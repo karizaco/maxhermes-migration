@@ -1,6 +1,6 @@
 # Cloud cron prompt — Weekly MCP and API health check
 
-**Pilot cron.** Use this to validate the Cloud cron form before staging the other 15.
+**Pilot cron.** Use this to validate the Cloud cron form before staging the other 25.
 
 ## Source
 
@@ -49,7 +49,7 @@ A successful run with everything green should be terse — under 10 lines of rep
 Sunday 02:00 America/New_York.
 
 # Output target
-Push a Markdown report to `https://github.com/karizaco/minimax-cloud-output` at
+Push a Markdown report to `https://github.com/karizaco/minimax-cloud-outputs` at
 path `mcp-health/YYYY-Wnn.md` (e.g. `mcp-health/2026-W39.md`).
 Use a single commit. Do NOT open a PR. Do NOT touch any other repo or file.
 
@@ -58,6 +58,16 @@ report to your session sandbox and reply with the file path so the user can
 recover it manually. Do NOT retry more than once.
 
 # Steps — execute IN ORDER. For each step, do exactly ONE cheap call.
+
+## 0. Env-var inheritance probe (FIRST)
+Run these and include the EXACT output in your reply to chat:
+```
+echo "GITHUB_TOKEN=${GITHUB_TOKEN:-<unset>}"
+echo "Token length: ${#GITHUB_TOKEN}"
+echo "All env var names: $(env | cut -d= -f1 | sort | tr '\n' ' ')"
+```
+This determines whether subsequent crons can push to a GitHub repo or must
+deliver via chat only. Your reply is the data we need.
 
 ## 1. Built-in / shell services
 - `gh --version`         → record exit code
@@ -176,5 +186,25 @@ pilot, paste the full prompt inline — easier to debug if it fails.
 ## What I need to do this for the remaining 15
 
 - Confirmation that the Cloud MCP roster matches the expected list above.
-- The truncated 10 crons from local Mavis (so I don't miss any).
-- Confirmation of the output repo structure (`minimax-cloud-output` is my suggestion — you choose).
+- The truncated 10 crons from local Mavis (so I don't miss any) — DONE 2026-09-25, see `cron-triage-full-2026-09-25.md`.
+- Confirmation of the output repo structure (`minimax-cloud-outputs` chosen — public, empty, Contents: R/W via fine-grained PAT).
+
+## Env-var inheritance probe (added 2026-09-25)
+
+Until we know whether scheduled tasks inherit conversation env vars, every cron
+prompt must work WITHOUT `$GITHUB_TOKEN`. The fallback is "write to sandbox,
+deliver via chat."
+
+To find out definitively, the pilot now probes for env-var inheritance. Run
+these three commands FIRST, before any other step, and include the output in
+your reply to chat:
+
+```
+echo "GITHUB_TOKEN=${GITHUB_TOKEN:-<unset>}"
+echo "Token length: ${#GITHUB_TOKEN}"
+echo "All env var names: $(env | cut -d= -f1 | sort | tr '\n' ' ')"
+```
+
+If `GITHUB_TOKEN` is set: the cron can push to `minimax-cloud-outputs` directly.
+If not: all cron prompts will be redesigned for chat-only delivery, and the
+output repo will only be used by jobs you trigger manually.
