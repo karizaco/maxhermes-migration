@@ -1,0 +1,183 @@
+{
+  "_note": "Snapshot of mavis cron list on 2026-09-25. 16 of 26 crons captured here due to display truncation in the runtime response (the mavis tool returns ~23KB of prompt content; the harness truncates middle of response at ~16KB). The remaining 10 crons have their metadata available via `mavis cron list --limit 100` (count: 26, hasMore: false) but were cut from the head+tail display. Cron prompts themselves are runtime-managed and don't need to be captured as static files for the migration; only metadata is required.",
+  "_snapshot_date_et": "2026-09-25",
+  "total_count": 26,
+  "captured_count": 16,
+  "truncated_count": 10,
+  "tasks": [
+    {
+      "cronId": "498db1df-4c60-45cd-b9dc-f40c979ff000",
+      "cronName": "Audit log daily backup",
+      "schedule": "55 23 * * *",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790394900000
+    },
+    {
+      "cronId": "e8b29d77-16c9-43af-afab-8cdb0d2d0512",
+      "cronName": "Asia pre-market reactions (06:30 ET)",
+      "schedule": "30 6 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:\\Users\\admin\\.minimax\\projects\\virtual-assistant",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790332200000
+    },
+    {
+      "cronId": "576c16e1-0fbf-4e41-a7cd-7a122d33e1f9",
+      "cronName": "[CRON] Watchdog Stock-screener (hourly)",
+      "schedule": "0 * * * *",
+      "timezone": null,
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/virtual-assistant",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790319600000
+    },
+    {
+      "cronId": "f6fce3d1-5739-4efd-bbf4-6594e8d1058c",
+      "cronName": "Reversal bullish screener (15:55 ET)",
+      "schedule": "55 15 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/technical",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790366100000
+    },
+    {
+      "cronId": "5edfb4aa-f234-47de-b528-a686b700b0af",
+      "cronName": "Daily EOD international pull (EU/ASX/JP/TW/CA)",
+      "schedule": "35 16 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790368500000
+    },
+    {
+      "cronId": "4847cfa0-f19a-449a-8779-e02ad1c61edc",
+      "cronName": "Stock-screener pattern-study backlog (Saturday)",
+      "schedule": "0 10 * * 6",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": null,
+      "model": "minimax/MiniMax-M3",
+      "status": "active"
+    },
+    {
+      "cronId": "9951cfe2-ea2b-4ffa-802a-28090542623c",
+      "cronName": "Weekly MCP and API health check",
+      "schedule": "0 2 * * 0",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790488800000
+    },
+    {
+      "cronId": "2dd70b0a-7308-43ba-b514-69d62e09c397",
+      "cronName": "Daily earnings reminder",
+      "schedule": "0 6 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790330400000
+    },
+    {
+      "cronId": "0a87adbe-1f83-4c7c-9253-38a6aaf985aa",
+      "cronName": "Daily EOD watchlist CSV snapshot",
+      "schedule": "30 16 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790368200000
+    },
+    {
+      "cronId": "bd4f22c1-9806-4cb3-b71c-16e521a6d8bb",
+      "cronName": "Daily agent-ops sync",
+      "schedule": "0 18 * * 0-6",
+      "timezone": "Asia/Bangkok",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790334000000
+    },
+    {
+      "cronId": "35b54204-2072-49d4-a682-a75c7f85af5c",
+      "cronName": "Weekly market recap and preview",
+      "schedule": "47 17 * * 0",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790545620000
+    },
+    {
+      "cronId": "9d67e123-9779-4276-a100-c1d088a5e444",
+      "cronName": "Daily agentic post-market brief",
+      "schedule": "35 22 * * 1-5",
+      "timezone": null,
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790350500000,
+      "_note": "Schedule updated from `13 16 * * 1-5` to `35 22 * * 1-5` America/New_York to match the MiniMax Code Desktop resume window; TZ field dropped during the update."
+    },
+    {
+      "cronId": "73cce695-e801-462e-b003-741d6c4c9b81",
+      "cronName": "Weekly X following audit",
+      "schedule": "0 10 * * 0",
+      "timezone": "Asia/Bangkok",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790478000000
+    },
+    {
+      "cronId": "e80a4e87-945b-4734-97d0-7ca4002d8513",
+      "cronName": "Daily NTRT gap brief",
+      "schedule": "30 6 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790332200000
+    },
+    {
+      "cronId": "62df8fee-09c3-4c23-b765-59bc9981796c",
+      "cronName": "Daily agentic pre-market brief",
+      "schedule": "37 7 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:/Users/admin/.minimax/projects/coding-shared",
+      "model": "minimax/MiniMax-M3",
+      "status": "active",
+      "nextRun": 1790336220000
+    },
+    {
+      "_from_partial_visibility": "us-stocks-in-play open slot (09:50 ET)",
+      "schedule": "50 9 * * 1-5",
+      "timezone": "America/New_York",
+      "enabled": true,
+      "project": "C:\\Users\\admin\\.minimax\\projects\\virtual-assistant",
+      "model": "minimax/MiniMax-M3",
+      "_note": "cronId not visible in truncated display; partial visibility from prior cron list capture. Verify via `mavis cron list --search \"us-stocks-in-play\"` or `mavis cron get --cron_id <unknown>` if exact ID needed."
+    }
+  ]
+}

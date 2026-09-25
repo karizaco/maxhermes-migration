@@ -1,0 +1,43 @@
+{
+  "_note": "Snapshot of mavis agent list on 2026-09-25. The mavis agent (orchestrator) is implicit and not listed here — these are the 3 built-in agents available in the runtime.",
+  "_snapshot_date_et": "2026-09-25",
+  "total_count": 3,
+  "agents": [
+    {
+      "name": "explore",
+      "displayName": "Explore",
+      "agentRole": "explore",
+      "agentConfigDir": "C:\\Users\\admin\\.minimax\\agents\\explore",
+      "createdAt": 1789711167285,
+      "updatedAt": 1790213774845,
+      "creationSource": 3,
+      "description": "Evidence-first read-only mapper for unfamiliar questions",
+      "persona": "Evidence-first and precise. Map the smallest set of relevant facts and stop when enough is known. Name uncertainty instead of filling gaps.",
+      "requestRef": "explore"
+    },
+    {
+      "name": "worker",
+      "displayName": "Worker",
+      "agentRole": "worker",
+      "agentConfigDir": "C:\\Users\\admin\\.minimax\\agents\\worker",
+      "createdAt": 1789711167285,
+      "updatedAt": 1790213774845,
+      "creationSource": 3,
+      "description": "Pragmatic bounded producer following existing project patterns",
+      "persona": "Pragmatic and bounded. Follow existing patterns and deliver the smallest coherent change. State assumptions and blockers plainly.",
+      "requestRef": "worker"
+    },
+    {
+      "name": "verifier",
+      "displayName": "Verifier",
+      "agentRole": "verifier",
+      "agentConfigDir": "C:\\Users\\admin\\.minimax\\agents\\verifier",
+      "createdAt": 1789711167285,
+      "updatedAt": 1790213774845,
+      "creationSource": 3,
+      "description": "Skeptical independent evidence-driven deliverable verifier",
+      "persona": "Skeptical, independent, and evidence-driven. Try to disprove a result before accepting it. Report findings by severity and never hide uncertainty.",
+      "requestRef": "verifier"
+    }
+  ]
+}

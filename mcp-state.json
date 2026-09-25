@@ -1,0 +1,84 @@
+{
+  "_note": "Snapshot of mavis mcp list on 2026-09-25. 9 servers total.",
+  "_snapshot_date_et": "2026-09-25",
+  "total_count": 9,
+  "servers": [
+    {
+      "name": "tradingview",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "TradingView unofficial MCP server — stock screener API for stocks/forex/crypto/ETFs (no API key)",
+      "endpoint": "cmd",
+      "cloud_portable": true
+    },
+    {
+      "name": "yahoo-finance",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "Yahoo Finance MCP server — real-time quotes, historical prices, financials, analyst ratings, options, news (no API key)",
+      "endpoint": "cmd",
+      "cloud_portable": true
+    },
+    {
+      "name": "tradingview-advanced",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "Advanced TradingView MCP — 30+ tools, real-time data, technical indicators, screeners, backtesting, sentiment, Yahoo Finance integration (no API key)",
+      "endpoint": "uv.exe",
+      "cloud_portable": "needs_linux_uv_binary",
+      "_cloud_action": "Substitute uv.exe → Linux `uv` in YAML; pin version (currently runs via uv.exe on Windows)"
+    },
+    {
+      "name": "financekit",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "FinanceKit MCP — 17 tools: stock quotes, technical analysis (RSI/MACD/Bollinger/Golden-Death Cross), crypto via CoinGecko, VaR/Sharpe/Sortino/Beta, correlation matrix, options chains, earnings calendar, sector rotation, portfolio analysis. No API keys.",
+      "endpoint": "uvx.exe",
+      "cloud_portable": "needs_linux_uvx_binary",
+      "_cloud_action": "Substitute uvx.exe → Linux `uvx` in YAML; pin version"
+    },
+    {
+      "name": "shibui-finance",
+      "enabled": true,
+      "transport": "streamable-http",
+      "description": "Shibui Finance — pre-loaded 64-year dataset for 9,900+ US equities: 31M+ daily prices, 56 technical indicators, financials, SEC filings, earnings surprises. Plain English → SQL. No API key.",
+      "endpoint": "https://mcp.shibui.finance/mcp",
+      "cloud_portable": true
+    },
+    {
+      "name": "deepgram-stt",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "Deepgram Nova-2 speech-to-text via stdio MCP. Exposes transcribe_file (local audio/video) and transcribe_url (public HTTPS URL, no local download). Returns plain text or speaker-labeled paragraphs (diarize=true).",
+      "endpoint": "python",
+      "cloud_portable": "needs_python_and_api_key",
+      "_cloud_action": "Verify Python runtime + DEEPGRAM_API_KEY env support in cloud MCP config"
+    },
+    {
+      "name": "discord",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "Discord (fmarcac/discord-mcp) — reads your own Discord desktop client via DevTools Protocol. 18 tools: channels, threads, forum posts, search, DMs. Works for any server you are a member of (no bot needed). ToS-sensitive — read-only defaults.",
+      "endpoint": "node",
+      "cloud_portable": false,
+      "_cloud_action": "DO NOT PORT — requires local Discord desktop client via DevTools Protocol"
+    },
+    {
+      "name": "stocktwits",
+      "enabled": true,
+      "transport": "streamable-http",
+      "description": "StockTwits social sentiment via Pipeworx hosted MCP gateway — 9 tools (symbol_stream, user_stream, trending_symbols, trending_messages, suggested_symbols, symbol_search, chart_data, watchlists, watchlist). Keyless public read endpoints via the gateway (200 req/hr/IP). Direct StockTwits API returns 403 from many regions; the gateway bypasses that.",
+      "endpoint": "https://gateway.pipeworx.io/stocktwits/mcp",
+      "cloud_portable": true
+    },
+    {
+      "name": "finviz",
+      "enabled": true,
+      "transport": "stdio",
+      "description": "Finviz.com screener via Playwright. Free tier: regular-session Change %, Rel Volume, snapshot, news, insider. Elite (set FINVIZ_USER/FINVIZ_PASS env): pre-market % column.",
+      "endpoint": "python",
+      "cloud_portable": "needs_playwright_install",
+      "_cloud_action": "Add `playwright install` hook before first MCP call to install browser binaries in cloud sandbox"
+    }
+  ]
+}
