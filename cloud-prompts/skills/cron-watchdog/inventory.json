@@ -1,0 +1,185 @@
+{
+  "now_ms": 1790157450000,
+  "tasks": [
+    {
+      "cronId": "5edfb4aa-f234-47de-b528-a686b700b0af",
+      "cronName": "Daily EOD international pull (EU/ASX/JP/TW/CA)",
+      "recent_sessions": []
+    },
+    {
+      "cronId": "fa024d13-76de-49dd-af84-aa00878c4dbf",
+      "cronName": "Stock-screener cron watchdog (hourly)",
+      "recent_sessions": [
+        {"sessionId": "mvs_6cca2a575561438fb3b4dacb16b62a43", "runId": "759b05de-7d02-47b6-bd66-0994560b4109", "createdAt": 1790078400014, "status": "delivered"},
+        {"sessionId": "mvs_910fea87a9844f6193381c764836bb4a", "runId": "e937198e-bce1-419b-83f4-bb3afb7b2a74", "createdAt": 1790074800012, "status": "delivered"},
+        {"sessionId": "mvs_1fc26417acbe4702a86290a90ba6c353", "runId": "867ae0ed-c4e6-4f1d-b2f5-4700d3337b31", "createdAt": 1790071200003, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "4847cfa0-f19a-449a-8779-e02ad1c61edc",
+      "cronName": "Stock-screener pattern-study backlog (Saturday)",
+      "recent_sessions": [
+        {"sessionId": "mvs_69b721cf524248ed8a9b693ed1dab19c", "runId": "298b2445-f44d-4d34-9c10-485c1c2e32c0", "createdAt": 1789990358759, "status": "delivered"},
+        {"sessionId": "mvs_f42c42157ddb4e59a247dc4b3f525771", "runId": "4b2144f5-2369-4f28-82d6-2abd63907cfa", "createdAt": 1789989788738, "status": "delivered"},
+        {"sessionId": "mvs_0491e9d74e3143d7947fa1bcf0cc2546", "runId": "6fe37aa1-f8b5-4ec5-9c86-4898c4fe30dd", "createdAt": 1789984729962, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "d63dd9ca-aef5-435d-8ffe-432f943ecabd",
+      "cronName": "Stock-screener focus RVOL rerank 09:45",
+      "recent_sessions": [
+        {"sessionId": "mvs_c46f2e89a4dc40fab2ddedcf7ad61f71", "runId": "9bcfd1a3-be5f-4a87-8ae4-ccf48270368b", "createdAt": 1789998300007, "status": "delivered"},
+        {"sessionId": "mvs_67bc80cd1b1446e1aecc023b4338b634", "runId": "db6bd198-7dc6-4c42-8f09-1ddab996251f", "createdAt": 1789990706123, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "2833acb0-e8b0-4f6c-b1cb-08c17d240c9c",
+      "cronName": "Stock-screener pre-market gapper (09:00 ET)",
+      "recent_sessions": [
+        {"sessionId": "mvs_d7ad1848c4aa4b989fc331364d1f176c", "runId": "a730f40b-fc0f-49b3-a924-ac5c5452dd2d", "createdAt": 1789995600015, "status": "delivered"},
+        {"sessionId": "mvs_dd6952ffa3124e2faa23a450f81706ba", "runId": "f1d87855-632e-4b82-805a-a55200123f7b", "createdAt": 1789989787067, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "b5187e5c-b93a-47a9-9783-2dc77dd4deb7",
+      "cronName": "Stock-screener reversal bullish 15:55 entry alert",
+      "recent_sessions": [
+        {"sessionId": "mvs_75fdf602331b4fb9953bae986ec96ec4", "runId": "dda281bb-a983-4e19-8aaa-743fe4016387", "createdAt": 1790044981762, "status": "delivered"},
+        {"sessionId": "mvs_f8c06438271c4d6888dbce97b5f912f7", "runId": "1b9e01d5-e3b0-4741-b8f5-3d23161bcae4", "createdAt": 1789993788092, "status": "delivered"},
+        {"sessionId": "mvs_e1856969eaa24b1a9bba72f467b833ba", "runId": "b811582c-a84f-4ef4-9ce2-735465df0f7a", "createdAt": 1789993556455, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "1fe85f1b-65d1-45ac-bcbb-d293b07c18d0",
+      "cronName": "Stock-screener daily sweep (18:30 ET)",
+      "recent_sessions": [
+        {"sessionId": "mvs_3a76551777df4ea2bfcaceb1b91db28f", "runId": "c188b907-3651-4dfc-b8e9-fb6d92bf744c", "createdAt": 1790044981717, "status": "delivered"},
+        {"sessionId": "mvs_7363926ba07b43b183641b82dcd25af9", "runId": "2a283a9c-91f3-43f6-9453-654a771b3c56", "createdAt": 1789992415814, "status": "delivered"},
+        {"sessionId": "mvs_24cf4a3baace4aafb6447509ae76652e", "runId": "540ace1c-6ef2-4c8b-bbfb-8a798a1d0c05", "createdAt": 1789990356215, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "af82b3bb-46e0-4fb1-809a-91c6462f8265",
+      "cronName": "Stock-screener breadth snapshot (06:30 ET)",
+      "recent_sessions": [
+        {"sessionId": "mvs_d0ff0b417e0c4a2783f812002917dae5", "runId": "d4820fc4-06d6-43e5-827a-7ea7d5cb3e34", "createdAt": 1790073000019, "status": "delivered"},
+        {"sessionId": "mvs_6d4613ae35224c45ba8faa08b0c51f5f", "runId": "2961af12-7fd1-4e57-a1b1-8d190a932ec0", "createdAt": 1789986720986, "status": "delivered"},
+        {"sessionId": "mvs_1d81d5e2ac054b3eaad22b55cefd7009", "runId": "202e1cc6-79e1-4acc-9034-86a3c33e5840", "createdAt": 1789986600019, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "a2d3c834-af3c-44f3-8aae-1491460b839c",
+      "cronName": "Daily mavis-runtime backup",
+      "recent_sessions": [
+        {"sessionId": "mvs_f2d22ea075324bfba1c2836a9d9b8b1c", "runId": "ec433f61-3e83-46e6-9231-5fa370edcf0b", "createdAt": 1790075100008, "status": "delivered"},
+        {"sessionId": "mvs_20f2bf78242e4a94b756369e0ca56a39", "runId": "1e5633ad-bed8-4999-ab4b-95ac85945eab", "createdAt": 1789988700011, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "73a27103-140a-4e41-ad8f-f645781a931e",
+      "cronName": "Cross-asset correlation snapshot",
+      "recent_sessions": []
+    },
+    {
+      "cronId": "269d4a4e-b23b-420d-b8ff-225dd541f8d6",
+      "cronName": "Macro calendar — midweek refresh (Wed)",
+      "recent_sessions": []
+    },
+    {
+      "cronId": "9a8c33e1-3da9-42ad-8d1a-a31e5c231499",
+      "cronName": "Macro calendar — week ahead (Sunday)",
+      "recent_sessions": []
+    },
+    {
+      "cronId": "4a7d6212-3aab-4758-aaca-22fd6741559f",
+      "cronName": "Earnings reaction scanner",
+      "recent_sessions": [
+        {"sessionId": "mvs_ee26d943b6c842738cff9b63cd61a41e", "runId": "3f63a8d3-97de-4dfc-b886-4668c36cee1a", "createdAt": 1790078400018, "status": "delivered"},
+        {"sessionId": "mvs_dfe396b6865947d6b551b0e6b1cfc1d2", "runId": "f667332f-4813-4b3e-ab41-77c228cdf3f7", "createdAt": 1789992000400, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "32b6515b-9689-40fa-a552-73719b07bf2d",
+      "cronName": "Unusual options flow daily",
+      "recent_sessions": [
+        {"sessionId": "mvs_7fe1357b8f614eaa964ad3ef6bf15d33", "runId": "fcc65388-90ef-4321-be64-d196f0b6274e", "createdAt": 1789998900012, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "7cf5909e-681f-4724-8300-fa0c410365eb",
+      "cronName": "US stocks in play — 09:50 ET open slot",
+      "recent_sessions": [
+        {"sessionId": "mvs_aa4ce0347e5645feafd239fa00914c3b", "runId": "25b6f986-d247-42f9-8376-d05a6f3bb449", "createdAt": 1789998600008, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "9951cfe2-ea2b-4ffa-802a-28090542623c",
+      "cronName": "Weekly MCP and API health check",
+      "recent_sessions": [
+        {"sessionId": "mvs_71881249317c4f2cba250a760e19ea99", "runId": "cae5d285-b5bd-4dae-bb70-2a38b8a5260c", "createdAt": 1789884000022, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "2dd70b0a-7308-43ba-b514-69d62e09c397",
+      "cronName": "Daily earnings reminder",
+      "recent_sessions": [
+        {"sessionId": "mvs_e5135028d9154008a3b553670ac430f6", "runId": "46e4bdb1-1a77-4e7f-85d8-8dcb36789726", "createdAt": 1790071200009, "status": "delivered"},
+        {"sessionId": "mvs_584c8ea29a4f478db0bce360bba3e660", "runId": "4f1e15a4-e54f-43b2-a658-0f5589060713", "createdAt": 1789984800013, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "0a87adbe-1f83-4c7c-9253-38a6aaf985aa",
+      "cronName": "Daily EOD watchlist CSV snapshot",
+      "recent_sessions": [
+        {"sessionId": "mvs_4a051d9fb34d49a0a62fb460d5efa3a1", "runId": "23627d83-c5e6-4a25-87a6-62c58670db4a", "createdAt": 1790044981690, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "bd4f22c1-9806-4cb3-b71c-16e521a6d8bb",
+      "cronName": "Daily agent-ops sync",
+      "recent_sessions": [
+        {"sessionId": "mvs_b5d8ff501ce1447bbc90899a902aad65", "runId": "f87abe5e-97af-42f2-b608-f8938abf024f", "createdAt": 1790074800015, "status": "delivered"},
+        {"sessionId": "mvs_2a4e9c4d5d8a4684aa8bb5c457e75c7f", "runId": "be5e98a9-033c-4e81-97cf-837ab59c8fd4", "createdAt": 1789988400003, "status": "delivered"},
+        {"sessionId": "mvs_e3a02f3b2c2545e9b91b445cbed079ac", "runId": "04c26bf1-eb85-4c6a-8749-34dd9429fa28", "createdAt": 1789910340904, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "35b54204-2072-49d4-a682-a75c7f85af5c",
+      "cronName": "Weekly market recap and preview",
+      "recent_sessions": [
+        {"sessionId": "mvs_bf93e42c2da7449d92140ddad2208223", "runId": "03042613-a483-4c55-9a3b-99856162416c", "createdAt": 1789955711217, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "9d67e123-9779-4276-a100-c1d088a5e444",
+      "cronName": "Daily agentic post-market brief",
+      "recent_sessions": [
+        {"sessionId": "mvs_f3a44f50384b4e03af2e48f3331619dd", "runId": "76d8a580-9364-47e1-b3e8-e18d5de836ba", "createdAt": 1790044981616, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "73cce695-e801-462e-b003-741d6c4c9b81",
+      "cronName": "Weekly X following audit",
+      "recent_sessions": [
+        {"sessionId": "mvs_aff0ed7d96694959a3b711329dca8a43", "runId": "a361bf2b-23ca-4bb9-b6bc-b2b11ba77a12", "createdAt": 1789873200025, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "e80a4e87-945b-4734-97d0-7ca4002d8513",
+      "cronName": "Daily NTRT gap brief",
+      "recent_sessions": [
+        {"sessionId": "mvs_86fd7de406b548499699c72f10995a8a", "runId": "e66c46ac-975e-42e9-bf04-14648f8fb961", "createdAt": 1790073000012, "status": "delivered"},
+        {"sessionId": "mvs_66f620830fdd4bd98da4c4c13e561788", "runId": "c3ec0617-23e2-4a83-8b3d-220eec6dcacb", "createdAt": 1789986600015, "status": "delivered"}
+      ]
+    },
+    {
+      "cronId": "62df8fee-09c3-4c23-b765-59bc9981796c",
+      "cronName": "Daily agentic pre-market brief",
+      "recent_sessions": [
+        {"sessionId": "mvs_0ed848d867be41e489620816c6c8f867", "runId": "cf6fb7cb-2588-4519-9d3d-94d7bcb9f553", "createdAt": 1790077020004, "status": "delivered"},
+        {"sessionId": "mvs_4c6165b0bb5f41da85a29ac4ee112719", "runId": "afee2351-8831-4d46-b510-90e8ec79615d", "createdAt": 1790047459892, "status": "delivered"},
+        {"sessionId": "mvs_07b82286cb5d4e05b9eacbe5c8d9fb80", "runId": "cbf4060c-3728-433a-a992-280424bc45bd", "createdAt": 1789990620005, "status": "delivered"}
+      ]
+    }
+  ]
+}
