@@ -7,6 +7,70 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 - Original local schedule: intraday
 - Schedule is unchanged — only the runtime environment changed.
 
+
+## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
+
+The agent.minimax.io cron scheduler only supports coarse schedule types (daily, weekly, every X minutes).
+It cannot express "weekdays at 09:45" or "every market hour". To work around this, this prompt
+includes a window-check preamble. Run it as the FIRST step — before fetching the skill URL.
+
+```bash
+# Window flags for THIS cron (set by migration):
+WEEKDAYS_ONLY=false
+WEEKEND_ONLY=false
+MARKET_HOURS_ONLY=true
+DAY_OF_WEEK=0   # 1=Mon ... 7=Sun; 0=no constraint
+
+# Resolve current time in US/Eastern
+NOW_ET=$(TZ=America/New_York date +"%Y-%m-%d %H:%M %u")
+DOW=$(TZ=America/New_York date +%u)
+HOUR=$(TZ=America/New_York date +%H)
+
+SKIP_REASON=""
+
+if [ "$WEEKDAYS_ONLY" = "true" ] && [ "$DOW" -ge 6 ]; then
+    SKIP_REASON="weekend (day=$DOW, expected Mon-Fri)"
+fi
+if [ "$WEEKEND_ONLY" = "true" ] && [ "$DOW" -lt 6 ]; then
+    SKIP_REASON="weekday (day=$DOW, expected Sat-Sun)"
+fi
+if [ "$DAY_OF_WEEK" -gt 0 ] && [ "$DOW" -ne "$DAY_OF_WEEK" ]; then
+    case $DAY_OF_WEEK in
+        1) DAY_NAME="Monday";;
+        2) DAY_NAME="Tuesday";;
+        3) DAY_NAME="Wednesday";;
+        4) DAY_NAME="Thursday";;
+        5) DAY_NAME="Friday";;
+        6) DAY_NAME="Saturday";;
+        7) DAY_NAME="Sunday";;
+    esac
+    SKIP_REASON="wrong day (today=$DOW, expected $DAY_NAME=$DAY_OF_WEEK)"
+fi
+if [ "$MARKET_HOURS_ONLY" = "true" ]; then
+    if [ "$HOUR" -lt 9 ] || [ "$HOUR" -ge 17 ]; then
+        SKIP_REASON="outside market hours (hour=$HOUR, expected 09-16 ET)"
+    fi
+fi
+
+if [ -n "$SKIP_REASON" ]; then
+    mkdir -p /workspace/$(TZ=America/New_York date +%Y-%m-%d)
+    cat > /workspace/$(TZ=America/New_York date +%Y-%m-%d)/SKIPPED_stock_screener_breadth_snapshot.md <<EOF
+# Cron #10 stock-screener-breadth-snapshot — SKIPPED
+- Date (ET): $(TZ=America/New_York date +%Y-%m-%d)
+- Time (ET): $(TZ=America/New_York date +%H:%M)
+- Reason: $SKIP_REASON
+- No artifact produced.
+EOF
+    echo "out-of-window: $SKIP_REASON"
+    echo "no artifact; no push"
+    exit 0
+fi
+
+echo "window-check: OK ($NOW_ET)"
+```
+
+If the window check exits cleanly with "out-of-window: <reason>", the cron is DONE. Do not fetch the skill, do not call MCPs, do not write any other artifact, do not push. The `SKIPPED_*.md` file IS the artifact for this run — it's the audit trail for skipped fires.
+
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md
