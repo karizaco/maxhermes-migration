@@ -119,16 +119,35 @@ After writing the artifact, optionally commit it to `karizaco/minimax-cloud-outp
 
 ```bash
 cd /workspace
+export GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt
+export SSL_CERT_FILE="$GIT_SSL_CAINFO"
+export CURL_CA_BUNDLE="$GIT_SSL_CAINFO"
+export HOME=/workspace/.home; mkdir -p "$HOME"
+git config --global http.sslCAInfo "$GIT_SSL_CAINFO"
+git config --global user.email "maxhermes-cloud@local"
+git config --global user.name "MaxHermes Cloud Cron"
 git init -q 2>/dev/null || true
-git remote add origin https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git 2>/dev/null || true
-git config user.email "maxhermes-cloud@local"
-git config user.name "MaxHermes Cloud Cron"
-mkdir -p $(dirname "ntrt/{date}.md")
-git add -A
-git commit -q -m "cron #25 ntrt-gap-brief-daily ${DATE}" || echo "nothing to commit"
-git push -q origin main 2>&1 | head -3 || echo "push failed (token unset? sandbox non-persistent?)"
+git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
+  git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
+git fetch -q origin main
+rm -rf /workspace/.wt
+git worktree add -f /workspace/.wt origin/main
+# copy THIS cron's artifact(s) into the worktree, then stage ONLY that path
+mkdir -p /workspace/.wt/ntrt
+cp -r /workspace/ntrt/. /workspace/.wt/ntrt/ 2>/dev/null || true
+cd /workspace/.wt
+git add ntrt                 # ONLY this cron's output dir
+git status --short                 # MUST show no 'D' entries
+git commit -q -m "cron 25-ntrt-gap-brief-daily ${DATE}" || echo "nothing to commit"
+git push origin HEAD:main
 ```
 
+**CRITICAL — never use `git add -A` here.** In a fresh sandbox the working tree does not contain
+the rest of the repo, so `git add -A` stages every other file on the branch as DELETED. On
+2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283 files, wiping the
+artifacts of cron #19 and seven other crons, plus the repo `.gitignore`. If `git status --short`
+shows any `D` (deleted) entry, ABORT the commit and report the push as failed.
+Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`.
 **If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any fallback. Just write the artifact and reply.
 
 ## DELIVERY
