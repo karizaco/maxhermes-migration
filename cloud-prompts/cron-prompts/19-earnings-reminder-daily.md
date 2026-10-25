@@ -4,10 +4,16 @@ You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Wi
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
 ## SCHEDULE
-- Fires 06:00 ET weekdays (America/New_York).
+- Cron expression: `0 6 * * 1-5`, timezone `America/New_York` — 06:00 ET, Monday to Friday.
+- The day-of-week field is now set in the SCHEDULER, so weekends never fire and no weekend
+  SKIPPED file is produced. The weekend branch in the window check below is retained as a
+  belt-and-braces guard (it costs one line) and is correct if the schedule is ever widened.
 - The skill pairs with the 07:37 ET pre-market brief (cron #26 fires 08:30 ET). This artifact must
-  land on disk BEFORE that brief reads it. It previously fired 11:30 ET, i.e. after the brief and
-  after the US open — that was a bug, now fixed.
+  land on disk BEFORE that brief reads it. It previously fired 11:30 ET on ALL days, i.e. after
+  the brief and after the US open — that was a bug, now fixed.
+- Session mode: `new` — every fire starts a clean conversation. The task was previously bound to a
+  single long-lived session, which contradicts this prompt's own "the cron session is fresh each
+  time" rule and let one run's context bleed into the next.
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 

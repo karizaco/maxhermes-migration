@@ -27,7 +27,7 @@
 | 15 | earnings-reaction-scanner | intraday | yahoo, shibui | earnings/{date}-reactions.md |
 | 16 | unusual-options-flow-daily | intraday | yahoo | options-flow/{date}.md |
 | 17 | us-stocks-in-play | intraday | tradingview, yahoo | us-stocks-in-play/{date}.md |
-| 19 | earnings-reminder-daily | morning | yahoo, shibui | earnings/{date}-reminders.md |
+| 19 | earnings-reminder-daily | 06:00 ET weekdays (`0 6 * * 1-5`) | web_search/web_fetch (no yahoo/shibui MCP in Cloud) | earnings/{date}-reminders.md |
 | 20 | eod-watchlist-csv-snapshot | 16:00 ET weekdays | tradingview, yahoo | us-eod/{date}.csv |
 | 22 | weekly-market-recap-preview | Friday | shibui, tradingview, yahoo | weekly/{date}-preview.md |
 | 23 | agentic-post-market-brief | 16:30 ET weekdays | yahoo, tradingview, shibui, web_search | daily-briefs/{date}-post-market.md |
@@ -88,3 +88,17 @@ In agent.minimax.io (Cloud Mavis):
 - `../_classification.md` — bucket assignment rationale for all 26 crons
 - `../01-weekly-mcp-health-check.md` — the pilot prompt (#18)
 - `../skills/` — skill SKILL.md files mirrored from local Mavis
+
+
+## Trigger conventions (applied 2026-10-25)
+
+- **Put day-of-week in the cron expression**, not only in the prompt's window check. `0 6 * * 1-5`
+  means the scheduler never fires on weekends, so no weekend SKIPPED file is written. The in-prompt
+  window check stays as a redundant guard and still handles US market holidays, which no cron
+  expression can express.
+- **Use `session: new`** so each run starts a clean conversation. A task bound to one long-lived
+  session (`sessionId`) contradicts the "fresh session each time" line every prompt carries, and
+  leaks context between runs.
+- **Always verify `timezone` after a `cron_update`.** An update that omits the timezone field can
+  silently adopt the caller's local zone (observed: America/New_York -> Europe/Paris, which moved a
+  06:00 ET job to 00:00 ET). Re-read the task after any schedule change.
