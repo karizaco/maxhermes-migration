@@ -75,26 +75,22 @@ and say so in Source health. Working replacements:
 - Pre-market gap = last 1m-bar close vs `regularMarketPrice`. **Do NOT use `chartPreviousClose`** (that is the prior session).
 - Catalyst research: `web_search` (separate egress path from curl; stays up even if curl TLS breaks).
 
+Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
+
 ### Rules
 
-1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path here and
-   it uses a different egress than curl, so it survives Yahoo blocking curl.
-2. **For bulk data walk the ladder:** Yahoo JSON → (on 429) Nasdaq API → Yahoo HTML →
-   `web_search` per symbol. Stop at the first source that returns real data.
-3. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
-   never successfully queried. Retry once after a short sleep, then fall through.
-4. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
-   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect and has
-   the fields you need before using any number.
-5. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say
-   so. A missing row is recoverable; an invented price is not.
-6. **Distinguish "no data" from "no source".** A symbol with no print today (pre-market, weekend,
-   holiday) is `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and
-   the HTTP status.
-7. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
+   never successfully queried. Retry once after a short sleep, then fall through the ladder.
+2. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect.
+3. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say so.
+   A missing row is recoverable; an invented price is not.
+4. **Distinguish "no data" from "no source".** No print today (pre-market, weekend, holiday) is
+   `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and HTTP status.
+5. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
    HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
    and which fallback you used. Never hide a degraded run.
-8. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
+6. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
    artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
    whole run because one source was blocked. The zero-fallback policy governs the *fallback
    chain*, not whether the artifact gets written.

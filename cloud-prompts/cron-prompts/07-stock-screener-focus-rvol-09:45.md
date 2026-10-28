@@ -98,6 +98,49 @@ Then counts, the method actually used, and any degradation.
 status must be exactly one of: ok, degraded_daily_rvol_proxy, failed_no_upstream_focus_list,
 failed_no_data.
 
+## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
+
+**The `mcp__*` tools named above DO NOT EXIST in this runtime.** They are listed for provenance
+only. Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
+`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
+`mcp__financekit__*` or `mcp__web_search__*`, and no `extract_content_from_websites`.
+**Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
+converts into an early abort with no artifact, via the zero-fallback policy.
+
+Use instead: `web_search` (search; returns page content), `web_fetch` (fetch a URL, incl. a raw
+JSON endpoint), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
+survives when curl is blocked. **Try `web_search` FIRST for any single-symbol quote.**
+
+**Measured 2026-10-28 from this sandbox — Yahoo's JSON endpoints return HTTP 429** (spark,
+chart, and screener alike), with and without a browser User-Agent and after a 60 s pause: it is
+persistent rate limiting, not a transient burst. Yahoo's *HTML* pages still work, and `web_search`
+still returns live data (SPY 769.66 close, 2026-10-27, while Yahoo JSON was 429).
+
+Ladder for bulk data: Yahoo JSON → (on 429) Nasdaq API `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf`
+→ Yahoo HTML `https://finance.yahoo.com/quote/{SYM}/` → `web_search` per symbol. Also confirmed
+working: CoinGecko (crypto), Frankfurter (FX), SEC EDGAR (fundamentals, needs User-Agent),
+US Treasury daily yield-curve CSV. Stooq CSV is blocked (404).
+Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
+
+### Rules
+
+1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
+   never successfully queried. Retry once after a short sleep, then fall through the ladder.
+2. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect.
+3. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say so.
+   A missing row is recoverable; an invented price is not.
+4. **Distinguish "no data" from "no source".** No print today (pre-market, weekend, holiday) is
+   `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and HTTP status.
+5. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+   HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
+   and which fallback you used. Never hide a degraded run.
+6. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
+   artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
+   whole run because one source was blocked. The zero-fallback policy governs the *fallback
+   chain*, not whether the artifact gets written.
+
 ## GIT PUSH (OPTIONAL)
 After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
 
@@ -177,61 +220,3 @@ tickers: N | RVOL Required: N | Liquid: N | method: METHOD
 file: PATH (BYTES B, written) | no artifact
 push: ok | skipped (token unset) | failed (reason)
 errors: N
-## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
-
-**The MCP tools named above do not exist in this runtime.** They are listed for provenance only.
-Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
-(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
-`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
-`mcp__financekit__*` or `mcp__web_search__*`. `extract_content_from_websites` is also absent.
-**Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
-converts into an early abort with no artifact, via the zero-fallback policy.
-
-Use instead: `web_fetch` (fetch a URL, incl. a raw JSON endpoint), `web_search` (search; returns
-page content), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
-survives when curl is blocked.
-
-### Tested data-source ladder (measured from this sandbox, 2026-10-28)
-
-| Source | Endpoint | Status |
-|---|---|---|
-| `web_search` (tool) | — | **OK** — most reliable; separate egress |
-| Nasdaq API | `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` | **OK** |
-| Yahoo page (HTML) | `https://finance.yahoo.com/quote/{SYM}/` | **OK** — scrape last close |
-| CoinGecko | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd` | **OK** — crypto |
-| Frankfurter FX | `https://api.frankfurter.app/latest?from=USD&to=EUR,JPY` | **OK** — FX |
-| SEC EDGAR | `https://data.sec.gov/submissions/CIK{10DIGITS}.json` | **OK** — needs User-Agent |
-| US Treasury | `https://home.treasury.gov/.../daily-treasury-rates.csv/2026/all?...` | **OK** — yield curve |
-| Yahoo spark | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...` | **429** |
-| Yahoo chart | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** |
-| Yahoo screener | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** |
-| Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404** |
-
-**Yahoo's JSON endpoints return HTTP 429 "Edge: Too Many Requests" from this egress** — with and
-without a browser User-Agent, and after a 60 s pause, so it is persistent rate limiting, not a
-transient burst. Yahoo's *HTML* pages still work, and `web_search` still returns live data
-(it returned SPY 769.66 close for 2026-10-27 while Yahoo JSON was 429).
-
-### Rules
-
-1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path here and
-   it uses a different egress than curl, so it survives Yahoo blocking curl.
-2. **For bulk data walk the ladder:** Yahoo JSON → (on 429) Nasdaq API → Yahoo HTML →
-   `web_search` per symbol. Stop at the first source that returns real data.
-3. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
-   never successfully queried. Retry once after a short sleep, then fall through.
-4. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
-   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect and has
-   the fields you need before using any number.
-5. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say
-   so. A missing row is recoverable; an invented price is not.
-6. **Distinguish "no data" from "no source".** A symbol with no print today (pre-market, weekend,
-   holiday) is `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and
-   the HTTP status.
-7. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
-   HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
-   and which fallback you used. Never hide a degraded run.
-8. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
-   artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
-   whole run because one source was blocked. The zero-fallback policy governs the *fallback
-   chain*, not whether the artifact gets written.
