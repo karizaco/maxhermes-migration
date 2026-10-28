@@ -123,6 +123,41 @@ working: CoinGecko (crypto), Frankfurter (FX), SEC EDGAR (fundamentals, needs Us
 US Treasury daily yield-curve CSV. Stooq CSV is blocked (404).
 Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
 
+### PRIMARY SOURCE: the MCP-over-HTTP bridge (use this FIRST)
+
+The `mcp__*` tool names above are NOT registered here, but the MCP SERVERS are reachable
+over plain HTTPS JSON-RPC from the sandbox. A ready-made bridge is published with the set:
+
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py
+
+```bash
+BR=/workspace/mcp_bridge.py
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" ; do
+  [ -s "$BR" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$BR" "$U" 2>/dev/null
+done
+[ -s "$BR" ] || echo "bridge fetch FAILED - fall back to web_search, then the curl ladder"
+mkdir -p /workspace/_mcp && cd /workspace/_mcp
+printf '%s' '{"symbol":"SPY","period":"1m"}' > a.json
+python3 /workspace/mcp_bridge.py stocktwits chart_data a.json      # OHLCV, sentiment, trending
+printf '%s' "SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+printf '%s' "SELECT ticker, close FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+python3 -c "import json,sys;print(json.dumps({'query':open('q.txt').read(),'user_prompt':'latest SPY close'}))" > b.json
+python3 /workspace/mcp_bridge.py shibui stock_data_query b.json   # history to 1962, fundamentals, screeners, EDGAR
+```
+
+**Verified 2026-10-28:** both servers answer, 6/6 identical values over 6 calls (median 204 ms),
+returning the same close web_search gave (SPY 769.66, 2026-10-27) while Yahoo JSON was 429.
+Fetch the bridge with the 3-URL ladder above - a freshly pushed file can 404 on the raw CDN
+for a few minutes. The bridge returns `{"error": ...}` and a non-zero exit on failure, so a
+failed call can never be mistaken for data. **Pass tool args as a FILE, not inline** - shell
+quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL above.
+
+**Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
+source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
+
 ### Rules
 
 1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
@@ -157,59 +192,86 @@ git config --global user.name "MaxHermes Cloud Cron"
 git init -q 2>/dev/null || true
 git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
-git fetch -q origin main
-rm -rf /workspace/.wt
-git worktree add -f /workspace/.wt origin/main
-# copy THIS cron's artifact(s) into the worktree, then stage ONLY that path
-mkdir -p "/workspace/.wt/daily-screens"
-cp -r "/workspace/daily-screens/." "/workspace/.wt/daily-screens/" 2>/dev/null || true
-cd /workspace/.wt
-git add daily-screens                  # ONLY this cron's output
-STAGED=$(git status --short)
-if [ -z "$STAGED" ]; then
-  echo "push: ABORTED (nothing staged — the artifact was not copied into the worktree)"
-elif echo "$STAGED" | grep -q '^\s*D'; then
-  echo "push: ABORTED (staged deletions detected — refusing to push)"
-else
-  echo "$STAGED"
+
+# --- push with race retry ---
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
+# 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
+# artifact is LOST - while the old block still reported success, because
+# `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
+# a concurrent push lost options-flow/<date>.md and reported exit 0.
+# This loop re-fetches origin/main, rebuilds the worktree from the NEW tip, re-copies
+# and re-commits, so the loser lands on the next attempt.
+PUSH_OK=0
+for attempt in 1 2 3; do
+  git fetch -q origin main
+  git worktree prune
+  WT=/workspace/.wt.$(date +%s)$$
+  rm -rf "$WT"
+  git worktree add -f "$WT" origin/main >/dev/null 2>&1
+  mkdir -p "$WT/daily-screens"
+  cp -r "/workspace/daily-screens/." "$WT/daily-screens/" 2>/dev/null || true
+  cd "$WT"
+  git add daily-screens                 # ONLY this cron's output directory
+  STAGED=$(git status --short)
+  if [ -z "$STAGED" ]; then
+    echo "push: ABORTED (nothing staged - the artifact was not copied into the worktree)"
+    break
+  fi
+  if echo "$STAGED" | grep -q '^\s*D'; then
+    echo "push: ABORTED (staged deletions detected - refusing to push)"
+    break
+  fi
   git commit -q -m "cron 07 07-stock-screener-focus-rvol-09%3A45.md $DATE" || echo "nothing to commit"
-  git push -q origin HEAD:main 2>&1 | head -3
-fi
+  if git push -q origin HEAD:main 2>/tmp/push.err; then
+    PUSH_OK=1
+    echo "push: ok (attempt $attempt)"
+    break
+  fi
+  echo "push: attempt $attempt rejected: $(head -1 /tmp/push.err | tr -d '\r')"
+  sleep 5
+done
+cd /workspace
 ```
 
-**CRITICAL — never use `git add -A` here.** In a fresh sandbox the working tree does not contain
-the rest of the repo, so `git add -A` stages every other file on the branch as DELETED. On
-2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283 files, wiping the
-artifacts of cron #19 and seven other crons, plus the repo `.gitignore`. If `git status --short`
-shows any `D` (deleted) entry, ABORT the commit and report the push as failed.
-Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`,
-which is why the push target is `HEAD:main` and not `origin main`.
-**If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any fallback. Just write the artifact and reply.
+**CRITICAL - never use `git add -A` here.** In a fresh sandbox the working tree does not
+contain the rest of the repo, so `git add -A` stages every other file on the branch as
+DELETED. On 2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283
+files, wiping the artifacts of cron #19 and seven other crons, plus the repo `.gitignore`.
+If `git status --short` shows any `D` (deleted) entry, ABORT the commit and report the push
+as failed.
+Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local
+`master`, which is why the push target is `HEAD:main` and not `origin main`.
+Never loop forever on a push failure - 3 attempts, then report the failure.
+**If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any
+fallback. Just write the artifact and reply.
 
-## DELIVERY VERIFICATION (MANDATORY — do this after the push block)
+## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 A successful `git push` is NOT proof of delivery. Verify the artifact is actually ON the remote
 branch, and report the result truthfully. A push that silently failed is worse than a push that
 failed loudly.
 
 ```bash
-cd /workspace/.wt 2>/dev/null || cd /workspace
+cd /workspace
 export DATE=$(TZ=America/New_York date +%Y-%m-%d)
 git fetch -q origin main
 if git cat-file -e "origin/main:daily-screens/$DATE/focus-rvol-snapshot.md" 2>/dev/null; then
   echo "DELIVERY: ok (origin/main:daily-screens/$DATE/focus-rvol-snapshot.md present)"
 else
   echo "DELIVERY: FAILED (origin/main:daily-screens/$DATE/focus-rvol-snapshot.md NOT found)"
+  echo "  the artifact is still in the sandbox at daily-screens/ - report this, do not silently continue"
 fi
 ```
 
-`daily-screens/$DATE/focus-rvol-snapshot.md` is the repo-relative path of the artifact you just wrote, with `{date}` replaced
-by `$DATE` (the shell variable above). If the cron writes several files, check the primary one
-and list the rest.
-- If DELIVERY is `ok` → the reply line is `push: ok (verified)`.
-- If DELIVERY is `FAILED` → the reply line is `push: FAILED (artifact absent on origin/main)`.
+`daily-screens/$DATE/focus-rvol-snapshot.md` is the repo-relative path of the artifact you just wrote, with `{{date}}`
+replaced by `$DATE` (the shell variable above). If the cron writes several files, check the
+primary one and list the rest.
+- If DELIVERY is `ok` -> the reply line is `push: ok (verified)`.
+- If DELIVERY is `FAILED` -> the reply line is `push: FAILED (artifact absent on origin/main)`.
   Say so plainly. Do NOT claim success. The artifact still exists in the sandbox, so also
   state the local path so the run is not lost.
-- If the push was skipped (no token) → `push: skipped (token unset)`.
+- If the push was skipped (no token) -> `push: skipped (token unset)`.
+- If all 3 push attempts were rejected, say so explicitly - a missing artifact is a real
+  failure, not a warning.
 
 ## DELIVERY (the only thing delivered to the chat)
 Six lines, no preamble:
