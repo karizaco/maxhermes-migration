@@ -79,8 +79,25 @@ The skill's procedure body lives here:
 Then follow the procedure verbatim, with these Cloud adaptations below.
 
 ## MCP TOOLS AVAILABLE
-- `mcp__tradingview_advanced__*`, `mcp__yahoo_finance__*`
-- `web_search`, `extract_content_from_websites` for catalyst/news research.
+- `mcp__tradingview_advanced__*`, `mcp__yahoo_finance__*` (provenance only - not registered here)
+- `web_search`, `web_fetch`, `bash`
+
+**PRIMARY DATA PATH FOR THIS CRON: the MCP bridge to the `shibui` server, which computes the
+correlation matrix SERVER-SIDE with DuckDB `corr()` in ONE call.** That is the Cloud equivalent
+of the skill's `financekit.correlation_matrix` (which is not bound in this runtime and has no
+reachable server). The skill's helper script does the whole job:
+
+```bash
+SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
+curl -s -o /workspace/correlation_matrix.py "$SKILL/correlation_matrix.py"
+python3 /workspace/correlation_matrix.py \
+  --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
+  --window-start <YYYY-MM-DD> --window-end <last COMPLETED session> \
+  --basis adjclose --cross-check --out /workspace/data_cross/mats.json
+```
+
+The matrix is then READ FROM `mats.json` - do not recompute correlations by hand in the agent.
+Fetch the bridge with the 3-URL ladder shown above; pass tool args to it as a FILE, never inline.
 
 ## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
 
@@ -175,9 +192,25 @@ Local Mavis called Python helpers like `python screen.py emit-sql ...` to do fil
   - Atomic file write → `write_file(path, content)` (already atomic).
   - Deduplication → do it in agent reasoning before writing.
 
-If the skill spec references a helper under `scripts/`, fetch the helper's URL too:
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts/<name>.py
-Read it for reference, but do NOT execute it. Re-implement its logic.
+**EXCEPTION FOR THIS CRON - the skill's helper IS meant to be executed.** This routine has
+exactly one helper, `scripts/correlation_matrix.py`, and it is the PRIMARY data path: it fetches
+the prices, computes the correlation matrix SERVER-SIDE via the MCP bridge, and writes
+`/workspace/data_cross/mats.json`. Re-implementing it inline is the manual computation the skill
+forbids.
+
+```bash
+SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
+curl -s -o /workspace/correlation_matrix.py "$SKILL/correlation_matrix.py"
+python3 /workspace/correlation_matrix.py \
+  --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
+  --window-start <YYYY-MM-DD> --window-end <last COMPLETED session> \
+  --basis adjclose --cross-check --out /workspace/data_cross/mats.json
+```
+
+Read the matrix from `/workspace/data_cross/mats.json` (`matrix_returns`, `window`, `sources`,
+`crosscheck_shibui_raw`). If the helper cannot be fetched or fails, fall back to the ladder in the
+RUNTIME DATA-SOURCE CONTRACT and **state in Source health that the matrix was computed locally
+rather than server-side**.
 
 ## AUDIT LOG
 Local Mavis wrote an audit line to a Windows audit file after every run.
@@ -302,7 +335,9 @@ No preamble. Tool call → result → write → push → reply.
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
-   registered in this runtime — and do not invent tool names.
+   registered in this runtime — and do not invent tool names. The MCP-over-HTTP BRIDGE is reached
+   through `bash` and IS the primary source for this routine: it computes the correlation matrix
+   server-side. Do not compute the matrix by hand in the agent.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
