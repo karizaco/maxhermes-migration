@@ -95,8 +95,7 @@ Full endpoint list + measured status: `https://raw.githubusercontent.com/karizac
    whole run because one source was blocked. The zero-fallback policy governs the *fallback
    chain*, not whether the artifact gets written.
 
-**Transport:** the sandbox egress proxy issues 24h leaf certs and has expired mid-window before.
-At run start check `openssl s_client -connect query1.finance.yahoo.com:443 -servername query1.finance.yahoo.com </dev/null 2>/dev/null | openssl x509 -noout -dates`. If the leaf is expired, use `curl -k` and **disclose the unverified transport in Source health**. If valid, use `--cacert /etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt` for verified TLS. **Always sanity-check response BODIES, not just status codes** — the proxy can return HTTP 200 carrying a plain-text error page.
+**Transport:** the sandbox egress proxy issues 24h leaf certs and has expired mid-window before. At run start check `openssl s_client -connect query1.finance.yahoo.com:443 -servername query1.finance.yahoo.com </dev/null 2>/dev/null | openssl x509 -noout -dates`. If the leaf is expired, use `curl -k` and **disclose the unverified transport in Source health**. If valid, use `--cacert /etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt` for verified TLS. **Always sanity-check response BODIES, not just status codes** — the proxy can return HTTP 200 carrying a plain-text error page.
 
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
