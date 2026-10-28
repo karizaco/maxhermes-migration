@@ -33,6 +33,7 @@
 | 23 | agentic-post-market-brief | 16:30 ET weekdays | yahoo, tradingview, shibui, web_search | daily-briefs/{date}-post-market.md |
 | 25 | ntrt-gap-brief-daily | morning | tradingview, yahoo | ntrt/{date}.md |
 | 26 | agentic-pre-market-brief | 08:30 ET weekdays | yahoo, tradingview, web_search | daily-briefs/{date}-pre-market.md |
+| 90 | delivery-auditor | 07:00 ET daily | (no MCP) | _audit/status.json → branch `audit/status` |
 
 ## Common header (every prompt has this)
 
