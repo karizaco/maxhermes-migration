@@ -138,15 +138,13 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Several routine pairs share a fire minute and push to the SAME branch, e.g. 16:30
-# (#05 + #16), 08:30 (#08 + #26), 14:00 (#10 + #13 on Wed), 15:00 (#06 + #14 on Sun).
-# When two clones push in the same instant, the loser's push is REJECTED
-# ("cannot lock ref" / "non-fast-forward") and its artifact is silently LOST --
-# while the old block still reported success, because `git push ... | head -3` takes
-# the exit status of `head`, which is always 0. Measured 2026-10-28: a concurrent
-# push lost options-flow/<date>.md entirely and reported exit 0.
-# The loop below re-fetches origin/main, rebuilds the worktree from the NEW tip,
-# re-copies the artifact and re-commits, so the loser lands on the next attempt.
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
+# 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
+# artifact is LOST - while the old block still reported success, because
+# `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
+# a concurrent push lost options-flow/<date>.md and reported exit 0.
+# This loop re-fetches origin/main, rebuilds the worktree from the NEW tip, re-copies
+# and re-commits, so the loser lands on the next attempt.
 PUSH_OK=0
 for attempt in 1 2 3; do
   git fetch -q origin main

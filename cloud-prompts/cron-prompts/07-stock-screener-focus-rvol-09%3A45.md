@@ -125,44 +125,38 @@ Full endpoint list + measured status: `https://raw.githubusercontent.com/karizac
 
 ### PRIMARY SOURCE: the MCP-over-HTTP bridge (use this FIRST)
 
-The `mcp__*` tools named above are not registered in this runtime, BUT the MCP servers
-themselves are reachable over plain HTTPS JSON-RPC from the sandbox. A ready-made bridge
-script is published with the prompt set:
+The `mcp__*` tool names above are NOT registered here, but the MCP SERVERS are reachable
+over plain HTTPS JSON-RPC from the sandbox. A ready-made bridge is published with the set:
 
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py
 
-Fetch it once, then call the remote MCP servers directly:
-
 ```bash
-curl -s -o /workspace/mcp_bridge.py https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py
+BR=/workspace/mcp_bridge.py
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" ; do
+  [ -s "$BR" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$BR" "$U" 2>/dev/null
+done
+[ -s "$BR" ] || echo "bridge fetch FAILED - fall back to web_search, then the curl ladder"
 mkdir -p /workspace/_mcp && cd /workspace/_mcp
-# stocktwits: OHLCV bars, sentiment, trending, entity lookup
-cat > a.json <<'J'
-{"symbol":"SPY","period":"1m"}
-J
-python3 /workspace/mcp_bridge.py stocktwits chart_data a.json
-# shibui: DuckDB SQL over ~10,400 US symbols / 31.7M daily prices / fundamentals / SEC EDGAR
-cat > b.json <<'J'
-{"query":"SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3","user_prompt":"latest SPY close"}
-J
-python3 /workspace/mcp_bridge.py shibui stock_data_query b.json
+printf '%s' '{"symbol":"SPY","period":"1m"}' > a.json
+python3 /workspace/mcp_bridge.py stocktwits chart_data a.json      # OHLCV, sentiment, trending
+printf '%s' "SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+printf '%s' "SELECT ticker, close FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+python3 -c "import json,sys;print(json.dumps({'query':open('q.txt').read(),'user_prompt':'latest SPY close'}))" > b.json
+python3 /workspace/mcp_bridge.py shibui stock_data_query b.json   # history to 1962, fundamentals, screeners, EDGAR
 ```
 
-**Verified 2026-10-28 from this sandbox:** both servers respond, 6/6 identical values across
-6 calls (median 204 ms, max 1.3 s), and both return the same close the web search returned
-(SPY 769.66 on 2026-10-27) - while Yahoo's JSON API was returning 429. The bridge returns
-`{"error": ...}` with a non-zero exit on failure, so a failed call can never be mistaken for
-data. **Pass the arguments as a FILE, not inline on the command line** - shell quoting
-corrupts the JSON.
-
-| Server | Use it for | Notes |
-|---|---|---|
-| `stocktwits` | daily/intraday OHLCV (`chart_data`), sentiment (`symbol_stream`), trending, ticker lookup, `ask_pipeworx` (a 7,100-tool router for SEC/FRED/filings/news) | fastest path; no auth |
-| `shibui` | historical daily prices back to 1962, fundamentals, valuation, 61 technical indicators, screeners, SEC EDGAR filing metadata | DuckDB SQL; call `get_database_schema` first if unsure of a table; `LIMIT` <= 200 rows |
+**Verified 2026-10-28:** both servers answer, 6/6 identical values over 6 calls (median 204 ms),
+returning the same close web_search gave (SPY 769.66, 2026-10-27) while Yahoo JSON was 429.
+Fetch the bridge with the 3-URL ladder above - a freshly pushed file can 404 on the raw CDN
+for a few minutes. The bridge returns `{"error": ...}` and a non-zero exit on failure, so a
+failed call can never be mistaken for data. **Pass tool args as a FILE, not inline** - shell
+quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL above.
 
 **Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
-source and it is not rate-limited, so try it before Yahoo. If the bridge fails, fall through
-to `web_search`, then to the curl ladder below.
+source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
 
 ### Rules
 
@@ -200,15 +194,13 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Several routine pairs share a fire minute and push to the SAME branch, e.g. 16:30
-# (#05 + #16), 08:30 (#08 + #26), 14:00 (#10 + #13 on Wed), 15:00 (#06 + #14 on Sun).
-# When two clones push in the same instant, the loser's push is REJECTED
-# ("cannot lock ref" / "non-fast-forward") and its artifact is silently LOST --
-# while the old block still reported success, because `git push ... | head -3` takes
-# the exit status of `head`, which is always 0. Measured 2026-10-28: a concurrent
-# push lost options-flow/<date>.md entirely and reported exit 0.
-# The loop below re-fetches origin/main, rebuilds the worktree from the NEW tip,
-# re-copies the artifact and re-commits, so the loser lands on the next attempt.
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
+# 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
+# artifact is LOST - while the old block still reported success, because
+# `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
+# a concurrent push lost options-flow/<date>.md and reported exit 0.
+# This loop re-fetches origin/main, rebuilds the worktree from the NEW tip, re-copies
+# and re-commits, so the loser lands on the next attempt.
 PUSH_OK=0
 for attempt in 1 2 3; do
   git fetch -q origin main
