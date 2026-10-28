@@ -90,15 +90,76 @@ In agent.minimax.io (Cloud Mavis):
 - `../skills/` — skill SKILL.md files mirrored from local Mavis
 
 
-## Trigger conventions (applied 2026-10-25)
+## Trigger conventions (applied 2026-10-25, extended 2026-10-28)
 
 - **Put day-of-week in the cron expression**, not only in the prompt's window check. `0 6 * * 1-5`
-  means the scheduler never fires on weekends, so no weekend SKIPPED file is written. The in-prompt
-  window check stays as a redundant guard and still handles US market holidays, which no cron
-  expression can express.
+  means the scheduler never fires on weekends, so no weekend SKIPPED file is written and no agent
+  invocation is spent discovering it is a weekend. The in-prompt window check stays as a redundant
+  guard and still handles US market holidays, which no cron expression can express.
+  **Applied 2026-10-28 to crons #02, #04, #05, #08, #09, #20, #23, #25** (daily schedules that
+  were weekday-only in intent). #16 was already `1-5` and is the template.
 - **Use `session: new`** so each run starts a clean conversation. A task bound to one long-lived
   session (`sessionId`) contradicts the "fresh session each time" line every prompt carries, and
-  leaks context between runs.
+  leaks context between runs. All 20 are `new` as of 2026-10-28.
 - **Always verify `timezone` after a `cron_update`.** An update that omits the timezone field can
   silently adopt the caller's local zone (observed: America/New_York -> Europe/Paris, which moved a
   06:00 ET job to 00:00 ET). Re-read the task after any schedule change.
+- **Keep the cron expression's day-of-week and the prompt's `DAY_OF_WEEK` flag in step.** The cron
+  field is `0=Sun..6=Sat`; the flag is compared against `date +%u`, which is `1=Mon..7=Sun`. They
+  agree for Mon-Sat but **Sunday differs (cron 0 vs %u 7)**. A mismatch makes the routine skip
+  every single fire. Cron #22 was exactly this bug (cron `* * 6` = Saturday, flag `5` = Friday)
+  and has never produced an artifact.
+
+## Runtime data-source contract (added 2026-10-28)
+
+**The finance MCP tools named in these prompts do not exist in the Cloud runtime.** Verified on
+the live sandbox: the connector catalog exposes 15 tools, all of them media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is no
+`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
+`mcp__financekit__*` or `mcp__web_search__*`, and no `extract_content_from_websites`.
+
+Every prompt now carries a **RUNTIME DATA-SOURCE CONTRACT** section with a *tested* fallback
+ladder (measured 2026-10-28 from the sandbox) and eight rules. Key findings:
+
+- Yahoo's JSON endpoints (spark / chart / screener) return **HTTP 429** from this egress, with
+  and without a browser User-Agent, and after a 60 s pause — persistent rate limiting, not a
+  transient burst. Yahoo's *HTML* pages still work.
+- `web_search` is the most reliable path and uses a **different egress** from curl, so it survives
+  Yahoo blocking curl. It returned live SPY data (769.66 close, 2026-10-27) while Yahoo JSON was
+  429. Try it FIRST.
+- Working fallbacks measured 200: Nasdaq quote API, Yahoo HTML, CoinGecko, Frankfurter (FX),
+  SEC EDGAR, US Treasury yield curve.
+- A 429 is a **rate limit, not a missing symbol**. Never report "no data" for a symbol you never
+  successfully queried.
+- **Partial data beats no data.** Write the artifact with what resolved, mark the gaps, and
+  report `errors: <n>`. The zero-fallback policy governs the fallback chain, not whether the
+  artifact gets written.
+
+## Push + delivery verification (rewritten 2026-10-28)
+
+The old push block used `git add -A` in a fresh sandbox, which stages every other file on the
+branch as DELETED. On 2026-10-25 cron #12's push (commit `1356a03`) did exactly that and deleted
+283 files, wiping the artifacts of cron #19 and seven other crons plus the repo `.gitignore`.
+
+The new block in all 20 prompts:
+1. pins the sandbox CA cert and sets `HOME` before any git call;
+2. fetches `origin/main` and creates a **git worktree** from it, so the full tree is present;
+3. copies ONLY this cron's output dir into the worktree and stages ONLY that path;
+4. **aborts** if `git status --short` shows any `D` entry, and **aborts** if nothing was staged
+   (which is how a failed artifact copy is caught);
+5. pushes `HEAD:main` — a fresh `git init` creates local `master`, so `origin main` is wrong;
+6. then runs **DELIVERY VERIFICATION**: `git cat-file -e "origin/main:<path>"` to prove the
+   artifact is actually on the remote, and reports `push: ok (verified)` or
+   `push: FAILED (artifact absent on origin/main)`. A successful `git push` is not proof of
+   delivery, and the old prompt could not tell the difference.
+
+Validated end-to-end against the real repo on 2026-10-28: positive case reports `ok`, negative
+case reports `FAILED`, and a real push left 1102 sibling files intact with no deletions.
+
+## Cron #22 schedule correction (2026-10-28)
+
+The original local cron of record was `47 17 * * 0` America/New_York — **Sunday 17:47 ET**, the
+"Sunday evening sit-down" weekly brief (per `migration-state.json`, `cron-triage-full-2026-09-25.md`
+and the skill's own `When` block). The Cloud deployment was `0 14 * * 6` (Saturday 14:00) while
+the prompt's window check demanded Friday, so it skipped every fire and produced nothing.
+Corrected to `47 17 * * 0` with `DAY_OF_WEEK=7`.

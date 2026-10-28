@@ -1,121 +1,149 @@
-# Cloud Mavis cron: earnings-reaction-scanner (cron #15)
+# Cloud Mavis cron: earnings-reaction-scanner (cron #15) — REPAIRED 2026-10-24
 
-You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
-Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
+You are running as a Cloud Mavis cron on Mavis. Linux sandbox: no PowerShell, no Windows paths.
+Output root: /workspace/ (mkdir -p it if missing).
 
 ## SCHEDULE
-- Original local schedule: intraday
-- Schedule is unchanged — only the runtime environment changed.
+Fires 08:00 ET on weekdays: cron `0 8 * * 1-5`, timezone America/New_York.
+This matches the skill's own spec (`0 8 * * 1-5` ET) — 23 min after the pre-market brief,
+~90 min before the US open, ~5h into the EU session, ~6h after the ASX close.
 
+**REPAIR NOTE (2026-10-24):** this task used to fire at 14:30 Europe/Berlin = 08:30 ET while its
+window check demanded 09:00-16:00 ET, so it skipped itself every single day and has never
+produced an artifact. The schedule is now `0 8 * * 1-5` America/New_York and the window check
+below accepts the 08:00 ET fire. Do not "fix" a skip by assuming the market is closed — check
+the clock and read the reason string.
 
-## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
-
-The agent.minimax.io cron scheduler only supports coarse schedule types (daily, weekly, every X minutes).
-It cannot express "weekdays at 09:45" or "every market hour". To work around this, this prompt
-includes a window-check preamble. Run it as the FIRST step — before fetching the skill URL.
+## STEP 1 — WINDOW CHECK (run this first, before anything else)
 
 ```bash
-# Window flags for THIS cron (set by migration):
-WEEKDAYS_ONLY=false
+WEEKDAYS_ONLY=true
 WEEKEND_ONLY=false
-MARKET_HOURS_ONLY=true
+MARKET_HOURS_ONLY=false
 DAY_OF_WEEK=0   # 1=Mon ... 7=Sun; 0=no constraint
+# This cron is a PRE-MARKET scan (08:00 ET), so it must NOT be gated on
+# market hours. It IS gated on weekdays: there is no US session to react to.
 
-# Resolve current time in US/Eastern
-NOW_ET=$(TZ=America/New_York date +"%Y-%m-%d %H:%M %u")
+NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M %u')
 DOW=$(TZ=America/New_York date +%u)
 HOUR=$(TZ=America/New_York date +%H)
-
-SKIP_REASON=""
-
+SKIP_REASON=
 if [ "$WEEKDAYS_ONLY" = "true" ] && [ "$DOW" -ge 6 ]; then
-    SKIP_REASON="weekend (day=$DOW, expected Mon-Fri)"
+  SKIP_REASON="weekend (day=$DOW, expected Mon-Fri)"
 fi
-if [ "$WEEKEND_ONLY" = "true" ] && [ "$DOW" -lt 6 ]; then
-    SKIP_REASON="weekday (day=$DOW, expected Sat-Sun)"
+if [ "$HOUR" -ne 8 ]; then
+  SKIP_REASON="off-schedule hour (hour=$HOUR ET, expected 08)"
 fi
-if [ "$DAY_OF_WEEK" -gt 0 ] && [ "$DOW" -ne "$DAY_OF_WEEK" ]; then
-    case $DAY_OF_WEEK in
-        1) DAY_NAME="Monday";;
-        2) DAY_NAME="Tuesday";;
-        3) DAY_NAME="Wednesday";;
-        4) DAY_NAME="Thursday";;
-        5) DAY_NAME="Friday";;
-        6) DAY_NAME="Saturday";;
-        7) DAY_NAME="Sunday";;
-    esac
-    SKIP_REASON="wrong day (today=$DOW, expected $DAY_NAME=$DAY_OF_WEEK)"
-fi
-if [ "$MARKET_HOURS_ONLY" = "true" ]; then
-    if [ "$HOUR" -lt 9 ] || [ "$HOUR" -ge 17 ]; then
-        SKIP_REASON="outside market hours (hour=$HOUR, expected 09-16 ET)"
-    fi
-fi
-
 if [ -n "$SKIP_REASON" ]; then
-    mkdir -p /workspace/$(TZ=America/New_York date +%Y-%m-%d)
-    cat > /workspace/$(TZ=America/New_York date +%Y-%m-%d)/SKIPPED_earnings_reaction_scanner.md <<EOF
-# Cron #15 earnings-reaction-scanner — SKIPPED
-- Date (ET): $(TZ=America/New_York date +%Y-%m-%d)
-- Time (ET): $(TZ=America/New_York date +%H:%M)
-- Reason: $SKIP_REASON
-- No artifact produced.
-EOF
-    echo "out-of-window: $SKIP_REASON"
-    echo "no artifact; no push"
-    exit 0
+  DATE=$(TZ=America/New_York date +%Y-%m-%d)
+  mkdir -p /workspace/$DATE
+  printf '# Cron #15 earnings-reaction-scanner - SKIPPED\n- Date (ET): %s\n- Time (ET): %s\n- Reason: %s\n' \
+    "$DATE" "$(TZ=America/New_York date +%H:%M)" "$SKIP_REASON" \
+    > /workspace/$DATE/SKIPPED_earnings_reaction_scanner.md
+  echo "out-of-window: $SKIP_REASON"
+  echo "no artifact; no push"
+  exit 0
 fi
-
 echo "window-check: OK ($NOW_ET)"
 ```
 
-If the window check exits cleanly with "out-of-window: <reason>", the cron is DONE. Do not fetch the skill, do not call MCPs, do not write any other artifact, do not push. The `SKIPPED_*.md` file IS the artifact for this run — it's the audit trail for skipped fires.
+If this exits with "out-of-window: <reason>", the run is DONE. Do not fetch the skill, do not
+call APIs, do not write any other artifact, do not push. The `SKIPPED_*.md` file IS the artifact.
 
-## SKILL SPEC (FETCH ONCE)
-The skill's procedure body lives here:
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/earnings-reaction-scanner/SKILL.md
+## STEP 2 — FETCH THE PIPELINE (the skill's MCP tools do not exist in Cloud)
 
-**FIRST tool call:** `curl -s https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/earnings-reaction-scanner/SKILL.md` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
-Then follow the procedure verbatim, with these Cloud adaptations below.
+The skill spec at
+`https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/earnings-reaction-scanner/SKILL.md`
+is the authoritative *procedure* (passes, thresholds, tags, caps, artifact sections). Read it once
+for reference.
 
-## MCP TOOLS AVAILABLE
-- `mcp__yahoo_finance__*`, `mcp__shibui_finance__*`
-- `web_search`, `extract_content_from_websites` for catalyst/news research.
+But every MCP tool it calls is **absent in Cloud sessions** — verified 2026-10-24:
+`mcp__tradingview-advanced__*`, `mcp__tradingview__*`, `mcp__financekit__*`, `mcp__stocktwits__*`
+return 0 hits from `tool_search`, and `mcode-tools connector tools` holds only media + credential
+tools. Do NOT burn turns re-testing them. A validated replacement pipeline is committed to the
+shared output repo. Fetch and run it:
 
-## ZERO-FALLBACK POLICY
-The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
-**Every fallback MUST terminate with:**
-  "accept the partial result, write the artifact, and STOP. Do NOT chain <deeper MCP>."
-Do NOT loop on MCP errors. Do NOT retry indefinitely. Do NOT re-raise.
+```bash
+cd /workspace
+mkdir -p scripts
+curl -sS -w 'HTTP=%{http_code}\n' --max-time 60 \
+  https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/scripts/earnings_reaction_scanner.py \
+  -o scripts/earnings_reaction_scanner.py
+head -5 scripts/earnings_reaction_scanner.py
+```
 
-## HELPER SCRIPTS (PYTHON)
-Local Mavis called Python helpers like `python screen.py emit-sql ...` to do file I/O, parsing, and atomic writes.
-**On Cloud, do NOT call those helpers — they don't exist here.** Re-implement the helper's job inline using tool calls:
-  - SQL generation → emit SQL directly (see skill's reference docs if attached).
-  - Finviz URL building → construct URL inline (see skill's filter spec).
-  - Finviz HTML parsing → parse with regex/text extraction in agent context.
-  - Atomic file write → `write_file(path, content)` (already atomic).
-  - Deduplication → do it in agent reasoning before writing.
+If that fetch fails, retry once with `-k` (the GitHub cert expires intermittently). If both
+attempts fail, write a stub artifact with `_source=skill_fetch_failed`, report `errors: 1`, stop.
+Never improvise the procedure from memory.
 
-If the skill spec references a helper under `scripts/`, fetch the helper's URL too:
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/earnings-reaction-scanner/scripts/<name>.py
-Read it for reference, but do NOT execute it. Re-implement its logic.
+## STEP 3 — RUN THE PIPELINE
 
-## AUDIT LOG
-Local Mavis wrote an audit line to a Windows audit file after every run.
-**On Cloud, skip audit log writes.** Audit is not needed here. If something goes wrong, the failure is in the chat reply and the (missing) artifact.
+```bash
+cd /workspace
+python3 scripts/earnings_reaction_scanner.py
+```
 
-## OUTPUT
-Write the artifact to:
-  `/workspace/earnings/{date}-reactions.md`
+It writes `/workspace/earnings/<date>-reactions.md` and
+`/workspace/earnings/<date>-catalyst-targets.json`. It is self-timing: it takes ~4-6 minutes
+because it cross-checks reported movers against Yahoo. **Give it a generous timeout** (at least
+560s). If it exceeds that, capture the partial state and report the failure — do not silently
+ship a half-written artifact.
 
-The `{date}` placeholder is today in US/Eastern, `YYYY-MM-DD`. Resolve it as the first step.
-(Literal text "{date}" in this template — replace it with the actual date.)
+What the pipeline does, and why (read this before changing any of it):
 
-If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/earnings/` subdirectory, with `{date}` as part of each filename.
+* Source is the TradingView **public screener** (`https://scanner.tradingview.com/<market>/scan`),
+  which replaces the absent MCP screener. One POST per market per direction, JSON in, JSON out.
+* **Stale-reference rows.** On illiquid rows the screener's `change` is computed against a stale
+  reference close, producing absurd prints (MRNA on SIX showed +71.77% on 25 shares while the US
+  line moved -1.25%). The tell: `change` == `Perf.W` exactly, and `Perf.1D` is always null.
+  A **volume floor of 10,000** removes these rows. Do not lower it.
+* **Venue codes differ from the skill's priority table.** The public scanner returns EURONEXT for
+  FR/NL/BE/PT/IE, EUROTLX for IT, BX for CH, OMXCOP for DK, OMXHEX for FI, GPW for PL, VIE for
+  AT, ATHEX for GR, XETR-family for DE, LSE for UK, ASX for AU. The skill's table (AMS/BRU/PAR/
+  LIS/DUB/MC/HE/CO/VI/AT/SW/WA) is for the MCP screener. The pipeline maps them explicitly.
+* **`country` is the reliable primary-listing filter** — it correctly excludes US ADRs listing on
+  EU venues (97 of 200 Swiss rows were `country=United States`).
+* **`earnings_release_date` = most recent FULL report date** (WDC 2026-10-22 matches the press),
+  `earnings_release_next_date` = next scheduled. These replace the absent financekit calendar.
+  **Caveat: this field does NOT capture preliminary, guidance or restructuring releases.** On
+  2026-10-23 LKQ fell 22.47% on a preliminary Q3 miss while the field still read 2026-07-30.
+  The field is a screen, never a verdict — confirm against the headline.
+* **Yahoo cross-check.** Yahoo's ASX feed appends a trailing live-stamp bar at a different
+  time-of-day than the completed daily bars; naive last-two-bar math makes every ASX move read
+  0.00%. The pipeline keeps only bars stamped at the modal time-of-day before differencing.
+  Verified 2026-10-24: **27 cross-checks agreed, 0 mismatched.**
+* BOD rows (no extended-hours data) go to source health only, not the headline table, per the
+  skill. US preferred shares (slash tickers like JPM/PC) are excluded.
+
+## STEP 4 — CATALYSTS (the one step the pipeline cannot do)
+
+The skill caps catalysts at 5 US + 3 EU + 2 AU = 10 per run. Read
+`/workspace/earnings/<date>-catalyst-targets.json` for the ticker list, then use `web_search` to
+find the headline for each (cap 10 searches; 1-2 per ticker). For US names, the earnings-driven
+test is: did `earnings_release_date` land within 7 days of today? If yes, mark `Y` and use the
+earnings headline as the catalyst. If not, mark `N` and find a non-earnings catalyst. For EU/AU
+names apply the skill's keyword test (earnings / results / Q1-Q4 / beats / misses / reports /
+guidance; plus interim, half-year, full-year, dividend, ASIC, iron ore, lithium, gold for AU).
+
+**Then write the catalyst table to `/workspace/catalog/catalysts/<date>.md`** (mkdir -p first)
+and re-run the pipeline, which splices that file into the artifact's `## Catalysts` section.
+Doing it this way means a re-run never wipes your work. You may also edit the table in place
+instead, but then do not re-run the pipeline afterwards.
+
+**Never fabricate a headline.** If a search returns nothing usable, write "no fresh catalyst found".
+
+## STEP 5 — WRITE THE ARTIFACT
+
+The pipeline writes `/workspace/earnings/<date>-reactions.md` with the TL;DR, the US headline
+table, US QUIET one-liners, the EU/UK table, the ASX table, source health and the audit line.
+Keep every other section as the pipeline wrote it — it carries the row counts, the cross-check
+result and the freshness stamps.
+
+If the script failed and no artifact exists, write a stub with `_source=skill_fetch_failed` and
+report the error. Never improvise the tables from memory.
 
 ## GIT PUSH (OPTIONAL)
-After writing the artifact, optionally commit it to `karizaco/minimax-cloud-outputs`:
+After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
 
 ```bash
 cd /workspace
@@ -123,6 +151,7 @@ export GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt
 export SSL_CERT_FILE="$GIT_SSL_CAINFO"
 export CURL_CA_BUNDLE="$GIT_SSL_CAINFO"
 export HOME=/workspace/.home; mkdir -p "$HOME"
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
 git config --global http.sslCAInfo "$GIT_SSL_CAINFO"
 git config --global user.email "maxhermes-cloud@local"
 git config --global user.name "MaxHermes Cloud Cron"
@@ -133,13 +162,20 @@ git fetch -q origin main
 rm -rf /workspace/.wt
 git worktree add -f /workspace/.wt origin/main
 # copy THIS cron's artifact(s) into the worktree, then stage ONLY that path
-mkdir -p /workspace/.wt/earnings
-cp -r /workspace/earnings/. /workspace/.wt/earnings/ 2>/dev/null || true
+mkdir -p "/workspace/.wt/earnings"
+cp -r "/workspace/earnings/." "/workspace/.wt/earnings/" 2>/dev/null || true
 cd /workspace/.wt
-git add earnings                 # ONLY this cron's output dir
-git status --short                 # MUST show no 'D' entries
-git commit -q -m "cron 15-earnings-reaction-scanner ${DATE}" || echo "nothing to commit"
-git push origin HEAD:main
+git add earnings                  # ONLY this cron's output
+STAGED=$(git status --short)
+if [ -z "$STAGED" ]; then
+  echo "push: ABORTED (nothing staged — the artifact was not copied into the worktree)"
+elif echo "$STAGED" | grep -q '^\s*D'; then
+  echo "push: ABORTED (staged deletions detected — refusing to push)"
+else
+  echo "$STAGED"
+  git commit -q -m "cron 15 15-earnings-reaction-scanner.md $DATE" || echo "nothing to commit"
+  git push -q origin HEAD:main 2>&1 | head -3
+fi
 ```
 
 **CRITICAL — never use `git add -A` here.** In a fresh sandbox the working tree does not contain
@@ -147,25 +183,109 @@ the rest of the repo, so `git add -A` stages every other file on the branch as D
 2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283 files, wiping the
 artifacts of cron #19 and seven other crons, plus the repo `.gitignore`. If `git status --short`
 shows any `D` (deleted) entry, ABORT the commit and report the push as failed.
-Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`.
+Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`,
+which is why the push target is `HEAD:main` and not `origin main`.
 **If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any fallback. Just write the artifact and reply.
 
-## DELIVERY
-The final reply (the only thing delivered to the chat) MUST be:
-  - ≤ 8 lines.
-  - Top movers / count / source / lag if any.
-  - One line per output file written.
-  - One line: "push: ok" / "push: skipped (token unset)" / "push: failed (<reason>)".
-  - One line: "errors: <n>" — count of MCP failures that triggered fallback. 0 = clean run.
+## DELIVERY VERIFICATION (MANDATORY — do this after the push block)
+A successful `git push` is NOT proof of delivery. Verify the artifact is actually ON the remote
+branch, and report the result truthfully. A push that silently failed is worse than a push that
+failed loudly.
 
-No preamble. Tool call → result → write → push → reply.
+```bash
+cd /workspace/.wt 2>/dev/null || cd /workspace
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
+git fetch -q origin main
+if git cat-file -e "origin/main:earnings/$DATE-reactions.md" 2>/dev/null; then
+  echo "DELIVERY: ok (origin/main:earnings/$DATE-reactions.md present)"
+else
+  echo "DELIVERY: FAILED (origin/main:earnings/$DATE-reactions.md NOT found)"
+fi
+```
+
+`earnings/$DATE-reactions.md` is the repo-relative path of the artifact you just wrote, with `{date}` replaced
+by `$DATE` (the shell variable above). If the cron writes several files, check the primary one
+and list the rest.
+- If DELIVERY is `ok` → the reply line is `push: ok (verified)`.
+- If DELIVERY is `FAILED` → the reply line is `push: FAILED (artifact absent on origin/main)`.
+  Say so plainly. Do NOT claim success. The artifact still exists in the sandbox, so also
+  state the local path so the run is not lost.
+- If the push was skipped (no token) → `push: skipped (token unset)`.
+
+## DELIVERY (the only thing delivered to the chat)
+Six lines, no preamble:
+earnings-reaction-scanner (cron #15) - DATE TIME_ET
+window: passed | skipped (reason)
+top movers: <name> <pct>% (region) | none | counts
+candidates: N | AMC: N | PRE_GAP: N | EU: N | AU: N | cross-check: agree N / mismatch N
+file: PATH (BYTES B, written) | no artifact
+push: ok | skipped (token unset) | failed (reason)
+errors: N
 
 ## CRITICAL REMINDERS
-1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
-2. Use the EXACT MCP tool names listed above. Do NOT invent tool names.
-3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
-4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+1. Window check first. If it says out-of-window, exit cleanly — the SKIPPED file is the artifact.
+2. The MCP tools in the skill spec do not exist in Cloud. Use the pipeline from the shared repo.
+3. Do not lower the volume floor of 10,000. Without it, illiquid rows report 30-90% phantom moves.
+4. Read-only. No trade ideas. Never fabricate a catalyst headline or a data value.
+5. Every number in the artifact must come from a payload you actually received. If a pass returned
+   too few rows to be credible, report the row count rather than padding the table.
+6. If the cross-check reports any mismatch, say so in the chat reply. A mismatch means the
+   screener and Yahoo disagree on a move you are about to publish — investigate before shipping.
+## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
 
-================================================================
-END OF CRON PROMPT
-================================================================
+**The MCP tools named above do not exist in this runtime.** They are listed for provenance only.
+Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
+`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
+`mcp__financekit__*` or `mcp__web_search__*`. `extract_content_from_websites` is also absent.
+**Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
+converts into an early abort with no artifact, via the zero-fallback policy.
+
+Use instead: `web_fetch` (fetch a URL, incl. a raw JSON endpoint), `web_search` (search; returns
+page content), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
+survives when curl is blocked.
+
+### Tested data-source ladder (measured from this sandbox, 2026-10-28)
+
+| Source | Endpoint | Status |
+|---|---|---|
+| `web_search` (tool) | — | **OK** — most reliable; separate egress |
+| Nasdaq API | `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` | **OK** |
+| Yahoo page (HTML) | `https://finance.yahoo.com/quote/{SYM}/` | **OK** — scrape last close |
+| CoinGecko | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd` | **OK** — crypto |
+| Frankfurter FX | `https://api.frankfurter.app/latest?from=USD&to=EUR,JPY` | **OK** — FX |
+| SEC EDGAR | `https://data.sec.gov/submissions/CIK{10DIGITS}.json` | **OK** — needs User-Agent |
+| US Treasury | `https://home.treasury.gov/.../daily-treasury-rates.csv/2026/all?...` | **OK** — yield curve |
+| Yahoo spark | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...` | **429** |
+| Yahoo chart | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** |
+| Yahoo screener | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** |
+| Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404** |
+
+**Yahoo's JSON endpoints return HTTP 429 "Edge: Too Many Requests" from this egress** — with and
+without a browser User-Agent, and after a 60 s pause, so it is persistent rate limiting, not a
+transient burst. Yahoo's *HTML* pages still work, and `web_search` still returns live data
+(it returned SPY 769.66 close for 2026-10-27 while Yahoo JSON was 429).
+
+### Rules
+
+1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path here and
+   it uses a different egress than curl, so it survives Yahoo blocking curl.
+2. **For bulk data walk the ladder:** Yahoo JSON → (on 429) Nasdaq API → Yahoo HTML →
+   `web_search` per symbol. Stop at the first source that returns real data.
+3. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
+   never successfully queried. Retry once after a short sleep, then fall through.
+4. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect and has
+   the fields you need before using any number.
+5. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say
+   so. A missing row is recoverable; an invented price is not.
+6. **Distinguish "no data" from "no source".** A symbol with no print today (pre-market, weekend,
+   holiday) is `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and
+   the HTTP status.
+7. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+   HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
+   and which fallback you used. Never hide a degraded run.
+8. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
+   artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
+   whole run because one source was blocked. The zero-fallback policy governs the *fallback
+   chain*, not whether the artifact gets written.

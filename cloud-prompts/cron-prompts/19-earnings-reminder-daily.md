@@ -4,16 +4,10 @@ You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Wi
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
 ## SCHEDULE
-- Cron expression: `0 6 * * 1-5`, timezone `America/New_York` — 06:00 ET, Monday to Friday.
-- The day-of-week field is now set in the SCHEDULER, so weekends never fire and no weekend
-  SKIPPED file is produced. The weekend branch in the window check below is retained as a
-  belt-and-braces guard (it costs one line) and is correct if the schedule is ever widened.
+- Fires 06:00 ET weekdays (America/New_York).
 - The skill pairs with the 07:37 ET pre-market brief (cron #26 fires 08:30 ET). This artifact must
-  land on disk BEFORE that brief reads it. It previously fired 11:30 ET on ALL days, i.e. after
-  the brief and after the US open — that was a bug, now fixed.
-- Session mode: `new` — every fire starts a clean conversation. The task was previously bound to a
-  single long-lived session, which contradicts this prompt's own "the cron session is fresh each
-  time" rule and let one run's context bleed into the next.
+  land on disk BEFORE that brief reads it. It previously fired 11:30 ET, i.e. after the brief and
+  after the US open — that was a bug, now fixed.
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
@@ -105,12 +99,71 @@ There is NO Yahoo MCP and NO shibui MCP in Cloud sessions. `mcode-tools connecto
 Do not probe for them, do not report their absence as an error, and do not count it as a fallback.
 
 **PRIMARY = `web_search` / `web_fetch`.** That is the intended path, not a degraded fallback.
-Working sources for the Oct-style daily calendar, in priority order:
+Working sources for the daily calendar, in priority order:
 1. `web_fetch` on the Yahoo Finance earnings calendar for the date (JS-rendered; the `?day=YYYY-MM-DD`
    URL renders the first ~25 rows server-side).
 2. `web_fetch` on earningswhispers.com/calendar/YYYYMMDD — returns a full before-open/after-close
    ticker list with no JS dependency. Best single source for a complete roster.
 3. `web_fetch`/`web_search` on investing.com earnings calendar, MarketBeat, TradingView, Newsquawk.
+
+## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
+
+**The MCP tools named above do not exist in this runtime.** They are listed for provenance only.
+Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
+`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
+`mcp__financekit__*` or `mcp__web_search__*`. `extract_content_from_websites` is also absent.
+**Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
+converts into an early abort with no artifact, via the zero-fallback policy.
+
+Use instead: `web_fetch` (fetch a URL, incl. a raw JSON endpoint), `web_search` (search; returns
+page content), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
+survives when curl is blocked.
+
+### Tested data-source ladder (measured from this sandbox, 2026-10-28)
+
+| Source | Endpoint | Status |
+|---|---|---|
+| `web_search` (tool) | — | **OK** — most reliable; separate egress |
+| Nasdaq API | `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` | **OK** |
+| Yahoo page (HTML) | `https://finance.yahoo.com/quote/{SYM}/` | **OK** — scrape last close |
+| CoinGecko | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd` | **OK** — crypto |
+| Frankfurter FX | `https://api.frankfurter.app/latest?from=USD&to=EUR,JPY` | **OK** — FX |
+| SEC EDGAR | `https://data.sec.gov/submissions/CIK{10DIGITS}.json` | **OK** — needs User-Agent |
+| US Treasury | `https://home.treasury.gov/.../daily-treasury-rates.csv/2026/all?...` | **OK** — yield curve |
+| Yahoo spark | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...` | **429** |
+| Yahoo chart | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** |
+| Yahoo screener | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** |
+| Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404** |
+
+**Yahoo's JSON endpoints return HTTP 429 "Edge: Too Many Requests" from this egress** — with and
+without a browser User-Agent, and after a 60 s pause, so it is persistent rate limiting, not a
+transient burst. Yahoo's *HTML* pages still work, and `web_search` still returns live data
+(it returned SPY 769.66 close for 2026-10-27 while Yahoo JSON was 429).
+
+### Rules
+
+1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path here and
+   it uses a different egress than curl, so it survives Yahoo blocking curl.
+2. **For bulk data walk the ladder:** Yahoo JSON → (on 429) Nasdaq API → Yahoo HTML →
+   `web_search` per symbol. Stop at the first source that returns real data.
+3. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
+   never successfully queried. Retry once after a short sleep, then fall through.
+4. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect and has
+   the fields you need before using any number.
+5. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say
+   so. A missing row is recoverable; an invented price is not.
+6. **Distinguish "no data" from "no source".** A symbol with no print today (pre-market, weekend,
+   holiday) is `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and
+   the HTTP status.
+7. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+   HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
+   and which fallback you used. Never hide a degraded run.
+8. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
+   artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
+   whole run because one source was blocked. The zero-fallback policy governs the *fallback
+   chain*, not whether the artifact gets written.
 
 ## ZERO-FALLBACK POLICY
 Every fallback MUST terminate with: "accept the partial result, write the artifact, and STOP.
@@ -186,13 +239,7 @@ empty table every day. If the calendar cannot be reached at all, write a stub wi
 `_source=calendar_unavailable` and `status: failed_no_calendar`, and report `errors: 1`.
 
 ## GIT PUSH (OPTIONAL)
-
-**Do NOT use the old `git init` + `git add -A` recipe.** In a fresh sandbox `git add -A` stages
-every file on the branch as DELETED. Cron #12's push on 2026-10-25 (commit 1356a03) deleted 283
-files that way, including all of cron #19's artifacts and the repo .gitignore. It has been repaired,
-but do not reintroduce it.
-
-Use a worktree at origin/main and add ONLY the artifact directory:
+After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
 
 ```bash
 cd /workspace
@@ -200,6 +247,7 @@ export GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt
 export SSL_CERT_FILE="$GIT_SSL_CAINFO"
 export CURL_CA_BUNDLE="$GIT_SSL_CAINFO"
 export HOME=/workspace/.home; mkdir -p "$HOME"
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
 git config --global http.sslCAInfo "$GIT_SSL_CAINFO"
 git config --global user.email "maxhermes-cloud@local"
 git config --global user.name "MaxHermes Cloud Cron"
@@ -209,20 +257,56 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
 git fetch -q origin main
 rm -rf /workspace/.wt
 git worktree add -f /workspace/.wt origin/main
-cp /workspace/earnings/{date}-reminders.md /workspace/.wt/earnings/
+# copy THIS cron's artifact(s) into the worktree, then stage ONLY that path
+mkdir -p "/workspace/.wt/earnings"
+cp -r "/workspace/earnings/." "/workspace/.wt/earnings/" 2>/dev/null || true
 cd /workspace/.wt
-git add earnings/{date}-reminders.md          # ONLY the artifact file
-git status --short                            # MUST show no 'D' entries
-git commit -q -m "cron #19 earnings-reminder-daily {date}" || echo "nothing to commit"
-git push origin HEAD:main
+git add earnings/$DATE-reminders.md                  # ONLY this cron's output
+STAGED=$(git status --short)
+if [ -z "$STAGED" ]; then
+  echo "push: ABORTED (nothing staged — the artifact was not copied into the worktree)"
+elif echo "$STAGED" | grep -q '^\s*D'; then
+  echo "push: ABORTED (staged deletions detected — refusing to push)"
+else
+  echo "$STAGED"
+  git commit -q -m "cron 19 19-earnings-reminder-daily.md $DATE" || echo "nothing to commit"
+  git push -q origin HEAD:main 2>&1 | head -3
+fi
 ```
 
-If `git status --short` shows any `D` (deleted) entry, ABORT the commit and report the push as
-failed — that is the exact condition that destroyed 283 files on 2026-10-25.
-Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`.
+**CRITICAL — never use `git add -A` here.** In a fresh sandbox the working tree does not contain
+the rest of the repo, so `git add -A` stages every other file on the branch as DELETED. On
+2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283 files, wiping the
+artifacts of cron #19 and seven other crons, plus the repo `.gitignore`. If `git status --short`
+shows any `D` (deleted) entry, ABORT the commit and report the push as failed.
+Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`,
+which is why the push target is `HEAD:main` and not `origin main`.
+**If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any fallback. Just write the artifact and reply.
 
-**If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any
-fallback. Just write the artifact and reply.
+## DELIVERY VERIFICATION (MANDATORY — do this after the push block)
+A successful `git push` is NOT proof of delivery. Verify the artifact is actually ON the remote
+branch, and report the result truthfully. A push that silently failed is worse than a push that
+failed loudly.
+
+```bash
+cd /workspace/.wt 2>/dev/null || cd /workspace
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
+git fetch -q origin main
+if git cat-file -e "origin/main:earnings/$DATE-reminders.md" 2>/dev/null; then
+  echo "DELIVERY: ok (origin/main:earnings/$DATE-reminders.md present)"
+else
+  echo "DELIVERY: FAILED (origin/main:earnings/$DATE-reminders.md NOT found)"
+fi
+```
+
+`earnings/$DATE-reminders.md` is the repo-relative path of the artifact you just wrote, with `{date}` replaced
+by `$DATE` (the shell variable above). If the cron writes several files, check the primary one
+and list the rest.
+- If DELIVERY is `ok` → the reply line is `push: ok (verified)`.
+- If DELIVERY is `FAILED` → the reply line is `push: FAILED (artifact absent on origin/main)`.
+  Say so plainly. Do NOT claim success. The artifact still exists in the sandbox, so also
+  state the local path so the run is not lost.
+- If the push was skipped (no token) → `push: skipped (token unset)`.
 
 ## DELIVERY
 The final reply (the only thing delivered to the chat) MUST be:

@@ -5,7 +5,12 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 
 ## SCHEDULE
 - Original local schedule: 18:30 ET weekdays
-- Schedule is unchanged — only the runtime environment changed.
+- Deployed schedule: `30 18 * * 1-5` America/New_York — 18:30 ET, Mon-Fri.
+- The day-of-week field is set in the SCHEDULER, so this routine does not fire
+  at all on weekends: no agent invocation is spent discovering it is a weekend,
+  and no weekend SKIPPED file is written. The in-prompt weekend branch below is
+  kept as a belt-and-braces guard (it costs one line) and is what still handles
+  US market holidays, which no cron expression can express.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
@@ -82,6 +87,65 @@ Then follow the procedure verbatim, with these Cloud adaptations below.
 - `mcp__tradingview_advanced__*`, `mcp__shibui_finance__*`
 - `web_search`, `extract_content_from_websites` for catalyst/news research.
 
+## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
+
+**The MCP tools named above do not exist in this runtime.** They are listed for provenance only.
+Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
+`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
+`mcp__financekit__*` or `mcp__web_search__*`. `extract_content_from_websites` is also absent.
+**Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
+converts into an early abort with no artifact, via the zero-fallback policy.
+
+Use instead: `web_fetch` (fetch a URL, incl. a raw JSON endpoint), `web_search` (search; returns
+page content), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
+survives when curl is blocked.
+
+### Tested data-source ladder (measured from this sandbox, 2026-10-28)
+
+| Source | Endpoint | Status |
+|---|---|---|
+| `web_search` (tool) | — | **OK** — most reliable; separate egress |
+| Nasdaq API | `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` | **OK** |
+| Yahoo page (HTML) | `https://finance.yahoo.com/quote/{SYM}/` | **OK** — scrape last close |
+| CoinGecko | `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd` | **OK** — crypto |
+| Frankfurter FX | `https://api.frankfurter.app/latest?from=USD&to=EUR,JPY` | **OK** — FX |
+| SEC EDGAR | `https://data.sec.gov/submissions/CIK{10DIGITS}.json` | **OK** — needs User-Agent |
+| US Treasury | `https://home.treasury.gov/.../daily-treasury-rates.csv/2026/all?...` | **OK** — yield curve |
+| Yahoo spark | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...` | **429** |
+| Yahoo chart | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** |
+| Yahoo screener | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** |
+| Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404** |
+
+**Yahoo's JSON endpoints return HTTP 429 "Edge: Too Many Requests" from this egress** — with and
+without a browser User-Agent, and after a 60 s pause, so it is persistent rate limiting, not a
+transient burst. Yahoo's *HTML* pages still work, and `web_search` still returns live data
+(it returned SPY 769.66 close for 2026-10-27 while Yahoo JSON was 429).
+
+### Rules
+
+1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path here and
+   it uses a different egress than curl, so it survives Yahoo blocking curl.
+2. **For bulk data walk the ladder:** Yahoo JSON → (on 429) Nasdaq API → Yahoo HTML →
+   `web_search` per symbol. Stop at the first source that returns real data.
+3. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
+   never successfully queried. Retry once after a short sleep, then fall through.
+4. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect and has
+   the fields you need before using any number.
+5. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say
+   so. A missing row is recoverable; an invented price is not.
+6. **Distinguish "no data" from "no source".** A symbol with no print today (pre-market, weekend,
+   holiday) is `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and
+   the HTTP status.
+7. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+   HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
+   and which fallback you used. Never hide a degraded run.
+8. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
+   artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
+   whole run because one source was blocked. The zero-fallback policy governs the *fallback
+   chain*, not whether the artifact gets written.
+
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
 **Every fallback MUST terminate with:**
@@ -115,7 +179,7 @@ The `{date}` placeholder is today in US/Eastern, `YYYY-MM-DD`. Resolve it as the
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-screens/{date}/` subdirectory, with `{date}` as part of each filename.
 
 ## GIT PUSH (OPTIONAL)
-After writing the artifact, optionally commit it to `karizaco/minimax-cloud-outputs`:
+After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
 
 ```bash
 cd /workspace
@@ -123,6 +187,7 @@ export GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt
 export SSL_CERT_FILE="$GIT_SSL_CAINFO"
 export CURL_CA_BUNDLE="$GIT_SSL_CAINFO"
 export HOME=/workspace/.home; mkdir -p "$HOME"
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
 git config --global http.sslCAInfo "$GIT_SSL_CAINFO"
 git config --global user.email "maxhermes-cloud@local"
 git config --global user.name "MaxHermes Cloud Cron"
@@ -133,13 +198,20 @@ git fetch -q origin main
 rm -rf /workspace/.wt
 git worktree add -f /workspace/.wt origin/main
 # copy THIS cron's artifact(s) into the worktree, then stage ONLY that path
-mkdir -p /workspace/.wt/daily-screens
-cp -r /workspace/daily-screens/. /workspace/.wt/daily-screens/ 2>/dev/null || true
+mkdir -p "/workspace/.wt/daily-screens"
+cp -r "/workspace/daily-screens/." "/workspace/.wt/daily-screens/" 2>/dev/null || true
 cd /workspace/.wt
-git add daily-screens                 # ONLY this cron's output dir
-git status --short                 # MUST show no 'D' entries
-git commit -q -m "cron 09-stock-screener-daily-sweep-18:30 ${DATE}" || echo "nothing to commit"
-git push origin HEAD:main
+git add daily-screens                  # ONLY this cron's output
+STAGED=$(git status --short)
+if [ -z "$STAGED" ]; then
+  echo "push: ABORTED (nothing staged — the artifact was not copied into the worktree)"
+elif echo "$STAGED" | grep -q '^\s*D'; then
+  echo "push: ABORTED (staged deletions detected — refusing to push)"
+else
+  echo "$STAGED"
+  git commit -q -m "cron 09 09-stock-screener-daily-sweep-18:30.md $DATE" || echo "nothing to commit"
+  git push -q origin HEAD:main 2>&1 | head -3
+fi
 ```
 
 **CRITICAL — never use `git add -A` here.** In a fresh sandbox the working tree does not contain
@@ -147,8 +219,34 @@ the rest of the repo, so `git add -A` stages every other file on the branch as D
 2026-10-25 cron #12's push (commit 1356a03) did exactly that and deleted 283 files, wiping the
 artifacts of cron #19 and seven other crons, plus the repo `.gitignore`. If `git status --short`
 shows any `D` (deleted) entry, ABORT the commit and report the push as failed.
-Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`.
+Never `git push --force`. The remote branch is `main`; a fresh `git init` creates local `master`,
+which is why the push target is `HEAD:main` and not `origin main`.
 **If `${GITHUB_TOKEN}` is empty/unset:** skip the push entirely. Do NOT try `gh auth` or any fallback. Just write the artifact and reply.
+
+## DELIVERY VERIFICATION (MANDATORY — do this after the push block)
+A successful `git push` is NOT proof of delivery. Verify the artifact is actually ON the remote
+branch, and report the result truthfully. A push that silently failed is worse than a push that
+failed loudly.
+
+```bash
+cd /workspace/.wt 2>/dev/null || cd /workspace
+export DATE=$(TZ=America/New_York date +%Y-%m-%d)
+git fetch -q origin main
+if git cat-file -e "origin/main:daily-screens/$DATE/daily-sweep.md" 2>/dev/null; then
+  echo "DELIVERY: ok (origin/main:daily-screens/$DATE/daily-sweep.md present)"
+else
+  echo "DELIVERY: FAILED (origin/main:daily-screens/$DATE/daily-sweep.md NOT found)"
+fi
+```
+
+`daily-screens/$DATE/daily-sweep.md` is the repo-relative path of the artifact you just wrote, with `{date}` replaced
+by `$DATE` (the shell variable above). If the cron writes several files, check the primary one
+and list the rest.
+- If DELIVERY is `ok` → the reply line is `push: ok (verified)`.
+- If DELIVERY is `FAILED` → the reply line is `push: FAILED (artifact absent on origin/main)`.
+  Say so plainly. Do NOT claim success. The artifact still exists in the sandbox, so also
+  state the local path so the run is not lost.
+- If the push was skipped (no token) → `push: skipped (token unset)`.
 
 ## DELIVERY
 The final reply (the only thing delivered to the chat) MUST be:
@@ -162,7 +260,8 @@ No preamble. Tool call → result → write → push → reply.
 
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
-2. Use the EXACT MCP tool names listed above. Do NOT invent tool names.
+2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
+   registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
