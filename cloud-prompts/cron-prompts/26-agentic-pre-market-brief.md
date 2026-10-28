@@ -77,6 +77,41 @@ and say so in Source health. Working replacements:
 
 Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
 
+### PRIMARY SOURCE: the MCP-over-HTTP bridge (use this FIRST)
+
+The `mcp__*` tool names above are NOT registered here, but the MCP SERVERS are reachable
+over plain HTTPS JSON-RPC from the sandbox. A ready-made bridge is published with the set:
+
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py
+
+```bash
+BR=/workspace/mcp_bridge.py
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" ; do
+  [ -s "$BR" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$BR" "$U" 2>/dev/null
+done
+[ -s "$BR" ] || echo "bridge fetch FAILED - fall back to web_search, then the curl ladder"
+mkdir -p /workspace/_mcp && cd /workspace/_mcp
+printf '%s' '{"symbol":"SPY","period":"1m"}' > a.json
+python3 /workspace/mcp_bridge.py stocktwits chart_data a.json      # OHLCV, sentiment, trending
+printf '%s' "SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+printf '%s' "SELECT ticker, close FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
+python3 -c "import json,sys;print(json.dumps({'query':open('q.txt').read(),'user_prompt':'latest SPY close'}))" > b.json
+python3 /workspace/mcp_bridge.py shibui stock_data_query b.json   # history to 1962, fundamentals, screeners, EDGAR
+```
+
+**Verified 2026-10-28:** both servers answer, 6/6 identical values over 6 calls (median 204 ms),
+returning the same close web_search gave (SPY 769.66, 2026-10-27) while Yahoo JSON was 429.
+Fetch the bridge with the 3-URL ladder above - a freshly pushed file can 404 on the raw CDN
+for a few minutes. The bridge returns `{"error": ...}` and a non-zero exit on failure, so a
+failed call can never be mistaken for data. **Pass tool args as a FILE, not inline** - shell
+quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL above.
+
+**Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
+source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
+
 ### Rules
 
 1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
