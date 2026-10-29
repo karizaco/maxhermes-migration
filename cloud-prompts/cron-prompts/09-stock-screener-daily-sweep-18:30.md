@@ -197,6 +197,40 @@ The `{date}` placeholder is today in US/Eastern, `YYYY-MM-DD`. Resolve it as the
 
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-screens/{date}/` subdirectory, with `{date}` as part of each filename.
 
+This cron is the END-OF-DAY breadth read (fires 18:30 ET, from the settled daily close). Cron #10
+(breadth-snapshot, 14:00 ET) runs the SAME skill into the SAME dated directory, so the two crons
+must never share a filename. Therefore:
+
+- Write `daily-sweep.md` as the primary artifact, plus the skill's other outputs, including
+  `breadth.md` and the regime payload. `breadth.md` and `_regime.json` are THIS cron's paths.
+- Do NOT write `breadth-snapshot.md`, `breadth-snapshot.csv` or `breadth-snapshot.json` - those
+  belong to cron #10, which fired 4.5 h earlier and already pushed them. If the skill leaves a
+  `breadth-snapshot.*` file in your output directory, DELETE it before the push step and say so
+  in the reply; otherwise your copy would overwrite #10's intraday read on the branch.
+- Do NOT rename this cron's regime payload to `_regime-intraday.json`. That name belongs to
+  cron #10. `_regime.json` (or `_regime-screener.json`, if the skill writes that name) is yours.
+- Never delete `breadth-snapshot.md` from the branch. #10's intraday read and this cron's
+  end-of-day read are meant to sit side by side in `daily-screens/<date>/`.
+
+## SELF-DESCRIPTION (mandatory — front-matter of `breadth.md`)
+This cron is the END-OF-DAY breadth read (fires 18:30 ET, from the settled daily close).
+Cron #10's `breadth-snapshot.md` is the INTRADAY read (14:00 ET, live tape). The two are SUPPOSED
+to differ and they will — different VIX quote times, and historically a different breadth
+universe. The front-matter of `breadth.md` must therefore state all of the following, so a reader
+never has to guess which of the two files is authoritative:
+
+- `fire_time_et` — the exact time this cron fired.
+- `data_date` — the session date the breadth numbers describe, and whether the feed is T+1.
+- `breadth_universe` — the EXACT population and filter used, e.g. "S&P 500 constituents, 502
+  names" or "NYSE/NASDAQ/AMEX, market cap > $10B, 905 names". Not "the market". Not "S&P 500"
+  unless it is.
+- `vix_quote_time` — the timestamp of the VIX/VIX3M pair, and the source feed used for it.
+- `cross_reference` — "intraday counterpart: daily-screens/<date>/breadth-snapshot.md (cron #10,
+  14:00 ET)".
+- Exactly ONE VIX/VIX3M pair, used everywhere in the document. Never quote two different
+  volatility readings in one artifact, and never silently mix a mid-session print with a settled
+  close.
+
 ## GIT PUSH (OPTIONAL)
 After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
 
@@ -280,6 +314,22 @@ if git cat-file -e "origin/main:daily-screens/$DATE/daily-sweep.md" 2>/dev/null;
 else
   echo "DELIVERY: FAILED (origin/main:daily-screens/$DATE/daily-sweep.md NOT found)"
   echo "  the artifact is still in the sandbox at daily-screens/ - report this, do not silently continue"
+fi
+if git cat-file -e "origin/main:daily-screens/$DATE/breadth.md" 2>/dev/null; then
+  echo "BREADTH: ok (origin/main:daily-screens/$DATE/breadth.md present - this cron's EOD read)"
+else
+  echo "BREADTH: FAILED (origin/main:daily-screens/$DATE/breadth.md NOT found)"
+fi
+if git cat-file -e "origin/main:daily-screens/$DATE/breadth-snapshot.md" 2>/dev/null; then
+  echo "INTRADAY: ok (cron #10's breadth-snapshot.md still on the branch - do NOT delete it)"
+else
+  echo "INTRADAY: absent (cron #10's breadth-snapshot.md is not on the branch - expected only if #10 did not run today)"
+fi
+if git cat-file -e "origin/main:daily-screens/$DATE/_regime.json" 2>/dev/null || \
+   git cat-file -e "origin/main:daily-screens/$DATE/_regime-screener.json" 2>/dev/null; then
+  echo "REGIME: ok (this cron's regime payload present on origin/main)"
+else
+  echo "REGIME: FAILED (neither _regime.json nor _regime-screener.json on origin/main)"
 fi
 ```
 
