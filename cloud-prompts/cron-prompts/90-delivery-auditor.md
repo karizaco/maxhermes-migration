@@ -49,6 +49,7 @@ git init -q 2>/dev/null || true
 git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 git fetch -q origin main
+# NOTE: origin/HEAD points at the stale `master` branch. Always fetch `main` explicitly.
 rm -rf /workspace/.audit
 git worktree add -f /workspace/.audit origin/main
 cd /workspace/.audit
@@ -110,7 +111,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 04-reversal-bullish-3:55 | `55 15 * * 1-5` | `daily-screens/{date}/reversal-bullish-3:55.md` | Mon-Fri |
 | 20-eod-watchlist-csv | `0 16 * * 1-5` | `us-eod/{date}.csv` | Mon-Fri |
 | 05-eod-international-daily | `30 16 * * 1-5` | `international-eod/{date}` | Mon-Fri |
-| 16-unusual-options-flow | `30 16 * * 1-5` | `options-flow/{date}.md` | Mon-Fri |
+| 16-unusual-options-flow | `35 16 * * 1-5` | `options-flow/{date}.md` | Mon-Fri |
 | 22-weekly-market-recap-preview | `47 17 * * 0` | `weekly/{date}-preview.md` | Sun |
 | 09-daily-sweep-18:30 | `30 18 * * 1-5` | `daily-screens/{date}/daily-sweep.md` | Mon-Fri |
 | 23-agentic-post-market-brief | `30 22 * * 1-5` | `daily-briefs/{date}-post-market.md` | Mon-Fri |
@@ -128,6 +129,77 @@ The `international-eod/{date}` path is a DIRECTORY of per-region CSVs — check 
 directory exists and contains at least one `.csv`; if it exists but is empty, that is
 `present_but_empty` (a degraded run wrote a stub), which still needs reporting.
 
+## STEP 4b — STALE-ROUTINE CHECK (catches routines that never fire)
+
+The check in STEP 4 is **relative to the audited day**. It answers "did today's due routines
+land?" and is therefore blind to a routine whose schedule is wrong in a way that makes it *never*
+due on the days the auditor looks. Cron #22 ran for months with a schedule that contradicted its
+own window check: it skipped every single fire and produced no artifact, and the auditor never
+flagged it because on the audited day it was simply `not_due`.
+
+This step closes that hole. It is **absolute**, not relative: for every routine in the roster,
+find the most recent artifact that exists on `origin/main`, and compare its date against the
+routine's own schedule. A routine that should have produced something in the last N days but whose
+newest artifact is older than that is **stale** — regardless of whether it was due on
+`$AUDIT_DATE`.
+
+```bash
+cd /workspace/.audit
+# STALE_DAYS = how long a routine may go without producing an artifact.
+# 5 covers a weekend (Fri->Mon) for a weekday-only routine; 9 covers a weekly routine's gap.
+STALE_DAYS=5
+for entry in \
+  "02-asia-pre-market-reactions|asia-pre-market" \
+  "19-earnings-reminder-daily|earnings-reminders" \
+  "15-earnings-reaction-scanner|earnings-reactions" \
+  "26-agentic-pre-market-brief|daily-briefs-pre-market" \
+  "08-pre-market-gapper|daily-screens-pre-market-gapper" \
+  "25-ntrt-gap-brief-daily|ntrt" \
+  "07-focus-rvol-09:45|focus-rvol-snapshot" \
+  "12-cross-asset-correlation|cross-asset" \
+  "10-breadth-snapshot|breadth-snapshot" \
+  "13-macro-calendar-midweek|macro-calendar-midweek" \
+  "14-macro-calendar-week-ahead|macro-calendar-week-ahead" \
+  "06-pattern-study-backlog|weekly-ipo" \
+  "17-us-stocks-in-play|us-stocks-in-play" \
+  "04-reversal-bullish-3:55|reversal-bullish" \
+  "20-eod-watchlist-csv|us-eod" \
+  "05-eod-international-daily|international-eod" \
+  "16-unusual-options-flow|options-flow" \
+  "22-weekly-market-recap-preview|weekly-preview" \
+  "09-daily-sweep-18:30|daily-sweep" \
+  "23-agentic-post-market-brief|daily-briefs-post-market" ; do
+  routine="${entry%%|*}"; pat="${entry##*|}"
+  last=$(git ls-tree -r --name-only origin/main \
+         | grep -E "/${pat}[^/]*\.(md|csv|json)$|^${pat}[^/]*\.(md|csv|json)$" \
+         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | tail -1)
+  if [ -z "$last" ]; then
+    echo "STALE  $routine  NEVER_DELIVERED  (no artifact matching '$pat' on origin/main)"
+  else
+    age=$(( ( $(date -d "$AUDIT_DATE" +%s) - $(date -d "$last" +%s) ) / 86400 ))
+    if [ "$age" -gt "$STALE_DAYS" ]; then
+      echo "STALE  $routine  last=$last  age=${age}d  (>$STALE_DAYS)"
+    fi
+  fi
+done
+```
+
+**How to read the output:**
+- `NEVER_DELIVERED` — the routine has produced nothing at all, ever. This is the #22 failure
+  mode. **Report it as `MISSING`**, not as a separate label: a routine that has never produced an
+  artifact IS missing.
+- `last=... age=Nd` — the routine produced something once, then stopped. Also report as `MISSING`
+  with the last date included, so the operator can see *when* it went quiet.
+- Nothing printed — the routine is within tolerance. Not a finding.
+
+**Cadence:** apply this to routines whose "Fires on" is Mon-Fri with `STALE_DAYS=5`; for the
+weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use `STALE_DAYS=9` so a legitimate weekly gap is
+not reported. Compute the threshold per routine from its "Fires on" column, not one global value.
+
+**Interaction with STEP 4:** the two checks are complementary, not redundant. STEP 4 finds
+"due today, did not land" (a delivery or push failure). STEP 4b finds "not landing for days"
+(a schedule or window-check failure). A routine can fail either way independently. Report both.
+
 ## STEP 5 — CLASSIFY EVERY GAP
 
 For each gap, pick exactly one label:
@@ -140,6 +212,7 @@ For each gap, pick exactly one label:
 | `not_due` | The schedule does not fire on `$AUDIT_DOW`. Not a gap. |
 | `present_but_empty` | The path exists but carries no data (a stub was pushed). |
 | `stale` | The artifact exists but is from an older date than expected. |
+| `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 
 ## STEP 6 — WRITE THE STATUS FILE
@@ -156,6 +229,8 @@ outputs repo holds artifacts, not audit state.
   "due": 18,
   "delivered": 16,
   "missing": 1,
+  "stale_routines": 0,
+  "never_delivered": [],
   "gaps": [
     {"routine": "12-cross-asset-correlation", "path": "cross-asset/2026-10-27.md", "label": "MISSING"}
   ],
@@ -245,7 +320,10 @@ No preamble. Tool call → result → write → push → reply.
    Check the "Fires on" column and the holiday list before labelling anything.
 4. **Do not fabricate a status.** If the repo could not be cloned, the status is
    `failed_no_repo` and `errors: 1`. If the token is missing, `skipped_no_token`.
-5. **A `MISSING` artifact on a day when the routine ran and reported success means the push
+5. **Run the STEP 4b stale check every time.** A routine that is `not_due` on the audited
+   day may still be permanently broken — that is exactly how cron #22 went unnoticed for
+   months. `NEVER_DELIVERED` is a MISSING finding, not a footnote.
+6. **A `MISSING` artifact on a day when the routine ran and reported success means the push
    silently failed** — the old `git add -A` block could stage deletions and abort, or the
    `|| echo` could mask the error. Name it clearly; that is the whole point of this cron.
 

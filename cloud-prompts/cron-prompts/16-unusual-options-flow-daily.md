@@ -5,7 +5,12 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 
 ## SCHEDULE
 - Original local schedule: intraday
-- Schedule is unchanged — only the runtime environment changed.
+- Deployed schedule: `35 16 * * 1-5` America/New_York — 16:35 ET, Mon-Fri.
+- The schedule was moved off 16:30 ET on 2026-10-29 to clear a push race with cron #05
+  (eod-international-daily), which also fires at 16:30. Both routines push to the same branch in
+  the same minute, and the loser's artifact was lost. Do not move this back to 16:30 without also
+  moving #05.
+- The window gate below is `MARKET_HOURS_ONLY` (09-17 ET), so 16:35 ET satisfies it.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
@@ -210,7 +215,7 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05, 16:35 #16,
 # 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
 # artifact is LOST - while the old block still reported success, because
 # `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:

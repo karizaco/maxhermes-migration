@@ -210,7 +210,7 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05, 16:35 #16,
 # 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
 # artifact is LOST - while the old block still reported success, because
 # `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
