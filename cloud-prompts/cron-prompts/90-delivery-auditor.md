@@ -258,8 +258,8 @@ done
 - `not_yet_fired (first fire <date>)` — the routine's current schedule has not reached its
   first fire yet. Expected, NOT a finding, and not a gap. (#22 before 2026-11-01.)
 - `NEVER_DELIVERED` — the routine has produced nothing at all, ever, AND its first fire date
-  has already passed. **Report it as `MISSING`**, not as a separate label: a routine that has
-  had its chance and produced no artifact IS missing.
+  has already passed. **Report it as `MISSING`**, not as a separate label: a routine that
+  has had its chance and produced no artifact IS missing.
 - `last=... age=Nd` — the routine produced something once, then stopped. Also report as `MISSING`
   with the last date included, so the operator can see *when* it went quiet.
 - Nothing printed — the routine is within tolerance. Not a finding.
