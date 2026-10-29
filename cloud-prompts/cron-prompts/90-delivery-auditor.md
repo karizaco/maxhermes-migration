@@ -18,7 +18,8 @@ Every other routine verifies **its own** delivery (`git cat-file -e "origin/main
 That is necessary but not sufficient: **a routine that never fires cannot verify itself.**
 Cron #22 ran for months with a schedule that contradicted its own window check — it skipped
 every single fire and never produced a single artifact, and nothing noticed. The per-run check
-is blind to exactly that failure mode.
+is blind to exactly that failure mode. (That schedule has since been fixed; the failure mode it
+exposed is the reason this cron exists.)
 
 This cron is the external observer. It reads the cron roster, works out what SHOULD have run
 against what actually landed on `origin/main`, and reports the difference. It writes no artifact
@@ -71,10 +72,25 @@ AUDIT_DOW=$(TZ=America/New_York date -d "yesterday" +%u)   # 1=Mon..7=Sun
 echo "auditing $AUDIT_DATE (dow $AUDIT_DOW)"
 ```
 
-If `$AUDIT_DATE` was a **Saturday or Sunday** (`$AUDIT_DOW` 6 or 7), there is no US session to
-audit — the weekday-only routines (`1-5`) correctly did not run, and #26/#12/#07/#17/#10/#22
-may or may not have run. Still report, but expect gaps and label them
-`weekend_no_us_session` rather than `MISSING`.
+**Weekend audit dates — audit the routines that ARE due on that weekend.**
+If `$AUDIT_DATE` was a **Saturday or Sunday** (`$AUDIT_DOW` 6 or 7), there is no US *weekday*
+session: the Mon-Fri routines (`1-5`) correctly did not run, and their gaps are
+`weekend_no_us_session` (NOT `MISSING`).
+
+But a routine whose OWN schedule fires on that weekend day IS due and MUST be audited on it —
+its absence is `MISSING`, not `weekend_no_us_session`:
+
+| Audited day | Routine that IS due | Schedule |
+|---|---|---|
+| Saturday (`$AUDIT_DOW` 6) | 06-pattern-study-backlog | `0 15 * * 6` |
+| Sunday (`$AUDIT_DOW` 7) | 14-macro-calendar-week-ahead | `0 15 * * 0` |
+| Sunday (`$AUDIT_DOW` 7) | 22-weekly-market-recap-preview | `47 17 * * 0` |
+
+**This is the failure mode that hid #14 for a whole cycle.** #14 skipped its Sunday 2026-10-25
+fire; `macro-calendar/2026-10-25-week-ahead.md` was never on `origin/main`; and the Monday
+audit of Sunday 2026-10-25 labelled it `weekend_no_us_session` — "expected, not a failure" —
+so the gap stayed invisible. `weekend_no_us_session` applies ONLY to routines that were NOT
+scheduled to fire on that weekday. Check the "Fires on" column before labelling anything.
 
 **SCHEDULE CHANGES IN EFFECT (apply the OLD schedule to older audit dates):**
 - **2026-10-29** — #15 (earnings-reaction-scanner) and #19 (earnings-reminder-daily) changed
@@ -83,6 +99,11 @@ may or may not have run. Still report, but expect gaps and label them
   before 2026-10-29 is `not_due`, NOT `MISSING`. From 2026-10-29 onward they are due Mon-Fri.
 - **2026-10-29** — #16 (unusual-options-flow) moved from `30 16` to `35 16` (16:30 -> 16:35 ET)
   to clear a push race with #05. Same firing days, so due-ness is unchanged.
+- **2026-10-29** — #22 (weekly-market-recap-preview) moved from `0 14 * * 6` (Sat) to
+  `47 17 * * 0` (Sun 17:47 ET). Its **first fire under the new schedule is 2026-11-01**.
+  Until 2026-11-01 it has never had a scheduled chance to run, so an empty `weekly/` is
+  EXPECTED: report #22 as `not_yet_fired`, NOT `MISSING`. From 2026-11-02 onward a missing
+  `weekly/2026-11-01-preview.md` IS `MISSING`.
 
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
@@ -138,13 +159,32 @@ The `international-eod/{date}` path is a DIRECTORY of per-region CSVs — check 
 directory exists and contains at least one `.csv`; if it exists but is empty, that is
 `present_but_empty` (a degraded run wrote a stub), which still needs reporting.
 
+**Near-miss triage — do this for every `MISSING`.** A `MISSING` path does not always mean the
+routine did not run: it may have written its artifact under a slightly different name (cron #10
+wrote `breadth.md` while this table expected `breadth-snapshot.md`, and the routine looked
+"broken" for days). Before reporting `MISSING`, list what the routine's own output directory
+actually holds for that date:
+
+```bash
+cd /workspace/.audit
+top=$(echo "$p" | cut -d/ -f1)
+git ls-tree -r --name-only origin/main -- "$top" | grep "$AUDIT_DATE" | head -20
+```
+
+If a file for `$AUDIT_DATE` exists under a different name, report the gap with that near-miss
+named in the reason — "routine ran, wrote `<path>` instead of `<path>`" — so the fix is a path
+correction, not a re-run. If nothing at all exists for that date, the routine genuinely did not
+deliver.
+
 ## STEP 4b — STALE-ROUTINE CHECK (catches routines that never fire)
 
 The check in STEP 4 is **relative to the audited day**. It answers "did today's due routines
 land?" and is therefore blind to a routine whose schedule is wrong in a way that makes it *never*
 due on the days the auditor looks. Cron #22 ran for months with a schedule that contradicted its
 own window check: it skipped every single fire and produced no artifact, and the auditor never
-flagged it because on the audited day it was simply `not_due`.
+flagged it because on the audited day it was simply `not_due`. (#22's schedule has since been
+fixed to `47 17 * * 0`; its first fire under the new schedule is 2026-11-01 — see the SCHEDULE
+CHANGES block. Before that date an empty `weekly/` is expected, not a finding.)
 
 This step closes that hole. It is **absolute**, not relative: for every routine in the roster,
 find the most recent artifact that exists on `origin/main`, and compare its date against the
@@ -158,9 +198,18 @@ cd /workspace/.audit
 # The path regex is ANCHORED to the real artifact layout on origin/main - a loose
 # substring match silently matches nothing and reports a healthy routine as NEVER_DELIVERED.
 # tolerance: 5 = daily or Mon-Fri routine (covers a Fri->Mon weekend gap)
-#            9 = weekly routine (06 Sat, 13 Wed, 14 Sun, 22 Sun) - a 7-day gap is normal.
+#            7 = weekly routine (06 Sat, 13 Wed, 14 Sun, 22 Sun)
+# Why 7 and not 9: a weekly routine fires every 7 days and this audit runs DAILY, so a
+# healthy weekly routine's age oscillates 0,1,2,3,4,5,6 and NEVER exceeds 6. A tolerance of
+# 7 therefore cannot false-positive on a healthy weekly routine, while a MISSED fire shows
+# up as age 8 one day later. A tolerance of 9 delayed every weekly finding by 3 days - that
+# is how #14's missed Sunday 2026-10-25 stayed invisible for a whole cycle.
 # Do NOT collapse this to one global tolerance: a single global 5 flags every weekly
 # routine as stale on the sixth day after its last run - a guaranteed false positive.
+# A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
+# absent. That is `not_yet_fired`, not a finding. Keep this list in sync with the
+# SCHEDULE CHANGES block above; it is empty for every routine that has already fired.
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01"
 for entry in \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "19-earnings-reminder-daily|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reminders\.md$|5" \
@@ -171,18 +220,26 @@ for entry in \
   "07-focus-rvol-09:45|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/focus-rvol-snapshot\.md$|5" \
   "12-cross-asset-correlation|^cross-asset/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "10-breadth-snapshot|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/breadth-snapshot\.md$|5" \
-  "13-macro-calendar-midweek|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-midweek\.md$|9" \
-  "14-macro-calendar-week-ahead|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-week-ahead\.md$|9" \
-  "06-pattern-study-backlog|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/weekly-ipo\.md$|9" \
+  "13-macro-calendar-midweek|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-midweek\.md$|7" \
+  "14-macro-calendar-week-ahead|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-week-ahead\.md$|7" \
+  "06-pattern-study-backlog|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/weekly-ipo\.md$|7" \
   "17-us-stocks-in-play|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "04-reversal-bullish-3:55|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/reversal-bullish-3:55\.md$|5" \
   "20-eod-watchlist-csv|^us-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv$|5" \
-  "05-eod-international-daily|^international-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}/summary\.md$|5" \
+  "05-eod-international-daily|^international-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}/[a-z]{2}(-[a-z]{2})?\.csv$|5" \
   "16-unusual-options-flow|^options-flow/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
-  "22-weekly-market-recap-preview|^weekly/[0-9]{4}-[0-9]{2}-[0-9]{2}-preview\.md$|9" \
+  "22-weekly-market-recap-preview|^weekly/[0-9]{4}-[0-9]{2}-[0-9]{2}-preview\.md$|7" \
   "09-daily-sweep-18:30|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/daily-sweep\.md$|5" \
   "23-agentic-post-market-brief|^daily-briefs/[0-9]{4}-[0-9]{2}-[0-9]{2}-post-market\.md$|5" ; do
   routine="${entry%%|*}"; rest="${entry#*|}"; pat="${rest%%|*}"; tol="${rest##*|}"
+  firstfire=""
+  for nf in $NOT_YET_FIRED; do
+    if [ "${nf%%:*}" = "$routine" ]; then firstfire="${nf##*:}"; fi
+  done
+  if [ -n "$firstfire" ] && [ "$(date -d "$AUDIT_DATE" +%s)" -lt "$(date -d "$firstfire" +%s)" ]; then
+    echo "ok     $routine  not_yet_fired (first fire $firstfire - not a finding)"
+    continue
+  fi
   last=$(git ls-tree -r --name-only origin/main \
          | grep -E "$pat" \
          | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | tail -1)
@@ -198,18 +255,21 @@ done
 ```
 
 **How to read the output:**
-- `NEVER_DELIVERED` — the routine has produced nothing at all, ever. This is the #22 failure
-  mode. **Report it as `MISSING`**, not as a separate label: a routine that has never produced an
-  artifact IS missing.
+- `not_yet_fired (first fire <date>)` — the routine's current schedule has not reached its
+  first fire yet. Expected, NOT a finding, and not a gap. (#22 before 2026-11-01.)
+- `NEVER_DELIVERED` — the routine has produced nothing at all, ever, AND its first fire date
+  has already passed. **Report it as `MISSING`**, not as a separate label: a routine that has
+  had its chance and produced no artifact IS missing.
 - `last=... age=Nd` — the routine produced something once, then stopped. Also report as `MISSING`
   with the last date included, so the operator can see *when* it went quiet.
 - Nothing printed — the routine is within tolerance. Not a finding.
 
 **Cadence:** the threshold is PER ROUTINE and is carried in the third field of each entry above
 (`routine|path-regex|tolerance`). Daily and Mon-Fri routines use **5** (which covers a Fri->Mon
-weekend gap); the weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use **9**, so a legitimate
-weekly gap is not reported. A routine listed as "every day" uses **5** — it fires seven days a
-week, so a gap of more than 5 days is never legitimate.
+weekend gap); the weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use **7** — a healthy weekly
+routine's age oscillates 0..6 because this audit runs daily, so 7 can never false-positive and a
+missed fire appears as age 8 one day later. A routine listed as "every day" uses **5** — it
+fires seven days a week, so a gap of more than 5 days is never legitimate.
 **Do not collapse this back to one global tolerance value.** A single global 5 flags every
 weekly routine as stale on the sixth day after its last run — a guaranteed false positive that
 would train the operator to ignore this check.
@@ -233,7 +293,8 @@ For each gap, pick exactly one label:
 | `not_due` | The schedule does not fire on `$AUDIT_DOW`. Not a gap. |
 | `present_but_empty` | The path exists but carries no data (a stub was pushed). |
 | `stale` | The artifact exists but is from an older date than expected. |
-| `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
+| `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
+| `not_yet_fired` | The routine's current schedule has not reached its first fire date yet (see the SCHEDULE CHANGES block). Expected, not a failure. NOT a gap — record it in the top-level `not_yet_fired` array, never in `gaps`. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 
 ## STEP 6 — WRITE THE STATUS FILE
@@ -252,6 +313,7 @@ outputs repo holds artifacts, not audit state.
   "missing": 1,
   "stale_routines": 0,
   "never_delivered": [],
+  "not_yet_fired": [],
   "gaps": [
     {"routine": "12-cross-asset-correlation", "path": "cross-asset/2026-10-27.md", "label": "MISSING"}
   ],
@@ -259,6 +321,8 @@ outputs repo holds artifacts, not audit state.
 }
 ```
 
+`not_yet_fired` lists routines whose first fire date has not arrived yet. They are NOT gaps:
+they never appear in `gaps` and never affect `audit_status`.
 `audit_status` is `gaps_found` when any gap has label `MISSING` or `present_but_empty`, and
 `ok` otherwise. A `MISSING` gap is a genuine, actionable finding — name the routine and the
 exact path so it can be reproduced.
@@ -345,7 +409,8 @@ No preamble. Tool call → result → write → push → reply.
    `failed_no_repo` and `errors: 1`. If the token is missing, `skipped_no_token`.
 5. **Run the STEP 4b stale check every time.** A routine that is `not_due` on the audited
    day may still be permanently broken — that is exactly how cron #22 went unnoticed for
-   months. `NEVER_DELIVERED` is a MISSING finding, not a footnote.
+   months. `NEVER_DELIVERED` is a MISSING finding, not a footnote — unless the routine's
+   first fire date has not arrived yet (`not_yet_fired`), which is not a finding at all.
 6. **A `MISSING` artifact on a day when the routine ran and reported success means the push
    silently failed** — the old `git add -A` block could stage deletions and abort, or the
    `|| echo` could mask the error. Name it clearly; that is the whole point of this cron.
