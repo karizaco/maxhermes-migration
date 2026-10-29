@@ -190,7 +190,37 @@ Write the artifact to:
 The `{date}` placeholder is today in US/Eastern, `YYYY-MM-DD`. Resolve it as the first step.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
-If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-screens/{date}/` subdirectory, with `{date}` as part of each filename.
+This cron writes EXACTLY ONE breadth artifact: `breadth-snapshot.md`. Cron #09 (daily-sweep, 18:30 ET)
+runs the SAME skill into the SAME dated directory, so writing the skill's default filenames here
+collides with #09 on two paths and leaves two conflicting breadth reads for one session. Therefore:
+
+- Write ONLY `daily-screens/{date}/breadth-snapshot.md` (plus at most `breadth-snapshot.csv` /
+  `breadth-snapshot.json` sidecars carrying the SAME `breadth-snapshot.` prefix).
+- The skill's regime payload MUST be written as `_regime-intraday.json`, NOT `_regime.json`.
+  `#09` owns `_regime.json`. Two producers writing one filename means the later fire silently
+  overwrites the earlier one, and #09 fires 4.5 h later, so #10's copy would always die.
+- Do NOT write `breadth.md` — that is #09's end-of-day artifact. If the skill created it in
+  `/workspace/daily-screens/{date}/`, DELETE IT from the sandbox before the push step and say so.
+- Do NOT create `/workspace/daily-screens/breadth/` — that path belongs to #09.
+- Any other intermediate the skill leaves in `/workspace/daily-screens/{date}/` (for example
+  `_breadth_raw.json`) must be removed before the push step. This cron's output directory holds
+  its own artifacts only.
+
+## SELF-DESCRIPTION (mandatory — front-matter of the artifact)
+This cron is the INTRADAY breadth read (fires 14:00 ET, live tape). Cron #09's `breadth.md` is the
+END-OF-DAY read (18:30 ET, from the settled daily close). The two are SUPPOSED to differ and they
+will — different VIX quote times, and historically a different breadth universe. The front-matter
+of `breadth-snapshot.md` must therefore state all of the following, so a reader never has to guess
+which of the two files is authoritative:
+
+- `fire_time_et` — the exact time this cron fired.
+- `data_date` — the session date the breadth numbers describe. If the feed is T+1, say so.
+- `breadth_universe` — the EXACT population and filter used, e.g.
+  "NYSE/NASDAQ/AMEX, market cap > $10B, 905 names". Not "the market". Not "S&P 500" unless it is.
+- `vix_quote_time` — the timestamp of the VIX/VIX3M pair, and the source feed used for it.
+- `cross_reference` — "end-of-day counterpart: daily-screens/<date>/breadth.md (cron #09, 18:30 ET)".
+- Exactly ONE VIX/VIX3M pair, used everywhere in the document. Never quote two different
+  volatility readings in one artifact, and never silently mix a mid-session print with a settled close.
 
 ## GIT PUSH (OPTIONAL)
 After writing the artifact, commit and push it to `karizaco/minimax-cloud-outputs` (branch `main`).
@@ -275,6 +305,21 @@ if git cat-file -e "origin/main:daily-screens/$DATE/breadth-snapshot.md" 2>/dev/
 else
   echo "DELIVERY: FAILED (origin/main:daily-screens/$DATE/breadth-snapshot.md NOT found)"
   echo "  the artifact is still in the sandbox at daily-screens/ - report this, do not silently continue"
+fi
+if [ -f "/workspace/daily-screens/$DATE/_regime-intraday.json" ]; then
+  if git cat-file -e "origin/main:daily-screens/$DATE/_regime-intraday.json" 2>/dev/null; then
+    echo "SIDECAR: ok (_regime-intraday.json present on origin/main)"
+  else
+    echo "SIDECAR: FAILED (_regime-intraday.json absent on origin/main)"
+  fi
+else
+  echo "SIDECAR: none written (optional)"
+fi
+if [ -f "/workspace/daily-screens/$DATE/breadth.md" ]; then
+  echo "ORPHAN: breadth.md is still in the output dir - it belongs to cron #09, delete it and re-push"
+fi
+if [ -d "/workspace/daily-screens/breadth" ]; then
+  echo "ORPHAN: daily-screens/breadth/ exists - that path belongs to cron #09, remove it and re-push"
 fi
 ```
 
