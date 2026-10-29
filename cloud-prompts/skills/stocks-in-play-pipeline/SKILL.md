@@ -146,15 +146,19 @@ Manual user-requested test runs may always chat a short summary even if empty.
 
 ### Chat summary format (one ticker per line)
 
-When the chat summary is warranted, format the ticker list as **one ticker per line**, not prose lines that combine multiple names.
+When the chat summary is warranted, the chat reply is a short, readable markdown digest. There is
+**no line cap** — cap by NAMES SHOWN (top ~8 per tier), not by lines, and let the dated file hold
+the long detail.
 
-- Lead with **one context line**: slot, time (ET), broad market tone (e.g. `US stocks in play — 2026-09-21 open slot · 09:56 ET · SPX +0.70% · NDX +1.18% · BTC +5.44%`).
+- **Open with a 2-4 sentence prose paragraph**: the headline finding of the run, then the caveat that most changes how it should be read. Complete sentences, not a label list. Context (slot, time ET, broad market tone) goes INSIDE that paragraph, not as a separate labelled line.
+- **Then `### Signal`**, with tiered bullets, **one ticker per line**. Never combine names on one prose line — that is paragraph-shaped, not bullet-shaped.
 - Use concise tier headers on their own line (`Tier A:`, `Tier B:`, `Tier C:`).
 - Each ticker on its own bullet line: `- TICKER +x.xx% — why-in-play / catalyst / theme` (e.g. `- MSTR +7.81% — BTC proxy; BTC +5.44% on the tape`). Append `⚠ low-float`, `⚠ gap watch`, `⚠ halt`, `⚠ SOFT_A`, `⚠ TECH_WATCH` inline when relevant.
 - **Default to the why, not the price.** Skip the `@ $price` column unless the price level materially adds context (key technical level, earnings reaction print, halt reference). For routine sector-strength or theme-driven moves, the catalyst is what makes the name actionable.
 - **Reserve `⚠ low-float` for evidence-based calls.** Only flag when shares-outstanding data shows <10–20M shares outstanding. A real catalyst-driven move in a small-cap (REE theme, AI silicon, FDA, halt-resume) is NOT a low-float tag — that's the catalyst doing the work.
-- Close with the audit line: `Audit: tier_a=N soft_a=N tech_watch=N chat=yes|no`.
+- Close the Signal section with the audit line: `Audit: tier_a=N soft_a=N tech_watch=N chat=yes|no`.
 - Do **not** combine multiple tickers on one prose line (e.g. `ARM +9% · MSTR +8% · RKLB +8% ...`); that is paragraph-shaped and not bullet-shaped.
+- Then `### Method & caveats` (2-4 bullets: source(s), lag, screen size, every degraded or blocked source, and anything you could not verify), `### Files` (one line per file written, with its path) and `### Push / errors` (push status, then `errors: <n>`).
 - Digests and source-health tables still go in the dated markdown file; chat is the bullet list.
 
 ## 6) Realtime data (optional polish)

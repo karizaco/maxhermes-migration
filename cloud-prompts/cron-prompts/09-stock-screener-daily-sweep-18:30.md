@@ -295,14 +295,25 @@ primary one and list the rest.
   failure, not a warning.
 
 ## DELIVERY
-The final reply (the only thing delivered to the chat) MUST be:
-  - ≤ 6 lines.
-  - Top movers / count / source / lag if any.
-  - One line per output file written.
-  - One line: "push: ok" / "push: skipped (token unset)" / "push: failed (<reason>)".
-  - One line: "errors: <n>" — count of MCP failures that triggered fallback. 0 = clean run.
+The final reply (the only thing delivered to the chat) MUST use this structure. There is **no
+line cap** — cap by NAMES SHOWN (top ~8 per tier), not by lines. Long-form detail belongs in
+the artifact file, not in the chat.
 
-No preamble. Tool call → result → write → push → reply.
+1. **Prose opener** — 2-4 sentences: the headline finding of the run, then the caveat that most
+   changes how it should be read. Complete sentences; no label lists, no clipped fragments.
+2. **`### Signal`** — tiered bullets, ONE ticker per line, each line a short clause naming the
+   catalyst or setup (e.g. `- BA -10.8% — Q3 adj EPS -$0.34 vs -$0.21 est; 737 Max ramp pushed
+   to H2-27`). Follow the skill's chat rules for tier order, flags and the audit line.
+   Lead with the top movers and the count of names, and give the source and any lag.
+   State how many further names are in the artifact file.
+3. **`### Method & caveats`** — 2-4 bullets: source(s), lag, universe/screen size, and every
+   degraded or blocked source. Name what could not be verified.
+4. **`### Files`** — one line per file written, with its sandbox path.
+5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
+   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for `errors: <n>` —
+   count of MCP failures that triggered fallback. 0 = clean run.
+
+Do not narrate tool calls. Tool call → result → write → push → reply.
 
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.

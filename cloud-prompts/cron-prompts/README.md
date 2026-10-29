@@ -44,15 +44,31 @@
 - **Output**: `/workspace/<path>` (Linux-style, no backslashes).
 - **Git push**: optional, to `minimax-cloud-outputs`.
 
-## Common delivery format (≤ N lines)
+## Common delivery format (no line cap)
+
+The reply is a short, readable digest - not a wall of text. There is **no line cap**: cap by
+NAMES SHOWN (top ~8 per tier), not by lines, and let the artifact file hold the long detail.
 
 ```
-top movers / counts / source / lag (if any)
-file 1 written: /workspace/...
-file 2 written: /workspace/...
+2-4 sentence prose opener (headline finding + the caveat that changes how it should be read)
+
+### Signal
+tiered bullets, one ticker per line, each line a short clause naming the catalyst
+
+### Method & caveats
+2-4 bullets: source(s), lag, screen size, degraded/blocked sources
+
+### Files
+one line per file written: /workspace/...
+
+### Push / errors
 push: ok | skipped | failed
 errors: <count>
 ```
+
+Three crons keep a fixed structured status reply by design (`07` focus-rvol twins,
+`15` earnings-reaction-scanner, `90` delivery-auditor) - those are machine-readable status
+blocks, not narrative digests, and are deliberately left alone.
 
 ## How to schedule
 
