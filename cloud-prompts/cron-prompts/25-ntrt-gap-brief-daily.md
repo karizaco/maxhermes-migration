@@ -157,7 +157,7 @@ source and is not rate-limited, so try it before Yahoo. If it fails, fall throug
    A missing row is recoverable; an invented price is not.
 4. **Distinguish "no data" from "no source".** No print today (pre-market, weekend, holiday) is
    `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and HTTP status.
-5. **Every artifact carries a `## Source health` section**: per source, the URL/query used, the
+5. **Every artifact carries a `## Source health` section`: per source, the URL/query used, the
    HTTP status, and `ok` / `failed:<reason>`. If a source was rate-limited, say `429 rate-limited`
    and which fallback you used. Never hide a degraded run.
 6. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the
@@ -314,6 +314,7 @@ the artifact file, not in the chat.
    count of MCP failures that triggered fallback. 0 = clean run.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
+
 
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
