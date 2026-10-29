@@ -171,11 +171,12 @@ source and is not rate-limited, so try it before Yahoo. If it fails, fall throug
 
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
-**Every fallback MUST terminate with:** "accept the partial result, write the artifact, and STOP.
-Do NOT chain <deeper MCP>." Do NOT loop on MCP errors. Do NOT retry indefinitely. Do NOT re-raise.
+**Every fallback MUST terminate with:**
+  "accept the partial result, write the artifact, and STOP. Do NOT chain <deeper MCP>."
+Do NOT loop on MCP errors. Do NOT retry indefinitely. Do NOT re-raise.
 
 ## HELPER SCRIPTS (PYTHON)
-Local Mavis called Python helpers for file I/O, parsing, and atomic writes.
+Local Mavis called Python helpers like `python screen.py emit-sql ...` to do file I/O, parsing, and atomic writes.
 **On Cloud, do NOT call those helpers — they don't exist here.** Re-implement the helper's job inline using tool calls:
 - SQL generation → emit SQL directly (see skill's reference docs if attached).
 - Finviz URL building → construct URL inline (see the skill's filter spec).
@@ -183,13 +184,13 @@ Local Mavis called Python helpers for file I/O, parsing, and atomic writes.
 - Atomic file write → `write_file(path, content)` (already atomic).
 - Deduplication → do it in agent reasoning before writing.
 
-If the skill spec references a helper under `scripts/`, fetch the helper's URL for reference only:
+If the skill spec references a helper under `scripts/`, fetch the helper's URL too:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/<name>.py
 Read it, do NOT execute it.
 
 ## AUDIT LOG
 Local Mavis wrote an audit line to a Windows audit file after every run.
-**On Cloud, skip audit log writes.** If something goes wrong, the failure is in the chat reply and the
+**On Cloud, skip audit log writes.** Audit is not needed here. If something goes wrong, the failure is in the chat reply and the
 (missing) artifact.
 
 ## OUTPUT
