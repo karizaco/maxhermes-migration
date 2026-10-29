@@ -317,15 +317,42 @@ primary one and list the rest.
 - If all 3 push attempts were rejected, say so explicitly - a missing artifact is a real
   failure, not a warning.
 
-## DELIVERY (the only thing delivered to the chat)
-Six lines, no preamble:
-earnings-reaction-scanner (cron #15) - DATE TIME_ET
-window: passed | skipped (reason)
-top movers: <name> <pct>% (region) | none | counts
-candidates: N | AMC: N | PRE_GAP: N | EU: N | AU: N | cross-check: agree N / mismatch N
-file: PATH (BYTES B, written) | no artifact
-push: ok | skipped (token unset) | failed (reason)
-errors: N
+## DELIVERY
+The final reply (the only thing delivered to the chat) MUST use this structure. There is **no
+line cap** — cap by NAMES SHOWN (top ~8 per tier), not by lines. Long-form detail
+belongs in the artifact file, not in the chat.
+
+1. **Prose opener** — 2-4 sentences: the headline finding of the run, then the caveat
+   that most changes how it should be read. Complete sentences; no label lists, no clipped
+   fragments.
+2. **`### Signal`** — tiered bullets, ONE ticker per line, each line a short clause
+   naming the catalyst or setup (e.g. `- BA -10.8% — Q3 adj EPS -$0.34 vs -$0.21 est;
+   737 Max ramp pushed to H2-27`). Follow the skill's chat rules for tier order, flags and the
+   audit line. For THIS scanner the tiers are: US pre-market gaps (PRE_GAP), EU/UK movers,
+   ASX movers, and the catalyst table — name the top movers in each tier with their
+   move and the catalyst. Lead with the top movers and the count of names, and give the source
+   and any lag. State how many further names are in the artifact file.
+3. **`### Method & caveats`** — 2-4 bullets: source(s), lag, universe/screen size, and
+   every degraded or blocked source. Name what could not be verified.
+4. **`### Files`** — one line per file written, with its sandbox path.
+5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
+   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for `errors: <n>` —
+   count of source failures that triggered fallback, PLUS every cross-check mismatch that was
+   dropped from the tables. 0 = clean run.
+
+**Formatting rules — the reply is rendered in a chat client, not read as a diff.**
+- Use a compact markdown **table** whenever there are 3+ comparable numeric rows (index
+  levels, sector rotation, futures, breadth). Header row, `|---|` separator, numbers
+  right-aligned. A table beats prose for anything the reader is going to compare.
+- Keep every bullet to **one short line**. Never cram three facts into a 300-character
+  line with two em-dashes and three numbers — split it into two bullets, or move the
+  detail to the artifact file.
+- Bold only the numbers that carry the story (the headline move, the level that matters),
+  not every figure in the table.
+- Blank line between the header and the first bullet under it, so the section renders as a
+  heading rather than a run-on block.
+
+Do not narrate tool calls. Tool call → result → write → push → reply.
 
 ## CRITICAL REMINDERS
 1. Window check first. If it says out-of-window, exit cleanly — the SKIPPED file is the artifact.
