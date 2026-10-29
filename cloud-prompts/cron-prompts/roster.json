@@ -12,8 +12,8 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "asia-pre-market/{date}.md",
-   "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "last_delivered": "2026-10-29",
+   "age_days": 0,
    "tolerance_days": 5,
    "stale": false
   },
@@ -60,8 +60,8 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/weekly-ipo.md",
-   "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "last_delivered": "2026-10-24",
+   "age_days": 5,
    "tolerance_days": 9,
    "stale": false
   },
@@ -82,13 +82,13 @@
    "stale": false
   },
   {
-   "task_id": "457170128208215",
+   "task_id": "457578163015913",
    "routine": "08-stock-screener-pre-market-gapper",
    "schedule": "30 8 * * 1-5",
    "fire_et": "08:30",
    "fires": "Mon-Fri",
    "tz": "America/New_York",
-   "project": "10635",
+   "project": "10645",
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/pre-market-gapper.md",
@@ -172,17 +172,17 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "macro-calendar/{date}-week-ahead.md",
-   "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "last_delivered": "2026-10-18",
+   "age_days": 11,
    "tolerance_days": 9,
-   "stale": false
+   "stale": true
   },
   {
    "task_id": "457570777166058",
    "routine": "15-earnings-reaction-scanner",
-   "schedule": "0 8 * * 1",
+   "schedule": "0 8 * * 1-5",
    "fire_et": "08:00",
-   "fires": "Mon",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "13835",
    "enabled": true,
@@ -228,16 +228,16 @@
   {
    "task_id": "457569978294401",
    "routine": "19-earnings-reminder-daily",
-   "schedule": "0 6 * * 1",
+   "schedule": "0 6 * * 1-5",
    "fire_et": "06:00",
-   "fires": "Mon",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "13835",
    "enabled": true,
    "session_mode": "new",
    "artifact": "earnings/{date}-reminders.md",
-   "last_delivered": "2026-10-26",
-   "age_days": 3,
+   "last_delivered": "2026-10-29",
+   "age_days": 0,
    "tolerance_days": 5,
    "stale": false
   },
@@ -290,13 +290,13 @@
    "stale": false
   },
   {
-   "task_id": "457175059497201",
+   "task_id": "457578106761360",
    "routine": "25-ntrt-gap-brief-daily",
    "schedule": "0 9 * * 1-5",
    "fire_et": "09:00",
    "fires": "Mon-Fri",
    "tz": "America/New_York",
-   "project": "10635",
+   "project": "10645",
    "enabled": true,
    "session_mode": "new",
    "artifact": "ntrt/{date}.md",
@@ -320,6 +320,22 @@
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
+  },
+  {
+   "task_id": "457193486962916",
+   "routine": "90-delivery-auditor",
+   "schedule": "0 7 * * *",
+   "fire_et": "07:00",
+   "fires": "every day",
+   "tz": "America/New_York",
+   "project": "10638",
+   "enabled": true,
+   "session_mode": "new",
+   "artifact": "_audit/status.json (audit/status branch)",
+   "last_delivered": null,
+   "age_days": null,
+   "tolerance_days": 5,
+   "stale": null
   }
  ]
 }

@@ -11,18 +11,19 @@ python3 tools/gen_roster.py --tasks tasks.json --repo ./outputs-clone --out .
 
 | Routine | Fire (ET) | Fires on | Project | Artifact | Last delivered | Age | Stale? |
 |---|---|---|---|---|---|---|---|
-| 19-earnings-reminder-daily | 06:00 | Mon | 13835 | `earnings/{date}-reminders.md` | 2026-10-26 | 3d | no |
-| 02-asia-pre-market-reactions | 06:30 | Mon-Fri | 10645 | `asia-pre-market/{date}.md` | 2026-10-28 | 1d | no |
-| 15-earnings-reaction-scanner | 08:00 | Mon | 13835 | `earnings/{date}-reactions.md` | 2026-10-26 | 3d | no |
-| 08-stock-screener-pre-market-gapper | 08:30 | Mon-Fri | 10635 | `daily-screens/{date}/pre-market-gapper.md` | 2026-10-28 | 1d | no |
+| 19-earnings-reminder-daily | 06:00 | Mon-Fri | 13835 | `earnings/{date}-reminders.md` | 2026-10-29 | 0d | no |
+| 02-asia-pre-market-reactions | 06:30 | Mon-Fri | 10645 | `asia-pre-market/{date}.md` | 2026-10-29 | 0d | no |
+| 90-delivery-auditor | 07:00 | every day | 10638 | `_audit/status.json (audit/status branch)` | — | — | ? |
+| 15-earnings-reaction-scanner | 08:00 | Mon-Fri | 13835 | `earnings/{date}-reactions.md` | 2026-10-26 | 3d | no |
+| 08-stock-screener-pre-market-gapper | 08:30 | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` | 2026-10-28 | 1d | no |
 | 26-agentic-pre-market-brief | 08:30 | every day | 10645 | `daily-briefs/{date}-pre-market.md` | 2026-10-28 | 1d | no |
-| 25-ntrt-gap-brief-daily | 09:00 | Mon-Fri | 10635 | `ntrt/{date}.md` | 2026-10-28 | 1d | no |
+| 25-ntrt-gap-brief-daily | 09:00 | Mon-Fri | 10645 | `ntrt/{date}.md` | 2026-10-28 | 1d | no |
 | 07-stock-screener-focus-rvol-09:45 | 09:45 | every day | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` | 2026-10-28 | 1d | no |
 | 12-cross-asset-correlation-snapshot | 10:00 | every day | 10636 | `cross-asset/{date}.md` | 2026-10-28 | 1d | no |
 | 10-stock-screener-breadth-snapshot | 14:00 | every day | 10635 | `daily-screens/{date}/breadth-snapshot.md` | 2026-10-28 | 1d | no |
 | 13-macro-calendar-midweek | 14:00 | Wed | 10636 | `macro-calendar/{date}-midweek.md` | 2026-10-28 | 1d | no |
-| 06-stock-screener-pattern-study-backlog | 15:00 | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` | 2026-10-28 | 1d | no |
-| 14-macro-calendar-week-ahead | 15:00 | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` | 2026-10-28 | 1d | no |
+| 06-stock-screener-pattern-study-backlog | 15:00 | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` | 2026-10-24 | 5d | no |
+| 14-macro-calendar-week-ahead | 15:00 | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` | 2026-10-18 | 11d | **YES** |
 | 17-us-stocks-in-play | 15:50 | every day | 10645 | `us-stocks-in-play/{date}.md` | 2026-10-28 | 1d | no |
 | 04-reversal-bullish-3:55 | 15:55 | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3:55.md` | 2026-10-28 | 1d | no |
 | 20-eod-watchlist-csv-snapshot | 16:00 | Mon-Fri | 10638 | `us-eod/{date}.csv` | 2026-10-28 | 1d | no |
@@ -34,8 +35,9 @@ python3 tools/gen_roster.py --tasks tasks.json --repo ./outputs-clone --out .
 
 ## Health summary
 
-- **20 routines** tracked; all owner `Mavis`, all `America/New_York`.
-- **1 routine(s) have not delivered within tolerance** — this is the check that would have caught cron #22:
+- **21 routines** tracked; all owner `Mavis`, all `America/New_York`.
+- **2 routine(s) have not delivered within tolerance** — this is the check that would have caught cron #22:
+  - `14-macro-calendar-week-ahead` — last delivered 2026-10-18, 11d old (tolerance 9d)
   - `22-weekly-market-recap-preview` — last delivered NEVER (tolerance 9d)
 
 ## Known repository hazards

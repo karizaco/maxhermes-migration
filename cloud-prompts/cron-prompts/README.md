@@ -1,6 +1,6 @@
 # Cloud Mavis Cron Prompts — index and operating notes
 
-**20 routines**, all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
+**21 routines** (20 producers + the #90 auditor), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
 all `session.mode=new`. Day-of-week lives in the **scheduler** expression, so weekend fires cost
 nothing — no agent invocation is spent discovering it is a weekend.
 
@@ -11,12 +11,13 @@ nothing — no agent invocation is spent discovering it is a weekend.
 
 | ID | Routine | Schedule (ET) | Fires on | Project | Output |
 |---|---|---|---|---|---|
-| 19 | earnings-reminder-daily | `0 6 * * 1` | Mon | 13835 | `earnings/{date}-reminders.md` |
+| 19 | earnings-reminder-daily | `0 6 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reminders.md` |
 | 02 | asia-pre-market-reactions | `30 6 * * 1-5` | Mon-Fri | 10645 | `asia-pre-market/{date}.md` |
-| 15 | earnings-reaction-scanner | `0 8 * * 1` | Mon | 13835 | `earnings/{date}-reactions.md` |
-| 08 | stock-screener-pre-market-gapper | `30 8 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/pre-market-gapper.md` |
+| 90 | delivery-auditor | `0 7 * * *` | every day | 10638 | `_audit/status.json` (audit/status branch) |
+| 15 | earnings-reaction-scanner | `0 8 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reactions.md` |
+| 08 | stock-screener-pre-market-gapper | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` |
 | 26 | agentic-pre-market-brief | `30 8 * * *` | every day | 10645 | `daily-briefs/{date}-pre-market.md` |
-| 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10635 | `ntrt/{date}.md` |
+| 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10645 | `ntrt/{date}.md` |
 | 07 | stock-screener-focus-rvol-09:45 | `45 9 * * *` | every day | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
 | 12 | cross-asset-correlation-snapshot | `0 10 * * *` | every day | 10636 | `cross-asset/{date}.md` |
 | 10 | stock-screener-breadth-snapshot | `0 14 * * *` | every day | 10635 | `daily-screens/{date}/breadth-snapshot.md` |
@@ -85,11 +86,30 @@ errors: <n>
 ## Known hazards
 
 - **Push collisions.** Routines that share a fire minute push to the same branch; the loser is
-  rejected and its artifact is lost. Staggered pairs are 16:30 #05 / 16:35 #16 (moved 2026-10-29),
-  08:30 #08 / #26, 14:00 #10 / #13, 15:00 #06 / #14. The retry loop is the safety net, not the fix.
+  rejected and its artifact is lost. As of 2026-10-29 the only pair that still shares a fire
+  minute AND a weekday is **08:30 #08 / #26** and **14:00 #10 / #13 (Wednesdays only)**.
+  #05/#16 were staggered to 16:30 / 16:35. The 15:00 pair (#06 Sat, #14 Sun) never collides —
+  different days. The retry loop in every prompt is the safety net, not the fix.
 - **The auditor is blind to a routine that never fires** — it compared only against the audited
   day. STEP 4b (added 2026-10-29) does an absolute last-delivered check, which is what catches
   the #22 class of failure.
+- **Loose path matching silently reports healthy routines as broken.** A substring match on a
+  shared directory (earnings/, macro-calendar/, daily-screens/) picks up a sibling routine's
+  dates, or matches nothing and reports `NEVER_DELIVERED`. Both the auditor and
+  `tools/gen_roster.py` now anchor on a per-routine filename suffix.
 - **Quota.** Runs die with `Token Plan usage limit reached (2067)` when the account plan is
   exhausted. No prompt edit fixes that.
 
+## Open findings (2026-10-29)
+
+| Routine | Finding | Evidence |
+|---|---|---|
+| `22-weekly-market-recap-preview` | **Has never delivered.** No `weekly/` directory exists on `origin/main` at all. Fires Sundays 17:47 ET, so it should have produced ~8 artifacts by now. | `git ls-tree -r --name-only origin/main -- weekly` returns 0 files |
+| `14-macro-calendar-week-ahead` | **Missed its Sunday 2026-10-25 run.** Last artifact is 2026-10-18; the 10-25 Sunday is absent. | `macro-calendar/2026-10-18-week-ahead.md` is the newest; there is no `2026-10-25-week-ahead.md` |
+| `15` / `19` | Were scheduled Mondays-only (`0 8 * * 1`, `0 6 * * 1`) while their prompts and skill specs said weekdays. **Fixed 2026-10-29** to `1-5`; the auditor now carries an effective-date rule so pre-change Tue–Fri gaps are `not_due`, not `MISSING`. | scheduler read-back; `earnings/{date}-reminders.md` last delivered 2026-10-26 (a Monday) |
+| `07` | Two prompt files exist with identical content (`...-09:45.md` and `...-09%3A45.md`). The URL-encoded name is the one the platform uses as `cron_name`; keep that one as canonical. | `cmp` reports the files identical |
+
+The `default branch` of the outputs repo still points at `master` rather than `main`. The GitHub
+token lacks repo Administration permission, so this needs one GUI click (Settings → Branches →
+default branch → `main`). Until then every prompt says `git fetch origin main` explicitly, and
+`master` has been merged with `main` so a stale clone still sees current artifacts.

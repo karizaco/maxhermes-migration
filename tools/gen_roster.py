@@ -16,29 +16,36 @@ import argparse, json, os, re, subprocess, sys, datetime, zoneinfo
 
 ET = zoneinfo.ZoneInfo("America/New_York")
 
-# routine key -> (output path template, output dir on the outputs repo)
+# routine key -> (output path template, output dir on the outputs repo, filename suffix)
+#
+# The artifact DIRECTORY is deliberately shared by several routines (earnings/ holds
+# both -reminders.md and -reactions.md; macro-calendar/ holds both -midweek.md and
+# -week-ahead.md; daily-screens/ holds seven different screens). Matching on the
+# directory alone makes every routine in a shared directory report the NEWEST date
+# any sibling produced. The third element is the filename suffix used to keep a
+# routine to its OWN artifact.
 ARTIFACTS = {
- "02-asia-pre-market-reactions": ("asia-pre-market/{date}.md", "asia-pre-market"),
- "04-reversal-bullish-3:55": ("daily-screens/{date}/reversal-bullish-3:55.md", "daily-screens"),
- "05-eod-international-daily": ("international-eod/{date}/", "international-eod"),
- "06-stock-screener-pattern-study-backlog": ("daily-screens/{date}/weekly-ipo.md", "daily-screens"),
- "07-stock-screener-focus-rvol-09:45": ("daily-screens/{date}/focus-rvol-snapshot.md", "daily-screens"),
- "08-stock-screener-pre-market-gapper": ("daily-screens/{date}/pre-market-gapper.md", "daily-screens"),
- "09-stock-screener-daily-sweep-18:30": ("daily-screens/{date}/daily-sweep.md", "daily-screens"),
- "10-stock-screener-breadth-snapshot": ("daily-screens/{date}/breadth-snapshot.md", "daily-screens"),
- "12-cross-asset-correlation-snapshot": ("cross-asset/{date}.md", "cross-asset"),
- "13-macro-calendar-midweek": ("macro-calendar/{date}-midweek.md", "macro-calendar"),
- "14-macro-calendar-week-ahead": ("macro-calendar/{date}-week-ahead.md", "macro-calendar"),
- "15-earnings-reaction-scanner": ("earnings/{date}-reactions.md", "earnings"),
- "16-unusual-options-flow-daily": ("options-flow/{date}.md", "options-flow"),
- "17-us-stocks-in-play": ("us-stocks-in-play/{date}.md", "us-stocks-in-play"),
- "19-earnings-reminder-daily": ("earnings/{date}-reminders.md", "earnings"),
- "20-eod-watchlist-csv-snapshot": ("us-eod/{date}.csv", "us-eod"),
- "22-weekly-market-recap-preview": ("weekly/{date}-preview.md", "weekly"),
- "23-agentic-post-market-brief": ("daily-briefs/{date}-post-market.md", "daily-briefs"),
- "25-ntrt-gap-brief-daily": ("ntrt/{date}.md", "ntrt"),
- "26-agentic-pre-market-brief": ("daily-briefs/{date}-pre-market.md", "daily-briefs"),
- "90-delivery-auditor": ("_audit/status.json", "_audit"),
+ "02-asia-pre-market-reactions": ("asia-pre-market/{date}.md", "asia-pre-market", ".md"),
+ "04-reversal-bullish-3:55": ("daily-screens/{date}/reversal-bullish-3:55.md", "daily-screens", "reversal-bullish-3:55.md"),
+ "05-eod-international-daily": ("international-eod/{date}/", "international-eod", ".csv"),
+ "06-stock-screener-pattern-study-backlog": ("daily-screens/{date}/weekly-ipo.md", "daily-screens", "weekly-ipo.md"),
+ "07-stock-screener-focus-rvol-09:45": ("daily-screens/{date}/focus-rvol-snapshot.md", "daily-screens", "focus-rvol-snapshot.md"),
+ "08-stock-screener-pre-market-gapper": ("daily-screens/{date}/pre-market-gapper.md", "daily-screens", "pre-market-gapper.md"),
+ "09-stock-screener-daily-sweep-18:30": ("daily-screens/{date}/daily-sweep.md", "daily-screens", "daily-sweep.md"),
+ "10-stock-screener-breadth-snapshot": ("daily-screens/{date}/breadth-snapshot.md", "daily-screens", "breadth-snapshot.md"),
+ "12-cross-asset-correlation-snapshot": ("cross-asset/{date}.md", "cross-asset", ".md"),
+ "13-macro-calendar-midweek": ("macro-calendar/{date}-midweek.md", "macro-calendar", "-midweek.md"),
+ "14-macro-calendar-week-ahead": ("macro-calendar/{date}-week-ahead.md", "macro-calendar", "-week-ahead.md"),
+ "15-earnings-reaction-scanner": ("earnings/{date}-reactions.md", "earnings", "-reactions.md"),
+ "16-unusual-options-flow-daily": ("options-flow/{date}.md", "options-flow", ".md"),
+ "17-us-stocks-in-play": ("us-stocks-in-play/{date}.md", "us-stocks-in-play", ".md"),
+ "19-earnings-reminder-daily": ("earnings/{date}-reminders.md", "earnings", "-reminders.md"),
+ "20-eod-watchlist-csv-snapshot": ("us-eod/{date}.csv", "us-eod", ".csv"),
+ "22-weekly-market-recap-preview": ("weekly/{date}-preview.md", "weekly", "-preview.md"),
+ "23-agentic-post-market-brief": ("daily-briefs/{date}-post-market.md", "daily-briefs", "-post-market.md"),
+ "25-ntrt-gap-brief-daily": ("ntrt/{date}.md", "ntrt", ".md"),
+ "26-agentic-pre-market-brief": ("daily-briefs/{date}-pre-market.md", "daily-briefs", "-pre-market.md"),
+ "90-delivery-auditor": ("_audit/status.json (audit/status branch)", "", "status.json"),
 }
 # weekly routines get a longer staleness tolerance
 TOLERANCE = {"13-macro-calendar-midweek":9, "14-macro-calendar-week-ahead":9,
@@ -58,11 +65,18 @@ def git_files(repo):
     return out.stdout.split("\n")
 
 def last_delivered(files, routine):
-    tpl = ARTIFACTS.get(routine, (None,None))[1]
-    if not tpl: return None
+    """Newest date among the files that belong to THIS routine.
+
+    Filters on directory AND filename suffix, because several routines share a
+    directory (earnings/, macro-calendar/, daily-screens/). Without the suffix
+    filter, #19 reports #15's newest date and every sibling looks fresh."""
+    spec = ARTIFACTS.get(routine)
+    if not spec: return None
+    dirname, suffix = spec[1], spec[2]
     best = None
     for f in files:
-        if not f.startswith(tpl + "/"): continue
+        if not f.startswith(dirname + "/"): continue
+        if not f.endswith(suffix): continue
         for d in DATE_RE.findall(f):
             if best is None or d > best: best = d
     return best
@@ -93,12 +107,19 @@ def main():
         dow = parts[4] if len(parts)==5 else "*"
         fires = {"*":"every day","1-5":"Mon-Fri","0":"Sun","1":"Mon","3":"Wed","6":"Sat"}.get(dow, dow)
         hh = parts[1] if len(parts)==5 else "?"
+        spec = ARTIFACTS.get(routine)
+        # A routine with no artifact dir on origin/main (e.g. the auditor, which
+        # pushes to the audit/status branch) cannot be stale-tested against main.
+        exempt = spec is None or not spec[1]
         last = last_delivered(files, routine) if files else None
         age = None
         if last:
             age = (datetime.date.fromisoformat(as_of) - datetime.date.fromisoformat(last)).days
         tol = TOLERANCE.get(routine, 5)
-        stale = (age is None) or (age > tol) if files else None
+        if exempt:
+            stale = None
+        else:
+            stale = (age is None) or (age > tol) if files else None
         rows.append({
             "task_id": t.get("task_id"), "routine": routine, "schedule": sch,
             "fire_et": f"{int(hh):02d}:{parts[0].zfill(2)}" if hh!="?" else "?",

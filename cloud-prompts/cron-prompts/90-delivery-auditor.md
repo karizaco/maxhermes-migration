@@ -7,7 +7,7 @@ exist, run `mkdir -p /workspace` first).
 ## SCHEDULE
 - Deployed schedule: `0 7 * * *` America/New_York — 07:00 ET daily.
 - Runs at 07:00 ET, which is AFTER every routine that fires before it (the earliest is 06:00 ET,
-  #02) and BEFORE the routines that fire later in the day. It therefore catches the whole
+  #19) and BEFORE the routines that fire later in the day. It therefore catches the whole
   previous US trading day's early-morning artifacts, and the routines that fire between 07:00
   and 22:30 are audited by the NEXT day's run.
 - Session mode: `new` — every fire starts a clean conversation.
@@ -71,10 +71,18 @@ AUDIT_DOW=$(TZ=America/New_York date -d "yesterday" +%u)   # 1=Mon..7=Sun
 echo "auditing $AUDIT_DATE (dow $AUDIT_DOW)"
 ```
 
-If `$AUDIT_DATE` was a **Saturday or Sunday** (`AUDIT_DOW` 6 or 7), there is no US session to
+If `$AUDIT_DATE` was a **Saturday or Sunday** (`$AUDIT_DOW` 6 or 7), there is no US session to
 audit — the weekday-only routines (`1-5`) correctly did not run, and #26/#12/#07/#17/#10/#22
 may or may not have run. Still report, but expect gaps and label them
 `weekend_no_us_session` rather than `MISSING`.
+
+**SCHEDULE CHANGES IN EFFECT (apply the OLD schedule to older audit dates):**
+- **2026-10-29** — #15 (earnings-reaction-scanner) and #19 (earnings-reminder-daily) changed
+  from `0 8 * * 1` / `0 6 * * 1` (Mondays only) to `0 8 * * 1-5` / `0 6 * * 1-5` (Mon-Fri).
+  For `$AUDIT_DATE` **before 2026-10-29** those two were due ONLY on Mondays. A Tue-Fri gap
+  before 2026-10-29 is `not_due`, NOT `MISSING`. From 2026-10-29 onward they are due Mon-Fri.
+- **2026-10-29** — #16 (unusual-options-flow) moved from `30 16` to `35 16` (16:30 -> 16:35 ET)
+  to clear a push race with #05. Same firing days, so due-ness is unchanged.
 
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
@@ -95,9 +103,10 @@ before this run; otherwise it is `not_due` and is not a gap.
 
 | Routine | Schedule (ET) | Expected artifact on origin/main | Fires on |
 |---|---|---|---|
+| 19-earnings-reminder-daily | `0 6 * * 1-5` | `earnings/{date}-reminders.md` | Mon-Fri |
 | 02-asia-pre-market-reactions | `30 6 * * 1-5` | `asia-pre-market/{date}.md` | Mon-Fri |
-| 19-earnings-reminder-daily | `0 6 * * 1` | `earnings/{date}-reminders.md` | Mon |
-| 15-earnings-reaction-scanner | `0 8 * * 1` | `earnings/{date}-reactions.md` | Mon |
+| 90-delivery-auditor | `0 7 * * *` | (no artifact — this cron) | every day |
+| 15-earnings-reaction-scanner | `0 8 * * 1-5` | `earnings/{date}-reactions.md` | Mon-Fri |
 | 26-agentic-pre-market-brief | `30 8 * * *` | `daily-briefs/{date}-pre-market.md` | every day |
 | 08-pre-market-gapper | `30 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
@@ -145,40 +154,44 @@ newest artifact is older than that is **stale** — regardless of whether it was
 
 ```bash
 cd /workspace/.audit
-# STALE_DAYS = how long a routine may go without producing an artifact.
-# 5 covers a weekend (Fri->Mon) for a weekday-only routine; 9 covers a weekly routine's gap.
-STALE_DAYS=5
+# Each entry is: routine|path-regex|tolerance-days
+# The path regex is ANCHORED to the real artifact layout on origin/main - a loose
+# substring match silently matches nothing and reports a healthy routine as NEVER_DELIVERED.
+# tolerance: 5 = daily or Mon-Fri routine (covers a Fri->Mon weekend gap)
+#            9 = weekly routine (06 Sat, 13 Wed, 14 Sun, 22 Sun) - a 7-day gap is normal.
+# Do NOT collapse this to one global tolerance: a single global 5 flags every weekly
+# routine as stale on the sixth day after its last run - a guaranteed false positive.
 for entry in \
-  "02-asia-pre-market-reactions|asia-pre-market" \
-  "19-earnings-reminder-daily|earnings-reminders" \
-  "15-earnings-reaction-scanner|earnings-reactions" \
-  "26-agentic-pre-market-brief|daily-briefs-pre-market" \
-  "08-pre-market-gapper|daily-screens-pre-market-gapper" \
-  "25-ntrt-gap-brief-daily|ntrt" \
-  "07-focus-rvol-09:45|focus-rvol-snapshot" \
-  "12-cross-asset-correlation|cross-asset" \
-  "10-breadth-snapshot|breadth-snapshot" \
-  "13-macro-calendar-midweek|macro-calendar-midweek" \
-  "14-macro-calendar-week-ahead|macro-calendar-week-ahead" \
-  "06-pattern-study-backlog|weekly-ipo" \
-  "17-us-stocks-in-play|us-stocks-in-play" \
-  "04-reversal-bullish-3:55|reversal-bullish" \
-  "20-eod-watchlist-csv|us-eod" \
-  "05-eod-international-daily|international-eod" \
-  "16-unusual-options-flow|options-flow" \
-  "22-weekly-market-recap-preview|weekly-preview" \
-  "09-daily-sweep-18:30|daily-sweep" \
-  "23-agentic-post-market-brief|daily-briefs-post-market" ; do
-  routine="${entry%%|*}"; pat="${entry##*|}"
+  "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "19-earnings-reminder-daily|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reminders\.md$|5" \
+  "15-earnings-reaction-scanner|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reactions\.md$|5" \
+  "26-agentic-pre-market-brief|^daily-briefs/[0-9]{4}-[0-9]{2}-[0-9]{2}-pre-market\.md$|5" \
+  "08-pre-market-gapper|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/pre-market-gapper\.md$|5" \
+  "25-ntrt-gap-brief-daily|^ntrt/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "07-focus-rvol-09:45|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/focus-rvol-snapshot\.md$|5" \
+  "12-cross-asset-correlation|^cross-asset/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "10-breadth-snapshot|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/breadth-snapshot\.md$|5" \
+  "13-macro-calendar-midweek|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-midweek\.md$|9" \
+  "14-macro-calendar-week-ahead|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-week-ahead\.md$|9" \
+  "06-pattern-study-backlog|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/weekly-ipo\.md$|9" \
+  "17-us-stocks-in-play|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "04-reversal-bullish-3:55|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/reversal-bullish-3:55\.md$|5" \
+  "20-eod-watchlist-csv|^us-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv$|5" \
+  "05-eod-international-daily|^international-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}/summary\.md$|5" \
+  "16-unusual-options-flow|^options-flow/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "22-weekly-market-recap-preview|^weekly/[0-9]{4}-[0-9]{2}-[0-9]{2}-preview\.md$|9" \
+  "09-daily-sweep-18:30|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/daily-sweep\.md$|5" \
+  "23-agentic-post-market-brief|^daily-briefs/[0-9]{4}-[0-9]{2}-[0-9]{2}-post-market\.md$|5" ; do
+  routine="${entry%%|*}"; rest="${entry#*|}"; pat="${rest%%|*}"; tol="${rest##*|}"
   last=$(git ls-tree -r --name-only origin/main \
-         | grep -E "/${pat}[^/]*\.(md|csv|json)$|^${pat}[^/]*\.(md|csv|json)$" \
+         | grep -E "$pat" \
          | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | tail -1)
   if [ -z "$last" ]; then
     echo "STALE  $routine  NEVER_DELIVERED  (no artifact matching '$pat' on origin/main)"
   else
     age=$(( ( $(date -d "$AUDIT_DATE" +%s) - $(date -d "$last" +%s) ) / 86400 ))
-    if [ "$age" -gt "$STALE_DAYS" ]; then
-      echo "STALE  $routine  last=$last  age=${age}d  (>$STALE_DAYS)"
+    if [ "$age" -gt "$tol" ]; then
+      echo "STALE  $routine  last=$last  age=${age}d  (>$tol)"
     fi
   fi
 done
@@ -192,9 +205,17 @@ done
   with the last date included, so the operator can see *when* it went quiet.
 - Nothing printed — the routine is within tolerance. Not a finding.
 
-**Cadence:** apply this to routines whose "Fires on" is Mon-Fri with `STALE_DAYS=5`; for the
-weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use `STALE_DAYS=9` so a legitimate weekly gap is
-not reported. Compute the threshold per routine from its "Fires on" column, not one global value.
+**Cadence:** the threshold is PER ROUTINE and is carried in the third field of each entry above
+(`routine|path-regex|tolerance`). Daily and Mon-Fri routines use **5** (which covers a Fri->Mon
+weekend gap); the weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use **9**, so a legitimate
+weekly gap is not reported. A routine listed as "every day" uses **5** — it fires seven days a
+week, so a gap of more than 5 days is never legitimate.
+**Do not collapse this back to one global tolerance value.** A single global 5 flags every
+weekly routine as stale on the sixth day after its last run — a guaranteed false positive that
+would train the operator to ignore this check.
+The path regexes are ANCHORED to the real layout on `origin/main`, because a loose substring
+match matches nothing and reports a healthy routine as `NEVER_DELIVERED`. If a routine starts
+writing somewhere new, fix the regex in this prompt rather than loosening it to a substring.
 
 **Interaction with STEP 4:** the two checks are complementary, not redundant. STEP 4 finds
 "due today, did not land" (a delivery or push failure). STEP 4b finds "not landing for days"
@@ -297,6 +318,7 @@ fi
 ```
 
 ## DELIVERY
+
 The final reply (the only thing delivered to the chat) MUST be:
   - ≤ 8 lines.
   - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>`
@@ -317,7 +339,8 @@ No preamble. Tool call → result → write → push → reply.
    repair the missing artifact. Report it precisely — routine, label, exact path — and stop.
    The user decides what to do about it.
 3. **Never report a routine as `MISSING` when its schedule does not fire on that weekday.**
-   Check the "Fires on" column and the holiday list before labelling anything.
+   Check the "Fires on" column and the holiday list before labelling anything. For audit dates
+   before 2026-10-29, #15 and #19 were Mondays-only — see the SCHEDULE CHANGES block above.
 4. **Do not fabricate a status.** If the repo could not be cloned, the status is
    `failed_no_repo` and `errors: 1`. If the token is missing, `skipped_no_token`.
 5. **Run the STEP 4b stale check every time.** A routine that is `not_due` on the audited

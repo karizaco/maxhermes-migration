@@ -215,11 +215,13 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Routine pairs share a fire minute and push to the SAME branch (16:30 #05, 16:35 #16,
-# 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
+# Routines that share a fire minute push to the SAME branch (08:30 #08+#26;
+# 14:00 #10+#13 on Wednesdays). The loser's push is REJECTED and its
 # artifact is LOST - while the old block still reported success, because
 # `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
 # a concurrent push lost options-flow/<date>.md and reported exit 0.
+# (#16 was moved 16:30 -> 16:35 ET on 2026-10-29 to clear its 16:30 collision with #05.)
+# The retry loop below is the real protection - it makes the loser land on a later attempt.
 # This loop re-fetches origin/main, rebuilds the worktree from the NEW tip, re-copies
 # and re-commits, so the loser lands on the next attempt.
 PUSH_OK=0

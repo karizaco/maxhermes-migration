@@ -80,8 +80,12 @@ If the window check exits cleanly with "out-of-window: <reason>", the cron is DO
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md
 
-**FIRST tool call:** `curl -s https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
-Then follow the procedure verbatim, with these Cloud adaptations below.
+**FIRST tool call:** `curl -s https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md` (or `web_fetch` if available).
+Read the procedure in full. Do NOT skip this step.
+
+If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert and has
+expired mid-session before), fall back to `web_fetch` on the SAME url. If both fail: write a stub
+artifact with `_source=skill_fetch_failed`, report `errors: 1`, and stop. Never improvise from memory.
 
 ## MCP TOOLS AVAILABLE
 - `mcp__tradingview_advanced__*`, `mcp__tradingview__*`
@@ -167,26 +171,26 @@ source and is not rate-limited, so try it before Yahoo. If it fails, fall throug
 
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
-**Every fallback MUST terminate with:**
-  "accept the partial result, write the artifact, and STOP. Do NOT chain <deeper MCP>."
-Do NOT loop on MCP errors. Do NOT retry indefinitely. Do NOT re-raise.
+**Every fallback MUST terminate with:** "accept the partial result, write the artifact, and STOP.
+Do NOT chain <deeper MCP>." Do NOT loop on MCP errors. Do NOT retry indefinitely. Do NOT re-raise.
 
 ## HELPER SCRIPTS (PYTHON)
-Local Mavis called Python helpers like `python screen.py emit-sql ...` to do file I/O, parsing, and atomic writes.
+Local Mavis called Python helpers for file I/O, parsing, and atomic writes.
 **On Cloud, do NOT call those helpers — they don't exist here.** Re-implement the helper's job inline using tool calls:
-  - SQL generation → emit SQL directly (see skill's reference docs if attached).
-  - Finviz URL building → construct URL inline (see skill's filter spec).
-  - Finviz HTML parsing → parse with regex/text extraction in agent context.
-  - Atomic file write → `write_file(path, content)` (already atomic).
-  - Deduplication → do it in agent reasoning before writing.
+- SQL generation → emit SQL directly (see skill's reference docs if attached).
+- Finviz URL building → construct URL inline (see the skill's filter spec).
+- Finviz HTML parsing → parse with regex/text extraction in agent context.
+- Atomic file write → `write_file(path, content)` (already atomic).
+- Deduplication → do it in agent reasoning before writing.
 
-If the skill spec references a helper under `scripts/`, fetch the helper's URL too:
+If the skill spec references a helper under `scripts/`, fetch the helper's URL for reference only:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/<name>.py
-Read it for reference, but do NOT execute it. Re-implement its logic.
+Read it, do NOT execute it.
 
 ## AUDIT LOG
 Local Mavis wrote an audit line to a Windows audit file after every run.
-**On Cloud, skip audit log writes.** Audit is not needed here. If something goes wrong, the failure is in the chat reply and the (missing) artifact.
+**On Cloud, skip audit log writes.** If something goes wrong, the failure is in the chat reply and the
+(missing) artifact.
 
 ## OUTPUT
 Write the artifact to:
@@ -215,7 +219,7 @@ git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizac
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 
 # --- push with race retry ---
-# Routine pairs share a fire minute and push to the SAME branch (16:30 #05, 16:35 #16,
+# Routine pairs share a fire minute and push to the SAME branch (16:30 #05+#16,
 # 08:30 #08+#26, 14:00 #10+#13, 15:00 #06+#14). The loser's push is REJECTED and its
 # artifact is LOST - while the old block still reported success, because
 # `git push ... | head -3` takes head's exit status, always 0. Measured 2026-10-28:
@@ -317,7 +321,8 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
 
 
 ## CRITICAL REMINDERS
-1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
+1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with
+   `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
