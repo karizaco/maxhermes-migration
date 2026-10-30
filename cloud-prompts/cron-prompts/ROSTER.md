@@ -13,7 +13,7 @@ python3 tools/gen_roster.py --tasks tasks.json --repo ./outputs-clone --out .
 |---|---|---|---|---|---|---|---|
 | 19-earnings-reminder-daily | 06:00 | Mon-Fri | 13835 | `earnings/{date}-reminders.md` | 2026-10-30 | 0d | no |
 | 02-asia-pre-market-reactions | 06:30 | Mon-Fri | 10645 | `asia-pre-market/{date}.md` | 2026-10-30 | 0d | no |
-| 90-delivery-auditor | 07:00 | every day | 10638 | `_audit/status.json (audit/status branch)` | — | — | ? |
+| 90-delivery-auditor | 07:00 | every day | 14002 | `_audit/status.json (audit/status branch)` | — | — | ? |
 | 15-earnings-reaction-scanner | 08:00 | Mon-Fri | 13835 | `earnings/{date}-reactions.md` | 2026-10-29 | 1d | no |
 | 08-stock-screener-pre-market-gapper | 08:30 | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` | 2026-10-28 | 2d | no |
 | 26-agentic-pre-market-brief | 08:30 | every day | 10645 | `daily-briefs/{date}-pre-market.md` | 2026-10-29 | 1d | no |
