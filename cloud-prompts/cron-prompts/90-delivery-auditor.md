@@ -50,11 +50,29 @@ git init -q 2>/dev/null || true
 git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 git fetch -q origin main
-# NOTE: origin/HEAD points at the stale `master` branch. Always fetch `main` explicitly.
+# `master` is the repo's DEFAULT branch (GitHub's default_branch cannot be changed
+# without repo Administration scope), but every routine pushes to `main`. So `master`
+# is kept as a fast-forward MIRROR of `main` - the same commits, so a plain `git clone`
+# lands on current artifacts. Always fetch `main` explicitly.
 rm -rf /workspace/.audit
 git worktree add -f /workspace/.audit origin/main
 cd /workspace/.audit
 git rev-parse --short origin/main | sed 's/^/  origin\/main = /'
+
+# --- keep the default branch in step with main ---
+# `master` is the default branch and every routine pushes to `main`. Fast-forward
+# `master` to `main` so a plain `git clone` never lands on a stale tree. This moves a
+# branch POINTER only - it never writes, deletes or rewrites an artifact, and it is
+# fast-forward-only, so it can never lose a commit.
+if git ls-remote --exit-code --heads origin master >/dev/null 2>&1; then
+  if git push -q origin FETCH_HEAD:master 2>/tmp/master.err; then
+    echo "  master mirror: fast-forwarded to main ($(git rev-parse --short FETCH_HEAD))"
+  else
+    echo "  master mirror: skipped (not a fast-forward: $(head -1 /tmp/master.err | tr -d '\r'))"
+  fi
+else
+  echo "  master mirror: skipped (master has been retired)"
+fi
 ```
 
 If `${GITHUB_TOKEN}` is unset, you cannot audit. In that case write the status file with
@@ -412,7 +430,9 @@ No preamble. Tool call → result → write → push → reply.
 ## CRITICAL REMINDERS
 1. **This cron is read-only with respect to the artifacts.** It clones, checks, writes a local
    status file, and optionally pushes to the `audit/status` branch. It never modifies, deletes
-   or re-pushes any routine's artifact, and it never pushes to `main`.
+   or re-pushes any routine's artifact, and it never pushes to `main`. Its ONLY write to the
+   repo is a fast-forward of the `master` branch pointer to `main` (see STEP 2) - that moves
+   a ref, it does not touch a file.
 2. **A gap is a finding, not a failure of this run.** Do not attempt to re-run, re-create, or
    repair the missing artifact. Report it precisely — routine, label, exact path — and stop.
    The user decides what to do about it.
