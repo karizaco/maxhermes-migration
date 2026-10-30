@@ -24,14 +24,14 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 13 | macro-calendar-midweek | `0 14 * * 3` | Wed | 10636 | `macro-calendar/{date}-midweek.md` |
 | 06 | stock-screener-pattern-study-backlog | `0 15 * * 6` | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` |
 | 14 | macro-calendar-week-ahead | `0 15 * * 0` | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` |
-| 17 | us-stocks-in-play | `50 15 * * *` | every day | 10645 | `us-stocks-in-play/{date}.md` |
+| 17 | us-stocks-in-play | `50 15 * * *` | every day | 13832 | `us-stocks-in-play/{date}.md` |
 | 04 | reversal-bullish-3:55 | `55 15 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3:55.md` |
 | 20 | eod-watchlist-csv-snapshot | `0 16 * * 1-5` | Mon-Fri | 10638 | `us-eod/{date}.csv` |
-| 05 | eod-international-daily | `30 16 * * 1-5` | Mon-Fri | 10635 | `international-eod/{date}/` |
+| 05 | eod-international-daily | `30 16 * * 1-5` | Mon-Fri | 10638 | `international-eod/{date}/` |
 | 16 | unusual-options-flow-daily | `35 16 * * 1-5` | Mon-Fri | 13832 | `options-flow/{date}.md` |
-| 22 | weekly-market-recap-preview | `47 17 * * 0` | Sun | 10638 | `weekly/{date}-preview.md` |
+| 22 | weekly-market-recap-preview | `47 17 * * 0` | Sun | 10636 | `weekly/{date}-preview.md` |
 | 09 | stock-screener-daily-sweep-18:30 | `30 18 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/daily-sweep.md` |
-| 23 | agentic-post-market-brief | `30 22 * * 1-5` | Mon-Fri | 10635 | `daily-briefs/{date}-post-market.md` |
+| 23 | agentic-post-market-brief | `30 22 * * 1-5` | Mon-Fri | 10638 | `daily-briefs/{date}-post-market.md` |
 
 ## Common contract (every prompt)
 
@@ -100,16 +100,17 @@ errors: <n>
 - **Quota.** Runs die with `Token Plan usage limit reached (2067)` when the account plan is
   exhausted. No prompt edit fixes that.
 
-## Open findings (2026-10-29)
+## Open findings (2026-10-30)
 
 | Routine | Finding | Evidence |
 |---|---|---|
-| `22-weekly-market-recap-preview` | **Has never delivered.** No `weekly/` directory exists on `origin/main` at all. Fires Sundays 17:47 ET, so it should have produced ~8 artifacts by now. | `git ls-tree -r --name-only origin/main -- weekly` returns 0 files |
-| `14-macro-calendar-week-ahead` | **Missed its Sunday 2026-10-25 run.** Last artifact is 2026-10-18; the 10-25 Sunday is absent. | `macro-calendar/2026-10-18-week-ahead.md` is the newest; there is no `2026-10-25-week-ahead.md` |
-| `15` / `19` | Were scheduled Mondays-only (`0 8 * * 1`, `0 6 * * 1`) while their prompts and skill specs said weekdays. **Fixed 2026-10-29** to `1-5`; the auditor now carries an effective-date rule so pre-change Tue–Fri gaps are `not_due`, not `MISSING`. | scheduler read-back; `earnings/{date}-reminders.md` last delivered 2026-10-26 (a Monday) |
-| `07` | **Resolved 2026-10-29** — the duplicate prompt file (`...-09%3A45.md`) was removed; the decoded `...-09:45.md` is canonical and matches the README, the roster and the generator. | repo now has one `07-` file |
-| `#08` / `#25` | **Recreated by a concurrent session on 2026-10-29 at 05:33/05:34 ET** (new task_ids `457578163015913` and `457578106761360`), then partially reverted at 06:57. Both prompts were restored to the committed repo text. Note the old task_ids `457170128208215` and `457175059497201` are dead. | task_id changed between two `cron_read` snapshots; SHA-256 differs from the repo |
-| whole fleet | **A concurrent session is writing to the same crons.** It created a `Scout`-owned one-shot reminder (`457578163015915`, since deleted) asserting cron #04 had a stray 09:00 ET fire — **false**, #04 fires 15:55 ET and the 09:00 slot belongs to #25. Treat any fleet change that did not come from this repo's git history as unverified. | `cron_read` snapshots 05:19 vs 07:07 ET show different task_ids and prompt bodies |
+| `22-weekly-market-recap-preview` | **Has never delivered.** No `weekly/` directory exists on `origin/main` at all. Under its current `47 17 * * 0` (Sun 17:47 ET) schedule its **first fire is 2026-11-01**, so an empty `weekly/` is expected until then — the auditor labels it `not_yet_fired`, not `MISSING`. | `git ls-tree -r --name-only origin/main -- weekly` returns 0 files |
+| `14-macro-calendar-week-ahead` | **Missed its Sunday 2026-10-25 run.** Newest artifact is 2026-10-18; there is no `2026-10-25-week-ahead.md`. The auditor's weekend rule previously hid this by labelling it `weekend_no_us_session`; weekend-due routines are now audited as due. | `macro-calendar/2026-10-18-week-ahead.md` is the newest |
+| `15` / `19` | Were scheduled Mondays-only (`0 8 * * 1`, `0 6 * * 1`) while their prompts and skill specs said weekdays. **Fixed 2026-10-29** to `1-5`. The auditor carries an effective-date rule so pre-change Tue-Fri gaps read as `not_due`, not `MISSING`. | their last artifact was 2026-10-26, a Monday |
+| `#05` / `#17` / `#22` / `#23` | **Recreated by a concurrent session on 2026-10-30** with new task_ids and new project assignments, and the recreate was pasted from an **older prompt revision** — it dropped the `## Source health` bold-close fix, the "Audit is not needed here" clause, and (for #23) the helper-script detail. All four were restored from this repo. | task_id changed between two `cron_read` snapshots; SHA-256 differed from the repo |
+| `#08` / `#25` | **Recreated by a concurrent session on 2026-10-29** (task_ids `457578163015913` / `457578106761360`) and partially reverted at 06:57, dropping the TLS-fallback hardening. Both restored from this repo. The old task_ids `457170128208215` / `457175059497201` are dead. | task_id changed between two `cron_read` snapshots |
+| `07` | Two prompt files existed with identical content (`...-09:45.md` and `...-09%3A45.md`). **Resolved 2026-10-29** — the `%3A` twin was deleted; the decoded `...-09:45.md` is canonical and matches the README, the roster and the generator. | the repo now has one `07-` file |
+| whole fleet | **A concurrent session is writing to the same crons.** It pushed repo commits of its own (an auditor weekend-blind-spot fix, a reply-format migration) and created a `Scout`-owned one-shot reminder asserting cron #04 had a stray 09:00 ET fire — **false**, #04 fires 15:55 ET and the 09:00 slot belongs to #25. Treat any fleet change that did not come from this repo's git history as unverified. | `cron_read` snapshots 05:19 vs 07:07 ET on 10-29 showed different task_ids and prompt bodies |
 
 The `default branch` of the outputs repo still points at `master` rather than `main`. The GitHub
 token lacks repo Administration permission, so this needs one GUI click (Settings → Branches →

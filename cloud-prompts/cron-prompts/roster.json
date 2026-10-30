@@ -1,5 +1,5 @@
 {
- "as_of_et": "2026-10-29",
+ "as_of_et": "2026-10-30",
  "routines": [
   {
    "task_id": "457173826801866",
@@ -12,7 +12,7 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "asia-pre-market/{date}.md",
-   "last_delivered": "2026-10-29",
+   "last_delivered": "2026-10-30",
    "age_days": 0,
    "tolerance_days": 5,
    "stale": false
@@ -28,23 +28,23 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/reversal-bullish-3:55.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
   },
   {
-   "task_id": "457173826801867",
+   "task_id": "457951662133387",
    "routine": "05-eod-international-daily",
    "schedule": "30 16 * * 1-5",
    "fire_et": "16:30",
    "fires": "Mon-Fri",
    "tz": "America/New_York",
-   "project": "10635",
+   "project": "10638",
    "enabled": true,
    "session_mode": "new",
    "artifact": "international-eod/{date}/",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
@@ -61,7 +61,7 @@
    "session_mode": "new",
    "artifact": "daily-screens/{date}/weekly-ipo.md",
    "last_delivered": "2026-10-24",
-   "age_days": 5,
+   "age_days": 6,
    "tolerance_days": 9,
    "stale": false
   },
@@ -77,7 +77,7 @@
    "session_mode": "new",
    "artifact": "daily-screens/{date}/focus-rvol-snapshot.md",
    "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "age_days": 2,
    "tolerance_days": 5,
    "stale": false
   },
@@ -93,7 +93,7 @@
    "session_mode": "new",
    "artifact": "daily-screens/{date}/pre-market-gapper.md",
    "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "age_days": 2,
    "tolerance_days": 5,
    "stale": false
   },
@@ -108,7 +108,7 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/daily-sweep.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
@@ -124,7 +124,7 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/breadth-snapshot.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
@@ -141,7 +141,7 @@
    "session_mode": "new",
    "artifact": "cross-asset/{date}.md",
    "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "age_days": 2,
    "tolerance_days": 5,
    "stale": false
   },
@@ -157,7 +157,7 @@
    "session_mode": "new",
    "artifact": "macro-calendar/{date}-midweek.md",
    "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "age_days": 2,
    "tolerance_days": 9,
    "stale": false
   },
@@ -173,7 +173,7 @@
    "session_mode": "new",
    "artifact": "macro-calendar/{date}-week-ahead.md",
    "last_delivered": "2026-10-18",
-   "age_days": 11,
+   "age_days": 12,
    "tolerance_days": 9,
    "stale": true
   },
@@ -188,8 +188,8 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "earnings/{date}-reactions.md",
-   "last_delivered": "2026-10-26",
-   "age_days": 3,
+   "last_delivered": "2026-10-29",
+   "age_days": 1,
    "tolerance_days": 5,
    "stale": false
   },
@@ -204,23 +204,23 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "options-flow/{date}.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
   },
   {
-   "task_id": "457173814395028",
+   "task_id": "457954144674016",
    "routine": "17-us-stocks-in-play",
    "schedule": "50 15 * * *",
    "fire_et": "15:50",
    "fires": "every day",
    "tz": "America/New_York",
-   "project": "10645",
+   "project": "13832",
    "enabled": true,
    "session_mode": "new",
    "artifact": "us-stocks-in-play/{date}.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
@@ -236,7 +236,7 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "earnings/{date}-reminders.md",
-   "last_delivered": "2026-10-29",
+   "last_delivered": "2026-10-30",
    "age_days": 0,
    "tolerance_days": 5,
    "stale": false
@@ -252,19 +252,19 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "us-eod/{date}.csv",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
   },
   {
-   "task_id": "457174835322946",
+   "task_id": "457956577145214",
    "routine": "22-weekly-market-recap-preview",
    "schedule": "47 17 * * 0",
    "fire_et": "17:47",
    "fires": "Sun",
    "tz": "America/New_York",
-   "project": "10638",
+   "project": "10636",
    "enabled": true,
    "session_mode": "new",
    "artifact": "weekly/{date}-preview.md",
@@ -274,17 +274,17 @@
    "stale": true
   },
   {
-   "task_id": "457175059497202",
+   "task_id": "457952877850694",
    "routine": "23-agentic-post-market-brief",
    "schedule": "30 22 * * 1-5",
    "fire_et": "22:30",
    "fires": "Mon-Fri",
    "tz": "America/New_York",
-   "project": "10635",
+   "project": "10638",
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-briefs/{date}-post-market.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
@@ -301,7 +301,7 @@
    "session_mode": "new",
    "artifact": "ntrt/{date}.md",
    "last_delivered": "2026-10-28",
-   "age_days": 1,
+   "age_days": 2,
    "tolerance_days": 5,
    "stale": false
   },
@@ -316,7 +316,7 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-briefs/{date}-pre-market.md",
-   "last_delivered": "2026-10-28",
+   "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
    "stale": false
