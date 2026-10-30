@@ -73,8 +73,11 @@ errors: <n>
 
 ## Repository rules (read before pushing)
 
-- **Push to `main`, never `master`.** `origin/HEAD` points at `master`, so a plain `git clone` lands
-  on the wrong branch — always `git fetch origin main` explicitly.
+- **Push to `main`, never `master`.** `master` is the repo's **default branch** (GitHub's
+  `default_branch` cannot be changed without repo Administration scope), so a plain `git clone`
+  lands there. `master` is kept as a **fast-forward mirror of `main`** — the auditor
+  (`#90`) advances it daily, and it holds the same commits, so a clone still sees current
+  artifacts. Always `git fetch origin main` explicitly.
 - **Never `git add -A`.** In a fresh sandbox the working tree lacks the rest of the repo, so a blanket
   add stages every other file as DELETED. Cron #12 did exactly that on 2026-10-25 (commit
   `1356a03`) and deleted 283 files belonging to eight other crons.
@@ -113,7 +116,9 @@ errors: <n>
 | `07` | Two prompt files existed with identical content (`...-09:45.md` and `...-09%3A45.md`). **Resolved 2026-10-29** — the `%3A` twin was deleted; the decoded `...-09:45.md` is canonical and matches the README, the roster and the generator. | the repo now has one `07-` file |
 | whole fleet | **A concurrent session is writing to the same crons.** It pushed repo commits of its own (an auditor weekend-blind-spot fix, a reply-format migration) and created a `Scout`-owned one-shot reminder asserting cron #04 had a stray 09:00 ET fire — **false**, #04 fires 15:55 ET and the 09:00 slot belongs to #25. Treat any fleet change that did not come from this repo's git history as unverified. | `cron_read` snapshots 05:19 vs 07:07 ET on 10-29 showed different task_ids and prompt bodies |
 
-The `default branch` of the outputs repo still points at `master` rather than `main`. The GitHub
-token lacks repo Administration permission, so this needs one GUI click (Settings → Branches →
-default branch → `main`). Until then every prompt says `git fetch origin main` explicitly, and
-`master` has been merged with `main` so a stale clone still sees current artifacts.
+The outputs repo's `default_branch` is still `master`, because GitHub's `default_branch` cannot be
+changed without repo Administration scope and the PAT does not have it. **This is now mitigated
+rather than outstanding:** `master` is a fast-forward mirror of `main` (same commits), so a plain
+`git clone` lands on current artifacts, and the auditor advances the mirror daily so it cannot
+drift. Setting the default branch to `main` by hand (Settings → Branches → Default branch) would
+still be tidier — and the auditor's mirror step becomes a no-op on its own.
