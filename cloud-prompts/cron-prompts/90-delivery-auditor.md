@@ -162,19 +162,33 @@ directory exists and contains at least one `.csv`; if it exists but is empty, th
 **Near-miss triage — do this for every `MISSING`.** A `MISSING` path does not always mean the
 routine did not run: it may have written its artifact under a slightly different name (cron #10
 wrote `breadth.md` while this table expected `breadth-snapshot.md`, and the routine looked
-"broken" for days). Before reporting `MISSING`, list what the routine's own output directory
-actually holds for that date:
+"broken" for days). Before reporting `MISSING`, establish whether **that routine** pushed
+anything for `$AUDIT_DATE` — attribute by COMMIT, never by directory.
+
+**Do NOT hunt for a near-miss by listing the output directory.** Several routines share one
+directory: `daily-screens/{date}/` holds files from #04, #06, #07, #09 and #10. On 2026-10-29
+#07's `focus-rvol-snapshot.md` was missing while #09's `focus.md` sat in the same directory — a
+directory listing would have reported "routine ran, wrote focus.md instead", which is false: #07
+pushed nothing that day. Attribute by the routine's OWN commit instead:
 
 ```bash
 cd /workspace/.audit
-top=$(echo "$p" | cut -d/ -f1)
-git ls-tree -r --name-only origin/main -- "$top" | grep "$AUDIT_DATE" | head -20
+# usage: triage.sh <NN> <AUDIT_DATE>
+# NN = the two digits at the start of the routine's name in the roster table (07, 25, 09, ...)
+NN="$1"; AUDIT_DATE="$2"
+git log --format="%h %s" origin/main --grep="$AUDIT_DATE" \
+  | grep -E "^[0-9a-f]+ cron (#)?$NN " | head -5
 ```
 
-If a file for `$AUDIT_DATE` exists under a different name, report the gap with that near-miss
-named in the reason — "routine ran, wrote `<path>` instead of `<path>`" — so the fix is a path
-correction, not a re-run. If nothing at all exists for that date, the routine genuinely did not
-deliver.
+Every routine's push commit is titled `cron <NN> <name> <date>` (a couple use `cron #<NN>`), so
+this returns the commits that routine made on the audited date — and only those.
+
+- **The routine pushed something for `$AUDIT_DATE`** → it ran and wrote to a different path.
+  Report the gap with that near-miss named — "routine ran, wrote `<path>` instead of `<path>`" —
+  because the fix is a path correction, not a re-run. List what it actually wrote with
+  `git show --stat <sha>`.
+- **The routine pushed nothing for `$AUDIT_DATE`** → it genuinely did not deliver. Say exactly
+  that, and never name another routine's file as a near-miss.
 
 ## STEP 4b — STALE-ROUTINE CHECK (catches routines that never fire)
 
