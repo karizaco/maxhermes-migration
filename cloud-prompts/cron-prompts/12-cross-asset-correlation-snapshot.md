@@ -106,8 +106,7 @@ Then follow the procedure verbatim, with these Cloud adaptations below.
 
 **PRIMARY DATA PATH FOR THIS CRON: the MCP bridge to the `shibui` server, which computes the
 correlation matrix SERVER-SIDE with DuckDB `corr()` in ONE call.** That is the Cloud equivalent
-of the skill's `financekit.correlation_matrix` (which is not bound in this runtime and has no
-reachable server). The skill's helper script does the whole job:
+of the skill's `financekit.correlation_matrix` (which is not bound as a TOOL in this runtime but IS reachable — `uvx --from financekit-mcp financekit` installs and speaks MCP over stdio (17 tools, incl. a working `correlation_matrix`); see the RUNTIME-CONTRACT §2d for the exact invocation). The skill's helper script does the whole job:
 
 ```bash
 SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
