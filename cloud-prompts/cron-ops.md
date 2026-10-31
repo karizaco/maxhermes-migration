@@ -147,8 +147,8 @@ MCPs previously marked `needs_linux_uv_binary` / `needs_linux_uvx_binary`:
 
 | PyPI package | What | Serves |
 |---|---|---|
-| `financekit-mcp` 1.2.0 | 17 tools: quotes, technical analysis (RSI/MACD/Bollinger/Golden-Death Cross), crypto via CoinGecko, VaR/Sharpe/Sortino/Beta, **correlation matrix**, options chains, **earnings calendar**, **sector rotation**, portfolio analysis. No API keys. | **#12** cross-asset-correlation, **#15** earnings-reaction-scanner, #09/#10 sector rotation, #16 options flow, #17 |
-| `tradingview-mcp` 0.9.1 | live market intelligence, trade analytics, screeners | #07 focus-rvol, #08 pre-market gapper, #09 sweep, #10 breadth, #17 |
+| `financekit-mcp` 1.2.0 (command: **`financekit`**) | 17 tools: quotes, technical analysis (RSI/MACD/Bollinger/Golden-Death Cross), crypto via CoinGecko, VaR/Sharpe/Sortino/Beta, **correlation matrix**, options chains, **earnings calendar**, **sector rotation**, portfolio analysis. No API keys. | **#12** cross-asset-correlation, **#15** earnings-reaction-scanner, #09/#10 sector rotation, #16 options flow, #17 |
+| `tradingview-mcp` 0.9.1 (needs `mcp<2` pinned) | live market intelligence, trade analytics, screeners | #07 focus-rvol, #08 pre-market gapper, #09 sweep, #10 breadth, #17 |
 
 **Blocker:** the sandbox sets `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `PIP_INDEX_URL` and
 `PIP_TRUSTED_HOST` to `mirrors.cloud.aliyuncs.com`, which is **unreachable** (connection reset).
@@ -157,8 +157,21 @@ Override both uv variables and drop the pip ones:
 ```bash
 env -u PIP_INDEX_URL -u UV_INDEX_URL -u PIP_TRUSTED_HOST \
     UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_URL="https://pypi.org/simple" \
-    uvx --quiet --from financekit-mcp financekit-mcp
+    uvx --quiet --from financekit-mcp financekit
 ```
+
+The **console script is not the package name**: `financekit-mcp` installs `financekit`.
+`tradingview-mcp` additionally needs `mcp<2` (it bundles mcp 2.x, where `FastMCP` was renamed
+`MCPServer`) — use `uvx --from "tradingview-mcp" --with "mcp<2" tradingview-mcp`.
+
+**Verified tool counts (2026-10-31):** `financekit` = **17** tools (`correlation_matrix`,
+`earnings_calendar`, `sector_rotation`, `options_chain`, `technical_analysis`, `market_overview`,
+`risk_metrics`, …); `tradingview-mcp` = **73** tools (`top_gainers`, `top_losers`,
+`egx_stock_screener`, `egx_sector_scan`, `egx_index_analysis`, `bollinger_scan`,
+`volume_breakout_scanner`, `market_sentiment`, …).
+
+**Argument shapes are strict:** `financekit.correlation_matrix` takes `symbols` as a
+comma-joined **string** (`"SPY,QQY,IWM,XLE"`), not a list.
 
 ### Routine → capability map
 
