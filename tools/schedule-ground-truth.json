@@ -1,0 +1,96 @@
+{
+  "_note": "GROUND TRUTH for the cloud cron fleet. Never regenerate this from the live scheduler - that would make the check agree with the corruption. Reconstructed from migration-state.json (the 2026-09-25 snapshot of the source mavis cron list = the ORIGINAL local Windows crons of record) plus the deliberate post-migration changes documented in cloud-prompts/cron-prompts/README.md and each prompt's ## SCHEDULE block.",
+  "_why": "Saving a scheduled task in the agent.minimax.io web GUI silently collapses the day-of-week field of a weekday routine: 1-5 (Mon-Fri) becomes 1 (Mondays only). Measured 2026-10-31 on cron #26: a GUI save that changed ONLY the model effort rewrote 30 8 * * 1-5 to 30 8 * * 1. On 2026-10-31 the same corruption hit 14 routines in a 05:40-09:08 ET sweep. The corruption is SILENT because next_run does not change (both forms next-fire on Monday).",
+  "_derived_from": "migration-state.json @ 2026-09-25 + README.md post-migration changes",
+  "_invariant": "Every weekday routine is 1-5. Only genuinely weekly routines carry a single day (0=Sun, 3=Wed, 6=Sat). #90 is daily.",
+  "routines": {
+    "01-weekly-mcp-health-check.md": {
+      "schedule": "0 2 * * 0",
+      "timezone": "America/New_York"
+    },
+    "02-asia-pre-market-reactions.md": {
+      "schedule": "30 6 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "04-reversal-bullish-3:55.md": {
+      "schedule": "55 15 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "05-eod-international-daily.md": {
+      "schedule": "30 16 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "06-stock-screener-pattern-study-backlog.md": {
+      "schedule": "0 15 * * 6",
+      "timezone": "America/New_York"
+    },
+    "07-stock-screener-focus-rvol-09:45.md": {
+      "schedule": "45 9 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "08-stock-screener-pre-market-gapper.md": {
+      "schedule": "30 8 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "09-stock-screener-daily-sweep-18:30.md": {
+      "schedule": "30 18 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "10-stock-screener-breadth-snapshot.md": {
+      "schedule": "0 14 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "12-cross-asset-correlation-snapshot.md": {
+      "schedule": "0 10 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "13-macro-calendar-midweek.md": {
+      "schedule": "0 14 * * 3",
+      "timezone": "America/New_York"
+    },
+    "14-macro-calendar-week-ahead.md": {
+      "schedule": "0 15 * * 0",
+      "timezone": "America/New_York"
+    },
+    "15-earnings-reaction-scanner.md": {
+      "schedule": "0 8 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "16-unusual-options-flow-daily.md": {
+      "schedule": "35 16 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "17-us-stocks-in-play.md": {
+      "schedule": "50 15 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "19-earnings-reminder-daily.md": {
+      "schedule": "0 6 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "20-eod-watchlist-csv-snapshot.md": {
+      "schedule": "0 16 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "22-weekly-market-recap-preview.md": {
+      "schedule": "47 17 * * 0",
+      "timezone": "America/New_York"
+    },
+    "23-agentic-post-market-brief.md": {
+      "schedule": "30 22 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "25-ntrt-gap-brief-daily.md": {
+      "schedule": "0 9 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "26-agentic-pre-market-brief.md": {
+      "schedule": "30 8 * * 1-5",
+      "timezone": "America/New_York"
+    },
+    "90-delivery-auditor.md": {
+      "schedule": "0 7 * * *",
+      "timezone": "America/New_York"
+    }
+  }
+}

@@ -20,14 +20,15 @@ becomes visible on Tuesday, when the Monday-only routine silently does not fire.
 
 THE GROUND TRUTH
 ----------------
-This file is the ground truth, NOT the live scheduler and NOT the GUI. It was
-reconstructed from `migration-state.json` (the 2026-09-25 snapshot of the source
-`mavis cron list`, i.e. the ORIGINAL local Windows crons of record) plus the
-intentional post-migration changes recorded in `cloud-prompts/cron-prompts/README.md`
-and the `## SCHEDULE` block of each routine's prompt.
+`tools/schedule-ground-truth.json` (next to this script) is the ground truth -- NOT the
+live scheduler and NOT the GUI. It was reconstructed from `migration-state.json` (the
+2026-09-25 snapshot of the source `mavis cron list`, i.e. the ORIGINAL local Windows
+crons of record) plus the intentional post-migration changes recorded in
+`cloud-prompts/cron-prompts/README.md` and the `## SCHEDULE` block of each routine's
+prompt.
 
 Every weekday routine in `migration-state.json` is `1-5`. Only genuinely weekly
-routines carry a single day. That is the invariant this file encodes.
+routines carry a single day. That is the invariant the ground truth encodes.
 
 USAGE
 -----
@@ -47,42 +48,21 @@ EXIT CODES
 import argparse, json, os, sys, urllib.parse
 
 # ---------------------------------------------------------------------------
-# GROUND TRUTH -- the intended schedule for every routine in the fleet.
-# Recovered from migration-state.json (the source `mavis cron list` snapshot of
-# 2026-09-25) plus the deliberate post-migration changes. Never regenerate this
-# from the live scheduler: that would make the check agree with the corruption.
-#
-# format: <cron_name>: "<cron expression>"
+# GROUND TRUTH is loaded from tools/schedule-ground-truth.json, never from the
+# live scheduler. Regenerating it from the live state would make this check
+# agree with the corruption, which is the one thing it must never do.
 # ---------------------------------------------------------------------------
-EXPECTED = {
-    # --- weekday routines: Mon-Fri ---
-    "02-asia-pre-market-reactions.md":             "30 6 * * 1-5",
-    "04-reversal-bullish-3:55.md":                 "55 15 * * 1-5",
-    "05-eod-international-daily.md":               "30 16 * * 1-5",
-    "07-stock-screener-focus-rvol-09:45.md":       "45 9 * * 1-5",
-    "08-stock-screener-pre-market-gapper.md":      "30 8 * * 1-5",
-    "09-stock-screener-daily-sweep-18:30.md":      "30 18 * * 1-5",
-    "10-stock-screener-breadth-snapshot.md":       "0 14 * * 1-5",
-    "12-cross-asset-correlation-snapshot.md":      "0 10 * * 1-5",
-    "15-earnings-reaction-scanner.md":             "0 8 * * 1-5",
-    "16-unusual-options-flow-daily.md":            "35 16 * * 1-5",
-    "17-us-stocks-in-play.md":                    "50 15 * * 1-5",
-    "19-earnings-reminder-daily.md":               "0 6 * * 1-5",
-    "20-eod-watchlist-csv-snapshot.md":            "0 16 * * 1-5",
-    "23-agentic-post-market-brief.md":             "30 22 * * 1-5",
-    "25-ntrt-gap-brief-daily.md":                 "0 9 * * 1-5",
-    "26-agentic-pre-market-brief.md":             "30 8 * * 1-5",
-    # --- weekly routines: one specific day ---
-    "01-weekly-mcp-health-check.md":               "0 2 * * 0",   # Sun
-    "06-stock-screener-pattern-study-backlog.md":  "0 15 * * 6",   # Sat
-    "13-macro-calendar-midweek.md":               "0 14 * * 3",   # Wed
-    "14-macro-calendar-week-ahead.md":             "0 15 * * 0",   # Sun
-    "22-weekly-market-recap-preview.md":           "47 17 * * 0",  # Sun
-    # --- daily routine ---
-    "90-delivery-auditor.md":                     "0 7 * * *",
-}
-
+GROUND_TRUTH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "schedule-ground-truth.json")
 EXPECTED_TZ = "America/New_York"
+
+
+def load_ground_truth(path=GROUND_TRUTH_PATH):
+    """Load {cron_name: {schedule, timezone}} from the ground-truth file."""
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return {k: (v["schedule"], v.get("timezone", EXPECTED_TZ))
+            for k, v in doc["routines"].items()}
 
 
 def load_tasks(path):
@@ -120,6 +100,8 @@ def main():
     ap.add_argument("--repair", action="store_true",
                     help="repair drift via cron_update (needs the MCP tools)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--ground-truth", default=GROUND_TRUTH_PATH,
+                    help="ground-truth JSON (default: tools/schedule-ground-truth.json)")
     args = ap.parse_args()
 
     if not os.path.exists(args.tasks):
@@ -127,6 +109,11 @@ def main():
         return 2
 
     tasks = load_tasks(args.tasks)
+    try:
+        EXPECTED = load_ground_truth(args.ground_truth)
+    except FileNotFoundError:
+        print(f"ERROR: ground truth not found: {args.ground_truth}")
+        return 2
 
     drift, unknown, missing = [], [], []
     seen = set()
@@ -144,8 +131,7 @@ def main():
         if name not in EXPECTED:
             unknown.append(name)
             continue
-        want_sched = EXPECTED[name]
-        want_tz = EXPECTED_TZ
+        want_sched, want_tz = EXPECTED[name]
         live_sched = (t.get("schedule") or "").strip()
         live_tz = (t.get("timezone") or "").strip()
         if live_sched != want_sched or live_tz != want_tz:
