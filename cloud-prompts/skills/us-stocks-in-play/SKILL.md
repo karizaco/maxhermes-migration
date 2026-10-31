@@ -10,7 +10,7 @@ description: >-
 
 # US stocks in play
 
-Scan US equities that are actionable right now (gaps, unusual volume, breakouts, material news, halts) — weekday post-open (~09:50) and midday (~12:30) America/New_York digests. Uses the shared `stocks-in-play-pipeline` skill for normalize→merge, Soft-A, TECH_WATCH, holiday skip, source-health table, and chat rules.
+Scan US equities that are actionable right now (gaps, unusual volume, breakouts, material news, halts) — weekday pre-close (~15:50, the deployed slot) and midday (~12:30) America/New_York digests. Uses the shared `stocks-in-play-pipeline` skill for normalize→merge, Soft-A, TECH_WATCH, holiday skip, source-health table, and chat rules.
 
 **Finviz Elite is optional.** Free Finviz (~1 minute delayed) is enough for digests. Barchart is never required paid.
 
@@ -74,7 +74,7 @@ A name is **in play** when there is a fresh, tradeable reason to look **now**: p
 
 | Trigger | Guidance |
 |---|---|
-| Gap | ≥ ~3–5% vs prior close; for 09:50 prefer PM $ vol ≥ ~$200k when PM data exists |
+| Gap | ≥ ~3–5% vs prior close; at the open prefer PM $ vol ≥ ~$200k when PM data exists |
 | Day move | |chg%| ≥ 5% large/liquid; ≥ 8% smaller (soft 3–5% with strong tape OK) |
 | Unusual volume | When RVol is available and meaningful — bonus, not a must |
 | Breakout / breakdown | Day high/low vs prior range with volume |
@@ -128,10 +128,10 @@ Save every run to:
 
 `C:\Users\admin\.minimax\projects\coding-shared\research\us-in-play\YYYY-MM-DD-<slot>.md`
 
-- `<slot>` = `open` (~09:50), `midday` (~12:30), or `manual`
-- Include: run time ET, session state, sort note, tier tables, PM gap annex (open slot), halt watch, source health table, sources
+- `<slot>` = `preclose` (~15:50, the deployed slot), `midday` (~12:30), or `manual`
+- Include: run time ET, session state, sort note, tier tables, PM gap annex, halt watch, source health table, sources
 - When after-close / AH 8-K / PR material catalysts exist, require an `overnight_carry` section
-- On open slot: load prior digest's `overnight_carry` into Overnight → open annex
+- On the pre-close slot: load prior digest's `overnight_carry` into the Overnight → pre-close annex
 - **Chat only if** any Tier A or Soft-A, material TECH_WATCH, or material Tier C
 
 ## Source stack
@@ -143,8 +143,10 @@ For each source: try HTTP fetch / API first; **if fetch blocked → open that UR
 1. **Yahoo** predefined JSON: `day_gainers`, `day_losers`, `most_actives`, `small_cap_gainers` (primary discovery).
 2. **Finviz screener** (when HTML table renders): top gainers / losers / unusual volume / most active.
 3. **TradingView-advanced MCP** — optional corroboration, under pipeline §2b budget.
+4. **MCP-over-HTTP bridge** (see the cloud RUNTIME-CONTRACT): `market-recap` pack `get_quotes` / `top_movers` / `market_snapshot`, plus `stocktwits` and `shibui`. Reachable over plain HTTPS JSON-RPC with no agent.minimax.io registration — preferred over raw Yahoo because it is not rate-limited and returns `as_of` + `market_state` with every quote.
+5. **TradingView scanner API** `POST https://scanner.tradingview.com/america/scan` — movers, `relative_volume_10d_calc` (RVol), `market_cap_basic`, `halted`, and `premarket_change`/`premarket_volume`/`premarket_close` in one call.
 
-### Pass 1b — Premarket / gap annex (especially 09:50)
+### Pass 1b — Premarket / gap annex (also relevant at 15:50 — gaps that held into the close)
 
 1. **TheStockCatalyst** `https://www.thestockcatalyst.com/NYSEPMMovers` — primary PM annex.
 2. **Barchart** `https://www.barchart.com/stocks/pre-market-trading` — WAF-blocked often; browser fallback.
@@ -191,7 +193,7 @@ RTH: 09:30–16:00 ET.
 
 - Treating Finviz delay as "broken" or requiring Finviz Elite
 - Requiring paid Barchart / paid RT for a routine digest
-- Hard-requiring RVol at 09:50
+- Hard-requiring RVol in the deployed slot
 - Forcing Soft-A merely because RVol is unavailable (vs known soft)
 - Including levered / single-stock levered ETFs
 - Including illiquid pinks without $ vol gate
