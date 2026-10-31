@@ -172,6 +172,20 @@ printf '%s' "SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM 
 printf '%s' "SELECT ticker, close FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
 python3 -c "import json,sys;print(json.dumps({'query':open('q.txt').read(),'user_prompt':'latest SPY close'}))" > b.json
 python3 /workspace/mcp_bridge.py shibui stock_data_query b.json   # history to 1962, fundamentals, screeners, EDGAR
+
+# --- market-recap: the primary quote + movers source (verified 2026-10-31) ---
+printf '%s' '{"symbols":"SPY,QQQ,IWM,DIA,XLK,XLF,SMH,XBI"}' > c.json
+python3 /workspace/mcp_bridge.py market-recap get_quotes c.json  # price, previous_close, change_pct, volume, day_high/low, as_of, market_state
+printf '%s' '{}' > d.json
+python3 /workspace/mcp_bridge.py market-recap top_movers d.json  # ranked gainers/losers/most-active
+python3 /workspace/mcp_bridge.py market-recap market_snapshot d.json # indices, yields, FX, futures
+python3 /workspace/mcp_bridge.py --list-packs                   # enumerate available packs
+
+# --- Barchart (AWS-WAF blocked for plain curl; works via headless chromium) ---
+curl -s -o /workspace/barchart_fetch.py \
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/barchart_fetch.py
+python3 /workspace/barchart_fetch.py --symbols SPY,QQQ,AAPL    # batch quotes
+python3 /workspace/barchart_fetch.py --list top-gainers --limit 20
 ```
 
 **Verified 2026-10-28:** both servers answer, 6/6 identical values over 6 calls (median 204 ms),
