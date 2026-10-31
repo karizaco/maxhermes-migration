@@ -292,7 +292,10 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
-4. **NEVER skip this run.** Weekends included — produce the scoped weekend brief described above. A skipped fire is a failure, not a graceful outcome.
+4. **This routine runs on WEEKDAYS only** (`30 8 * * 1-5`). The scheduler never starts a weekend
+   run, and there is no weekend brief to produce. If the window check skips (a US market
+   holiday), exit cleanly with "out-of-window: <reason>" and write the SKIPPED file — on a
+   holiday a skipped fire is correct behaviour, not a failure.
 5. Every percentage in the brief must trace to a fetched value or a cited source. Do not invent numbers. Audit before rendering.
 
 ================================================================
