@@ -109,27 +109,47 @@ Working sources for the daily calendar, in priority order:
 ## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
 
 **The `mcp__*` tools named above DO NOT EXIST in this runtime.** They are listed for provenance
-only. Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
-(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
-`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
-`mcp__financekit__*` or `mcp__web_search__*`, and no `extract_content_from_websites`.
+only. Verified 2026-10-28, **re-verified 2026-10-31**: the connector catalog exposes **133 tools** —
+118 `connector__github__*` (a built-in GitHub connector, authorized as `karizaco`), 13
+`connector__matrix__*` (media) and 2 `connector__email_workbench_credentials__*`. There is
+still **no** `mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`,
+`mcp__stocktwits__*`, `mcp__financekit__*` or `mcp__web_search__*`, and no
+`extract_content_from_websites`.
 **Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
 converts into an early abort with no artifact, via the zero-fallback policy.
 
 Use instead: `web_search` (search; returns page content), `web_fetch` (fetch a URL, incl. a raw
-JSON endpoint), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
-survives when curl is blocked. **Try `web_search` FIRST for any single-symbol quote.**
+JSON endpoint), `bash` (curl, python3), and `connector__github__*` for repo writes. `web_search`
+uses a DIFFERENT egress than curl, so it survives when curl is blocked.
 
-**Measured 2026-10-28 from this sandbox — Yahoo's JSON endpoints return HTTP 429** (spark,
-chart, and screener alike), with and without a browser User-Agent and after a 60 s pause: it is
-persistent rate limiting, not a transient burst. Yahoo's *HTML* pages still work, and `web_search`
-still returns live data (SPY 769.66 close, 2026-10-27, while Yahoo JSON was 429).
+**Measured 2026-10-31 from this sandbox — Yahoo's JSON endpoints are working again** (chart,
+screener, quoteSummary and options all 200; they were 429 on 2026-10-28 and worked on every run
+from 10-13 to 10-23). The earlier "persistent 429" was an egress-side condition that has
+cleared. **Do not hard-code a Yahoo-avoidance path** — try the ladder in cost order and fall
+through on a real failure.
 
-Ladder for bulk data: Yahoo JSON → (on 429) Nasdaq API `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf`
-→ Yahoo HTML `https://finance.yahoo.com/quote/{SYM}/` → `web_search` per symbol. Also confirmed
-working: CoinGecko (crypto), Frankfurter (FX), SEC EDGAR (fundamentals, needs User-Agent),
-US Treasury daily yield-curve CSV. Stooq CSV is blocked (404).
+Ladder for bulk data: bridge `market-recap` → Yahoo JSON → (on 429) Nasdaq API
+`https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` → Yahoo HTML
+`https://finance.yahoo.com/quote/{SYM}/` → `web_search` per symbol. Also confirmed working:
+TradingView scanner `POST https://scanner.tradingview.com/america/scan` (movers, RVol, `halted`,
+premarket), Nasdaq market movers `https://api.nasdaq.com/api/marketmovers?market=stocks`, SEC
+EDGAR full-text + per-company 8-K Atom (needs a User-Agent header), CoinGecko (crypto),
+Frankfurter (FX), US Treasury daily yield-curve CSV, and **Barchart via headless chromium**
+(`_shared/barchart_fetch.py`). Stooq CSV is blocked (404).
 Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
+
+### MCP AVAILABILITY PROBE (non-blocking, one cheap call)
+
+Run `python3 /workspace/probe_mcp.py` at the start of the run (fetch it from
+`cloud-prompts/_shared/probe_mcp.py` if missing) and record the result in this run's
+`## Source health`. It prints exactly one of three states:
+
+- `catalog_ok total=N finance_tools=0` — catalog healthy, no financial MCP registered yet.
+- `catalog_ok total=N finance_tools=K` — **a financial MCP has LANDED. Switch to it this run.**
+- `catalog_unreachable` — the probe itself failed. This is **NOT** evidence that no MCPs exist.
+
+The weekly `mcp-health/` routine does the same probe on a slower cadence; this in-run probe is
+the fast path.
 
 ### PRIMARY SOURCE: the MCP-over-HTTP bridge (use this FIRST)
 
