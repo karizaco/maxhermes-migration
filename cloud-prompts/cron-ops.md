@@ -199,5 +199,7 @@ comma-joined **string** (`"SPY,QQY,IWM,XLE"`), not a list.
   embeds a condensed `RUNTIME-CONTRACT.md`.
 - **Artifacts:** `karizaco/minimax-cloud-outputs`, branch `main`. `master` is a fast-forward mirror
   maintained by the auditor.
-- **`refs/` in the outputs repo** is gitignored in the cloud sandbox — `git add -f refs/<file>.md`
-  is required, and a plain `git add -A` silently skips it.
+- **`refs/` in the outputs repo** — the *live* repo `.gitignore` does **not** exclude `refs/`
+  (checked 2026-10-31). A stale sandbox-local `.gitignore` copy may still carry a `refs/` line,
+  in which case `git add -A` silently skips new files there and `git add -f refs/<file>.md` is
+  needed. Verify against the repo's current `.gitignore` before assuming the trap is live.
