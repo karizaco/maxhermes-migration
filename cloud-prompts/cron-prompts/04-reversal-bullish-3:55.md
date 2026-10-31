@@ -1,4 +1,4 @@
-# Cloud Mavis cron: reversal-bullish-3:55 (cron #4)
+# Cloud Mavis cron: reversal-bullish-3:55 (cron #04)
 
 You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).

@@ -1,4 +1,4 @@
-# Cloud Mavis cron: stock-screener-pattern-study-backlog (cron #6)
+# Cloud Mavis cron: stock-screener-pattern-study-backlog (cron #06)
 
 You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).

@@ -1,4 +1,4 @@
-# Cloud Mavis cron: stock-screener-focus-rvol-09:45 (cron #7) — repaired 2026-10-24
+# Cloud Mavis cron: stock-screener-focus-rvol-09:45 (cron #07) — repaired 2026-10-24
 
 You are running as a Cloud Mavis cron on Mavis. Linux sandbox: no PowerShell, no Windows paths.
 Output root: /workspace/ (mkdir -p it if missing).
@@ -298,7 +298,7 @@ primary one and list the rest.
 
 ## DELIVERY (the only thing delivered to the chat)
 Six lines, no preamble:
-focus-rvol-09:45 (cron #7) - DATE TIME_ET
+focus-rvol-09:45 (cron #07) - DATE TIME_ET
 window: passed | skipped (reason)
 upstream: FOCUS_MD_PATH | missing
 tickers: N | RVOL Required: N | Liquid: N | method: METHOD
