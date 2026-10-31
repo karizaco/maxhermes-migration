@@ -107,25 +107,31 @@ Then follow the procedure verbatim, with these Cloud adaptations below.
 ## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
 
 **The `mcp__*` tools named above DO NOT EXIST in this runtime.** They are listed for provenance
-only. Verified 2026-10-28: the connector catalog exposes 15 tools, ALL media/email
-(`connector__matrix__*`, `connector__email_workbench_credentials__*`). There is **no**
-`mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`, `mcp__stocktwits__*`,
-`mcp__financekit__*` or `mcp__web_search__*`, and no `extract_content_from_websites`.
+only. Verified 2026-10-28: the connector catalog exposed 15 tools, ALL media/email
+(`connector__matrix__*`, `connector__email_workbench_credentials__*`). **Re-verified 2026-10-31:
+the catalog now exposes 133 tools — 118 `connector__github__*` (NEW), 13 media, 2 email.** There is
+still **no** `mcp__yahoo_finance__*`, `mcp__tradingview__*`, `mcp__shibui_finance__*`,
+`mcp__stocktwits__*`, `mcp__financekit__*` or `mcp__web_search__*`, and no
+`extract_content_from_websites`.
 **Do not attempt an MCP call and do not wait for one to appear** — a tool-not-found error
 converts into an early abort with no artifact, via the zero-fallback policy.
 
 Use instead: `web_search` (search; returns page content), `web_fetch` (fetch a URL, incl. a raw
-JSON endpoint), and `bash` (curl, python3). `web_search` uses a DIFFERENT egress than curl, so it
-survives when curl is blocked. **Try `web_search` FIRST for any single-symbol quote.**
+JSON endpoint), `bash` (curl, python3), and `connector__github__*` for GitHub writes. `web_search`
+uses a DIFFERENT egress than curl, so it survives when curl is blocked.
 
-**Measured 2026-10-28 from this sandbox — Yahoo's JSON endpoints return HTTP 429** (spark,
-chart, and screener alike), with and without a browser User-Agent and after a 60 s pause: it is
-persistent rate limiting, not a transient burst. Yahoo's *HTML* pages still work, and `web_search`
-still returns live data (SPY 769.66 close, 2026-10-27, while Yahoo JSON was 429).
+**Measured 2026-10-31 from this sandbox — Yahoo's JSON endpoints are working again** (chart,
+screener, quoteSummary and options all 200; they were 429 on 2026-10-28 and worked on every run
+from 10-13 to 10-23). The earlier "persistent 429" was an egress-side condition that has
+cleared. **Do not hard-code a Yahoo-avoidance path** — try the ladder in cost order and fall
+through on a real failure.
 
-Ladder for bulk data: Yahoo JSON → (on 429) Nasdaq API `https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf`
-→ Yahoo HTML `https://finance.yahoo.com/quote/{SYM}/` → `web_search` per symbol. Also confirmed
-working: CoinGecko (crypto), Frankfurter (FX), SEC EDGAR (fundamentals, needs User-Agent),
+Ladder for bulk data: bridge `market-recap` → Yahoo JSON → (on 429) Nasdaq API
+`https://api.nasdaq.com/api/quote/{SYM}/info?assetclass=etf` → Yahoo HTML
+`https://finance.yahoo.com/quote/{SYM}/` → `web_search` per symbol. Also confirmed working:
+TradingView scanner `POST https://scanner.tradingview.com/america/scan` (movers, RVol, `halted`,
+premarket), Nasdaq market movers `https://api.nasdaq.com/api/marketmovers?market=stocks`, SEC
+EDGAR full-text + per-company 8-K Atom (needs User-Agent), CoinGecko (crypto), Frankfurter (FX),
 US Treasury daily yield-curve CSV. Stooq CSV is blocked (404).
 Full endpoint list + measured status: `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/RUNTIME-CONTRACT.md`
 
@@ -152,10 +158,23 @@ printf '%s' "SELECT ticker, strftime(date, '%Y-%m-%d') AS d, close, volume FROM 
 printf '%s' "SELECT ticker, close FROM shibui.stock_quotes WHERE ticker = 'SPY' ORDER BY date DESC LIMIT 3" > q.txt
 python3 -c "import json,sys;print(json.dumps({'query':open('q.txt').read(),'user_prompt':'latest SPY close'}))" > b.json
 python3 /workspace/mcp_bridge.py shibui stock_data_query b.json   # history to 1962, fundamentals, screeners, EDGAR
+
+# --- market-recap: the primary quote + movers source (added 2026-10-31) ---
+printf '%s' '{"symbols":"SPY,QQQ,IWM,DIA,XLK,XLF,SMH,XBI"}' > c.json
+python3 /workspace/mcp_bridge.py market-recap get_quotes c.json  # price, previous_close, change_pct, volume, day_high/low, as_of, market_state
+printf '%s' '{}' > d.json
+python3 /workspace/mcp_bridge.py market-recap top_movers d.json  # ranked gainers/losers/most-active
+python3 /workspace/mcp_bridge.py market-recap market_snapshot d.json # indices, yields, FX, futures
+python3 /workspace/mcp_bridge.py --list-packs                   # enumerate available packs
 ```
 
 **Verified 2026-10-28:** both servers answer, 6/6 identical values over 6 calls (median 204 ms),
 returning the same close web_search gave (SPY 769.66, 2026-10-27) while Yahoo JSON was 429.
+**Verified 2026-10-31:** `market-recap` added and answering — `get_quotes` returned SPY 755.72,
+QQQ 690.49, AAPL 344.63 with full `previous_close`/`change_pct`/`volume`/`as_of`/`market_state`,
+`top_movers` returned the ranked US gainers table, `market_snapshot` returned a multi-region
+market recap. `--list-packs` enumerated `tradier`, `fmp` and `market-recap`; `fmp` needs the
+user's own FMP API key as `_apiKey`.
 Fetch the bridge with the 3-URL ladder above - a freshly pushed file can 404 on the raw CDN
 for a few minutes. The bridge returns `{"error": ...}` and a non-zero exit on failure, so a
 failed call can never be mistaken for data. **Pass tool args as a FILE, not inline** - shell
@@ -163,6 +182,38 @@ quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL ab
 
 **Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
 source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
+
+### MCP AVAILABILITY PROBE (non-blocking, run once at the start)
+
+The platform may add financial MCPs without notice. Do **not** wait for one, and do **not** call a
+`mcp__*` name that is not in the tool list — a tool-not-found aborts the run. Instead, spend one
+cheap call enumerating the connector catalog and record the result in this run's `## Source health`
+table, so the first digest after an MCP lands says so.
+
+```bash
+mcode-tools connector tools 2>/dev/null | python3 -c "
+import sys,json,re
+raw=sys.stdin.read()
+try: ts=json.loads(raw).get('tools',[])
+except Exception:
+    print('catalog_unreachable'); raise SystemExit
+names=[t.get('tool_name','') for t in ts]
+fin=[n for n in names if re.search(r'yahoo|tradingview|shibui|stocktwits|financekit|finviz|barchart|market|quote',n,re.I)]
+print(f'catalog_ok total={len(names)} finance_tools={len(fin)}')
+for n in fin[:12]: print('   ',n)
+"
+```
+
+**Record one of three states — never collapse them:**
+- `catalog_ok total=N finance_tools=0` — catalog is healthy, no financial MCP registered yet.
+- `catalog_ok total=N finance_tools=K` — a financial MCP has landed. **Switch the source stack to
+  it this run** and say so in Source health.
+- `catalog_unreachable` — the catalog call itself failed (seen 2026-10-21 as
+  `error: invalid signature`). This is **not** "no MCPs exist". Record it as a probe failure, and
+  carry on with the bridge/HTTP stack. Do not treat it as evidence either way.
+
+The weekly `mcp-health/` routine in the fleet does the same probe on a slower cadence; this
+in-run probe is the fast path.
 
 ### Rules
 
