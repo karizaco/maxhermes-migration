@@ -53,7 +53,8 @@ TOLERANCE = {"13-macro-calendar-midweek":9, "14-macro-calendar-week-ahead":9,
 # A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
 # absent — it has never had a scheduled chance to run. Reporting it as stale is a false
 # positive. Keep this in sync with the NOT_YET_FIRED list in cron #90's prompt.
-NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01"}
+NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01",
+                 "14-macro-calendar-week-ahead": "2026-11-01"}
 DATE_RE = re.compile(r"(20\d\d-\d\d-\d\d)")
 
 def key_of(name):

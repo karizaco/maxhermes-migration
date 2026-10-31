@@ -122,11 +122,19 @@ its absence is `MISSING`, not `weekend_no_us_session`:
 | Sunday (`$AUDIT_DOW` 7) | 14-macro-calendar-week-ahead | `0 15 * * 0` |
 | Sunday (`$AUDIT_DOW` 7) | 22-weekly-market-recap-preview | `47 17 * * 0` |
 
-**This is the failure mode that hid #14 for a whole cycle.** #14 skipped its Sunday 2026-10-25
-fire; `macro-calendar/2026-10-25-week-ahead.md` was never on `origin/main`; and the Monday
-audit of Sunday 2026-10-25 labelled it `weekend_no_us_session` — "expected, not a failure" —
-so the gap stayed invisible. `weekend_no_us_session` applies ONLY to routines that were NOT
-scheduled to fire on that weekday. Check the "Fires on" column before labelling anything.
+**This is the failure mode that hid #14 for a whole cycle.** On Sunday 2026-10-25 the EU DST
+end moved #14's Europe/Berlin `0 15 * * 0` slot from 13:00 UTC to **14:00 UTC** — the exact
+minute cron #12's `0 10 * * 1-5` ET slot fired (10:00 ET = 14:00 UTC). Both routines live in
+project 10636, push to the SAME `main` branch, and at that time #14's push block still used
+`git init` + `git add -A` with **no fetch and no retry** and `git push ... | head -3`, which
+takes `head`'s exit status (always 0) — so a REJECTED push reported success. #12's push
+landed first (commit `1356a03`, 14:07:33 UTC); #14's push was rejected as non-fast-forward
+and its artifact was never written to `origin/main`. `macro-calendar/2026-10-25-week-ahead.md`
+exists in NO commit on ANY ref. Two lessons: (1) `weekend_no_us_session` applies ONLY to
+routines that were NOT scheduled to fire on that weekday — check the "Fires on" column before
+labelling anything; (2) a routine can fire, build its artifact, and still deliver nothing
+because the push lost a race — a MISSING with no git ADD event anywhere is a push loss, not
+a skip.
 
 **SCHEDULE CHANGES IN EFFECT (apply the OLD schedule to older audit dates):**
 - **2026-10-29** — #15 (earnings-reaction-scanner) and #19 (earnings-reminder-daily) changed
@@ -272,7 +280,14 @@ cd /workspace/.audit
 # A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
 # absent. That is `not_yet_fired`, not a finding. Keep this list in sync with the
 # SCHEDULE CHANGES block above; it is empty for every routine that has already fired.
-NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01"
+# 14-macro-calendar-week-ahead is here for the same reason as 22: its live task
+# (457172664209611) was created 2026-10-28 02:09 ET, AFTER the last Sunday (2026-10-25),
+# so it has had ZERO scheduled fire opportunities and cron_read view=runs returns 0 runs.
+# Its first fire is 2026-11-01 15:00 ET. The 2026-10-25 miss under the PRIOR task
+# instance is a SEPARATE historical gap (a lost push race) and is not a stale finding.
+# VERIFICATION DEADLINE: if macro-calendar/2026-11-01-week-ahead.md is absent after
+# 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01"
 for entry in \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "19-earnings-reminder-daily|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reminders\.md$|5" \
@@ -319,7 +334,7 @@ done
 
 **How to read the output:**
 - `not_yet_fired (first fire <date>)` — the routine's current schedule has not reached its
-  first fire yet. Expected, NOT a finding, and not a gap. (#22 before 2026-11-01.)
+  first fire yet. Expected, NOT a finding, and not a gap. (#22 and #14 before 2026-11-01.)
 - `NEVER_DELIVERED` — the routine has produced nothing at all, ever, AND its first fire date
   has already passed. **Report it as `MISSING`**, not as a separate label: a routine that
   has had its chance and produced no artifact IS missing.
