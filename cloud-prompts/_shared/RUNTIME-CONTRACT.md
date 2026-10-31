@@ -1,25 +1,26 @@
 # Cloud Runtime Data-Source Contract
 
-**Status:** authoritative. Last measured 2026-10-28 against the live agent.minimax.io Cloud
+**Status:** authoritative. Last measured 2026-10-31 against the live agent.minimax.io Cloud
 sandbox. Every cron prompt in `cloud-prompts/cron-prompts/` embeds a condensed version of this
 file; this is the full reference.
 
 ## 1. What actually exists in this runtime
 
-The connector catalog exposes **15 tools, all of them media/email**:
+The connector catalog exposed **15 tools (media/email only)** when this file was first written on
+2026-10-28. **As of 2026-10-31 it exposes 133 tools: 118 GitHub, 13 media, 2 email.**
 
 ```
-connector__matrix__audios_understand          connector__matrix__generate_image
-connector__matrix__batch_text_to_audio         connector__matrix__get_voice_list
-connector__matrix__batch_text_to_music         connector__matrix__listen_audio
-connector__matrix__describe_images             connector__matrix__query_video_generation
-connector__matrix__reverse_image_search        connector__matrix__search_images
-connector__matrix__submit_video_generation     connector__matrix__synthesize_speech
-connector__matrix__videos_understand           connector__email_workbench_credentials__exchange
-connector__email_workbench_credentials__session
+connector__github__*            (118)   <- NEW 2026-10-31
+connector__matrix__*            ( 13)   audios_understand, generate_image, batch_text_to_audio,
+                                          get_voice_list, batch_text_to_music, listen_audio,
+                                          describe_images, query_video_generation,
+                                          reverse_image_search, search_images,
+                                          submit_video_generation, synthesize_speech,
+                                          videos_understand
+connector__email_workbench_credentials__*  ( 2)
 ```
 
-**None of these are financial.** There is **no** `mcp__yahoo_finance__*`,
+**Still no financial MCP.** There is **no** `mcp__yahoo_finance__*`,
 `mcp__tradingview__*`, `mcp__tradingview_advanced__*`, `mcp__shibui_finance__*`,
 `mcp__stocktwits__*`, `mcp__financekit__*` or `mcp__web_search__*`, and no
 `extract_content_from_websites`.
@@ -37,8 +38,64 @@ straight into that trap; that line has been rewritten.
 | `web_search` | Search; returns page content. **Separate egress from curl** — survives Yahoo blocking curl. Most reliable path for a single-symbol quote. |
 | `web_fetch` | Fetch a URL, including a raw JSON endpoint. The `web_fetch` replacement for `extract_content_from_websites`. |
 | `bash` | `curl`, `python3`, `git`, `date`. The egress proxy, however, rate-limits some hosts. |
+| **`connector__github__*` (118)** | **NEW 2026-10-31.** Built-in GitHub connector, authorized as `karizaco`. Use `create_or_update_file` / `push_files` for repo writes instead of `git`+PAT: no token in the sandbox, no CA-bundle wrangling, and file-level writes structurally cannot stage deletions (the `git add -A` hazard that cost cron #12 283 files on 2026-10-25). `get_file_contents` returns the blob sha needed to update an existing file. |
 
-## 2. Measured endpoint status (2026-10-28)
+### MCP servers over plain HTTPS — no registration needed
+
+The missing `mcp__*` *tools* are not the same as the MCP *servers*. The servers are reachable
+directly over JSON-RPC. See `mcp_bridge.py` in this directory. Packs confirmed reachable
+2026-10-31:
+
+| Pack | Endpoint | Notes |
+|---|---|---|
+| `stocktwits` | `https://gateway.pipeworx.io/stocktwits/mcp` | 53 tools — chart_data, sentiment, trending |
+| `shibui` | `https://mcp.shibui.finance/mcp` | 12 tools — history to 1962, fundamentals, screeners, EDGAR |
+| **`market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` | **48 tools. `get_quotes` (batch quotes), `top_movers`, `market_snapshot`, `price_history`.** Yahoo-sourced prices, not rate-limited. |
+| `cftc-cot` | `https://gateway.pipeworx.io/cftc-cot/mcp` | CFTC Commitments of Traders positioning |
+| `tradier` | `https://gateway.pipeworx.io/tradier/mcp` | `tradier_quote` |
+| `fmp` | `https://gateway.pipeworx.io/fmp/mcp` | `stock_screener` — **requires the user's own FMP API key** as `_apiKey` |
+
+Any pack name resolves without a code change — `mcp_bridge.py` falls back to
+`https://gateway.pipeworx.io/{pack}/mcp`. `python3 mcp_bridge.py --list-packs` enumerates them
+via the gateway's own `discover_tools`.
+
+## 2. Measured endpoint status
+
+### 2a. Re-measured 2026-10-31 (current)
+
+| Source | Endpoint | Status |
+|---|---|---|
+| **bridge `market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` → `get_quotes` | **200 OK — batch quotes with `previous_close`, `change_pct`, `volume`, `day_high/low`, `as_of`, `market_state`. Not rate-limited. Now the preferred quote source.** |
+| **bridge `market-recap`** | → `top_movers` | **200 OK** — ranked movers with price/change/volume/exchange. Replaces the Finviz movers screener. |
+| **bridge `market-recap`** | → `market_snapshot` | **200 OK** — multi-region snapshot (indices, yields, FX, futures) in one call. |
+| bridge `stocktwits` | `https://gateway.pipeworx.io/stocktwits/mcp` | **200 OK** — `chart_data` returned SPY OHLCV, sentiment, trending |
+| bridge `shibui` | `https://mcp.shibui.finance/mcp` | **200 OK** — `stock_data_query` returned SPY closes |
+| **TradingView scanner** | `POST https://scanner.tradingview.com/america/scan` | **200 OK** — movers, `relative_volume_10d_calc` (RVol), `market_cap_basic`, **`halted`**, **`premarket_change`/`premarket_volume`/`premarket_close`** |
+| **Yahoo chart** | `https://query1.finance.yahoo.com/v8/finance/chart/{SYM}?period1=..&period2=..&interval=1d` | **200 OK** — daily bars; also `interval=5m` for intraday reconstruction |
+| **Yahoo chart (5m)** | same + `&interval=5m&includePrePost=true` | **200 OK** — 5-minute bars retained for ~60 days |
+| **Yahoo screener** | `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100` | **200 OK** — `day_gainers`, `day_losers`, `most_actives`, `small_cap_gainers`, `aggressive_small_caps` |
+| **Yahoo quoteSummary** | `https://query1.finance.yahoo.com/v10/finance/quoteSummary/{SYM}?modules=defaultKeyStatistics,summaryDetail&crumb={CRUMB}` | **200 OK with the crumb** — `floatShares`, `sharesOutstanding`, `shortRatio`, 52-week range. **Without the crumb: 401.** |
+| **Yahoo options** | `https://query2.finance.yahoo.com/v7/finance/options/{SYM}?crumb={CRUMB}` | **200 OK with the crumb** — IV / implied move |
+| **Nasdaq market movers** | `https://api.nasdaq.com/api/marketmovers?market=stocks` | **200 OK** — most-active / gainers / losers tables |
+| **SEC EDGAR full-text** | `https://efts.sec.gov/LATEST/search-index?q={Q}&forms=8-K&startdt=..&enddt=..` | **200 OK** — 8-K hits with date/form/CIK/accession |
+| **SEC EDGAR ticker→CIK** | `https://www.sec.gov/files/company_tickers.json` | **200 OK** |
+| **SEC EDGAR 8-K Atom** | `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={10DIGITS}&type=8-K&output=atom` | **200 OK** — CIK must be zero-padded to 10 digits |
+| `connector__github__*` | GitHub connector | **200 OK** — authorized as `karizaco` |
+
+**The Yahoo crumb recipe** (both steps required):
+
+```bash
+UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+curl -s -c ck.txt -A "$UA" "https://fc.yahoo.com" -o /dev/null   # 404 BUT sets the cookie jar
+CRUMB=$(curl -s -b ck.txt -A "$UA" "https://query1.finance.yahoo.com/v1/test/getcrumb")
+curl -s -b ck.txt -A "$UA" \
+  "https://query1.finance.yahoo.com/v10/finance/quoteSummary/EFX?modules=defaultKeyStatistics,summaryDetail&crumb=$CRUMB"
+```
+
+`fc.yahoo.com` returning **404 is expected** — it still sets the cookies. Check the crumb, not the
+status of the cookie request.
+
+### 2b. Original measurement 2026-10-28 (superseded for Yahoo)
 
 | Source | Endpoint | Status |
 |---|---|---|
@@ -51,15 +108,21 @@ straight into that trap; that line has been rewritten.
 | SEC EDGAR | `https://data.sec.gov/submissions/CIK{10DIGITS}.json` | **200 OK** — needs a User-Agent header |
 | US Treasury | `https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve&field_tdr_date_value=2026&page&_format=csv` | **200 OK** — yield curve |
 | AlphaVantage | `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={SYM}&apikey=demo` | 200 OK, but the `demo` key only serves IBM |
-| **Yahoo spark** | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...&range=1d&interval=1m&includePrePost=true` | **429** |
-| **Yahoo chart** | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** |
-| **Yahoo screener** | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** |
+| **Yahoo spark** | `https://query1.finance.yahoo.com/v7/finance/spark?symbols=...&range=1d&interval=1m&includePrePost=true` | **429** on 10-28; **200 OK** on 10-31 |
+| **Yahoo chart** | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** on 10-28; **200 OK** on 10-31 |
+| **Yahoo screener** | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** on 10-28; **200 OK** on 10-31 |
 | Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404 / 000** |
+| Finviz screener | `https://finviz.com/screener.ashx?...` | **403 / 000 / 503** across 4 attempts — Cloudflare challenge, and the 503 body was an upstream TLS `CERTIFICATE_VERIFY_FAILED` from the sandbox egress proxy |
+| Barchart | `https://www.barchart.com/...` | **000** — connection failure. `proxies/core-api/v1/quotes/get` → **403** (needs an XSRF token from a page that will not load) |
+| NASDAQ halt RSS | `https://www.nasdaqtrader.com/rss.aspx?feed=HALTS` | **HTTP 200 with 0 RSS items** — serves an HTML shell. `api.nasdaq.com/api/quote-list/halt-directory` → 404. `Trader.aspx?id=TradeHalts` → 200 but JS-rendered, 0 table rows. **Use the TradingView scanner's `halted` column instead.** |
 
-**Yahoo JSON returns HTTP 429 "Edge: Too Many Requests" from this egress.** Verified across three
-separate requests, two different User-Agents (including a browser UA), and a 60-second pause
-between them — it is persistent rate limiting, not a transient burst from probing. Yahoo's
-*HTML* pages are unaffected, and `web_search` is unaffected because it egresses differently.
+**CORRECTION (2026-10-31):** the 2026-10-28 note below claimed Yahoo JSON returns a *persistent*
+429 from this egress. **That is no longer true.** Yahoo's chart, screener, quoteSummary and
+options endpoints all returned 200 on 2026-10-31, and Yahoo JSON worked on every cron #17 run
+from 10-13 to 10-23 (hundreds of requests). The 429 was an egress-side condition that has since
+cleared. **Do not hard-code a Yahoo-avoidance path.** Try the ladder in cost order and fall
+through on a real failure. The `market-recap` bridge pack is still preferable as the primary quote
+source because it is not rate-limited and returns `as_of` + `market_state` with every quote.
 
 **Yahoo spark batch limit** (from the original cron #26 notes): max 12 symbols per request;
 larger batches return HTTP 400 on URL length. Pre-market gap = last 1m-bar close vs
