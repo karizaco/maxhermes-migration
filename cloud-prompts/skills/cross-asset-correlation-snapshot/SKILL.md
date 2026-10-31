@@ -4,7 +4,7 @@ description: >-
   Weekly correlation matrix of the major asset proxies: SPY, QQQ, IWM, TLT,
   GLD, DXY (via UUP), VIX (when available), EEM. Used to spot regime shifts
   (risk-on/off, growth-value, commodity-Dollar coupling) that inform sector
-  positioning for the week. Runs Sunday 16:30 ET, between macro calendar and
+  positioning for the week. Runs 10:00 ET on weekdays, intraday.
   the weekly brief. On Cloud the matrix is computed SERVER-SIDE by DuckDB
   `corr()` over the MCP bridge — see "Cloud adaptation" below.
 ---
@@ -14,7 +14,7 @@ description: >-
 Single-purpose: produce a Pearson correlation matrix across the core asset proxies so the weekly brief can spot regime changes (stocks-bond decoupling, growth-value rotation, USD-gold rotation) and frame the week ahead.
 
 ## When
-- Cron: `30 16 * * 0` America/New_York (Sundays, 16:30 ET — 17 min after macro-calendar, ~77 min before weekly brief)
+- Cron: `0 10 * * 1-5` America/New_York (weekdays, 10:00 ET — intraday, one hour after the US open)
 - Manual: user asks "show me the cross-asset correlation" or "how correlated are bonds and stocks right now?"
 
 ## Output

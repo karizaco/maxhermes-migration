@@ -12,7 +12,7 @@ Generates the weekday pre-market gapper brief. Replaces the paused `ntrt-pre-mar
 
 ## When
 
-- Cron: `30 6 * * 1-5` America/New_York (weekdays, 06:30 ET)
+- Cron: `0 9 * * 1-5` America/New_York (weekdays, 09:00 ET — 30 min before the US open)
 - Manual: user asks "run the ntrt brief" or "what's gapping today"
 
 ## Backend discovery

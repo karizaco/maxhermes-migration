@@ -2,9 +2,28 @@
 name: Earnings reminder
 description: >
   Quick morning reminder of who's reporting earnings today, filtered to the
-  watchlist plus any S&P 500 names. Pairs with the 07:37 ET pre-market brief.
+  watchlist plus any S&P 500 names. Pairs with the 08:30 ET pre-market brief.
   Runs weekdays 06:00 ET.
 ---
+
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Earnings reminder
 
@@ -12,7 +31,7 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
 
 ## When
 
-- Cron: `0 6 * * 1-5` America/New_York (weekdays, 06:00 ET — ~90 min before pre-market brief)
+- Cron: `0 6 * * 1-5` America/New_York (weekdays, 06:00 ET — ~2.5 h before the 08:30 ET pre-market brief)
 - Manual: user asks "who reports earnings today" or "today's earnings"
 
 ## Output

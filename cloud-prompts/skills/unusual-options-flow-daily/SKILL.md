@@ -4,15 +4,34 @@ description: >-
   Daily scan of unusual options activity on watchlist + mega-cap tickers using
   TradingView-advanced `stock_options_unusual_activity`. Surfaces strikes where
   today's volume exceeds open interest (V/OI > 1) — classic institutional
-  positioning signal. Runs weekdays 09:55 ET, just after the open.
+  positioning signal. Runs weekdays 16:35 ET, just after the close.
 ---
+
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Unusual options flow — daily
 
 Lightweight daily scan: where is the smart money positioning today on options? Built on `mcp__tradingview-advanced__stock_options_unusual_activity`, no LLM cost.
 
 ## When
-- Cron: `55 9 * * 1-5` America/New_York (weekdays, 09:55 ET — ~25 min after open so vol settles)
+- Cron: `35 16 * * 1-5` America/New_York (weekdays, 16:35 ET — just after the cash close, so the day's volume is settled)
 - Manual: user asks "any unusual options activity today?" or "show me NVDA options flow"
 
 ## Output

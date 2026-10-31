@@ -3,13 +3,34 @@
 You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## SCHEDULE
 - Original local schedule: 08:30 ET weekdays
-- Fires 08:30 ET DAILY (schedule `30 8 * * *`, timezone America/New_York). The scheduler cannot
-  express "weekdays at 08:30", so the weekday/weekend distinction is handled by the window check
-  below — NOT by the schedule.
-- **Do not skip the run because it is a weekend.** Run it every day. On weekends you produce a
-  scoped WEEKEND brief (see WEEKEND MODE below). On weekdays you produce the full brief.
+- Deployed schedule: `30 8 * * 1-5` America/New_York — 08:30 ET, Mon-Fri only.
+- The day-of-week field is set in the SCHEDULER, so this routine does not fire
+  at all on weekends: no agent invocation is spent discovering it is a weekend,
+  and no weekend SKIPPED file is written. The in-prompt weekend branch below is
+  kept as a belt-and-braces guard (it costs one line) and is what still handles
+  US market holidays, which no cron expression can express.
+- There is no pre-market session on a weekend and this brief has no weekend edition, so it does
+  not run on Saturday or Sunday at all. (Retired 2026-10-31 — it used to fire daily and produce a
+  scoped WEEKEND brief; see WEEKEND MODE below, kept for reference only and NOT to be used.)
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
@@ -18,40 +39,31 @@ mkdir -p /workspace
 NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M %u')
 DOW=$(TZ=America/New_York date +%u)
 HOUR=$(TZ=America/New_York date +%H)
-IS_WEEKEND=false
-if [ "$DOW" -ge 6 ]; then IS_WEEKEND=true; fi
-echo "window-check: OK ($NOW_ET) weekend=$IS_WEEKEND"
-export IS_WEEKEND
+SKIP_REASON=
+if [ "$DOW" -ge 6 ]; then SKIP_REASON="weekend (day=$DOW, expected Mon-Fri)"; fi
+if [ -n "$SKIP_REASON" ]; then
+  DATE=$(TZ=America/New_York date +%Y-%m-%d)
+  mkdir -p /workspace/$DATE
+  printf '# Cron #26 agentic-pre-market-brief - SKIPPED\n- Date (ET): %s\n- Time (ET): %s\n- Reason: %s\n' "$DATE" "$(TZ=America/New_York date +%H:%M)" "$SKIP_REASON" > /workspace/$DATE/SKIPPED_agentic_pre_market_brief.md
+  echo "out-of-window: $SKIP_REASON"
+  echo "no artifact; no push"
+  exit 0
+fi
+echo "window-check: OK ($NOW_ET)"
 ```
 
-**The window check never skips this cron.** It only records whether it is a weekend so the rest of
-the run knows which mode it is in. Do NOT exit on a weekend. Do NOT write a SKIPPED file. The
-artifact is always written.
+If the window check exits cleanly with "out-of-window: <reason>", the cron is DONE. Do not fetch
+the skill, do not call MCPs, do not write any other artifact, do not push. The `SKIPPED_*.md`
+file IS the artifact for this run — it's the audit trail for skipped fires.
 
-## WEEKEND MODE (Sat/Sun)
+## WEEKEND MODE (RETIRED 2026-10-31)
 
-On a weekend there is no live US pre-market session: cash equity closed Friday 16:00 ET, the
-pre-market session does not open until Monday 04:00 ET, and index/commodity futures are closed
-until Sunday 18:00 ET. **Only crypto trades live over the weekend.**
+This routine no longer fires on weekends. The deployed schedule `30 8 * * 1-5` restricts it to
+Mon-Fri, so the scheduler never starts a Saturday or Sunday run — there is no weekend brief
+to produce and no weekend mode to enter. The weekend procedure that used to live here is
+RETIRED: do not write a weekend brief, do not label a column "Fri close", and do not treat a
+weekend run as expected.
 
-A weekend brief is therefore SHORTER and scoped to what actually exists. It MUST:
-
-1. State prominently and at the top that it is a **weekend brief**, that the last completed US
-   session was **Friday 2026-10-23** (i.e. the most recent Friday), and that the pre-market
-   columns are **Friday's closing prints, not live weekend prices**. Never present a frozen
-   Friday print as if it were a live pre-market gap.
-2. Cover the **weekend-only live data**: crypto (BTC, ETH and the crypto-equity complex
-   MSTR/COIN/MARA/RIOT/CLSK) — this IS live on weekends and is the most valuable weekend content.
-3. Carry a **Monday-open setup** section: what closed Friday, what is scheduled for Monday
-   (earnings before the open, macro releases), and what the weekend crypto tape implies for the
-   Monday pre-market.
-4. Include the Friday full-session screen (gainer/loser tables) as **"last session (Fri)"** context,
-   clearly labelled as Friday's data — NOT as a pre-market table.
-5. Still include: theme clusters, StockTwits lead read, macro calendar, source health, research
-   queue. Keep the same section order as the weekday brief so downstream readers can rely on it.
-
-**Do not fabricate a pre-market gap table on a weekend.** If Yahoo returns a stale/empty pre-market
-print, say so and label the column "Fri close" instead of "Pre-mkt".
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:

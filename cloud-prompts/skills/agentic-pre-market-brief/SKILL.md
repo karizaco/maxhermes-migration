@@ -5,7 +5,7 @@ description: >-
   US equity market — watchlist is one section, not the spine. Theme-
   clusters the day's action. Replaces the paused `agentic-research-
   brief-paused` Grok routine. Uses MCPs (no per-call cost), writes to
-  the local research vault. Runs on cron at 07:37 ET weekdays.
+  the local research vault. Runs on cron at 08:30 ET weekdays.
 ---
 
 # Agentic pre-market brief (market-wide, theme-clustered)
@@ -21,7 +21,7 @@ description: >-
 
 ## When
 
-- Cron: `37 7 * * 1-5` America/New_York (weekdays, 07:37 ET).
+- Cron: `30 8 * * 1-5` America/New_York (weekdays, 08:30 ET — 60 min before the US open).
 - Manual: user asks "give me today's pre-market brief" / "run the pre-market brief".
 
 ## Output

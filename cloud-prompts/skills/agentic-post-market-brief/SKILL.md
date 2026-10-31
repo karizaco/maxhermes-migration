@@ -3,9 +3,28 @@ name: Agentic post-market brief
 description: >-
   Generate the daily post-market brief: day's tape, watchlist EOD review,
   after-hours earnings reactions, tomorrow's setup. Uses MCPs (no per-call
-  cost), writes to the local research vault. Runs on cron at 16:13 ET
+  cost), writes to the local research vault. Runs on cron at 22:30 ET
   weekdays.
 ---
+
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Agentic post-market brief
 
@@ -13,7 +32,7 @@ Generates the daily post-market markdown brief using Mavis's financial MCPs. Com
 
 ## When
 
-- Cron: `13 16 * * 1-5` America/New_York (weekdays, 16:13 ET — ~13 min after cash close)
+- Cron: `30 22 * * 1-5` America/New_York (weekdays, 22:30 ET — the evening post-market digest)
 - Manual: user asks "give me today's post-market brief" or "run the post-market brief"
 
 ## Output

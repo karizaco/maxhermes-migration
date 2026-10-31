@@ -4,17 +4,36 @@ description: >-
   Forward-week macro release calendar for the US market: CPI, PPI, NFP, FOMC,
   ISM, retail sales, consumer sentiment, Treasury auctions, Fed speakers.
   Pulls from FRED MCP (release schedule) once added, falls back to web_search
-  on Investing.com / ForexFactory. Runs Sunday 16:00 ET, ahead of the weekly
-  brief. Optional Wednesday refresh at 13:00 ET.
+  on Investing.com / ForexFactory. Runs Sunday 15:00 ET, ahead of the weekly
+  brief. Optional Wednesday refresh at 14:00 ET.
 ---
+
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Macro calendar — week ahead
 
 The forward-looking macro overlay for the weekly brief. Sunday edition feeds `agentic-weekly-brief` directly; Wednesday refresh updates the remaining week.
 
 ## When
-- Sunday: `0 16 * * 0` America/New_York (16:00 ET Sun — ~105 min before weekly brief at 17:47)
-- Wednesday refresh: `0 13 * * 3` America/New_York (13:00 ET Wed — refreshes Wed/Thu/Fri events)
+- Sunday: `0 15 * * 0` America/New_York (15:00 ET Sun — ~167 min before weekly brief at 17:47)
+- Wednesday refresh: `0 14 * * 3` America/New_York (14:00 ET Wed — refreshes Wed/Thu/Fri events)
 - Manual: user asks "what's on the macro calendar this week?" or "any Fed speakers?"
 
 ## Output

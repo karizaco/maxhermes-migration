@@ -3,9 +3,31 @@
 You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## SCHEDULE
 - Original local schedule: intraday
-- Schedule is unchanged — only the runtime environment changed.
+- Deployed schedule: `50 15 * * 1-5` America/New_York — 15:50 ET, Mon-Fri only.
+- The day-of-week field is set in the SCHEDULER, so this routine does not fire
+  at all on weekends: no agent invocation is spent discovering it is a weekend,
+  and no weekend SKIPPED file is written. The in-prompt weekend branch below is
+  kept as a belt-and-braces guard (it costs one line) and is what still handles
+  US market holidays, which no cron expression can express.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
@@ -16,7 +38,7 @@ includes a window-check preamble. Run it as the FIRST step — before fetching t
 
 ```bash
 # Window flags for THIS cron (set by migration):
-WEEKDAYS_ONLY=false
+WEEKDAYS_ONLY=true
 WEEKEND_ONLY=false
 MARKET_HOURS_ONLY=true
 DAY_OF_WEEK=0   # 1=Mon ... 7=Sun; 0=no constraint

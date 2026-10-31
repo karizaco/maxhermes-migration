@@ -11,6 +11,25 @@ description: >-
   stocktwits. Runs weekdays 08:00 ET, after the pre-market brief.
 ---
 
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
+
 # Earnings reaction scanner
 
 Surfaces the price action that the pre-market brief missed: every name in the S&P 500 top-200 with a meaningful pre-market or post-market move, the prior session's biggest movers across the full US universe, **EU/UK intraday movers during their live session** (started 03:00 ET, mid-session at scan time), and **Australia (ASX) prior-session movers** (ASX closed ~02:00 ET, 6h before scan). Four-pass design replaces the original watchlist-only Pass A and hardcoded 13-name Pass B.

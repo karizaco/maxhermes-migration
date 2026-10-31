@@ -16,6 +16,25 @@ description: |
   crypto-specific scans, or executing trades.
 ---
 
+## Scheduled-run conversation title (FIRST ACTION)
+
+If this session was started by a scheduled cron run — the first message begins with
+`# Cloud Mavis cron:` — set this conversation's title before doing anything else. Every scheduled
+run gets its own conversation; it is never appended to an earlier run's conversation.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of that cron prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
+If this session was NOT started by a scheduled cron run, ignore this section.
+
 # Stock Screener Suite
 
 Daily multi-stylist screening pipeline. Five stock-screening veterans each get their own
@@ -220,7 +239,8 @@ reference when the scan produces fewer than 5 names:
 
 ### 6. Pre-market Gapper (Sun + Bonde)
 
-Run at 09:00 ET weekdays only. For each ticker in `focus.md`:
+Run at 08:30 ET weekdays only (the deployed `#08-pre-market-gapper` cron slot). For each ticker
+in `focus.md`:
 
 - One `mcp__tradingview-advanced__stock_extended_hours(ticker)` call **per ticker**
   — cap at the 12 names in the Focus list, so this is ≤ 12 calls
@@ -229,7 +249,8 @@ Run at 09:00 ET weekdays only. For each ticker in `focus.md`:
 
 ### 7. Live intraday RVOL re-rank (Sun)
 
-Weekdays at 09:45, 10:15, 10:45, 11:15 ET. For each Focus ticker:
+Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deployed cron
+(`#07-focus-rvol-09:45`); the other slots are manual runs. For each Focus ticker:
 
 - One `mcp__tradingview-advanced__coin_analysis(symbol, exchange=NASDAQ, timeframe=15)`
   call. Returns RVOL + indicators.
@@ -240,7 +261,7 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET. For each Focus ticker:
 
 ### 8. Hook into existing briefs
 
-- 07:37 ET pre-market brief: prepend yesterday's `tier-a.md` + `regime.json`.
+- 08:30 ET pre-market brief: prepend yesterday's `tier-a.md` + `regime.json`.
 - Sunday 17:47 ET weekly brief: add sections for `ipo.md`, `high-short-float.md`,
   the theme-of-the-week (top-3 sector ETFs × tickers that appeared in daily Focus),
   the peoplewish 1000%-in-10-years backlog enrichment (run the `pattern-study` script).

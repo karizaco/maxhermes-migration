@@ -2,10 +2,10 @@
 name: US stocks in play
 description: >-
   Weekday US (NYSE/NASDAQ/AMEX + liquid OTC + major ETFs) in-play scanner:
-  post-open (~09:50 ET) and midday (~12:30 ET) digests. Uses
+  pre-close (~15:50 ET) and midday (~12:30 ET) digests. Uses
   TradingView-advanced + Yahoo Finance MCPs, falls back to Finviz/Barchart
   browser only on block. Tier A → Soft-A → TECH_WATCH → B → C, USD session
-  $ volume sort. Quiet chat unless actionable. Cron weekdays 09:50 ET.
+  $ volume sort. Quiet chat unless actionable. Cron weekdays 15:50 ET.
 ---
 
 # US stocks in play
@@ -62,7 +62,7 @@ A name is **in play** when there is a fresh, tradeable reason to look **now**: p
 
 ### Liquidity floor (required)
 
-| Filter | Open ~09:50 ET | Midday ~12:30 ET |
+| Filter | Pre-close ~15:50 ET (deployed) | Midday ~12:30 ET |
 |---|---|---|
 | Price | ≥ $1 | ≥ $1 |
 | Market cap | ≥ $50m soft | same |
@@ -169,14 +169,14 @@ Perplexity Finance or major wires for large-cap colour only.
 
 ## Timing emphasis
 
-- **~09:50 ET (`open`):** post-open gaps that held, early tape, halt resumes; PM gap annex; pull prior `overnight_carry`.
+- **~15:50 ET (`preclose`, the deployed slot):** gaps that held into the close, late tape, halt resumes; PM gap annex; pull prior `overnight_carry`.
 - **~12:30 ET (`midday`):** continuation vs fade; raise $ volume bar; RVol soft preference; write `overnight_carry` for AH-relevant names.
 
 RTH: 09:30–16:00 ET.
 
 ## When
 
-- Cron: `50 9 * * 1-5` America/New_York (weekdays, 09:50 ET — open slot)
+- Cron: `50 15 * * 1-5` America/New_York (weekdays, 15:50 ET — pre-close slot, 10 min before the cash close)
 - Manual: user asks "what's in play today" or "run US stocks in play"
 - For midday digest, run manually or as a separate cron (not added by default).
 
