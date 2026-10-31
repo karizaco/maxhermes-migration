@@ -138,6 +138,20 @@ quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL ab
 **Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
 source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
 
+
+### MCP AVAILABILITY PROBE (non-blocking, one cheap call)
+
+Run `python3 /workspace/probe_mcp.py` at the start of the run (fetch it from
+`cloud-prompts/_shared/probe_mcp.py` if missing) and record the result in this run's
+`## Source health`. It prints exactly one of three states:
+
+- `catalog_ok total=N finance_tools=0` — catalog healthy, no financial MCP registered yet.
+- `catalog_ok total=N finance_tools=K` — **a financial MCP has LANDED. Switch to it this run.**
+- `catalog_unreachable` — the probe itself failed. This is **NOT** evidence that no MCPs exist.
+
+The weekly `mcp-health/` routine does the same probe on a slower cadence; this in-run probe is
+the fast path.
+
 ### Rules
 
 1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
