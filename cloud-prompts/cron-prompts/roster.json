@@ -15,7 +15,9 @@
    "last_delivered": "2026-10-30",
    "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457170140713209",
@@ -28,10 +30,12 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/reversal-bullish-3:55.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457951662133387",
@@ -44,10 +48,12 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "international-eod/{date}/",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457172664209604",
@@ -63,14 +69,16 @@
    "last_delivered": "2026-10-24",
    "age_days": 6,
    "tolerance_days": 9,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "446509795921995",
    "routine": "07-stock-screener-focus-rvol-09:45",
-   "schedule": "45 9 * * *",
+   "schedule": "45 9 * * 1-5",
    "fire_et": "09:45",
-   "fires": "every day",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "10635",
    "enabled": true,
@@ -79,7 +87,9 @@
    "last_delivered": "2026-10-28",
    "age_days": 2,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457578163015913",
@@ -95,7 +105,9 @@
    "last_delivered": "2026-10-28",
    "age_days": 2,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457172664209608",
@@ -108,33 +120,37 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/daily-sweep.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457173814395027",
    "routine": "10-stock-screener-breadth-snapshot",
-   "schedule": "0 14 * * *",
+   "schedule": "0 14 * * 1-5",
    "fire_et": "14:00",
-   "fires": "every day",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "10635",
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-screens/{date}/breadth-snapshot.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457172664209609",
    "routine": "12-cross-asset-correlation-snapshot",
-   "schedule": "0 10 * * *",
+   "schedule": "0 10 * * 1-5",
    "fire_et": "10:00",
-   "fires": "every day",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "10636",
    "enabled": true,
@@ -143,7 +159,9 @@
    "last_delivered": "2026-10-28",
    "age_days": 2,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457174550757502",
@@ -159,7 +177,9 @@
    "last_delivered": "2026-10-28",
    "age_days": 2,
    "tolerance_days": 9,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457172664209611",
@@ -175,7 +195,9 @@
    "last_delivered": "2026-10-18",
    "age_days": 12,
    "tolerance_days": 9,
-   "stale": true
+   "stale": true,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457570777166058",
@@ -191,7 +213,9 @@
    "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457305357095000",
@@ -204,26 +228,30 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "options-flow/{date}.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457954144674016",
    "routine": "17-us-stocks-in-play",
-   "schedule": "50 15 * * *",
+   "schedule": "50 15 * * 1-5",
    "fire_et": "15:50",
-   "fires": "every day",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "13832",
    "enabled": true,
    "session_mode": "new",
    "artifact": "us-stocks-in-play/{date}.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457569978294401",
@@ -239,7 +267,9 @@
    "last_delivered": "2026-10-30",
    "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457172664209610",
@@ -252,10 +282,12 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "us-eod/{date}.csv",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457956577145214",
@@ -271,7 +303,9 @@
    "last_delivered": null,
    "age_days": null,
    "tolerance_days": 9,
-   "stale": true
+   "stale": null,
+   "not_yet_fired": true,
+   "first_fire": "2026-11-01"
   },
   {
    "task_id": "457952877850694",
@@ -284,10 +318,12 @@
    "enabled": true,
    "session_mode": "new",
    "artifact": "daily-briefs/{date}-post-market.md",
-   "last_delivered": "2026-10-29",
-   "age_days": 1,
+   "last_delivered": "2026-10-30",
+   "age_days": 0,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457578106761360",
@@ -303,14 +339,16 @@
    "last_delivered": "2026-10-28",
    "age_days": 2,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457175063601252",
    "routine": "26-agentic-pre-market-brief",
-   "schedule": "30 8 * * *",
+   "schedule": "30 8 * * 1-5",
    "fire_et": "08:30",
-   "fires": "every day",
+   "fires": "Mon-Fri",
    "tz": "America/New_York",
    "project": "10645",
    "enabled": true,
@@ -319,7 +357,9 @@
    "last_delivered": "2026-10-29",
    "age_days": 1,
    "tolerance_days": 5,
-   "stale": false
+   "stale": false,
+   "not_yet_fired": false,
+   "first_fire": null
   },
   {
    "task_id": "457957802930526",
@@ -335,7 +375,9 @@
    "last_delivered": null,
    "age_days": null,
    "tolerance_days": 5,
-   "stale": null
+   "stale": null,
+   "not_yet_fired": false,
+   "first_fire": null
   }
  ]
 }

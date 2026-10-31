@@ -50,6 +50,10 @@ ARTIFACTS = {
 # weekly routines get a longer staleness tolerance
 TOLERANCE = {"13-macro-calendar-midweek":9, "14-macro-calendar-week-ahead":9,
               "22-weekly-market-recap-preview":9, "06-stock-screener-pattern-study-backlog":9}
+# A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
+# absent — it has never had a scheduled chance to run. Reporting it as stale is a false
+# positive. Keep this in sync with the NOT_YET_FIRED list in cron #90's prompt.
+NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01"}
 DATE_RE = re.compile(r"(20\d\d-\d\d-\d\d)")
 
 def key_of(name):
@@ -116,7 +120,9 @@ def main():
         if last:
             age = (datetime.date.fromisoformat(as_of) - datetime.date.fromisoformat(last)).days
         tol = TOLERANCE.get(routine, 5)
-        if exempt:
+        first_fire = NOT_YET_FIRED.get(routine)
+        not_yet_fired = bool(first_fire) and as_of < first_fire
+        if exempt or not_yet_fired:
             stale = None
         else:
             stale = (age is None) or (age > tol) if files else None
@@ -128,7 +134,7 @@ def main():
             "session_mode": (t.get("session") or {}).get("mode"),
             "artifact": ARTIFACTS.get(routine,("",""))[0],
             "last_delivered": last, "age_days": age, "tolerance_days": tol,
-            "stale": stale,
+            "stale": stale, "not_yet_fired": not_yet_fired, "first_fire": first_fire,
         })
 
     os.makedirs(args.out, exist_ok=True)
@@ -163,6 +169,12 @@ def main():
     L.append("## Health summary")
     L.append("")
     L.append(f"- **{len(rows)} routines** tracked; all owner `Mavis`, all `America/New_York`.")
+    nyf = [r for r in rows if r.get("not_yet_fired")]
+    if nyf:
+        L.append(f"- **{len(nyf)} routine(s) have not fired yet under their current schedule** — "
+                 "expected, NOT a finding:")
+        for r in nyf:
+            L.append(f"  - `{r['routine']}` — first fire {r['first_fire']}")
     if stale:
         L.append(f"- **{len(stale)} routine(s) have not delivered within tolerance** — this is the check "
                  f"that would have caught cron #22:")
