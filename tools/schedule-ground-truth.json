@@ -1,5 +1,5 @@
 {
-  "_note": "GROUND TRUTH for the cloud cron fleet. Never regenerate this from the live scheduler - that would make the check agree with the corruption. Reconstructed from migration-state.json (the 2026-09-25 snapshot of the source mavis cron list = the ORIGINAL local Windows crons of record) plus the deliberate post-migration changes documented in cloud-prompts/cron-prompts/README.md and each prompt's ## SCHEDULE block.",
+  "_note": "GROUND TRUTH for the cloud cron fleet. Never regenerate this from the live scheduler - that would make the check agree with the corruption. Reconstructed from migration-state.json (the 2026-09-25 snapshot of the source mavis cron list = the ORIGINAL local Windows crons of record) plus the deliberate post-migration changes documented in cloud-prompts/cron-prompts/README.md and each prompt's ## SCHEDULE block. #91 is the drift guard itself: a DAILY cron, deliberately, so a GUI save cannot narrow it.",
   "_why": "Saving a scheduled task in the agent.minimax.io web GUI silently collapses the day-of-week field of a weekday routine: 1-5 (Mon-Fri) becomes 1 (Mondays only). Measured 2026-10-31 on cron #26: a GUI save that changed ONLY the model effort rewrote 30 8 * * 1-5 to 30 8 * * 1. On 2026-10-31 the same corruption hit 14 routines in a 05:40-09:08 ET sweep. The corruption is SILENT because next_run does not change (both forms next-fire on Monday).",
   "_derived_from": "migration-state.json @ 2026-09-25 + README.md post-migration changes",
   "_invariant": "Every weekday routine is 1-5. Only genuinely weekly routines carry a single day (0=Sun, 3=Wed, 6=Sat). #90 is daily.",
@@ -90,6 +90,10 @@
     },
     "90-delivery-auditor.md": {
       "schedule": "0 7 * * *",
+      "timezone": "America/New_York"
+    },
+    "91-schedule-drift-guard.md": {
+      "schedule": "5 4 * * *",
       "timezone": "America/New_York"
     }
   }
