@@ -385,8 +385,9 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
 
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
-2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
-   registered in this runtime — and do not invent tool names.
+2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`,
+   `bash`, the MCP-over-HTTP bridge, and `connector__github__*` for repo writes). Do NOT call the
+   `mcp__*` tools — they are not registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
