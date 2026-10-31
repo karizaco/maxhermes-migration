@@ -161,25 +161,43 @@ list uses `priceChange`/`percentChange`. **Capture the list name from the page's
 calls** — a wrong list name returns HTTP 200 with `count:0`, which looks like an empty market
 rather than an error. Guessing `stocks.us.advances` does exactly that.
 
-### 2d. `uv` / `uvx` — two more MCPs are installable
+### 2d. `uv` / `uvx` — two MORE MCP servers now run natively in the sandbox
 
 `uv` and `uvx` 0.12.17 are **already installed** at `/usr/local/bin/`. That unlocks the two local
-MCPs previously marked `needs_linux_uv_binary` / `needs_linux_uvx_binary`:
+MCPs previously marked `needs_linux_uv_binary` / `needs_linux_uvx_binary`. Both were verified
+working on 2026-10-31.
 
-| PyPI package | Tools | Serves |
-|---|---|---|
-| `financekit-mcp` 1.2.0 | 17: quotes, technical analysis (RSI/MACD/Bollinger/Golden-Death Cross), crypto via CoinGecko, VaR/Sharpe/Sortino/Beta, **correlation matrix**, options chains, **earnings calendar**, **sector rotation**, portfolio analysis. No API keys. | **#12** cross-asset-correlation, **#15** earnings-reaction-scanner, #09/#10 sector rotation, #16 options flow, #17 |
-| `tradingview-mcp` 0.9.1 | live market intelligence, trade analytics, screeners | #07 focus-rvol, #08 pre-market gapper, #09 sweep, #10 breadth, #17 |
-
-**Blocker:** the sandbox points `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `PIP_INDEX_URL` and
+**Blocker and fix.** The sandbox points `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `PIP_INDEX_URL` and
 `PIP_TRUSTED_HOST` at `mirrors.cloud.aliyuncs.com`, which is unreachable (connection reset).
-Override both uv variables and drop the pip ones:
+Override **both** uv variables and drop the pip ones:
 
 ```bash
 env -u PIP_INDEX_URL -u UV_INDEX_URL -u PIP_TRUSTED_HOST \
     UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_URL="https://pypi.org/simple" \
-    uvx --quiet --from financekit-mcp financekit-mcp
+    uvx --quiet --from financekit-mcp financekit
 ```
+
+**The console-script name is not the package name.** `financekit-mcp` installs a script called
+**`financekit`** (entry point `financekit.server:main`). Running `financekit-mcp` as the command
+fails.
+
+| Package | Command | Tools | Verified |
+|---|---|---|---|
+| `financekit-mcp` 1.2.0 | `financekit` | **17** — `stock_quote`, `company_info`, `multi_quote`, `crypto_price`, `crypto_trending`, `crypto_search`, `crypto_top_coins`, `technical_analysis`, `price_history`, `compare_assets`, `portfolio_analysis`, `market_overview`, `risk_metrics`, **`correlation_matrix`**, **`earnings_calendar`**, `options_chain`, **`sector_rotation`** | ✅ stdio handshake OK; `market_overview` returned live indices (S&P 500 7580.07 −1.82%, Nasdaq 25437.0 −2.86%); `correlation_matrix` returned SPY/QQQ 0.924, QQQ/XLE −0.284 over 250 points |
+| `tradingview-mcp` 0.9.1 | `tradingview-mcp` | **73** — `top_gainers`, `top_losers`, `bollinger_scan`, `rating_filter`, `coin_analysis`, `consecutive_candles_scan`, `advanced_candle_pattern`, `volume_breakout_scanner`, `volume_confirmation_analysis`, `smart_volume_scanner`, `multi_agent_analysis`, `egx_market_overview`, `egx_sector_scan`, `egx_sector_scanner`, `egx_index_analysis`, **`egx_stock_screener`**, `egx_trade_plan`, `egx_fibonacci_retracement`, `multi_timeframe_analysis`, `market_sentiment`, … | ✅ stdio handshake OK **only with `mcp<2` pinned** |
+
+**`tradingview-mcp` needs `mcp<2`.** It bundles `mcp` 2.x, where `FastMCP` was renamed to
+`MCPServer`; the server dies with
+`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`. The fix is a version constraint:
+
+```bash
+uv pip install --python python3.11 --target <dir> "mcp<2" tradingview-mcp   # resolves to mcp 1.30.0
+# or, for uvx: uvx --quiet --from "tradingview-mcp" --with "mcp<2" tradingview-mcp
+```
+
+**Argument shapes are strict.** `financekit.correlation_matrix` takes `symbols` as a
+**comma-joined string** (`"SPY,QQY,IWM,XLE"`), not a list — a list returns a pydantic
+validation error.
 
 ### 2e. Built-in GitHub connector
 
