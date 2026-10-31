@@ -140,22 +140,19 @@ scheduled to fire on that weekday. Check the "Fires on" column before labelling 
   Until 2026-11-01 it has never had a scheduled chance to run, so an empty `weekly/` is
   EXPECTED: report #22 as `not_yet_fired`, NOT `MISSING`. From 2026-11-02 onward a missing
   `weekly/2026-11-01-preview.md` IS `MISSING`.
-- **2026-10-31** — #07 (focus-rvol-09:45), #10 (breadth-snapshot), #12 (cross-asset-correlation),
+- **2026-10-30 23:06 ET** — #07 (focus-rvol-09:45), #10 (breadth-snapshot), #12 (cross-asset-correlation),
   #17 (us-stocks-in-play) and #26 (agentic-pre-market-brief) moved from a daily schedule to
   weekday-only: `45 9 * * *` -> `45 9 * * 1-5`, `0 14 * * *` -> `0 14 * * 1-5`,
   `0 10 * * *` -> `0 10 * * 1-5`, `50 15 * * *` -> `50 15 * * 1-5`, `30 8 * * *` -> `30 8 * * 1-5`.
-  They had no useful output on a closed weekend market. The switch took effect on
-  **2026-10-30 at 23:06 ET**, so for `$AUDIT_DATE` **on or after 2026-10-31** they are due
-  Mon-Fri only and their weekend gaps are `not_due`. Only for `$AUDIT_DATE` **before 2026-10-31**
-  were they due EVERY day, so a weekend gap back then (2026-10-25, 2026-10-26) is `MISSING`,
-  not `not_due`.
-- **2026-10-31, 05:40-09:20 ET** — a faulty fleet edit briefly set the day-of-week field of
-  **fourteen** weekday routines to `1` (Mondays only) instead of `1-5`, while their prompts,
-  this roster and the audit trail all still said Mon-Fri. It was detected and repaired the same
-  day, **before Monday 2026-11-02**, so **no routine missed a fire** and there is no audit-date
-  exception to apply: every `$AUDIT_DATE` from 2026-11-02 onward is judged against `1-5`.
-  The tell-tale is a prompt whose SCHEDULE block says `1-5` while the scheduler field says `1` —
-  when the two disagree, the SCHEDULE block and this roster are the contract.
+  They had no useful output on a closed weekend market. For `$AUDIT_DATE` **before 2026-10-31**
+  those five were due EVERY day, so a weekend gap back then (2026-10-24, 2026-10-25) is `MISSING`,
+  not `not_due`. From 2026-10-31 onward they are due Mon-Fri only and their weekend gaps are `not_due`.
+- **2026-10-31, 05:40-09:08 ET** — a faulty fleet edit briefly set the day-of-week field of
+  **fourteen** weekday routines to `1` (Mondays only) instead of `1-5`, while their prompts and
+  this roster still said Mon-Fri. It was repaired the same day, **before Monday 2026-11-02**, so
+  **no routine missed a fire** and no audit-date exception applies: every `$AUDIT_DATE` from
+  2026-11-02 onward is judged against the roster table below. If a prompt's SCHEDULE block says
+  `1-5` but the scheduler field says `1`, the SCHEDULE block and this roster are the contract.
 
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
@@ -516,7 +513,7 @@ No preamble. Tool call → result → write → push → reply.
    Check the "Fires on" column and the holiday list before labelling anything. For audit dates
    before 2026-10-29, #15 and #19 were Mondays-only, and before 2026-10-31, #07/#10/#12/#17/#26
    were daily — see the SCHEDULE CHANGES block above. The roster table below is the contract for
-   every date from 2026-11-02 onward.
+   every date from 2026-10-31 onward.
 4. **Name the cause of every gap** (STEP 4c). "MISSING" alone is not an answer; "quota
    exhausted (2067)" and "push failed" need different fixes.
 5. **Do not fabricate a status.** If the repo could not be cloned, the status is
