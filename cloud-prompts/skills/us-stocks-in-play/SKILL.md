@@ -18,6 +18,24 @@ Scan US equities that are actionable right now (gaps, unusual volume, breakouts,
 
 Always run `stocks-in-play-pipeline` **after** gathering sources and **before** writing the dated digest. That pipeline covers Soft-A tiering, holiday skip, source health table, overnight carry, fetch→browser fallback, and stricter chat rules.
 
+## Prior-digest continuity and research scoping (required)
+
+This routine fires into a repo that already holds the previous slot's digest. **Read it before
+researching anything.**
+
+1. **Read the most recent prior digest** in `us-stocks-in-play/` from the output repo, plus the
+   prior slot's screen CSV if present. From a shallow clone,
+   `git show origin/main:us-stocks-in-play/<file>` is enough; the slot is named in the title.
+2. **Build a `changed_since` list**: names new to the screen, plus names whose move changed by
+   ≥ 3pp since the prior pull, plus any name whose tier moved.
+3. **Scope catalyst research to that list.** Do **not** re-verify a catalyst the prior digest
+   already documented with figures — cite it and move on. Re-verifying Intel or Reddit when
+   yesterday's digest already carries the guidance and the consensus numbers is the single
+   largest waste of a slot, and it crowds out the names that actually changed.
+4. **Publish the delta.** The digest must carry a "what changed since the <prior slot> digest"
+   section: the `changed_since` list with the move at each pull, and the names that were new.
+   This section is usually more useful to a reader than the full board.
+
 ## TradingView-advanced MCP rate-limit
 
 When calling `mcp__tradingview-advanced__run_screener` / `get_symbol_data` / `get_news` / `get_symbol_data_batch`, follow pipeline §2b:
@@ -66,15 +84,37 @@ A name is **in play** when there is a fresh, tradeable reason to look **now**: p
 |---|---|---|
 | Price | ≥ $1 | ≥ $1 |
 | Market cap | ≥ $50m soft | same |
-| Session $ volume | ≥ ~$0.5–1m | ≥ ~$2–5m |
-| OTC / pink | Session or PM $ vol ≥ ~$1–2m | same spirit |
-| RVol | Not a hard gate at the open | Soft preference ≥ ~1.5–2× if available |
+| Session $ volume | ≥ ~$2–5m | ≥ ~$2–5m |
+| OTC / pink | Session $ vol ≥ ~$1–2m | same spirit |
+| RVol | Soft preference ≥ ~1.5–2× if available | same |
+
+`preclose` and `midday` share the same dollar-volume bar because both read a **full session's**
+turnover. The `open` slot was lower (~$0.5–1m) only because it ran 20 minutes into the session;
+that number must not be applied at pre-close, where it admits every micro-float that printed a
+few million dollars on a quiet tape.
+
+### Slot resolution (required)
+
+The **deployed schedule determines the slot** — not the slot a previous run used. Map the fire
+time to the nearest defined slot and apply that slot's floors and triggers.
+
+| Fire time (ET) | Slot | Session $ volume floor |
+|---|---|---|
+| ~15:50 (deployed) | `preclose` | ≥ ~$2–5m (full session) |
+| ~12:30 | `midday` | ≥ ~$2–5m (full session) |
+| ~09:50 | `open` (not deployed) | ≥ ~$0.5–1m (partial session) |
+
+**Pre-close timing caveat:** the `preclose` slot fires ~10 minutes **before** the 16:00 ET bell,
+so the regular-session close is **not final at fire time**. Take the settled close from the
+post-bell print — the cloud RUNTIME-CONTRACT documents the source whose `primaryData` field flips
+to the after-hours print at 16:00 — and state in the artifact whether the numbers are live
+intraday or settled.
 
 ### Triggers (≥1 after the floor)
 
 | Trigger | Guidance |
 |---|---|
-| Gap | ≥ ~3–5% vs prior close; at the open prefer PM $ vol ≥ ~$200k when PM data exists |
+| Gap | ≥ ~3–5% vs prior close; prefer PM $ vol ≥ ~$200k when PM data exists. At pre-close, a gap that **held into the bell** is the signal; a gap that faded is not |
 | Day move | |chg%| ≥ 5% large/liquid; ≥ 8% smaller (soft 3–5% with strong tape OK) |
 | Unusual volume | When RVol is available and meaningful — bonus, not a must |
 | Breakout / breakdown | Day high/low vs prior range with volume |
@@ -120,7 +160,7 @@ Between Soft-A and B. For liquid technical setups that fail a hard pure-technica
 
 **Sort:** after Soft-A, before B, by session turnover descending.
 
-**Chat:** include material TECH_WATCH on midday / manual when turnover clearly clears the midday-scale floor; on open, only if turnover already looks midday-scale.
+**Chat:** include material TECH_WATCH on midday / manual when turnover clearly clears the midday-scale floor; at the deployed pre-close slot, only if turnover already clears the midday-scale floor (~$2–5m).
 
 ## Persistence
 
@@ -145,6 +185,24 @@ For each source: try HTTP fetch / API first; **if fetch blocked → open that UR
 3. **TradingView-advanced MCP** — optional corroboration, under pipeline §2b budget.
 4. **MCP-over-HTTP bridge** (see the cloud RUNTIME-CONTRACT): `market-recap` pack `get_quotes` / `top_movers` / `market_snapshot`, plus `stocktwits` and `shibui`. Reachable over plain HTTPS JSON-RPC with no agent.minimax.io registration — preferred over raw Yahoo because it is not rate-limited and returns `as_of` + `market_state` with every quote.
 5. **TradingView scanner API** `POST https://scanner.tradingview.com/america/scan` — movers, `relative_volume_10d_calc` (RVol), `market_cap_basic`, `halted`, and `premarket_change`/`premarket_volume`/`premarket_close` in one call.
+
+### Pass 1 screening rule (required)
+
+Discover on the **trigger**, not on the close-to-close move. A name that gapped +4% and closed
++3.5% on heavy volume is in play; a name that closed flat after gapping +9% and fading is not.
+
+1. Screen the universe for `(|change| >= 3%) OR (|gap| >= 3%)`. Do **not** screen on
+   `|change| >= 5%` alone — that silently drops every gap-and-fade and every gap-that-held.
+2. Apply the slot's floors (price, market cap, session $ volume) to the survivors.
+3. **Price every survivor.** Do not cap the screen at "the top N by dollar volume": a mid-cap
+   with a real 8-K routinely sits below that cap, and a silent cap is an invisible hole in the
+   digest. If a cap is genuinely unavoidable, state it in the artifact along with the
+   **priced / unpriced counts** and which candidates the cap dropped.
+4. Record in the artifact: universe size, survivors after the trigger, survivors after the
+   floors, number priced, number tiered.
+5. Compute RVol as session volume ÷ the **trailing 10 settled sessions from the same series**
+   and state that denominator. A screener's own RVol column uses a different denominator and is
+   not comparable across sources.
 
 ### Pass 1b — Premarket / gap annex (also relevant at 15:50 — gaps that held into the close)
 
@@ -208,6 +266,6 @@ RTH: 09:30–16:00 ET.
 - Retrying TradingView `run_screener` after HTTP 429
 - Serial `get_symbol_data` for dozens of names when one batch (≤50) would cover them
 - `get_news` on every mover instead of top floor-cleared candidates only
-- Forgetting overnight carry on the morning open after a big AH 8-K print
+- Forgetting overnight carry at the start of a slot after a big AH 8-K print
 - Scanning through a full NYSE/NASDAQ holiday without the pipeline skip
 - Dropping liquid technicals (soft RVol, large turnover) with no TECH_WATCH home
