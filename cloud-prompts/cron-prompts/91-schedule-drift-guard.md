@@ -147,9 +147,11 @@ how the #14 gap stayed invisible for a cycle.
 
 - **No drift:** reply with exactly two lines:
   ```
-  schedule guard: OK — 22 routines match the ground truth
+  schedule guard: OK — <n> routines match the ground truth
   drift: 0
   ```
+  `<n>` is the count the detector printed (`checked N routines against the ground truth`) — never a
+  hardcoded fleet size, which goes stale whenever a routine is added, removed or recreated.
 - **Drift found and repaired:** report it properly, because it is a real finding:
   ```
   schedule guard: DRIFT REPAIRED — <n> routine(s) had a corrupted day-of-week field
