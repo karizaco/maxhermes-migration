@@ -140,6 +140,15 @@ movers list uses `priceChange`/`percentChange`. Capture the list name from the p
 calls (`page.on("response")`) — guessing `stocks.us.advances` returns `count:0` with HTTP 200, so
 a wrong list name looks like an empty market rather than an error.
 
+**Finviz diagnosis (2026-10-31):** blocked **site-wide** with Cloudflare
+`cf-mitigated: challenge` on every path. It is **egress-IP reputation, not fingerprinting** —
+headed chromium under Xvfb with a persistent profile and full stealth patches also fails, and
+the sandbox egress is AS45102 (Alibaba Cloud). An n8n relay helps **only** if it egresses from a
+residential/clean IP; another datacenter VPS hits the same wall. One n8n HTTP Request node
+decides it: fetch `https://finviz.com/screener.ashx?v=111`, POST the status back. `200` → build
+it. `403` → your egress is still flagged. Note `xvfb` IS installable here, so a headed browser is
+available to any routine that wants one.
+
 ### `uv` / `uvx` — two more MCPs are installable
 
 `uv` and `uvx` 0.12.17 are **already installed** at `/usr/local/bin/`. That unlocks the two local
@@ -199,7 +208,5 @@ comma-joined **string** (`"SPY,QQY,IWM,XLE"`), not a list.
   embeds a condensed `RUNTIME-CONTRACT.md`.
 - **Artifacts:** `karizaco/minimax-cloud-outputs`, branch `main`. `master` is a fast-forward mirror
   maintained by the auditor.
-- **`refs/` in the outputs repo** — the *live* repo `.gitignore` does **not** exclude `refs/`
-  (checked 2026-10-31). A stale sandbox-local `.gitignore` copy may still carry a `refs/` line,
-  in which case `git add -A` silently skips new files there and `git add -f refs/<file>.md` is
-  needed. Verify against the repo's current `.gitignore` before assuming the trap is live.
+- **`refs/` in the outputs repo** is gitignored in the cloud sandbox — `git add -f refs/<file>.md`
+  is required, and a plain `git add -A` silently skips it.
