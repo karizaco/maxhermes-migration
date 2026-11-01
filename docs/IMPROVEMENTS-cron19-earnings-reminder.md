@@ -1,0 +1,208 @@
+# Improvements — cron #19 earnings-reminder-daily
+
+Reviewed 2026-10-25. Evidence base: 16 recorded runs (2026-10-10 → 2026-10-25), the deployed
+cron task `450511266500917`, the migration repo `karizaco/maxhermes-migration`, and the live
+`karizaco/minimax-cloud-outputs` remote.
+
+---
+
+## 1. Stop advertising MCPs that do not exist — CRITICAL
+
+The prompt's "MCP TOOLS AVAILABLE" block lists `mcp__yahoo_finance__*` and `mcp__shibui_finance__*`.
+Neither exists in Cloud sessions. `mcode-tools connector tools` returns `partial=false`,
+`provider_failures=[]`, and a catalog containing only `connector__matrix__*` and
+`connector__email_workbench_credentials__*`. `tool_search` returns 0 hits for every finance keyword.
+
+Every run therefore burns 2–3 turns re-proving the same negative before falling back, and every
+artifact reports a spurious `errors: 1`. Sibling cron #7 was already repaired for exactly this
+("provably absent in Cloud sessions … Do not burn turns re-testing them"). Cron #19 was missed.
+
+**Fix:** name the working path as PRIMARY. Web search is the primary source; the MCPs are not
+mentioned as available. `errors: 0` now means a genuinely clean run.
+
+## 2. Fix the git push recipe — it deletes other crons' artifacts — CRITICAL
+
+The prompt's recipe is `git init` → `git add -A` → `git push origin main`. In a fresh sandbox with
+no working tree, `git add -A` stages **every file on the branch as deleted**.
+
+This is not hypothetical. Cron #12's push on 2026-10-25 (commit `1356a03`) deleted **283 files**,
+including all six of cron #19's published artifacts, `2026-10-18/SKIPPED_earnings_reminder_daily.md`,
+and the repo's `.gitignore` — wiping 109 `daily-screens/`, 72 `us-eod/`, 13 `international-eod/`,
+9 `us-stocks-in-play/` and 6 `daily-briefs/` files belonging to other crons.
+
+Reproduced locally: `git reset --mixed origin/main` + `git add -A` stages **327 deletions**.
+Verified safe alternative: worktree at `origin/main`, `git add <artifact-dir>` only → **1 addition,
+0 deletions**.
+
+**Fix:** replace the recipe with the worktree form, add only the artifact directory, and push
+`HEAD:main`. Also restore `.gitignore` (done) so scratch files are never staged.
+
+## 3. Never push from a stale base — cron #12's push also silently dropped cron #19's files
+
+On 2026-10-23 cron #19's push was rejected (non-fast-forward) because sibling crons had moved
+`origin/main`; local `master` was also an orphan history. The recovery was a worktree at
+`origin/main`. The recipe in the prompt does `git init` + `git push origin main` against a branch
+that does not exist locally — it pushes a *new* orphan history or fails outright.
+
+**Fix:** `git fetch origin main` → worktree at `origin/main` → commit → `git push origin HEAD:main`.
+Never force-push; never `git init` a fresh history against a shared remote.
+
+## 4. The watchlist leg has never once succeeded — resolve it or delete it
+
+Skill step 1 requires `research/watchlist.yaml`. It does not exist in the Cloud sandbox, does not
+exist in the migration repo (205 paths, no `research/`), and does not exist in the outputs repo
+(455 paths). Every artifact since 2026-10-14 carries the same line: *"Not evaluated —
+`research/watchlist.yaml` is a local Windows path, absent from the cloud sandbox."*
+
+Five of the skill's six numbered steps are about watchlist cross-referencing. A permanently
+unreachable input should not be advertised as a capability.
+
+**Fix (a):** publish a watchlist to the outputs repo and fetch it at run time —
+`https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml`.
+**Fix (b):** if no watchlist is to be published, drop the step and the "Your watchlist" section
+entirely rather than carrying an empty table every day.
+
+## 5. Fix the schedule — it fires at 11:30 ET, but the skill says 06:00 ET
+
+Deployed schedule is `30 11 * * *` America/New_York (11:30 ET). The skill states
+`0 6 * * 1-5` (06:00 ET) and says it "pairs with the 07:37 ET pre-market brief". Cron #26, the
+pre-market brief, fires 08:30 ET.
+
+11:30 ET is *after* the brief it is supposed to feed, and after the US open — a "morning reminder"
+that arrives mid-session. Run history confirms the intent drift: the 2026-10-25 fire ran 11:30 ET
+(Sunday), while the 10-10 → 10-24 fires all ran 05:30 ET.
+
+**Fix:** schedule `0 6 * * *` America/New_York, with the window check keeping it weekdays-only.
+This puts the artifact on disk before cron #26 reads it.
+
+## 6. Add a market-holiday check — the window check only knows weekends
+
+The window check tests `DOW >= 6`, so US market holidays still fire and produce a normal artifact.
+Thanksgiving, Christmas and July 4 will each generate a "here is today's earnings" file for a closed
+market. The sibling `eod-watchlist-snapshot` skill already ships `scripts/holiday_calendar.py` —
+the pattern exists in this repo and is not being used here.
+
+**Fix:** check the NYSE holiday calendar in the window check; skip with `reason: market holiday`.
+
+## 7. Verify report dates against company sources, not just aggregators
+
+Aggregator calendars carry wrong dates. Across 2026-10-20 → 10-23 the following were mis-dated and
+had to be excluded after checking the company IR page or press release:
+
+| Ticker | Aggregator said | Company source says |
+|---|---|---|
+| OMC | Oct 21 | Oct 22 (omc.com press release) |
+| NEM | Oct 21 | Oct 22 (newmont.com) |
+| ITW | Oct 23 | Oct 27 (investor.itw.com) |
+| NXPI | Oct 23 | Oct 27 (nxp.com, Oct 6 release) |
+| HCA | Oct 23 | Oct 27 (investor.hcahealthcare.com) |
+| CHGCY | Oct 23 | Oct 27 (chugai-pharm.co.jp IR) |
+| NWG | Oct 23 | Oct 30 (investors.natwestgroup.com) |
+| INTC | Oct 22 | Oct 29 (intel.com, Oct 6 release) |
+| SLB | Oct 22 | Oct 23 (marketbeat/marketbeat) |
+
+**Fix:** state explicitly in the prompt that any name near the filter boundary must have its date
+confirmed against a company IR page, press release or filing, and record exclusions in the artifact.
+This is the single highest-value correctness rule — it is what turned 6 of those 9 into exclusions.
+
+## 8. Verify S&P 500 membership against a live constituent list, never from memory
+
+The filter is "S&P 500 / mega-cap >$50B mcap". Membership must be checked against a live
+constituent list. The Wikipedia `List_of_S&P_500_companies` wikitext via the MediaWiki API parses
+cleanly: 502 symbols from `{{NyseSymbol|…}}` / `{{NasdaqSymbol|…}}` templates, with `BRK.B`,
+`GOOGL`, `GOOG` and `FOX` all present as a control check. The rendered HTML table does **not** parse
+this way — an early attempt yielded 3 symbols and would have produced a badly wrong artifact.
+
+**Fix:** specify the API wikitext endpoint, the template regex, the expected symbol count (~502) and
+the control-ticker check. Cache to `/workspace/.cache/sp500.txt` and reuse within the run.
+
+## 9. Reconcile conflicting market caps and EPS across sources instead of silently picking one
+
+Sources disagree materially: AXP market cap ranged $203.7B–$219.6B across five providers on
+2026-10-23; INFY ranged $43.7B–$53.6B, straddling the $50B inclusion threshold itself; AXP EPS
+ranged 4.47–4.61; META 5.54 (Yahoo) vs 6.35–6.67 (adjusted); ARGX −27.83 (Yahoo) vs 7.44
+(StockTitan). Without a rule, the same name lands differently on different days.
+
+**Fix:** pick one primary source per field (Yahoo for market cap and EPS estimate), record the
+spread when it exceeds a tolerance, and state the primary source in the artifact header.
+
+## 10. Make the artifact self-describing and machine-readable
+
+Current artifacts are prose-plus-table with no front matter, so a downstream consumer (cron #26's
+pre-market brief) cannot parse them without guessing. They also do not state *when* the data was
+snapshotted, and on 2026-10-22 and 10-23 three names had already reported before the fire time —
+a distinction the reader needs but the table does not carry.
+
+**Fix:** add a front-matter header (`date`, `cron`, `fire_time_et`, `snapshot_et`, `source`,
+`primary_source`, `status`, `pending_count`, `already_reported_count`) and a `status` column
+(`pending` / `reported`) per row. Also fix the skill's output-path drift: it still names
+`C:\Users\admin\…\YYYY-MM-DD-today.md` while the cron prompt names
+`/workspace/earnings/{date}-reminders.md`, and the skill's "≤ 10 lines" / "≤ 5-line summary"
+guidance contradicts a table with 27 rows.
+
+---
+
+## Trigger layer — also edited (2026-10-25)
+
+Beyond the prompt body, the scheduler-level trigger was editable too:
+
+- **Schedule → `0 6 * * 1-5` America/New_York.** The day-of-week field now lives in the cron
+  expression, so the scheduler never fires on weekends and no weekend `SKIPPED_*.md` files are
+  produced. The in-prompt weekend branch is kept as a redundant one-line guard, and the holiday
+  gate still runs — no cron expression can express market holidays.
+- **Session mode → `new`.** The task was bound to one long-lived conversation
+  (`sessionId: 450511046144336` — the very conversation this review happened in), while all 20
+  prompts carry the line *"The cron session is fresh each time — there is no shared state."* The
+  deployment and the prompt contradicted each other, and one run's context bled into the next.
+  Now each fire starts clean, which matches what the prompt always claimed.
+- **Timezone pinned.** A `cron_update` that omits `timezone` silently adopted the caller's local
+  zone — the task briefly flipped to `Europe/Paris`, which would have fired a 06:00 ET job at
+  00:00 ET. Caught by re-reading the task; the repo README now documents the gotcha.
+- **Next fire confirmed: 2026-10-26 06:00 Mon ET.**
+
+---
+
+## Also fixed (not counted among the ten)
+
+- **Restored the deleted artifacts.** All six cron #19 earnings files plus the 2026-10-18 skip
+  record, recovered from git history, were re-added to `main` in commits `886a949` / `7ac925a`,
+  together with the repo's `.gitignore`.
+- **Restored the other 275 files cron #12 deleted** — `daily-screens/` (109), `us-eod/` (72),
+  `international-eod/` (13), `us-stocks-in-play/` (9), `daily-briefs/` (6), `ntrt/` (6),
+  `options-flow/` (5), `refs/` (5), `macro-calendar/` (2) and the rest, in commit `d3f774e` and
+  `b3d7877`. Verified: **zero** paths that existed before the incident are missing now.
+- **Fixed the destructive push recipe across the whole fleet, not just cron #19.** All 19 other
+  cron prompts in the migration repo used the same unscoped `git add -A`. Cron #12's prompt was the
+  one that fired, but the next offender would have been any of the other 18. Every prompt now uses
+  a worktree at `origin/main` and stages only its own output directory, with an abort-if-deletion
+  guard. Commit `27ad61b`. The fix was validated end-to-end in a clean sandbox: one file added,
+  zero deletions, all directories intact.
+- **Removed the contradictory `refs/` rule from `.gitignore`.** The repo ignored `refs/` while
+  tracking five documents inside it, so any restore via `git add -A` silently skipped them — that
+  is why the first restore pass left `refs/` empty.
+- **Pinned the sandbox CA in the push recipe.** `GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/
+  sandbox-gateway-ca.crt` — without it git fails cert verification, as it did on 2026-10-14 and
+  2026-10-20.
+- **Skill audit line is malformed.** SKILL.md step 6 reads
+  `earnings_reminder target=earnings:<date> watchlist_hits=<n> bigcap_hits=<n>` — the angle brackets
+  were eaten by templating, so the format string is unusable as written.
+- **TLS proxy cert rotation.** The sandbox gateway's leaf cert expired mid-day on 2026-10-22,
+  breaking all egress (curl, connector tools, git) until the proxy reissued it. The prompt's
+  skill-fetch step should name `web_fetch` as the fallback when `curl` returns a certificate error,
+  and pin `GIT_SSL_CAINFO` to the sandbox CA.
+
+---
+
+## Cross-check outcome (2026-11-01)
+
+Nine of the ten improvements were verified working on live artifacts produced 2026-10-26 →
+2026-10-30. The tenth — S&P 500 membership verification — was working but carried a defect in the
+rule I wrote: the constituent parse I specified matched 502 symbols and silently dropped **CBOE**
+(written `{{BZX link|CBOE}}` in the wikitext, not `{{NyseSymbol|…}}`). The 10-30 run found this on
+its own and reported it. Rule A is now corrected to 503 symbols with a five-ticker control check,
+in the live task, the repo prompt and `SKILL.md`.
+
+Full evidence table, the two out-of-routine failures found (cron #12's 498-file deletion recurred
+on 2026-10-26 with the old recipe, and cron #19 missed 10-27/10-28 entirely because its task was
+deleted and recreated), and the 10-27/10-28 backfill are documented in
+`cloud-prompts/../docs/CROSSCHECK-cron19-earnings-reminder.md` (this repo).
