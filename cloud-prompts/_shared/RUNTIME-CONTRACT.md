@@ -112,7 +112,7 @@ status of the cookie request.
 | **Yahoo chart** | `https://query2.finance.yahoo.com/v8/finance/chart/{SYM}?range=5d&interval=1d` | **429** on 10-28; **200 OK** on 10-31 |
 | **Yahoo screener** | `https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0` | **429** on 10-28; **200 OK** on 10-31 |
 | Stooq CSV | `https://stooq.com/q/l/?s={SYM}.us&f=sd2t2ohlcv&h&e=csv` | **404 / 000** |
-| Finviz screener | `https://finviz.com/screener.ashx?...` | **403 / 000 / 503** across 4 attempts — Cloudflare challenge, and the 503 body was an upstream TLS `CERTIFICATE_VERIFY_FAILED` from the sandbox egress proxy |
+| Finviz (ALL paths) | `https://finviz.com/` , `/quote.ashx`, `/screener.ashx`, `/news.ashx`, `/api/screener.ashx` | **403 site-wide** — Cloudflare `cf-mitigated: challenge`, edge `cf-ray: …-IAD`. **Root cause = egress IP reputation, not fingerprinting** (see §2f) |
 | Barchart | `https://www.barchart.com/...` | **Blocked for plain curl** — HTTP 202 bot challenge, no cookies set, `core-api` → 403. **But it WORKS via headless chromium** — see §2c. |
 | NASDAQ halt RSS | `https://www.nasdaqtrader.com/rss.aspx?feed=HALTS` | **HTTP 200 with 0 RSS items** — serves an HTML shell. `api.nasdaq.com/api/quote-list/halt-directory` → 404. `Trader.aspx?id=TradeHalts` → 200 but JS-rendered, 0 table rows. **Use the TradingView scanner's `halted` column instead.** |
 
@@ -208,6 +208,50 @@ MCPs** — but the GitHub connector replaces the `git`+PAT push block in every c
 No token in the sandbox, no CA-bundle wrangling, and file-level writes cannot stage deletions.
 It has **no equivalent of the push block's 3-attempt race-retry**, so routines that share a fire
 minute with a partner should keep the git block.
+
+
+### 2f. Finviz — exact diagnosis, and when an n8n relay is worth building (2026-10-31)
+
+**Measured, not assumed.** Cloudflare blocks **every** Finviz path from this sandbox
+(`/`, `/quote.ashx`, `/screener.ashx`, `/news.ashx`, `/api/screener.ashx`) with HTTP 403,
+`cf-mitigated: challenge`, `server: cloudflare`, edge `cf-ray: …-IAD`.
+
+**It is the egress IP, not the browser.** Evidence, all on 2026-10-31:
+
+| Test | Result |
+|---|---|
+| curl with 4 different UAs (Chrome / Safari / iPhone / bare curl) | byte-identical challenge |
+| headless chromium + `navigator.webdriver` masked + `chrome.runtime` + plugins/languages/hardwareConcurrency patched | still 403 |
+| **headed** chromium under Xvfb, persistent profile, full stealth patch, waited 30 s | still 403, "Just a moment…" |
+| sandbox egress | `47.253.4.207` = **AS45102 Alibaba (US) Technology**, Virginia Beach — a datacenter ASN with poor Cloudflare bot score |
+
+A headed browser with a real profile and a persistent cookie jar **would** clear a
+fingerprint challenge. It did not clear this one. That rules out fingerprinting and points at
+IP reputation.
+
+**When is an n8n relay worth it?** Only if the n8n host can egress from a **residential or
+otherwise clean** IP. Another datacenter VPS (AWS/GCP/Azure/DO/Hetzner) will almost certainly
+hit the same challenge — Cloudflare penalises datacenter ASNs broadly.
+
+**Cheap decision test — one n8n HTTP Request node, no build:**
+fetch `https://finviz.com/screener.ashx?v=111`, POST back the status code and whether the body
+contains `cf-mitigated`. `200` → build the relay. `403` + challenge → your egress is still
+flagged and no orchestration will fix it without a residential proxy.
+
+**But first check the alternatives — Finviz's function is already covered:**
+movers → `market-recap.top_movers`; screener/filtering → the TradingView scanner
+(`market_cap_basic`, `relative_volume_10d_calc`, `price`, `change`, `volume`, `exchange`,
+`halted`, `premarket_*`) and `financekit`/`tradingview-mcp` screeners; quotes, float and short
+ratio → Yahoo `quoteSummary` with the crumb; premarket → the scanner's `premarket_*` columns and
+Barchart via headless chromium; halts → the scanner's `halted` column; news and filings →
+`web_search` + SEC EDGAR full-text.
+
+**The only Finviz-unique content left is its preset filter sets, the insider-trading tab and the
+analyst-ratings tab.** If that is worth having, the boring route is Finviz's **official paid API**
+(`finviz.com/api`) — no scraping, no challenge, no proxy, no n8n.
+
+**Note:** `xvfb` is installable in this sandbox (`apt-get install -y xvfb` works), so a *headed*
+browser is available to any routine that wants one. It does not help with Finviz.
 
 
 ## 3. The rules
