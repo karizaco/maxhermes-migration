@@ -61,11 +61,16 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    - Show any S&P 500 / mega-cap name (>$50B mcap) reporting today.
    - Skip everything else (no mid/small-cap noise).
 4. **Verify S&P 500 membership against a live constituent list — never from memory.**
-   Fetch the MediaWiki API wikitext and parse the symbol templates:
+   Fetch the MediaWiki API wikitext:
    `https://en.wikipedia.org/w/api.php?action=parse&page=List_of_S%26P_500_companies&prop=wikitext&format=json`
-   Parse `{{NyseSymbol|X}}` and `{{NasdaqSymbol|X}}`; expect ~502 symbols. Control check before
-   trusting the parse: `BRK.B`, `GOOGL`, `GOOG` and `FOX` must all be present. Do NOT parse the
-   rendered HTML table — it yields a handful of symbols and silently corrupts the roster.
+   Parse ALL THREE symbol templates — `{{NyseSymbol|X}}`, `{{NasdaqSymbol|X}}` AND `{{BZX link|X}}`.
+   The third one matters: Cboe Global Markets is written `{{BZX link|CBOE}}`, so a
+   NyseSymbol/NasdaqSymbol-only regex yields 502 symbols and silently DROPS CBOE — a real
+   constituent that then gets wrongly excluded. Expect **503** symbols.
+   Control check before trusting the parse: `BRK.B`, `GOOGL`, `GOOG`, `FOX` AND `CBOE` must all
+   be present. Do NOT parse the rendered HTML table — it yields a handful of symbols and
+   silently corrupts the roster. Do NOT use the `datasets/s-and-p-500-companies` CSV as the
+   authority: it is stale (still lists MMM, which left the index in 2024).
 5. **Confirm every report date against a company source before including a name.** Aggregator
    calendars carry wrong dates. Verified examples: OMC (Oct 21→22), NEM (Oct 21→22), ITW (Oct 23→27),
    NXPI (Oct 23→27), HCA (Oct 23→27), CHGCY (Oct 23→27), NWG (Oct 23→30), INTC (Oct 22→29),

@@ -237,11 +237,20 @@ Local Mavis wrote an audit line to a Windows audit file after every run.
 ## FILTER — the two rules that decide the roster
 
 **Rule A — S&P 500 membership must be verified against a live constituent list, never from memory.**
-Fetch the MediaWiki API wikitext and parse the symbol templates:
+Fetch the MediaWiki API wikitext:
   curl -s "https://en.wikipedia.org/w/api.php?action=parse&page=List_of_S%26P_500_companies&prop=wikitext&format=json"
-Parse `{{NyseSymbol|X}}` and `{{NasdaqSymbol|X}}`. You must get ~502 symbols.
-CONTROL CHECK before trusting the parse: `BRK.B`, `GOOGL`, `GOOG` and `FOX` must all be present.
+Parse ALL THREE symbol templates — `{{NyseSymbol|X}}`, `{{NasdaqSymbol|X}}` AND `{{BZX link|X}}`:
+  re.findall(r'\{\{(?:NyseSymbol|NasdaqSymbol|BZX link)\|([A-Z.\-]{1,6})\}\}', wikitext)
+**Why the third template matters:** Cboe Global Markets is written `{{BZX link|CBOE}}` in the
+wikitext. A NyseSymbol/NasdaqSymbol-only regex yields 502 symbols and silently DROPS CBOE — a
+real S&P 500 constituent — which then gets wrongly excluded from the roster. Verified 2026-10-30.
+You must get **503** symbols, not 502.
+CONTROL CHECK before trusting the parse: `BRK.B`, `GOOGL`, `GOOG`, `FOX` AND `CBOE` must all be
+present. If any control is missing the parse is broken — stop and fix it rather than shipping a
+truncated roster.
 Do NOT parse the rendered HTML table — it yields a handful of symbols and silently corrupts the roster.
+Do NOT treat the `datasets/s-and-p-500-companies` CSV as the authority: it is STALE (still lists
+MMM, which left the index in 2024). Wikipedia is authoritative; the CSV is a cross-check only.
 Cache the result to /workspace/.cache/sp500.txt and reuse it within the run.
 
 **Rule B — confirm every report date against a company source before including a name.**
