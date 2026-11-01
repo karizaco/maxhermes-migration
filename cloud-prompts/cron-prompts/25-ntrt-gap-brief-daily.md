@@ -76,6 +76,38 @@ echo "window-check: OK ($NOW_ET)"
 
 If the window check exits cleanly with "out-of-window: <reason>", the cron is DONE. Do not fetch the skill, do not call MCPs, do not write any other artifact, do not push. The `SKIPPED_*.md` file IS the artifact for this run — it's the audit trail for skipped fires.
 
+### BEFORE honouring the weekend branch — check WHEN THIS FIRE WAS SCHEDULED
+
+A weekday routine can execute on a **weekend**: the platform's Token Plan quota wall (error 2067)
+kills the session at its scheduled time and the platform re-dispatches the SAME session later, so
+the session's calendar day is not the day the brief is for. Measured 2026-11-01: this routine's
+2026-10-30 09:00 ET fire (run_id 457983592751486, `scheduled_at_ms` = 2026-10-30 09:00:00 ET) was
+re-dispatched and executed on **Sunday 2026-11-01 01:51 ET**. The weekend guard fired on
+`DOW=7`, which would have **discarded a real trading-day brief** and written a SKIPPED marker that
+falsely claimed a Sunday skip.
+
+**A weekend/weekday mismatch is a signal to check the scheduled date, not to skip.** Before
+writing the SKIPPED marker for a weekday routine, resolve the fire's own date:
+
+```bash
+# cron_read view=runs for this task -> run.scheduled_at_ms (epoch ms) == the fire's scheduled time
+# Convert THAT to ET and use it as the brief's date. If it differs from today's ET date, this is a
+# delayed replay: DO NOT skip. Rebuild the brief for the scheduled date instead.
+```
+
+Rules that follow:
+
+1. **The brief is dated to the fire's scheduled date, not to the execution date.** Write
+   `ntrt/<scheduled-date>.md`. Dated to today, the file lands under a date the delivery auditor
+   never expected, and its staleness check (which takes the NEWEST `ntrt/*.md` date) reads it as
+   "routine is current" and **masks the real gap**.
+2. **The SKIPPED marker must never be written for a delayed replay.** A marker dated on the
+   execution day asserts "this routine was scheduled for Sunday and was skipped" — false.
+3. **A delayed replay is normal, not an error.** Rebuild the brief for the scheduled date from
+   archived data (see Mode B2 in the skill) and say plainly in the artifact that it is a
+   reconstruction produced late.
+
+
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/ntrt-gap-brief/SKILL.md
@@ -184,6 +216,45 @@ quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL ab
 
 **Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
 source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
+
+### FOR THIS ROUTINE: the TradingView public screener is the primary data source
+
+This brief is a **pre-market gap screen**, and the skill's Mode B screener is the one source that
+returns **pre-market volume** alongside the pre-market print. Use the **public endpoint** — the
+MCP tool `mcp__tradingview_advanced__screen_stocks` is usually not registered here (verified
+2026-11-01: catalog 133 tools, 0 finance), while the public endpoint works:
+
+`POST https://scanner.tradingview.com/america/scan` (headers: `Content-Type: application/json`,
+`User-Agent: Mozilla/5.0`, `Origin: https://www.tradingview.com`)
+
+```json
+{"filter":[{"left":"type","operation":"equal","right":"stock"},
+           {"left":"exchange","operation":"not_in_range","right":["OTC"]},
+           {"left":"market_cap_basic","operation":"egreater","right":200000000},
+           {"left":"premarket_change","operation":"in_range","right":[3,1000]}],
+ "options":{"lang":"en"},"markets":["america"],
+ "symbols":{"query":{"types":[]},"tickers":[]},
+ "columns":["name","close","premarket_close","premarket_change","premarket_volume",
+            "market_cap_basic","average_volume_30d_calc","sector","exchange"],
+ "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,600]}
+```
+
+Run it **twice** — `premarket_change` in `[3,1000]` (desc) and in `[-1000,-3]` (asc) — so both sides
+are carried, then rank by **absolute** `premarket_change`.
+
+Four rules that decide whether this brief is right:
+
+- **`type: "stock"` includes REITs.** Do not re-filter to common stock. On 2026-10-30 a universe
+  seeded on common stock only hid **ARI (-63.9%)**, the largest mover of the day.
+- **`premarket_volume` is the importance measure.** Divide by `average_volume_30d_calc` for % of
+  ADV and publish it. A ±20% gap on 100 shares is a quote, not a market. **Yahoo has NO pre-market
+  volume** (0 on every pre-market bar), so a Yahoo-only route cannot publish this column.
+- **Yahoo's pre-market tape goes stale** on thinly-traded names — a flat print left from hours
+  earlier. Never publish a Yahoo pre-market price or range without checking it against the
+  screener, and drop any Yahoo range where the two disagree by more than ~0.6%.
+- **TradingView's `premarket_*` columns hold only the most recent session.** For a session older
+  than the last one they are gone — use `premarketprice.com/premarket-{gainers,losers}/<date>`
+  and Chartmill's dated articles instead.
 
 ### Rules
 
