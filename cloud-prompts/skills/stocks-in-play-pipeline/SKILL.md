@@ -112,10 +112,10 @@ Aim for ≤12–15 TradingView MCP calls per SIP digest slot:
 3. Continue digest: HTML movers + batch/quotes already in hand + local catalysts.
 4. Log once in Source health. Remaining calls may still be tried sparingly if 429 was screener-only.
 
-## 3) After-close → next-open annex
+## 3) After-close → next-slot annex
 
 - Midday/manual/EOD: after-close / AH / PTS high-material → Tier C + **`overnight_carry`**.
-- Next `open`: load prior `overnight_carry` into Overnight → open annex; re-check; promote only if floors + tape clear.
+- Next slot (open, pre-close or midday, as the market's schedule runs): load prior `overnight_carry` into the Overnight → next-slot annex; re-check; promote only if floors + tape clear.
 - TOB/buyout near-offer rules still win (no chase).
 
 ## 4) Source health (required table)
@@ -137,7 +137,7 @@ Status values: `ok` | `blocked` | `browser` | `skipped`. One row per attempted s
 
 **Chat only when actionable:**
 - Any Tier A or Soft-A name, **or**
-- Material TECH_WATCH (midday/manual when turnover clears midday-scale floor; open only if already midday-scale), **or**
+- Material TECH_WATCH (midday/manual when turnover clears midday-scale floor; at any other slot — including a deployed pre-close slot — only if turnover already clears that scale), **or**
 - Material Tier C gap/halt watch (fresh wide-spread deal, LIMIT_UP/DOWN with size, halt resume risk, overnight_carry that still matters)
 
 Otherwise: **quiet in chat** (no "nothing in play" filler).
