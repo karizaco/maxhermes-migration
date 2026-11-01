@@ -145,7 +145,7 @@ The reply is delivered to the user's chat. **Stay silent-ish when there is nothi
 a daily "everything is fine" message trains the user to ignore this routine, which is exactly
 how the #14 gap stayed invisible for a cycle.
 
-- **No drift:** reply with exactly two lines:
+- **No drift and nothing else happened:** reply with exactly two lines:
   ```
   schedule guard: OK — <n> routines match the ground truth
   drift: 0
@@ -167,6 +167,13 @@ how the #14 gap stayed invisible for a cycle.
   ```
   and state the likely cause (a GUI save) plus the fact that these routines will NOT fire on
   their other weekdays until fixed.
+- **No drift, but something else happened** — you changed this routine's own prompt, or you found a
+  repo-level staleness that is NOT a schedule drift (a stale doc, a generator bug, a roster that
+  contradicts the ground truth): report it in the rich format the user expects — a 2–4 sentence prose
+  opener carrying the headline AND the caveat that changes how it should be read, then `### Signal`,
+  `### Method & caveats`, `### Files`, `### Push / errors`. Cap by NAMES SHOWN, not by lines; the long
+  detail belongs in the repo, not the chat. Do NOT pad a clean drift check into a report: if the only
+  news is "no drift", use the two lines above.
 
 ## WHAT TO TELL THE USER ABOUT THE ROOT CAUSE
 
