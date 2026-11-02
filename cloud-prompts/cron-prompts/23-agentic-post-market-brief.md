@@ -204,7 +204,6 @@ from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
- Resolve it as the first step.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-briefs/` subdirectory, with `{date}` as part of each filename.
@@ -257,21 +256,10 @@ the artifact file, not in the chat.
    degraded or blocked source. Name what could not be verified.
 4. **`### Files`** — one line per file written, with its sandbox path.
 5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
-   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for `errors: <n>` —
-   - `errors: <n>` — count of **SOURCE** failures that degraded the artifact. 0 = clean run. The
-  absent `mcp__*` tools are NOT an error and must not be counted.
-
-**Formatting rules — the reply is rendered in a chat client, not read as a diff.**
-- Use a compact markdown **table** whenever there are 3+ comparable numeric rows (index
-  levels, sector rotation, futures, breadth). Header row, `|---|` separator, numbers
-  right-aligned. A table beats prose for anything the reader is going to compare.
-- Keep every bullet to **one short line**. Never cram three facts into a 300-character
-  line with two em-dashes and three numbers — split it into two bullets, or move the
-  detail to the artifact file.
-- Bold only the numbers that carry the story (the headline move, the level that matters),
-  not every figure in the table.
-- Blank line between the header and the first bullet under it, so the section renders as a
-  heading rather than a run-on block.
+   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for
+   `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
+   0 = clean run. The absent `mcp__*` tools are NOT an error and must not be
+   counted.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
 

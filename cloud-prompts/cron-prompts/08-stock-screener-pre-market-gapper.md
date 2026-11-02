@@ -209,7 +209,6 @@ from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
- Resolve it as the first step.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-screens/{date}/` subdirectory, with `{date}` as part of each filename.
@@ -262,9 +261,10 @@ the artifact file, not in the chat.
    degraded or blocked source. Name what could not be verified.
 4. **`### Files`** — one line per file written, with its sandbox path.
 5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
-   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for `errors: <n>` —
-   - `errors: <n>` — count of **SOURCE** failures that degraded the artifact. 0 = clean run. The
-  absent `mcp__*` tools are NOT an error and must not be counted.
+   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for
+   `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
+   0 = clean run. The absent `mcp__*` tools are NOT an error and must not be
+   counted.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
 

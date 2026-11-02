@@ -106,12 +106,30 @@ Full endpoint list + measured status:
 
 ### Rules
 
+1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a
+   symbol you never successfully queried. Retry once after a short sleep, then fall through the
+   ladder.
+2. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect.
+3. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say so.
+   A missing row is recoverable; an invented price is not.
+4. **Distinguish "no data" from "no source".** No print today (pre-market, weekend, holiday) is
+   `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and HTTP status.
+5. **Every artifact discloses per-source health**: a `## Source health` section **or** an equivalent
+   `_source=` front-matter line — per source, the URL/query used, the HTTP status, and `ok` /
+   `failed:<reason>`. If a source was rate-limited, say `429 rate-limited` and which fallback you
+   used. Never hide a degraded run.
+6. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the artifact
+   with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the whole run
+   because one source was blocked. The zero-fallback policy governs the *fallback chain*, not
+   whether the artifact gets written.
 7. **One number per field, one source per field.** When two sources give different
    values for the same field, pick ONE and say which in `## Source health`: the bridge's
    `market-recap` for prices and movers (it is Yahoo-sourced and not rate-limited), the TradingView
    scanner for pre-market and RVol, Yahoo JSON for history. When they disagree by more than 0.6 %,
    prefer the bridge, say so, and **do not publish both**. Never report "no source available" when
    a source is reachable — a 429 is a rate limit, not an absence.
+
 
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
@@ -136,7 +154,6 @@ from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
- Resolve it as the first step.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-briefs/` subdirectory, with `{date}` as part of each filename.
@@ -189,9 +206,10 @@ the artifact file, not in the chat.
    degraded or blocked source. Name what could not be verified.
 4. **`### Files`** — one line per file written, with its sandbox path.
 5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
-   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for `errors: <n>` —
-   - `errors: <n>` — count of **SOURCE** failures that degraded the artifact. 0 = clean run. The
-  absent `mcp__*` tools are NOT an error and must not be counted.
+   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for
+   `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
+   0 = clean run. The absent `mcp__*` tools are NOT an error and must not be
+   counted.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
 

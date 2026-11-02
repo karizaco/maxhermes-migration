@@ -269,6 +269,27 @@ PRECEDENCE_RULE = """7. **One number per field, one source per field.** When two
    a source is reachable — a 429 is a rate limit, not an absence.
 """
 
+RULES_FULL = """1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a
+   symbol you never successfully queried. Retry once after a short sleep, then fall through the
+   ladder.
+2. **Sanity-check the RESPONSE BODY, not just the HTTP status.** The proxy can return HTTP 200
+   carrying a plain-text error page. Confirm the body parses as the JSON/CSV you expect.
+3. **Never fabricate a number.** If every source for a symbol failed, omit that symbol and say so.
+   A missing row is recoverable; an invented price is not.
+4. **Distinguish "no data" from "no source".** No print today (pre-market, weekend, holiday) is
+   `no_data`. A symbol you could not fetch is `fetch_failed` — name the reason and HTTP status.
+5. **Every artifact discloses per-source health**: a `## Source health` section **or** an equivalent
+   `_source=` front-matter line — per source, the URL/query used, the HTTP status, and `ok` /
+   `failed:<reason>`. If a source was rate-limited, say `429 rate-limited` and which fallback you
+   used. Never hide a degraded run.
+6. **Partial data beats no data.** If some symbols resolved and others did not, WRITE the artifact
+   with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the whole run
+   because one source was blocked. The zero-fallback policy governs the *fallback chain*, not
+   whether the artifact gets written.
+""" + PRECEDENCE_RULE
+
+
+
 DATE_RULE = """The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
 from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
@@ -375,7 +396,7 @@ def main():
                 # #26 has no Rules block at all - give it one, so the precedence rule has a home.
                 anchor = "## ZERO-FALLBACK POLICY"
                 if anchor in text:
-                    text = text.replace(anchor, "### Rules\n\n" + PRECEDENCE_RULE + "\n" + anchor, 1)
+                    text = text.replace(anchor, "### Rules\n\n" + RULES_FULL + "\n" + anchor, 1)
                     log.append(f"  CHANGED {routine} rules: +precedence (new Rules block)")
                 else:
                     log.append(f"  SKIP {routine} rules: no '### Rules' block")
@@ -383,7 +404,7 @@ def main():
                 log.append(f"  SKIP {routine} rules: no '### Rules' block")
         # WP7.2 — scheduled-date rule
         if "the fire's **scheduled** date" not in text:
-            m = re.search(r"(The `\{date\}` placeholder is today in US/Eastern, `YYYY-MM-DD`\.)", text)
+            m = re.search(r"(The `\{date\}` placeholder is today in US/Eastern, `YYYY-MM-DD`\.[^\n]*\n[^\n]*?Resolve it as the first step\.)", text)
             m2 = (re.search(r"(`\{date\}` = today in US/Eastern, `YYYY-MM-DD`\. Resolve it as the FIRST step\.)", text)
                   if not m else None)
             if m:
@@ -409,9 +430,18 @@ def main():
                 log.append(f"  SKIP {routine} output: date clause not found")
         # WP7.3 — errors definition
         if "count of MCP failures" in text:
-            text = text.replace(
-                "count of MCP failures that triggered fallback. 0 = clean run.", ERRORS_RULE.strip())
-            log.append(f"  CHANGED {routine} errors: source-failure wording")
+            # The existing bullet reads "... and one line for `errors: <n>` — count of MCP
+            # failures that triggered fallback. 0 = clean run." — replace the WHOLE bullet,
+            # not just its tail, or the two halves interleave into a mangled line.
+            m = re.search(r"^(\s*)(-\s*`errors: <n>`[^\n]*(?:\n\s*[^\n]*)?)", text, re.M)
+            if m:
+                text = text[:m.start()] + ERRORS_RULE.rstrip() + text[m.end():]
+                log.append(f"  CHANGED {routine} errors: source-failure wording")
+            else:
+                text = text.replace(
+                    "count of MCP failures that triggered fallback. 0 = clean run.",
+                    ERRORS_RULE.strip())
+                log.append(f"  CHANGED {routine} errors: source-failure wording")
 
         # verification
         problems = []
