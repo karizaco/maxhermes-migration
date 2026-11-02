@@ -77,7 +77,7 @@ connector_fallback() {
   HELP=/workspace/push_via_connector.sh
   # A sibling copy, if the caller fetched both files into one directory.
   SIB="$(dirname "$0" 2>/dev/null)/push_via_connector.sh"
-  [ -s "$HELP" ] || { [ -s "$SIB" ] && HELP="$SIB"; }
+  if [ ! -s "$HELP" ] && [ -s "$SIB" ]; then HELP="$SIB"; fi
   if [ ! -s "$HELP" ]; then
     for U in \
       "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_via_connector.sh" \
@@ -92,7 +92,8 @@ connector_fallback() {
   fi
   if [ ! -s "$HELP" ] || ! head -1 "$HELP" 2>/dev/null | grep -q '^#!'; then
     rm -f "$HELP"
-    echo "push: connector fallback skipped (could not fetch push_via_connector.sh)"; return 1; }
+    echo "push: connector fallback skipped (could not fetch push_via_connector.sh)"; return 1
+  fi
   sh "$HELP" --path "$ADD" --file "$LOCAL_FILE" --branch "$BRANCH" \
      --msg "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}"
 }
