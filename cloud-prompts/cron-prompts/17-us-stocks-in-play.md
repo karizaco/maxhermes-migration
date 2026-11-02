@@ -106,6 +106,30 @@ NOT improvise the source ladder, the fallback chain or the reply format from mem
 what keep a degraded run honest.
 
 
+## PRE-OPEN FEED AND GAP PROVENANCE (run before tiering)
+
+This routine fires ~15:50 ET, so by default it sees only where a stock **IS**. "In play" is a
+claim about the **journey** — a name that gapped +12% on an FDA nod at 09:12 and now trades +2%
+looks identical to one that never moved. The skill requires the gap annex to separate a gap that
+**held into the bell** from one that faded; this is how you compute it.
+
+```bash
+P=/workspace/preopen_feed.py
+[ -s "$P" ] || curl -s -o "$P" \
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_feed.py
+DATE=$(TZ=America/New_York date +%Y-%m-%d)
+python3 "$P" merge --date "$DATE" --symbols "<A,B,C — your candidate set>"
+```
+
+Output per name: `premarket % / 09:30 % / 10:00 % / 12:00 % / now %`, a **verdict**
+(`reverse` | `faded` | `held` | `no_move`), and — when a catalyst feed exists — the **reason**
+and the **timestamp** it broke.
+
+- The **catalyst feed is optional**; the path and the verdict still come from 5-minute bars.
+  Never block the digest on the feed, and never invent a path.
+- Feed prices are never trusted: >2pp disagreement ⇒ `unverified`. Report as unconfirmed or drop.
+- If the tool cannot run, record `gap provenance unavailable` in Source health and continue.
+
 ## OUTPUT
 Write the artifact to:
   `/workspace/us-stocks-in-play/{date}.md`
@@ -151,7 +175,8 @@ exists, and why the push script must never be run with `git push … | head -3`.
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`,
-   `bash`, the MCP-over-HTTP bridge, and `connector__github__*` for repo writes). Do NOT call the
+   `bash`, the MCP-over-HTTP bridge, `connector__github__*` for repo writes, and the shared
+   `preopen_feed.py` helper). Do NOT call the
    `mcp__*` tools — they are not registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.

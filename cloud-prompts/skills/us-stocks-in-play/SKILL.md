@@ -127,6 +127,33 @@ that **held into the bell** from one that faded. Never publish an intraday price
 close. Do not wait for the after-close earnings slate — the fleet's post-market brief owns that;
 the carry hands off to it.
 
+### Gap provenance — the missing mechanism (required)
+
+The gap rules above **mandate a computation that nothing else in the fleet performs**: whether a
+gap held into the bell or faded, and what the catalyst was *at the open*. Compute it with the
+shared helper, which rebuilds the intraday path from 5-minute bars and joins an optional
+catalyst feed:
+
+```bash
+python3 /workspace/preopen_feed.py merge --date <YYYY-MM-DD> --symbols <A,B,C>
+```
+
+| verdict | meaning | treatment |
+|---|---|---|
+| `reverse` | the opening move flipped sign | strongest in-play signal; the gap and the tape disagree |
+| `faded` | the opening move was substantially given back | in play, but the open buyer is gone |
+| `held` | the move is largely intact | a trend, not a squeeze-and-fade |
+| `no_move` | the open was inside the noise band | no gap to read; judge on the catalyst alone |
+
+- The **catalyst feed is optional**. Without it the path and the verdict still stand — the verdict
+  comes from 5-minute bars, not from the feed.
+- Feed **prices are never trusted**: >2pp disagreement with the bars or the scanner ⇒ `unverified`.
+- The helper's **premarket columns are LIVE ONLY** and come back blank for a past date. The
+  09:30 / 10:00 / 12:00 path from 5-minute bars is historical and always valid.
+- Tag affected names in the artifact and in chat: `GAP_FADED`, `REVERSED`.
+- Self-test: `python3 /workspace/preopen_feed.py selftest` runs four known sessions and must
+  print 4 PASS.
+
 ### Triggers (≥1 after the floor)
 
 | Trigger | Guidance |
@@ -230,17 +257,21 @@ Discover on the **trigger**, not on the close-to-close move. A name that gapped 
 ### Pass 1b — Premarket / gap annex (also relevant at 15:50 — gaps that held into the close)
 
 1. **TheStockCatalyst** `https://www.thestockcatalyst.com/NYSEPMMovers` — primary PM annex.
-2. **Barchart** `https://www.barchart.com/stocks/pre-market-trading` — WAF-blocked often; browser fallback.
+2. **Barchart** — plain curl is WAF-blocked (HTTP 202 challenge). Use the shared helper
+   `_shared/barchart_fetch.py` (headless chromium) instead: `--symbols A,B` or `--list top-gainers`.
 3. **Perplexity Finance** — browser catalyst Q&A.
 
 ### Pass 2 — Confirm
 
-Yahoo charts / Finviz quotes for last, % chg, volume → USD $ volume. OTC: confirm venue + $ vol gate.
+Yahoo chart API for last, % chg, volume → USD $ volume. **Finviz is egress-IP blocked** (403 on every
+path, Cloudflare challenge) — use the TradingView scanner and `market-recap` instead. OTC: confirm
+venue + $ vol gate.
 
 ### Pass 3 — Catalysts / halts
 
 - SEC EDGAR 8-K Atom (descriptive User-Agent): items 1.01, 2.01, 5.02, 7.01, 8.01
-- NASDAQ Trade Halt RSS + NYSE trading-halts page — strip warrants
+- Halts: the TradingView scanner's `halted` column (the NASDAQ Trade Halt RSS returns an empty
+  HTML shell every time) — strip warrants
 - Finviz news + PR Newswire RSS — headline glue
 - Apply buyout near-offer rule
 

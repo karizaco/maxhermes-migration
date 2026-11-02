@@ -1,0 +1,118 @@
+{
+  "name": "Pre-open catalyst capture",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 8,9,14,15 * * 1-5",
+              "times": []
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Schedule (08:30, 09:20, 09:50 ET)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-560, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://api.x.ai/v1/chat/completions",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.XAI_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'grok-4', temperature: 0.1, search_parameters: {}, messages: [{ role: 'user', content: 'You are a US equity market catalyst feed. RIGHT NOW, list US-listed stocks (NYSE/NASDAQ/AMEX, ticker under 6 chars) that are moving materially pre-market or at the open. For each, return JSON ONLY, one object per line, no prose: {\"ticker\":\"\",\"name\":\"\",\"pct\":0.0,\"price\":0.0,\"cat\":\"acquisition|merger|earnings|guidance|fda|trial|offering|halt|downgrade|guidance-cut|spin|dividend|other\",\"why\":\"one clause, <=140 chars, stating the specific catalyst\",\"ref\":\"source URL\",\"conf\":\"high|medium|low\"}. Only include names with a move beyond roughly 3% pre-market or a genuinely material corporate catalyst. If there is no US pre-market session (weekend/holiday), return nothing. Do NOT include your own commentary.' }] }) }}",
+        "options": { "timeout": 90000 }
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Grok (narrative)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-320, -120],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "url": "https://scanner.tradingview.com/america/scan",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filter: [ { left: 'type', operation: 'equal', right: 'stock' }, { left: 'exchange', operation: 'in_range', right: ['NASDAQ','NYSE','AMEX'] }, { left: 'volume', operation: 'egreater', right: 50000 } ], columns: ['name','description','close','change','volume','relative_volume_10d_calc','market_cap_basic','premarket_change','premarket_volume','premarket_close','halted','exchange'], sort: { sortBy: 'premarket_volume', sortOrder: 'desc' }, range: [0, 120] }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "TradingView scanner (ground truth)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-320, 140],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge Grok (narrative) with the TradingView scanner (ground truth prices).\n// Output: JSONL lines, one per name. Prices ALWAYS come from the scanner.\nconst out = [];\nconst CAT = new Set(['acquisition','merger','earnings','guidance','fda','trial','offering','halt','downgrade','guidance-cut','spin','dividend','other']);\n\nconst ts = $now.setZone('America/New_York').toFormat(\"yyyy-MM-dd'T'HH:mm:ssxxx\");\nconst date = ts.slice(0, 10);\n\n// ---- scanner rows -> map by ticker\nconst tvRows = [];\ntry {\n  const j = $input.all().find(n => n.json && Array.isArray(n.json.data));\n  const d = j ? j.json.data : [];\n  for (const r of d) {\n    const s = r.d;\n    tvRows.push({ ticker: String(s[0]||'').toUpperCase(), name: s[1], close: s[2], change: s[3],\n      volume: s[4], rvol10: s[5], market_cap: s[6], premkt_chg: s[7], premkt_vol: s[8],\n      premkt_px: s[9], halted: s[10], exchange: s[11] });\n  }\n} catch (e) {}\nconst tv = Object.fromEntries(tvRows.map(r => [r.ticker, r]));\n\n// ---- grok lines -> records\nconst grok = [];\ntry {\n  const g = $input.all().find(n => n.json && n.json.choices);\n  const text = g ? (g.json.choices[0].message.content || '') : '';\n  for (const line of text.split('\\n')) {\n    const m = line.match(/\\{[^{}]*\\}/);\n    if (!m) continue;\n    try {\n      const r = JSON.parse(m[0]);\n      if (!r.ticker) continue;\n      grok.push(r);\n    } catch (e) {}\n  }\n} catch (e) {}\n\nconst seen = new Set();\nfor (const g of grok) {\n  const t = String(g.ticker).toUpperCase();\n  if (seen.has(t)) continue;\n  seen.add(t);\n  const s = tv[t];\n  let pct = g.pct, conf = g.conf || 'medium';\n  if (s && typeof s.premkt_chg === 'number') {\n    if (typeof pct === 'number' && Math.abs(pct - s.premkt_chg) > 2) conf = 'unverified';\n    pct = s.premkt_chg;\n  } else { conf = 'unverified'; }\n  out.push({ ts, src: 'grok', ticker: t, name: g.name || (s && s.name) || null,\n    pct: pct === null || pct === undefined ? null : Number(pct),\n    price: (s && s.premkt_px) || g.price || null,\n    cat: CAT.has(g.cat) ? g.cat : 'other',\n    why: String(g.why || '').slice(0, 200), ref: g.ref || null, conf });\n}\n\n// scanner-only rows: a big premarket move with no reason yet is itself information\nfor (const s of tvRows) {\n  if (seen.has(s.ticker)) continue;\n  if (typeof s.premkt_chg === 'number' && Math.abs(s.premkt_chg) >= 3 && (s.premkt_vol || 0) > 0) {\n    out.push({ ts, src: 'tv', ticker: s.ticker, name: s.name, pct: s.premkt_chg,\n      price: s.premkt_px, cat: 'other', why: null, ref: null, conf: 'low',\n      halted: s.halted === true });\n  }\n}\n\nreturn out.map(o => ({ json: o }));"
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Merge + validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-40, 0]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "fileName": "={{ $now.setZone('America/New_York').toFormat('yyyy-MM-dd') }}.jsonl",
+        "fileContent": "={{ $json.ts }}\n",
+        "additionalProperties": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Append to feed (placeholder)",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [200, 0],
+      "notes": "Wiring placeholder — see README.md 'Building the append' for the working implementation"
+    }
+  ],
+  "connections": {
+    "Schedule (08:30, 09:20, 09:50 ET)": {
+      "main": [[{ "node": "Grok (narrative)", "type": "main", "index": 0 }]]
+    },
+    "Grok (narrative)": {
+      "main": [[{ "node": "TradingView scanner (ground truth)", "type": "main", "index": 0 }]]
+    },
+    "TradingView scanner (ground truth)": {
+      "main": [[{ "node": "Merge + validate", "type": "main", "index": 0 }]]
+    },
+    "Merge + validate": {
+      "main": [[{ "node": "Append to feed (placeholder)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "versionId": "1.0.0",
+  "meta": { "instanceId": "preopen-capture-template" },
+  "tags": []
+}
