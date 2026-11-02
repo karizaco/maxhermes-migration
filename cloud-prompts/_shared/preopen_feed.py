@@ -56,9 +56,12 @@ NOISE_BAND_PCT = 2.0
 # How much of the open move must survive for the verdict to be "held".
 HELD_RATIO = 0.50
 
+# The capture routine may write several checkpoints per day (0830/0920/0950 ET), each to
+# its own file, so three crons never clobber each other. Read them all, oldest first.
 FEED_RAW = ("https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/"
-            "preopen-feed/{date}.jsonl")
-FEED_LOCAL = "/workspace/preopen-feed/{date}.jsonl"
+            "preopen-feed/{date}-{cp}.jsonl")
+FEED_LOCAL = "/workspace/preopen-feed/{date}-{cp}.jsonl"
+FEED_CHECKPOINTS = ("0830", "0920", "0950")
 
 CAT_VOCAB = {"acquisition", "merger", "earnings", "guidance", "fda", "trial", "offering",
              "halt", "downgrade", "guidance-cut", "spin", "dividend", "other"}
@@ -181,37 +184,53 @@ def verdict(open_pct, now_pct):
 
 
 def load_feed(date_str):
-    """Read + validate the catalyst feed. Never raises; absence is a state, not an error."""
-    out = {"status": "feed_absent", "rows": [], "reason": None}
-    for path in (FEED_LOCAL.format(date=date_str), FEED_RAW.format(date=date_str)):
-        try:
-            raw = _get(path, timeout=25).decode("utf-8", "ignore")
-            break
-        except Exception:
-            raw = None
-    if raw is None:
-        out["reason"] = "no feed file for this date (expected preopen-feed/%s.jsonl)" % date_str
+    """Read + validate the catalyst feed. Never raises; absence is a state, not an error.
+
+    Reads every checkpoint file for the date (0830/0920/0950 ET) and merges them in
+    timestamp order. Missing checkpoints are normal and are not an error.
+    """
+    out = {"status": "feed_absent", "rows": [], "reason": None, "checkpoints": []}
+    good, bad, found_any = [], 0, False
+    for cp in FEED_CHECKPOINTS:
+        raw = None
+        for path in (FEED_LOCAL.format(date=date_str, cp=cp),
+                     FEED_RAW.format(date=date_str, cp=cp)):
+            try:
+                raw = _get(path, timeout=20).decode("utf-8", "ignore")
+                break
+            except Exception:
+                raw = None
+        if raw is None:
+            continue
+        found_any = True
+        n_cp = 0
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                bad += 1
+                continue
+            if not isinstance(rec, dict) or not rec.get("ticker"):
+                bad += 1
+                continue
+            rec["_cat"] = rec.get("cat") if rec.get("cat") in CAT_VOCAB else "other"
+            rec["_cp"] = cp
+            good.append(rec)
+            n_cp += 1
+        out["checkpoints"].append({"cp": cp, "records": n_cp})
+    if not found_any:
+        out["reason"] = ("no feed file for this date (expected preopen-feed/%s-{0830,0920,0950}.jsonl)"
+                         % date_str)
         return out
-    good, bad = [], 0
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception:
-            bad += 1
-            continue
-        if not isinstance(rec, dict) or not rec.get("ticker"):
-            bad += 1
-            continue
-        rec["_cat"] = rec.get("cat") if rec.get("cat") in CAT_VOCAB else "other"
-        good.append(rec)
+    good.sort(key=lambda r: r.get("ts") or "")
     out["status"] = "feed_ok" if good else "feed_empty"
     out["rows"] = good
     out["malformed"] = bad
     if not good:
-        out["reason"] = "feed file present but had no usable records"
+        out["reason"] = "feed file(s) present but had no usable records"
     return out
 
 
