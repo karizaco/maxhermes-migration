@@ -94,72 +94,23 @@ US Treasury yield-curve CSV. The authoritative endpoint list and measured status
 
 Two finance MCPs are NOT registered on the platform and are NOT on the Pipeworx gateway, but they
 ARE pip-installable and they work as local stdio servers. They are invisible to every other probe
-in this routine, so probe them here.
+in this routine, so probe them here. The script installs them — the `mcp<2` pin is MANDATORY,
+because the packages bundle mcp 2.x where `FastMCP` was renamed `MCPServer` — and prints one line
+per server with its tool count:
 
 ```bash
-DIR=/workspace/mcpprobe
-mkdir -p "$DIR"
-if command -v uv >/dev/null 2>&1; then
-  for P in tradingview-mcp financekit-mcp; do
-    env -u PIP_INDEX_URL -u UV_INDEX_URL \
-      UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_URL="https://pypi.org/simple" \
-      uv pip install --python python3.11 --target "$DIR" "mcp<2" "$P" >/dev/null 2>&1 \
-      || echo "install_failed:$P"
-  done
-fi
+S=/workspace/stdio_mcp_probe.sh
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/stdio_mcp_probe.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/stdio_mcp_probe.sh" ; do
+  [ -s "$S" ] || curl -sL -o "$S" "$U" 2>/dev/null
+done
+sh "$S" 2>&1 | head -10
 ```
 
-Then count the tools each server exposes. The `mcp<2` pin is MANDATORY — the packages bundle mcp
-2.x, where `FastMCP` was renamed `MCPServer`, and without the pin the server dies with
-`No module named 'mcp.server.fastmcp'`. The console script is `financekit`, NOT `financekit-mcp`.
-
-```bash
-python3 - <<'PYEOF'
-import json, os, subprocess, time
-
-def probe(cmd):
-    try:
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, bufsize=1,
-                             env={**os.environ, "PYTHONPATH": "/workspace/mcpprobe"})
-        def send(o):
-            p.stdin.write(json.dumps(o) + "\n"); p.stdin.flush()
-        def recv(t=45):
-            end = time.time() + t
-            while time.time() < end:
-                line = p.stdout.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    return json.loads(line)
-                except Exception:
-                    pass
-            return {}
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                         "clientInfo": {"name": "probe", "version": "1"}}})
-        recv()
-        send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        r = recv()
-        n = len((r or {}).get("result", {}).get("tools", []))
-        p.kill()
-        return n
-    except Exception as exc:
-        return "probe_failed:%s" % exc
-
-for name, cmd in (("tradingview-mcp", ["/workspace/mcpprobe/bin/tradingview-mcp"]),
-                  ("financekit-mcp", ["/workspace/mcpprobe/bin/financekit"])):
-    print("%s: tools=%s" % (name, probe(cmd)))
-PYEOF
-```
-
-Record both counts. A count of `0` means the install or the handshake failed — record it as
-`probe_failed:<reason>`, NEVER as "no tools exist". Measured 2026-11-01: `tradingview-mcp` = 73
-tools, `financekit-mcp` = 17 tools.
+The install takes about a minute. Record both counts. A count of `0` means the install or the
+handshake failed — record it as `probe_failed:<reason>`, NEVER as "no tools exist". Measured
+2026-11-01: `tradingview-mcp` = 73 tools, `financekit-mcp` = 17 tools.
 
 **If either count CHANGED, lead the reply with it.** A finance MCP appearing — or gaining or
 losing tools — changes how every digest routine should be run. That is the single most important
