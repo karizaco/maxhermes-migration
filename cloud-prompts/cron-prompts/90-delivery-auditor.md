@@ -4,13 +4,31 @@ You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Wi
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not
 exist, run `mkdir -p /workspace` first).
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## SCHEDULE
 - Deployed schedule: `0 7 * * *` America/New_York — 07:00 ET daily.
 - Runs at 07:00 ET, which is AFTER every routine that fires before it (the earliest is 06:00 ET,
   #19) and BEFORE the routines that fire later in the day. It therefore catches the whole
   previous US trading day's early-morning artifacts, and the routines that fire between 07:00
   and 22:30 are audited by the NEXT day's run.
-- Session mode: `new` — every fire starts a clean conversation.
+- Session mode: `new` — every fire starts a clean conversation, and the run sets that
+  conversation's title to `[DD-MM] NN-<routine name>` so the list shows which day it belongs to.
 
 ## WHAT THIS CRON IS FOR
 
@@ -50,11 +68,29 @@ git init -q 2>/dev/null || true
 git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
   git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
 git fetch -q origin main
-# NOTE: origin/HEAD points at the stale `master` branch. Always fetch `main` explicitly.
+# `master` is the repo's DEFAULT branch (GitHub's default_branch cannot be changed
+# without repo Administration scope), but every routine pushes to `main`. So `master`
+# is kept as a fast-forward MIRROR of `main` - the same commits, so a plain `git clone`
+# lands on current artifacts. Always fetch `main` explicitly.
 rm -rf /workspace/.audit
 git worktree add -f /workspace/.audit origin/main
 cd /workspace/.audit
 git rev-parse --short origin/main | sed 's/^/  origin\/main = /'
+
+# --- keep the default branch in step with main ---
+# `master` is the default branch and every routine pushes to `main`. Fast-forward
+# `master` to `main` so a plain `git clone` never lands on a stale tree. This moves a
+# branch POINTER only - it never writes, deletes or rewrites an artifact, and it is
+# fast-forward-only, so it can never lose a commit.
+if git ls-remote --exit-code --heads origin master >/dev/null 2>&1; then
+  if git push -q origin FETCH_HEAD:master 2>/tmp/master.err; then
+    echo "  master mirror: fast-forwarded to main ($(git rev-parse --short FETCH_HEAD))"
+  else
+    echo "  master mirror: skipped (not a fast-forward: $(head -1 /tmp/master.err | tr -d '\r'))"
+  fi
+else
+  echo "  master mirror: skipped (master has been retired)"
+fi
 ```
 
 If `${GITHUB_TOKEN}` is unset, you cannot audit. In that case write the status file with
@@ -86,11 +122,19 @@ its absence is `MISSING`, not `weekend_no_us_session`:
 | Sunday (`$AUDIT_DOW` 7) | 14-macro-calendar-week-ahead | `0 15 * * 0` |
 | Sunday (`$AUDIT_DOW` 7) | 22-weekly-market-recap-preview | `47 17 * * 0` |
 
-**This is the failure mode that hid #14 for a whole cycle.** #14 skipped its Sunday 2026-10-25
-fire; `macro-calendar/2026-10-25-week-ahead.md` was never on `origin/main`; and the Monday
-audit of Sunday 2026-10-25 labelled it `weekend_no_us_session` — "expected, not a failure" —
-so the gap stayed invisible. `weekend_no_us_session` applies ONLY to routines that were NOT
-scheduled to fire on that weekday. Check the "Fires on" column before labelling anything.
+**This is the failure mode that hid #14 for a whole cycle.** On Sunday 2026-10-25 the EU DST
+end moved #14's Europe/Berlin `0 15 * * 0` slot from 13:00 UTC to **14:00 UTC** — the exact
+minute cron #12's `0 10 * * 1-5` ET slot fired (10:00 ET = 14:00 UTC). Both routines live in
+project 10636, push to the SAME `main` branch, and at that time #14's push block still used
+`git init` + `git add -A` with **no fetch and no retry** and `git push ... | head -3`, which
+takes `head`'s exit status (always 0) — so a REJECTED push reported success. #12's push
+landed first (commit `1356a03`, 14:07:33 UTC); #14's push was rejected as non-fast-forward
+and its artifact was never written to `origin/main`. `macro-calendar/2026-10-25-week-ahead.md`
+exists in NO commit on ANY ref. Two lessons: (1) `weekend_no_us_session` applies ONLY to
+routines that were NOT scheduled to fire on that weekday — check the "Fires on" column before
+labelling anything; (2) a routine can fire, build its artifact, and still deliver nothing
+because the push lost a race — a MISSING with no git ADD event anywhere is a push loss, not
+a skip.
 
 **SCHEDULE CHANGES IN EFFECT (apply the OLD schedule to older audit dates):**
 - **2026-10-29** — #15 (earnings-reaction-scanner) and #19 (earnings-reminder-daily) changed
@@ -104,6 +148,19 @@ scheduled to fire on that weekday. Check the "Fires on" column before labelling 
   Until 2026-11-01 it has never had a scheduled chance to run, so an empty `weekly/` is
   EXPECTED: report #22 as `not_yet_fired`, NOT `MISSING`. From 2026-11-02 onward a missing
   `weekly/2026-11-01-preview.md` IS `MISSING`.
+- **2026-10-30 23:06 ET** — #07 (focus-rvol-09:45), #10 (breadth-snapshot), #12 (cross-asset-correlation),
+  #17 (us-stocks-in-play) and #26 (agentic-pre-market-brief) moved from a daily schedule to
+  weekday-only: `45 9 * * *` -> `45 9 * * 1-5`, `0 14 * * *` -> `0 14 * * 1-5`,
+  `0 10 * * *` -> `0 10 * * 1-5`, `50 15 * * *` -> `50 15 * * 1-5`, `30 8 * * *` -> `30 8 * * 1-5`.
+  They had no useful output on a closed weekend market. For `$AUDIT_DATE` **before 2026-10-31**
+  those five were due EVERY day, so a weekend gap back then (2026-10-24, 2026-10-25) is `MISSING`,
+  not `not_due`. From 2026-10-31 onward they are due Mon-Fri only and their weekend gaps are `not_due`.
+- **2026-10-31, 05:40-09:08 ET** — a faulty fleet edit briefly set the day-of-week field of
+  **fourteen** weekday routines to `1` (Mondays only) instead of `1-5`, while their prompts and
+  this roster still said Mon-Fri. It was repaired the same day, **before Monday 2026-11-02**, so
+  **no routine missed a fire** and no audit-date exception applies: every `$AUDIT_DATE` from
+  2026-11-02 onward is judged against the roster table below. If a prompt's SCHEDULE block says
+  `1-5` but the scheduler field says `1`, the SCHEDULE block and this roster are the contract.
 
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
@@ -129,7 +186,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 02-asia-pre-market-reactions | `30 6 * * 1-5` | `asia-pre-market/{date}.md` | Mon-Fri |
 | 90-delivery-auditor | `0 7 * * *` | (no artifact — this cron) | every day |
 | 15-earnings-reaction-scanner | `0 8 * * 1-5` | `earnings/{date}-reactions.md` | Mon-Fri |
-| 26-agentic-pre-market-brief | `30 8 * * *` | `daily-briefs/{date}-pre-market.md` | every day |
+| 26-agentic-pre-market-brief | `30 8 * * 1-5` | `daily-briefs/{date}-pre-market.md` | Mon-Fri |
 | 08-pre-market-gapper | `30 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
 | 07-focus-rvol-09:45 | `45 9 * * 1-5` | `daily-screens/{date}/focus-rvol-snapshot.md` | Mon-Fri |
@@ -147,16 +204,16 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 09-daily-sweep-18:30 | `30 18 * * 1-5` | `daily-screens/{date}/daily-sweep.md` | Mon-Fri |
 | 23-agentic-post-market-brief | `30 22 * * 1-5` | `daily-briefs/{date}-post-market.md` | Mon-Fri |
 
-For `01-weekly-mcp-health-check` the path uses the **ISO week** of `$AUDIT_DATE`, not the
-date: `mcp-health/$(date -d "$AUDIT_DATE" +%G-W%V).md`. It also appends a row to
+For `01-weekly-mcp-health-check` the path uses the **ISO week** of `$AUDIT_DATE`, not the date:
+`mcp-health/$(date -d "$AUDIT_DATE" +%G-W%V).md`. It also appends a row to
 `mcp-health/ledger.md`; the weekly report file is the one to check.
 
 **WRITTEN_OFF — gaps the operator has accepted. Do NOT report these again.**
 `WRITTEN_OFF="14-macro-calendar-week-ahead:2026-10-25"`
 Format is `<routine>:<date>`. A gap whose routine AND date both match an entry here is **not a
 finding**: record it in the top-level `written_off` array and move on. The operator accepted
-these deliberately; re-reporting them every morning is noise that trains people to ignore the
-audit. Add to this list only when the operator says so.
+this one deliberately. `WRITTEN_OFF` is a specific accepted gap; `not_yet_fired` (below) is a
+routine whose current task has not yet had a fire opportunity. They are different things.
 
 Check each expected path with `git cat-file -e`:
 
@@ -235,7 +292,14 @@ cd /workspace/.audit
 # A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
 # absent. That is `not_yet_fired`, not a finding. Keep this list in sync with the
 # SCHEDULE CHANGES block above; it is empty for every routine that has already fired.
-NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01"
+# 14-macro-calendar-week-ahead is here for the same reason as 22: its live task
+# (457172664209611) was created 2026-10-28 02:09 ET, AFTER the last Sunday (2026-10-25),
+# so it has had ZERO scheduled fire opportunities and cron_read view=runs returns 0 runs.
+# Its first fire is 2026-11-01 15:00 ET. The 2026-10-25 miss under the PRIOR task
+# instance is a SEPARATE historical gap (a lost push race) and is not a stale finding.
+# VERIFICATION DEADLINE: if macro-calendar/2026-11-01-week-ahead.md is absent after
+# 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01"
 for entry in \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "19-earnings-reminder-daily|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reminders\.md$|5" \
@@ -282,10 +346,10 @@ done
 
 **How to read the output:**
 - `not_yet_fired (first fire <date>)` — the routine's current schedule has not reached its
-  first fire yet. Expected, NOT a finding, and not a gap. (#22 before 2026-11-01.)
+  first fire yet. Expected, NOT a finding, and not a gap. (#22 and #14 before 2026-11-01.)
 - `NEVER_DELIVERED` — the routine has produced nothing at all, ever, AND its first fire date
-  has already passed. **Report it as `MISSING`**, not as a separate label: a routine that has
-  had its chance and produced no artifact IS missing.
+  has already passed. **Report it as `MISSING`**, not as a separate label: a routine that
+  has had its chance and produced no artifact IS missing.
 - `last=... age=Nd` — the routine produced something once, then stopped. Also report as `MISSING`
   with the last date included, so the operator can see *when* it went quiet.
 - Nothing printed — the routine is within tolerance. Not a finding.
@@ -307,63 +371,74 @@ writing somewhere new, fix the regex in this prompt rather than loosening it to 
 "due today, did not land" (a delivery or push failure). STEP 4b finds "not landing for days"
 (a schedule or window-check failure). A routine can fail either way independently. Report both.
 
-## STEP 4c — WHY A GAP HAPPENED, AND IS THE ROSTER STILL TRUE (read-only)
+## STEP 4c — DIAGNOSE A GAP (why did the routine not deliver?)
 
-STEP 4 tells you **that** an artifact is missing. It cannot tell you **why**, so a billing
-outage and a broken pipeline look identical in the report — and the operator's next action is
-completely different for each. This step resolves the cause, and checks that the roster table
-above still matches the live schedules.
+A `MISSING` artifact has at least three very different causes, and the operator needs the right
+one. Do NOT stop at "MISSING" — name the cause in the gap's reason.
 
-**Do this ONLY for routines you already flagged `MISSING` and that are not in `WRITTEN_OFF`.**
-On a clean day this costs **zero** extra API calls.
+**How to get it:**
 
-### 4c-1 — Read the live fleet ONCE
+```bash
+# 1. the run that was supposed to fire for $AUDIT_DATE, and the session it created
+#    (cron_read view=runs needs the task_id; cron_read view=list gives the task_id map)
+# 2. that session's status_message:
+session_list agent_name="Mavis" limit=100
+```
 
-`cron_read` is reached through `mcp_invoke`; if it has not surfaced yet, run `tool_search`
-for it once ("cron scheduled task list"). A single call returns every routine with its
-`task_id`, `schedule`, `timezone`, `enabled` and `project_id`:
+`session_list` returns every recent conversation with its `title`, `status` and `status_message`.
+A healthy run has `status_message: ""`. A run killed by the billing quota carries
+`"The Token Plan usage limit has been reached ... (2067)"`.
 
-    mcp_invoke tool_name="cron_read" arguments={"view":"list"}
+**Two ways to read a session's `status_message`.** `session_list agent_name="Mavis" limit=100`
+returns every recent conversation with its `title`, `status` and `status_message` in ONE call —
+use it to scan several routines at once. `session_get session_id="<id>"` reads ONE session
+directly and is the precise path when you already have the id from `cron_read view=runs`; pass
+the id as a **quoted string** (verified working 2026-11-02 on six sessions). `session_update` and
+`session_messages` still reject a numeric id. (`cron_read`'s `task_id` is not affected — numeric
+task ids pass fine.)
 
-Keep that output: it is both the task_id map and the live schedule for every routine.
+### 4c-0 — IS THE ROSTER TABLE STILL TRUE?
 
-### 4c-2 — ROSTER_DESYNC: is the table above still true?
+The roster table below is a **copy**, and it is this auditor's only statement of what should have
+run. The live scheduler is NOT the reference — a web-GUI save can collapse its day-of-week field
+(cron #91 `schedule-drift-guard` repairs that at 04:05 ET, before this audit runs). **The ground
+truth is the reference:** `tools/schedule-ground-truth.json` in `karizaco/maxhermes-migration`,
+rebuilt from `migration-state.json` (the original local cron list).
 
-For every row of the roster table, compare its `Schedule (ET)` column with that routine's live
-`schedule` from 4c-1. If they differ, the table is stale — and every due/not_due decision this
-run made for that routine is suspect. Report it as a gap:
+```bash
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/schedule-ground-truth.json" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/schedule-ground-truth.json" ; do
+  [ -s /workspace/schedule-ground-truth.json ] || \
+    curl -sL --max-time 30 -o /workspace/schedule-ground-truth.json "$U"
+done
+```
 
-    gap: <routine> ROSTER_DESYNC <live schedule> (table says <table schedule>)
+Compare each roster row's `Schedule (ET)` column with the ground-truth entry for the same
+routine. If they differ, the TABLE is stale — report it:
 
-**Use the LIVE schedule for the due/not_due decision, not the table.** The live schedule is the
-truth; the table is only a copy. If `cron_read` cannot be reached, say so once (`errors: 1`) and
-carry on with the table — never guess, never silently use a stale table.
+    gap: <routine> ROSTER_DESYNC <ground truth> (table says <table schedule>)
 
-### 4c-3 — Resolve the cause of each MISSING
+A `ROSTER_DESYNC` is a finding even when no artifact is missing: every due/not_due decision made
+from a stale table is suspect. If the ground truth cannot be fetched, say so once (`errors: 1`)
+and carry on with the table — never guess a schedule.
 
-For each routine flagged `MISSING` (and not written off):
+Also remember: `status: 1` on a run in `cron_read view=runs` is only the TRIGGER outcome — it
+means the run was dispatched, not that the session succeeded. `status: 2` on a session means the
+session ended in an error; `status: 0` is a healthy session.
 
-1. `mcp_invoke tool_name="cron_read" arguments={"view":"runs","task_id":"<task_id from 4c-1>"}`
-   → find the run whose `scheduled_at_ms` falls on `$AUDIT_DATE` → take its `session_id`.
-   Runs are newest first. **A routine recreated since that date has no run for it** — report
-   `no_run_recorded` and stop. (The run row's `status` is ALWAYS 1, even for a run that died;
-   do not trust it.)
-2. `mcp_invoke tool_name="session_get" arguments={"session_id":"<session_id>"}`
-   → read `status_message` and `status`:
+Classify every gap with its cause:
 
-   - **`status_message` is non-empty** → that IS the cause. Put it in the gap line, abbreviated:
-     `gap: <routine> MISSING <path> (<cause>)`. If it mentions the Token Plan usage limit or
-     code 2067, the cause is **`quota_exhausted`** — a BILLING problem, not a cron bug. Say so
-     plainly: the operator's next action is credits, not a prompt edit.
-   - `status` 2 with an empty `status_message` → report `run_failed`.
-   - `status` 0 with an empty `status_message` → the run **succeeded** but delivered nothing.
-     That is a silent delivery failure: report `push_failed`, and say the session finished
-     cleanly yet no artifact landed.
-   - the session is not found → report `session_not_found`.
-   - `cron_read` / `session_get` unreachable → report `cause_unknown` and carry on.
+| Evidence | Cause | Report as |
+|---|---|---|
+| No run at all for that routine on `$AUDIT_DATE`, and no session with that routine's title | it never fired | `MISSING` — reason: never fired |
+| A session for that routine on `$AUDIT_DATE` whose `status_message` contains `2067` | the Token Plan quota wall | `MISSING` — reason: quota exhausted (2067) |
+| A session for that routine on `$AUDIT_DATE` with a different non-empty `status_message` | the run failed | `MISSING` — reason: <that message> |
+| A healthy session, but the routine's own commit is absent for `$AUDIT_DATE` | the push silently failed | `MISSING` — reason: push failed (session healthy) |
 
-**Never invent a cause.** If you could not read the run or the session, the cause is
-`cause_unknown` — not a guess, and not "the push failed".
+Only the third and fourth cases are a bug in the routine itself. A quota death is a billing
+problem, and a routine that never fired is usually a scheduler problem — say which, because the
+fix is different.
 
 ## STEP 5 — CLASSIFY EVERY GAP
 
@@ -381,11 +456,7 @@ For each gap, pick exactly one label:
 | `not_yet_fired` | The routine's current schedule has not reached its first fire date yet (see the SCHEDULE CHANGES block). Expected, not a failure. NOT a gap — record it in the top-level `not_yet_fired` array, never in `gaps`. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 | `written_off` | The operator accepted this gap (see `WRITTEN_OFF`). NOT a finding — record it in the top-level `written_off` array, never in `gaps`. |
-| `roster_desync` | The roster table's schedule for this routine differs from the LIVE schedule (STEP 4c-2). The live schedule wins. |
-| `quota_exhausted` | The run died on the Token Plan usage limit (2067). A BILLING problem, not a cron bug. |
-| `push_failed` | The run's session finished cleanly (`status` 0) yet no artifact landed. |
-| `run_failed` | The run's session ended with `status` 2 and no status message. |
-| `cause_unknown` | The run or session could not be read, so the cause is unknown. Never a guess. |
+| `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
 
 ## STEP 6 — WRITE THE STATUS FILE
 
@@ -405,9 +476,8 @@ outputs repo holds artifacts, not audit state.
   "never_delivered": [],
   "not_yet_fired": [],
   "written_off": [],
-  "causes": {},
   "gaps": [
-    {"routine": "12-cross-asset-correlation", "path": "cross-asset/2026-10-27.md", "label": "MISSING"}
+    {"routine": "12-cross-asset-correlation", "path": "cross-asset/2026-10-27.md", "label": "MISSING", "cause": "quota exhausted (2067)"}
   ],
   "audit_status": "ok" | "gaps_found" | "failed_no_repo"
 }
@@ -415,9 +485,9 @@ outputs repo holds artifacts, not audit state.
 
 `not_yet_fired` lists routines whose first fire date has not arrived yet. They are NOT gaps:
 they never appear in `gaps` and never affect `audit_status`.
-`written_off` lists gaps the operator accepted — NOT findings; they never affect
-`audit_status`. `roster_desync` IS a finding: it means the table above is wrong, so report it
-even when no artifact is missing.
+`written_off` lists gaps the operator accepted — NOT findings; they never affect `audit_status`.
+`roster_desync` IS a finding: it means the roster table is wrong, so report it even when no
+artifact is missing.
 `audit_status` is `gaps_found` when any gap has label `MISSING`, `present_but_empty` or
 `roster_desync`, and `ok` otherwise. A `MISSING` gap is a genuine, actionable finding — name the routine and the
 exact path so it can be reproduced.
@@ -481,7 +551,8 @@ fi
 The final reply (the only thing delivered to the chat) MUST be:
   - ≤ 8 lines.
   - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>`
-  - One line per gap: `gap: <routine> <label> <path>`
+  - One line per gap: `gap: <routine> <label> <path> — <cause>` (the cause comes from STEP 4c;
+    omit the cause only when it could not be determined)
   - One line: `push: ok (verified)` / `push: skipped (token unset)` / `push: FAILED (<reason>)`
   - One line: `errors: <n>` — count of audit errors. 0 = clean audit.
 
@@ -493,22 +564,25 @@ No preamble. Tool call → result → write → push → reply.
 ## CRITICAL REMINDERS
 1. **This cron is read-only with respect to the artifacts.** It clones, checks, writes a local
    status file, and optionally pushes to the `audit/status` branch. It never modifies, deletes
-   or re-pushes any routine's artifact, and it never pushes to `main`.
+   or re-pushes any routine's artifact, and it never pushes to `main`. Its ONLY write to the
+   repo is a fast-forward of the `master` branch pointer to `main` (see STEP 2) - that moves
+   a ref, it does not touch a file.
 2. **A gap is a finding, not a failure of this run.** Do not attempt to re-run, re-create, or
    repair the missing artifact. Report it precisely — routine, label, exact path — and stop.
    The user decides what to do about it.
 3. **Never report a routine as `MISSING` when its schedule does not fire on that weekday.**
    Check the "Fires on" column and the holiday list before labelling anything. For audit dates
-   before 2026-10-29, #15 and #19 were Mondays-only — see the SCHEDULE CHANGES block above.
-4. **Do not fabricate a status.** If the repo could not be cloned, the status is
+   before 2026-10-29, #15 and #19 were Mondays-only, and before 2026-10-31, #07/#10/#12/#17/#26
+   were daily — see the SCHEDULE CHANGES block above. The roster table below is the contract for
+   every date from 2026-10-31 onward.
+4. **Name the cause of every gap** (STEP 4c). "MISSING" alone is not an answer; "quota
+   exhausted (2067)" and "push failed" need different fixes.
+5. **Do not fabricate a status.** If the repo could not be cloned, the status is
    `failed_no_repo` and `errors: 1`. If the token is missing, `skipped_no_token`.
-5. **Run the STEP 4b stale check every time.** A routine that is `not_due` on the audited
+6. **Run the STEP 4b stale check every time.** A routine that is `not_due` on the audited
    day may still be permanently broken — that is exactly how cron #22 went unnoticed for
    months. `NEVER_DELIVERED` is a MISSING finding, not a footnote — unless the routine's
    first fire date has not arrived yet (`not_yet_fired`), which is not a finding at all.
-6. **Name the cause of every MISSING** (STEP 4c). "MISSING" alone leaves the operator
-   guessing; "MISSING (quota_exhausted)" tells them to buy credits. If you cannot read the run
-   or the session, say `cause_unknown` — never guess.
 7. **A `MISSING` artifact on a day when the routine ran and reported success means the push
    silently failed** — the old `git add -A` block could stage deletions and abort, or the
    `|| echo` could mask the error. Name it clearly; that is the whole point of this cron.
