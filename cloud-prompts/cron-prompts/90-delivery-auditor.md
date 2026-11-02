@@ -556,21 +556,6 @@ else
 fi
 ```
 
-## DELIVERY
-
-The final reply (the only thing delivered to the chat) MUST be:
-  - ≤ 8 lines.
-  - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>`
-  - One line per gap: `gap: <routine> <label> <path> — <cause>` (the cause comes from STEP 4c;
-    omit the cause only when it could not be determined)
-  - One line: `push: ok (verified)` / `push: skipped (token unset)` / `push: FAILED (<reason>)`
-  - One line: `errors: <n>` — count of audit errors. 0 = clean audit.
-
-**If there are no gaps, say so in one line and stop.** Do not pad the reply with counts of
-routines that are `not_due` — those are working as designed, not news.
-
-No preamble. Tool call → result → write → push → reply.
-
 ## CRITICAL REMINDERS
 1. **This cron is read-only with respect to the artifacts.** It clones, checks, writes a local
    status file, and optionally pushes to the `audit/status` branch. It never modifies, deletes
