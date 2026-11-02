@@ -38,11 +38,18 @@ Generates the daily post-market markdown brief using Mavis's financial MCPs. Com
 ## Output
 
 - `C:\Users\admin\.minimax\projects\coding-shared\research\briefs\YYYY-MM-DD-post_market.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤60-line summary in the reply / cron report.
 
 ## Steps
 
-1. **Read the watchlist.** Same as pre-market: `C:\Users\admin\.minimax\projects\coding-shared\research\watchlist.yaml`.
+1. **Read the watchlist.** Same as pre-market.
+
+> **Cloud adaptation.** `research/watchlist.yaml` does **not** exist in the Cloud runtime — it
+> lives only on the local Mavis host. If the file cannot be read, say so ONCE in the notes and
+> **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
+> routine's deployed universe (per its `## OUTPUT` path) and label it as the universe, not as
+> the watchlist.
 2. **Day's tape.** Pull index closes via TradingView MCP `lookup_symbols` (`^GSPC, ^IXIC, ^DJI, ^RUT, ^VIX`) and ETF proxies via Yahoo MCP (`SPY, QQQ, IWM, DIA, GLD, TLT`).
 3. **Sector rotation.** Use TradingView MCP `screen_stocks` with `sector` filters and `change` percent desc — rank top 3 / bottom 3 sectors. Cross-check via `compare_stocks` for 1-2 representative tickers per sector.
 4. **Watchlist EOD review.** Pull post-close data for each watchlist ticker via Yahoo MCP `get_stock_quote`: price, day change, day range, after-hours activity, volume vs avg.

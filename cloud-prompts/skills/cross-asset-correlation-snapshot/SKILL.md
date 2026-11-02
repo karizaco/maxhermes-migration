@@ -19,6 +19,7 @@ Single-purpose: produce a Pearson correlation matrix across the core asset proxi
 
 ## Output
 - `C:\Users\admin\.minimax\projects\coding-shared\research\correlations\YYYY-Wnn-snapshot.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 10-line summary in chat reply.
 
 ## Universe (hardcoded 8 proxies)

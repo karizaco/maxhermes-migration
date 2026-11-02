@@ -27,6 +27,7 @@ description: >-
 ## Output
 
 - `C:\Users\admin\.minimax\projects\coding-shared\research\briefs\YYYY-MM-DD-pre_market.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 60-line chat summary on top of the markdown.
 - Audit log line on `research\logs\audit.log`: `action=brief_rendered target=pre_market:<date>`.
 
@@ -91,7 +92,7 @@ Run these in one assistant turn:
 
 ### Step 7 — Watchlist section (parallel to steps 1–6, NOT the spine)
 
-Read `C:\Users\admin\.minimax\projects\coding-shared\research\watchlist.yaml`. **In parallel** with steps 1–5, batch-pull quotes:
+Read the watchlist if it is present — see the Cloud adaptation note below for what to do when it is not. **In parallel** with steps 1–5, batch-pull quotes:
 
   - `mcp__yahoo-finance__get_stock_quote` per ticker (12 names → 12 calls, fine; do not slow us down).
   - `mcp__tradingview-advanced__stock_extended_hours` per ticker for pre-market gap.

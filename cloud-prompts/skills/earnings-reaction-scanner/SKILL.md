@@ -40,6 +40,7 @@ Surfaces the price action that the pre-market brief missed: every name in the S&
 
 ## Output
 - `C:\Users\admin\.minimax\projects\coding-shared\research\earnings-reactions\YYYY-MM-DD.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 12-line summary in chat reply.
 
 ## Universe

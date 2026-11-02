@@ -1,6 +1,12 @@
 # Plan — pre-open catalyst feed (n8n → repo → cron #17)
 
 **Status:** proposal, awaiting owner approval. Two gating items in §3.
+
+> **Note on the files named below.** `_shared/preopen_feed.py`, `n8n/workflow-preopen-feed.json`
+> and `n8n/README.md` **do not exist in this repo yet** — they are the artefacts this plan
+> proposes to build. Every path in §5 and §6 is therefore a *specification*, not a live
+> reference. Nothing in this document is fetched by any routine; no cron prompt points at it.
+> If you are an agent reading this file: do not try to fetch those paths.
 **Scope:** fill the 09:00–09:50 information hole for cron #17 (`us-stocks-in-play`, fires **15:50 ET**,
 pre-close slot) and, optionally, for #02 / #08 / #16 / #26.
 **Prepared:** 2026-11-01.

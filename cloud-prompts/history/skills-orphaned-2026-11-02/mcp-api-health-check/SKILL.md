@@ -18,6 +18,7 @@ Walks every external service the runtime depends on, pings it with a no-op query
 ## Output
 
 - `C:\Users\admin\.minimax\projects\coding-shared\research\mcp-health\YYYY-Wnn.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 10-line summary in reply.
 - If any service is down or unusually slow, the reply highlights that — otherwise stays terse.
 

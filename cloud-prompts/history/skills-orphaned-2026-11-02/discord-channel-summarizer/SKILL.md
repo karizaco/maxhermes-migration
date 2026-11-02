@@ -18,6 +18,7 @@ Read-only summarization layer on top of the `discord` MCP (`fmarcac/discord-mcp`
 
 ## Output
 - `C:\Users\admin\.minimax\projects\coding-shared\research\discord-digests\YYYY-MM-DD-<slug>.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 20-line summary in chat reply.
 
 ## Prerequisites

@@ -36,13 +36,14 @@ Lightweight daily scan: where is the smart money positioning today on options? B
 
 ## Output
 - `C:\Users\admin\.minimax\projects\coding-shared\research\options-flow\YYYY-MM-DD.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 15-line summary in chat reply (top 5 only).
 
 ## Universe
 Two passes:
 
 **Pass A — Watchlist core**
-Read `C:\Users\admin\.minimax\projects\coding-shared\research\watchlist.yaml` (top-level `tickers:` list). Call `stock_options_unusual_activity` per ticker (cap 30 — split if larger watchlist).
+Read the watchlist if it is present — see the Cloud adaptation note below for what to do when it is not. (top-level `tickers:` list). Call `stock_options_unusual_activity` per ticker (cap 30 — split if larger watchlist).
 
 **Pass B — Mega-cap sweep (optional, weekdays only)**
 IWM, GLD, TLT, plus the top 5 S&P 500 names by market cap (AAPL, MSFT, NVDA, GOOGL, AMZN as of 2026 — refresh quarterly). Capped at 12 total to stay inside minute budget.
@@ -60,6 +61,12 @@ IWM, GLD, TLT, plus the top 5 S&P 500 names by market cap (AAPL, MSFT, NVDA, GOO
 ## Steps
 
 1. **Read watchlist.** Parse `research/watchlist.yaml` → `tickers: [...]`. Cap at 30.
+
+> **Cloud adaptation.** `research/watchlist.yaml` does **not** exist in the Cloud runtime — it
+> lives only on the local Mavis host. If the file cannot be read, say so ONCE in the notes and
+> **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
+> routine's deployed universe (per its `## OUTPUT` path) and label it as the universe, not as
+> the watchlist.
 2. **Build mega-cap list.** Hardcoded 11 names (above). Pulled from `mcp__financekit__stock_quote` for mcap validation if available; otherwise trust the hardcode.
 3. **Call per underlying.** `mcp__tradingview-advanced__stock_options_unusual_activity(symbol, top_n=10, min_volume=100, expiries=4)` for each. Concurrency: serial, ~3 calls/sec.
 4. **Aggregate per-ticker** into rows:

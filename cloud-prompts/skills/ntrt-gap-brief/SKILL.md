@@ -44,6 +44,7 @@ Generates the weekday pre-market gapper brief. Replaces the paused `ntrt-pre-mar
 ## Output
 
 - `C:\Users\admin\.minimax\projects\coding-shared\research\briefs\YYYY-MM-DD-ntrt-premarket.md`
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Return a short TL;DR + top gappers table to chat.
 
 ## Steps

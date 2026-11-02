@@ -48,6 +48,12 @@ Generates a weekly recap + forward-looking preview. Companion to the pre/post-ma
 1. **Index week-over-week.** TradingView `lookup_symbols` for `^GSPC, ^IXIC, ^DJI, ^RUT, ^VIX`. Compute % change from prior Friday close to this Friday close via Yahoo MCP `get_historical_prices` for each (range=`5d`, interval=`1d`).
 2. **Sector weekly performance.** TradingView `screen_stocks` with `sector` filter, `change` desc — rank top 3 / bottom 3 sectors.
 3. **Watchlist weekly performance.** For each ticker in `research/watchlist.yaml`, pull `get_historical_prices` (5d, 1d) and compute week % change. Highlight top-3 winners and bottom-3 losers.
+
+> **Cloud adaptation.** `research/watchlist.yaml` does **not** exist in the Cloud runtime — it
+> lives only on the local Mavis host. If the file cannot be read, say so ONCE in the notes and
+> **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
+> routine's deployed universe (per its `## OUTPUT` path) and label it as the universe, not as
+> the watchlist.
 4. **Themes of the week.** `web_search` `<ISOWEEK> week recap <year>` from 2-3 sources (Reuters / WSJ / Bloomberg headlines). Synthesize 3-5 dominant themes.
 5. **Macro events recap.** This week's FOMC / CPI / PPI / NFP / Treasury auctions (whatever actually happened). `web_search` confirmation.
 
