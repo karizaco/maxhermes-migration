@@ -89,9 +89,10 @@ git rev-parse --short origin/main | sed 's/^/  origin\/main = /'
 # "src refspec FETCH_HEAD does not match any".
 #
 # The ancestry gate is what makes it safe: if `master` carries a commit `main` does not
-# (it currently does - a merge commit from 2026-10-30), master is NOT an ancestor of
-# main and the mirror is skipped rather than force-pushed. As of 2026-11-02:
-#   origin/master 2d5e9da  -  NOT an ancestor of origin/main 9666a41  ->  skipped
+# (it did on 2026-11-02, from a merge commit dated 2026-10-30), master is NOT an ancestor of
+# main and the mirror is skipped rather than force-pushed. Whether master is behind or ahead
+# changes as other routines push, so NEVER hardcode the comparison here - let
+# `git merge-base --is-ancestor` decide at run time.
 if git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
   if git merge-base --is-ancestor origin/master origin/main; then
     if git push -q origin origin/main:master 2>/tmp/master.err; then
