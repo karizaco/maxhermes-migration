@@ -1,30 +1,43 @@
 # Cloud Mavis Cron Prompts — index and operating notes
 
-**21 routines** (20 producers + the #90 auditor), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
+**23 routines** (21 producers + the #90 auditor + the #91 drift guard), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
 all `session.mode=new`. Day-of-week lives in the **scheduler** expression, so weekend fires cost
 nothing — no agent invocation is spent discovering it is a weekend.
 
-> This index is generated from live scheduler state. See `cron-prompts/ROSTER.md` for the
-> machine-generated roster with last-delivered dates, and `tools/gen_roster.py` to rebuild it.
+> **This index is GENERATED — do not hand-edit it.** `tools/gen_index.py` rebuilds both the
+> table and the routine count from `tools/schedule-ground-truth.json` (the authoritative schedules)
+> plus the live scheduler (project ids) and `tools/gen_roster.py`'s artifact map:
+>
+> ```bash
+> python3 tools/gen_index.py --tasks <cron_read view=list json>   # rewrite
+> python3 tools/gen_index.py --tasks <cron_read view=list json> --check   # exit 1 if stale
+> ```
+>
+> A hand-kept table is a table that lies: it sat at "21 routines" while the fleet was 23, listed
+> five Mon-Fri routines as "every day", and omitted #01 and #91 entirely until 2026-11-02. See
+> `cron-prompts/ROSTER.md` for the machine-generated roster with last-delivered dates
+> (`tools/gen_roster.py`).
 
 ## Cron index
 
 | ID | Routine | Schedule (ET) | Fires on | Project | Output |
 |---|---|---|---|---|---|
+| 01 | weekly-mcp-health-check | `0 2 * * 0` | Sun | 10645 | `mcp-health/ledger.md` + `mcp-health/YYYY-Wnn.md` |
+| 91 | schedule-drift-guard | `5 4 * * *` | every day | 14002 | none (writes no artifact) |
 | 19 | earnings-reminder-daily | `0 6 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reminders.md` |
 | 02 | asia-pre-market-reactions | `30 6 * * 1-5` | Mon-Fri | 10645 | `asia-pre-market/{date}.md` |
 | 90 | delivery-auditor | `0 7 * * *` | every day | 14002 | `_audit/status.json` (audit/status branch) |
 | 15 | earnings-reaction-scanner | `0 8 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reactions.md` |
 | 08 | stock-screener-pre-market-gapper | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` |
-| 26 | agentic-pre-market-brief | `30 8 * * *` | every day | 10645 | `daily-briefs/{date}-pre-market.md` |
+| 26 | agentic-pre-market-brief | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market.md` |
 | 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10645 | `ntrt/{date}.md` |
-| 07 | stock-screener-focus-rvol-09:45 | `45 9 * * *` | every day | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
-| 12 | cross-asset-correlation-snapshot | `0 10 * * *` | every day | 10636 | `cross-asset/{date}.md` |
-| 10 | stock-screener-breadth-snapshot | `0 14 * * *` | every day | 10635 | `daily-screens/{date}/breadth-snapshot.md` |
+| 07 | stock-screener-focus-rvol-09:45 | `45 9 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
+| 12 | cross-asset-correlation-snapshot | `0 10 * * 1-5` | Mon-Fri | 10636 | `cross-asset/{date}.md` |
+| 10 | stock-screener-breadth-snapshot | `0 14 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/breadth-snapshot.md` |
 | 13 | macro-calendar-midweek | `0 14 * * 3` | Wed | 10636 | `macro-calendar/{date}-midweek.md` |
 | 06 | stock-screener-pattern-study-backlog | `0 15 * * 6` | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` |
 | 14 | macro-calendar-week-ahead | `0 15 * * 0` | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` |
-| 17 | us-stocks-in-play | `50 15 * * *` | every day | 13832 | `us-stocks-in-play/{date}.md` |
+| 17 | us-stocks-in-play | `50 15 * * 1-5` | Mon-Fri | 13832 | `us-stocks-in-play/{date}.md` |
 | 04 | reversal-bullish-3:55 | `55 15 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3:55.md` |
 | 20 | eod-watchlist-csv-snapshot | `0 16 * * 1-5` | Mon-Fri | 10638 | `us-eod/{date}.csv` |
 | 05 | eod-international-daily | `30 16 * * 1-5` | Mon-Fri | 10638 | `international-eod/{date}/` |
