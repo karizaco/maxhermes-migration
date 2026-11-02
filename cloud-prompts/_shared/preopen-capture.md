@@ -116,6 +116,11 @@ flagged with `halted`, and one line for push status and `errors: <n>`.
 
 ## RULES
 
+- **A certificate/TLS error is a FETCH failure, not a missing source.** The sandbox egress proxy
+  rotates its leaf cert and it has expired mid-session before; `web_fetch` uses a different egress
+  and still works. On a cert error, retry the SAME url with `web_fetch` before you conclude
+  anything about the source.
+
 - **No key ⇒ no tape.** Say so plainly; never write an empty file that looks like "no news".
 - **Never fabricate a ticker, a price or a catalyst.** A record with no source URL is `conf:low`.
 - **A missing checkpoint is normal.** Do not backfill or interpolate.
