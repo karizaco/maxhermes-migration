@@ -239,22 +239,19 @@ sh /workspace/verify_delivery.sh --path us-stocks-in-play/{date}.md --branch mai
 `cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
 `git push … | head -3` (that returns head's exit status and reports a rejected push as success).
 
-
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
+The push above already verifies its own delivery: `push_artifact.sh` calls
+`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+Run it again if you need to re-check:
+
 ```bash
-B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
-done
-sh /workspace/push_artifact.sh --out us-stocks-in-play --add us-stocks-in-play/{date}.md --branch main
 sh /workspace/verify_delivery.sh --path us-stocks-in-play/{date}.md --branch main
 ```
 
-**If the push script cannot be fetched**, use the inline fallback in
-`cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
-`git push … | head -3` (that returns head's exit status and reports a rejected push as success).
-
+A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's
+exit status (always 0) and reports a rejected push as a success. That is why the delivery check
+exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY
 The final reply (the only thing delivered to the chat) MUST use this structure. There is **no
