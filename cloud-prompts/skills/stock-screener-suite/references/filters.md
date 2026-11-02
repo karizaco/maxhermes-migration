@@ -235,33 +235,52 @@ LIMIT 50
 
 ## L. Bonde — Reversal Bullish (3:55 PM)
 
-Pre-filter: stocks held by ≥ 1,000 institutional funds. shibui has
-`institutional_holders_count` in the institutional-ownership table (verify via
-`get_database_schema`); fallback is a proxy via `market_cap > 5_000_000_000` +
-`avg_volume_30d > 1_000_000` (the high-institutional-owned set).
+**Gate values are Bonde's PUBLISHED ones**, taken from Pradeep Bonde, *stockbee.blogspot.com*
+(2019-11-26), "Reversal Bullish Scan I use":
 
-```sql
-SELECT
-  symbol,
-  close,
-  high,
-  low,
-  open,
-  (close - low) / NULLIF(high - low, 0) AS lower_shadow_ratio,
-  ABS(close - open) / NULLIF(high - low, 0) AS body_ratio
-FROM shibui.daily
-WHERE date = CURRENT_DATE
-  AND institutional_holders_count >= 1000
-  AND close < open * 1.02                -- day is down or barely green
-  AND (close - low) / NULLIF(high - low, 0) >= 0.6   -- long lower shadow
-  AND ABS(close - open) / NULLIF(high - low, 0) <= 0.4  -- small body
-  AND close / close_2d_ago < 1.0         -- part of a 2-3 day decline
-ORDER BY lower_shadow_ratio DESC
-LIMIT 10
+```
+l = minl5 and (o-l) > (c-o) and (c-l)/(h-l) >= .6 and v >= 290000 and c >= 5 and minv3.1 >= 100000
 ```
 
-Output entry = 15:55 ET close. Next-day stop = body low of the signal candle (the min of
-open and close).
+plus the prose rules from the same source and from the BreakoutsHappen write-up of the same
+workflow: *"the drop should last at least **two to three days**"*, *"there has to be some sort of
+a **wash out**"*, the candle must be a **hammer** — *"a long, well-defined lower shadow and a
+small body"* — and *"the reversal bar has to **jump off the chart**… if it could pass for one more
+bar in a range, or an ordinary pause inside a decline — it is not the signal."*
+
+| # | Criterion | SQL form | Source |
+|---|---|---|---|
+| 1 | **5-day low** | `low <= MIN(low, last 5 rows)` | published (`l = minl5`) |
+| 2 | **Close in the top 40% of the day's range** | `DCR = (close - low) / (high - low) >= 0.60` | published (`>= .6`) |
+| 3 | **Lower shadow longer than the body** | `(open - low) > (close - open)` | published |
+| 3b | **Hammer** — long lower wick, short upper wick | `lower_shadow >= 2 * upper_shadow` where `lower_shadow = LEAST(open,close) - low`, `upper_shadow = high - GREATEST(open,close)` | published prose; replaces the tail:body ratio, which explodes on doji bodies (a 3% body makes it 15–17×) and is not a usable gate |
+| 3c | **Small body** | `ABS(close - open) / (high - low) <= 0.30` | published "small body — squat, or narrow and pushed toward the top of the range" |
+| 4 | Small body (house rule, non-binding given 3c) | `<= 0.40` | house |
+| 5 | **Prior decline of 2–3 days, with a washout** | `(low / close_1d_ago - 1) <= -0.015` **and** (`(close / close_3d_ago - 1) <= -0.03` **or** `(close / close_5d_ago - 1) <= -0.03`) | published "the drop should last at least two to three days" + "there has to be some sort of a wash out". The old `close < close_2d_ago` is satisfied by a single marginal down day, so a sideways range passed it. |
+| 6 | **ADR ≥ 3%** | `AVG((high-low)/close, 20 rows) >= 0.03` | house (SMFG counter-example) |
+| 7 | **Close ≥ $5** | `close >= 5.0` | published (`c >= 5`). "Prefer higher priced stocks" is a **ranking** preference, not a filter — use it to order the list, not to cut it. |
+| 8 | **Long-term trend intact** | `close >= close_20d_ago * 0.92` — 20 sessions back, not 21 | house; exhaustion at support, not a falling knife |
+| S | **Stop** | body low `LEAST(open, close)`, **but** if `body_ratio < 0.15` use the signal bar's **low**; the stop must be `<= 2.5%` from the entry | published: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."* A body-low stop on a near-doji sits inside the bar's own noise (0.07% away on the 2026-10-26 CBRE bar) and produces false exits. |
+| U | **Universe** | NYSE/NASDAQ/AMEX, `market_cap > $5B` (proxy for ≥ 1,000 institutional funds), `avg_volume_30d > 1M` | proxy; shibui has no `institutional_holders_count` |
+
+The canonical SQL for all of this is emitted by
+`scripts/screen.py emit-sql reversal_bullish <YYYY-MM-DD>` (T+1-safe: the inner CTE is windowed
+over 60 calendar days so `LAG()` and the 5-day/20-day windows see full history, and the outer
+query takes `rn = 1` per symbol; `shibui.valuation` is de-duplicated to each symbol's most recent
+row so a stale market cap cannot qualify a symbol).
+
+**Discretionary step is mandatory.** The mechanical screen returns candidates; Bonde's actual
+process then reduces them to **1–3 ideas**: *"reducing down your list to just that 1 or 2 ideas"*,
+*"the reversal bar has to jump off the chart"*, *"no catalyst, no trade"*, and the exit rule
+*"if it does not work on 3rd day"*. A floor-exact DCR or a stop-distance tie-breaker is **not** a
+reason to promote a name — the 2026-10-26 bar had three passers, of which only one (CELH) was a
+clean qualifier.
+
+**Resolve every candidate against the next session's close before it is called actionable.**
+The SQL's `entry_price` is the signal-bar close; the tradeable entry is the next session's
+close. A candidate whose next-session close is below its stop has failed the setup, not been
+stopped out — and a candidate that *undercut the signal bar's low* has failed structurally, which
+is a different statement from a close a few cents below a doji body stop. Report both.
 
 ## M. Bonde — NTRT / EP continuation (overnight news)
 

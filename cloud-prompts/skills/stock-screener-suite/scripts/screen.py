@@ -41,7 +41,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field, asdict
-from datetime import date as date_cls
+from datetime import date as date_cls, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -543,38 +543,123 @@ ORDER BY metric, symbol
 
 
 def emit_reversal_bullish_sql(date: str) -> str:
-    """Bonde 3:55 PM reversal-bullish SQL.
+    """Bonde 3:55 PM reversal-bullish SQL — CORRECTED to Bonde's PUBLISHED criteria.
 
-    Schema note: shibui has no `institutional_holders_count`. Falls back to a
-    market_cap proxy (`> 5B`, the rough proxy for "held by ≥ 1,000 funds").
+    Gate values come from Pradeep Bonde, stockbee.blogspot.com (2019-11-26),
+    "Reversal Bullish Scan I use":
+
+        l=minl5 and (o-l)>(c-o) and (c-l)/(h-l)>=.6 and v>=290000 and c>=5 and minv3.1>=100000
+
+    The previous version of this function encoded the skill table's SQL floors, which
+    differ from the published scan in four ways, all of which were audited on the
+    2026-10-26 signal bar (see daily-screens/2026-10-27/reversal-bullish-3:55-CORRECTION.md
+    in karizaco/minimax-cloud-outputs):
+
+      * DCR floor 0.50 -> 0.60 (published: close in the top 40% of the day's range)
+      * prior-decline test `close < close_2d_ago` -> a real washout: the bar must
+        undercut the prior close intraday (>= 1.5%) and the stock must be down
+        >= 3% over the 3 preceding sessions, or down >= 3% over 5 (Bonde: "the drop
+        should last at least two to three days" / "there has to be some sort of a wash out")
+      * tail:body ratio -> the published `(o-l) > (c-o)` plus a scale-free hammer test
+        (lower shadow >= 2x upper shadow). The ratio explodes on doji bodies
+        (a 3% body makes the ratio 15-17x) and is not usable as a gate.
+      * price floor $15 -> $5 (published). "Prefer higher priced stocks" is a RANKING
+        preference, not a filter; keep it as a tie-break in the discretionary step.
+
+    Stop handling: the body low is the invalidation, but on a near-doji body it sits
+    inside the bar's own noise (0.07% away on the 2026-10-26 CBRE bar) and produces
+    false exits, so a body under 15% of the range uses the signal bar's LOW instead.
+    Bonde sanctions the shadow stop: "If you prefer to place the stop at the low of the
+    shadow instead, make sure that level does not exceed a 2.5% loss from your purchase
+    price." The 2.5% cap is enforced here as a filter.
+
+    Schema notes: shibui exposes no `institutional_holders_count`; `market_cap > $5B`
+    stands in for "held by >= 1,000 institutional funds". `shibui.valuation` keeps stale
+    rows per symbol, so the cap is taken from each symbol's MOST RECENT valuation row
+    (QUALIFY ... = 1), not from an arbitrary historical row.
     """
+    win_start = (date_cls.fromisoformat(date) - timedelta(days=60)).isoformat()
     return f"""
--- Reversal bullish for {date}
-WITH today AS (
-  SELECT q.symbol, q.date, q.open, q.high, q.low, q.close,
-         v.market_cap,
-         LAG(q.close, 2) OVER (PARTITION BY q.symbol ORDER BY q.date) AS close_2d_ago,
-         LAG(q.close)    OVER (PARTITION BY q.symbol ORDER BY q.date) AS prev_close
-  FROM shibui.stock_quotes q
-  JOIN shibui.valuation v ON q.symbol = v.symbol AND q.date = v.date
-  WHERE q.date = '{date}'
-    AND q.exchange IN ('NYSE','NASDAQ','AMEX')
-    AND v.market_cap > 5000000000
+-- Bonde reversal-bullish — CORRECTED published criteria — signal bar {date}
+-- Gate values: Pradeep Bonde, stockbee.blogspot.com 2019-11-26
+--   l=minl5 and (o-l)>(c-o) and (c-l)/(h-l)>=.6 and v>=290000 and c>=5 and minv3.1>=100000
+-- T+1-safe shape: the inner CTE is windowed over {win_start}..{date} so LAG() and the
+-- 5-day/20-day windows see full history; the outer query takes rn=1 per symbol.
+WITH q AS (
+  SELECT symbol, ticker, exchange, date, open, high, low, close, volume
+  FROM shibui.stock_quotes
+  WHERE date BETWEEN DATE '{win_start}' AND DATE '{date}'
+    AND exchange IN ('NYSE','NASDAQ','AMEX')
+), w AS (
+  SELECT q.*,
+         LAG(close,1)  OVER w AS c1d,
+         LAG(close,2)  OVER w AS c2d,
+         LAG(close,3)  OVER w AS c3d,
+         LAG(close,5)  OVER w AS c5d,
+         LAG(close,20) OVER w AS c20d,
+         MIN(low) OVER (PARTITION BY symbol ORDER BY date
+                        ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) AS low5,
+         AVG((high-low)/close) OVER (PARTITION BY symbol ORDER BY date
+                        ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adr20,
+         AVG(volume) OVER (PARTITION BY symbol ORDER BY date
+                        ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS adv30,
+         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+  FROM q
+  WINDOW w AS (PARTITION BY symbol ORDER BY date)
+), val AS (
+  SELECT symbol, market_cap
+  FROM shibui.valuation
+  WHERE date <= DATE '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+), sig AS (
+  SELECT w.*, val.market_cap,
+         (close - low) / NULLIF(high - low, 0) AS dcr,
+         ABS(close - open) / NULLIF(high - low, 0) AS body_ratio,
+         (LEAST(open,close) - low) AS lower_shadow,
+         (high - GREATEST(open,close)) AS upper_shadow,
+         (open - low) > (close - open) AS shadow_gt_body,
+         (low / c1d - 1) AS shakeout_vs_prev_close,
+         (close / c3d - 1) AS drop_3d,
+         (close / c5d - 1) AS drop_5d
+  FROM w LEFT JOIN val ON val.symbol = w.symbol
+  WHERE w.rn = 1 AND w.date = DATE '{date}'
+), calc AS (
+  SELECT sig.*,
+         CASE WHEN body_ratio < 0.15 THEN low ELSE LEAST(open, close) END AS next_day_stop,
+         (close - LEAST(open, close)) / NULLIF(close, 0) AS body_stop_pct,
+         (close - low) / NULLIF(close, 0) AS shadow_stop_pct
+  FROM sig
+), scored AS (
+  SELECT *,
+         CASE WHEN body_ratio < 0.15 THEN shadow_stop_pct ELSE body_stop_pct END AS stop_risk_pct
+  FROM calc
 )
-SELECT symbol,
-       close AS entry_price,
-       LEAST(open, close) AS next_day_stop,
-       NULL AS funds_held_proxy,
-       (close - low) / NULLIF(high - low, 0) AS lower_shadow_ratio,
-       ABS(close - open) / NULLIF(high - low, 0) AS body_ratio
-FROM today
-WHERE close < open * 1.02
-  AND (close - low) / NULLIF(high - low, 0) >= 0.6
-  AND ABS(close - open) / NULLIF(high - low, 0) <= 0.4
-  AND close_2d_ago IS NOT NULL AND close_2d_ago > 0
-  AND close / close_2d_ago < 1.0
-ORDER BY (close - low) / NULLIF(high - low, 0) DESC
-LIMIT 10
+SELECT symbol, ticker, exchange, date AS signal_date,
+       open, high, low, close AS entry_price, volume,
+       dcr, body_ratio, lower_shadow, upper_shadow,
+       (lower_shadow / NULLIF(ABS(close - open), 0)) AS tail_body_ratio,
+       shadow_gt_body,
+       c1d AS close_1d_ago, c2d AS close_2d_ago, c3d AS close_3d_ago, c20d AS close_20d_ago,
+       low5, adr20, adv30, market_cap,
+       drop_3d, drop_5d, shakeout_vs_prev_close,
+       next_day_stop, stop_risk_pct, body_stop_pct, shadow_stop_pct
+FROM scored
+WHERE market_cap > 5000000000                 -- U: institutional proxy (>= 1,000 funds)
+  AND adv30 > 1000000                        -- U: liquidity floor
+  AND close >= 5.0                           -- F7 published price floor ("prefer higher priced" is a RANKING input)
+  AND low <= low5                            -- F1 5-day low
+  AND dcr >= 0.60                            -- F2 published: close in the top 40% of the range
+  AND shadow_gt_body                         -- F3 published: (o-l) > (c-o)
+  AND lower_shadow >= 2 * upper_shadow       -- F3b hammer: long lower wick, short upper wick
+  AND body_ratio <= 0.30                     -- F3c small body (published "small, narrow, toward the top")
+  AND body_ratio <= 0.40                     -- F4 house rule (kept, non-binding given F3c)
+  AND shakeout_vs_prev_close <= -0.015       -- F5 washout: the bar undercut the prior close intraday
+  AND (drop_3d <= -0.03 OR drop_5d <= -0.03) -- F5 prior decline of 2-3 days (or a 5-day slide)
+  AND adr20 >= 0.03                          -- F6 ADR >= 3% (house rule)
+  AND close >= c20d * 0.92                   -- F8 long-term trend intact
+  AND stop_risk_pct <= 0.025                 -- S: maximum 2.5% loss from the signal close
+ORDER BY dcr DESC
+LIMIT 50
 """.strip()
 
 

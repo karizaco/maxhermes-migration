@@ -170,19 +170,32 @@ Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus a `regime.json`:
 
 Only run on weekdays between 15:30 and 16:00 ET. Output: `daily-screens/<cron_date>/reversal-bullish-3:55.{md,csv}` with the candidates that pass **all** of Pradeep Bonde's published criteria.
 
-**Pradeep Bonde / Stockbee criteria** (verbatim, from stockbee.blogspot.com + Bonde's Playbook + BreakoutsHappen summary):
+**Pradeep Bonde / Stockbee criteria** — the gate values are Bonde's **published** ones, from
+`stockbee.blogspot.com` (2019-11-26, "Reversal Bullish Scan I use":
+`l=minl5 and (o-l)>(c-o) and (c-l)/(h-l)>=.6 and v>=290000 and c>=5 and minv3.1>=100000`)
+plus his Playbook and the BreakoutsHappen write-up of the same workflow:
 
 | # | Criterion | SQL form |
 |---|---|---|
 | 1 | **5-day low** — "stock making 5 day low" | `low <= MIN(low, last 5 rows)` |
-| 2 | **Close in top half of day range** — "closing in top half of range" | `DCR = (close - low) / (high - low) >= 0.5` |
-| 3 | **Tail 3-5x body** — "tail is 3 to 5 times the body" | `(LEAST(open, close) - low) >= 3 * ABS(close - open)` |
-| 4 | **Small body** — "small body, narrow, pushed toward the top of the range" | `ABS(close - open) / (high - low) <= 0.4` |
-| 5 | **Prior decline (2-3 days)** — "drop should last at least 2-3 days" | `close < close_2d_ago` |
+| 2 | **Close in the top 40% of the day's range** — published `(c-l)/(h-l) >= .6` | `DCR = (close - low) / (high - low) >= 0.60` |
+| 3 | **Lower shadow longer than the body** — published `(o-l) > (c-o)` | `(open - low) > (close - open)` |
+| 3b | **Hammer** — "a long, well-defined lower shadow and a small body" | `lower_shadow >= 2 * upper_shadow`, where `lower_shadow = LEAST(open,close) - low` and `upper_shadow = high - GREATEST(open,close)` |
+| 3c | **Small body** — "small body, narrow, pushed toward the top of the range" | `ABS(close - open) / (high - low) <= 0.30` |
+| 4 | Small body (house rule; non-binding given 3c) | `ABS(close - open) / (high - low) <= 0.40` |
+| 5 | **Prior decline of 2–3 days, with a washout** — "the drop should last at least 2-3 days" / "there has to be some sort of a wash out" | `(low / close_1d_ago - 1) <= -0.015` **and** (`(close / close_3d_ago - 1) <= -0.03` **or** `(close / close_5d_ago - 1) <= -0.03`) |
 | 6 | **ADR ≥ 3%** — exclude slow movers (counter-example: SMFG at 1.33% ADR was rejected) | `AVG((high-low)/close, 20 rows) >= 0.03` |
-| 7 | **Close ≥ $15** — Bonde: "Prefer higher priced stocks" | `close >= 15.0` |
-| 8 | **Long-term trend** — exhaustion at support, NOT long-term downtrend | `close >= close_20d_ago * 0.92` |
-| U | **Universe** — NYSE/NASDAQ/AMEX, market_cap > $5B (proxy for institutional ownership ≥ 1,000 funds; shibui does not expose `institutional_holders_count`) | |
+| 7 | **Close ≥ $5** — published `c >= 5`. "Prefer higher priced stocks" is a **ranking** preference, not a filter | `close >= 5.0` |
+| 8 | **Long-term trend** — exhaustion at support, NOT long-term downtrend | `close >= close_20d_ago * 0.92` (20 sessions back, not 21) |
+| S | **Stop** — body low, but the signal bar's LOW if the body is under 15% of the range; must be ≤ 2.5% from the entry | `CASE WHEN body_ratio < 0.15 THEN low ELSE LEAST(open, close) END` |
+| U | **Universe** — NYSE/NASDAQ/AMEX, market_cap > $5B (proxy for institutional ownership ≥ 1,000 funds; shibui does not expose `institutional_holders_count`), avg_vol_30d > 1M | |
+
+> **The tail:body ratio is NOT a gate.** The old criterion 3 (`(LEAST(open,close) - low) >= 3 * ABS(close - open)`)
+> has no published ceiling and explodes on a near-doji body — the 2026-10-26 CBRE bar printed a 15× ratio
+> off a 3.2% body, and the 2026-10-27 CELH bar a 17× ratio off a 5.2% body. Bonde's published expression is
+> `(o-l) > (c-o)`; the "3 to 5 times the body" line is his prose description of a hammer, and the hammer test
+> (3b) is the scale-free way to apply it. If a report quotes a tail:body ratio, quote it as a description,
+> never as a pass/fail.
 
 **Universe** is the **single biggest filter** for Bonde's RB scan. Per Bonde:
 > "The universe we need is the set of stocks owned by at least 1,000 institutional funds."
@@ -192,12 +205,20 @@ shibui does not have `institutional_holders_count`. Two proxies:
 - `mcp__tradingview__screen_stocks` filter `institutional_holders_count >= 1000` (more accurate but adds an MCP call; only use when validating a short list, not as the primary universe gate)
 
 **Bonde's output discipline** (do NOT skip these):
-- "Select 1 to 3 ideas" — the SQL returns up to 10 names; the discretionary review narrows to 1-3. Do not pad with marginal setups.
-- "Prefer higher priced stocks" — already in the price filter.
+- "Select 1 to 3 ideas" — the screen returns the mechanical passers; the discretionary review narrows to 1-3. Do not pad with marginal setups.
+- "Prefer higher priced stocks" — a **ranking** preference, applied when ordering the final list. It is not a filter (the published price floor is $5).
 - "Run the Stockbee Reversal Bullish Scan between 3.30 to 3.55 PM" — cron at 15:55 ET is right at the end of Bonde's window.
 - "Enter between 3.58 to 4PM or using Market On Close order (MOC)" — the cron is a screener, not an executor; entry is the trader's job.
-- "Put stop of less than 2%" — Bonde places stop at the **low of the candle body** next morning, sized so loss ≤ 2.5%. The report's `body_low_stop` column is the body-low (when `open == close` it equals `close`).
+- "Put stop of less than 2%" — Bonde places the stop at the **low of the candle body** next morning, sized so loss ≤ 2.5%. **On a near-doji body the body low sits inside the bar's own noise** (0.07% away on the 2026-10-26 CBRE bar) and produces false exits, so when `body_ratio < 0.15` the report uses the signal bar's low instead — Bonde sanctions this: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."*
 - "Exit on stop hit if it does not work on 3rd day" — typical hold 1-3-5 days; report a "Day 1 / Day 2 / Day 3+" tag so the trader knows how stale the signal is.
+
+**Resolve every candidate against the next session before calling it actionable.** The SQL's
+`entry_price` is the signal-bar close; the tradeable entry is the next session's close. Two
+different failures must be reported separately: a candidate whose next close is a few cents below a
+doji body stop is a *noise breach*, while a candidate that **undercut the signal bar's low** has
+failed structurally. On 2026-10-26 CBRE closed below a body stop 0.07% wide (the signal low held
+by $0.03, and the stock returned +4.86% over three sessions) while CELH's next session undercut
+the signal low by $0.26 (the setup was genuinely dead). Never report both as "stop hit".
 
 **⚠ shibui is T+1** — at 15:55 ET on the cron day, today's close is usually
 not yet ingested. The SQL must therefore be run against the LATEST available
@@ -205,21 +226,23 @@ date in shibui (`< MAX(date) WHERE date <= today`), not literally today.
 
 - Resolve latest date first via `scripts/screen.py emit-sql resolve_date <date>`
   and substitute `latest_date` into the reversal-bullish SQL.
-- The default `emit_reversal_bullish_sql(<date>)` SQL has **three known bugs**
-  that surface on T+1 days:
-  1. The CTE filters `WHERE q.date = '<date>'` BEFORE the LAG window — the
-     window then has only one row per symbol, so `LAG(close, 2)` returns NULL
-     for everyone and the 2-day-decline filter drops the entire result set.
-  2. The SQL hard-codes `<date>` instead of using `MAX(date) <= <date>`, so
-     on the cron-day itself (when shibui has not yet ingested today), the
-     CTE is empty regardless.
-  3. The SQL has no Bonde-quality filters (5-day low, tail:body ≥ 3, ADR,
-     price, trend). It returns 10 names that mostly fail Bonde's published
-     criteria — see "Common rejections" below.
-- For the cron at 15:55 ET, the Agent MUST run the **T+1-safe + Bonde-strict
-  SQL**: window the inner CTE over `date BETWEEN '<cron_date-10d>' AND
-  '<latest_date>'`, pick `rn=1` (latest row per symbol) in the outer WHERE,
-  AND apply all 8 Bonde filters. See the cron prompt for the canonical form.
+- **The canonical SQL is `scripts/screen.py emit-sql reversal_bullish <latest_date>`** (the
+  `reversal-bullish` alias emits the same thing). It is already T+1-safe and Bonde-strict: the
+  inner CTE is windowed over 60 calendar days so `LAG()` and the 5-day/20-day windows see full
+  history, the outer query takes `rn = 1` per symbol, `shibui.valuation` is de-duplicated to each
+  symbol's most recent row (a stale market cap must not qualify a symbol), and every gate above is
+  applied in the query. It replaces the older loose form, which had three defects: the CTE
+  filtered `WHERE date = '<date>'` before the LAG window (so `LAG(close,2)` was NULL for everyone
+  and the 2-day-decline filter dropped the whole result set), it hard-coded `<date>` instead of
+  `MAX(date) <= <date>`, and it carried none of the Bonde-quality filters.
+- **A 15:55 ET scan on a T+1 feed cannot make a 15:58 ET entry.** The signal bar is the previous
+  session, so every candidate is a *next-session* planning artifact — say so in the artifact.
+  The routine's own 2026-10-29 run states it: *"Bonde's entry window has passed… a name taken
+  today is a Day-2 entry by Bonde's 'first day of the swing' rule, which his own published
+  process rejects."* When a live bar for the cron day IS available (Yahoo 5m with
+  `includePrePost=true`, or a bridge source carrying the in-progress session), scan today's live
+  bar and re-pull it after the 16:00 ET bell — that is the only way the same-day entry window can
+  be honoured.
 
 **Common rejections** — these all showed up in the loose scan on Sep 21 2026
 and were rejected by Bonde's stricter criteria. Keep this list as a debugging
@@ -229,8 +252,10 @@ reference when the scan produces fewer than 5 names:
 |---|---|---|
 | Slow mover (ADR < 3%) | filter 6 | `SMFG` (1.33% ADR) |
 | Long-term downtrend | filter 8 | `XPEV`, `TFII`, `ERIC` |
-| Choppy / mid-range close | filter 2 (DCR < 0.5) | `INTU`, `JBHT` (closed near lows) |
+| Choppy / mid-range close | filter 2 (DCR < 0.60) | `INTU`, `JBHT` (closed near lows) |
 | Random chop, no pullback pattern | filter 1 (no 5-day low) | `WPP` |
+| Sideways drift — no prior decline | filter 5 (no washout) | `HIMS` on 2026-10-26: a −5.5% two-day slide, but a doji bar whose upper shadow exceeded its lower shadow (DCR 0.514) — the decline was real, the candle was not a hammer |
+| Doji body, absurd tail ratio | filter 3b (hammer test) | `CBRE` on 2026-10-26: 15× tail on a 3.2% body, DCR 0.510, lower shadow 1.35 vs upper 1.39 |
 | Day 2+ setup (already past entry window) | n/a — review timing tag | `EXE`, `EQT`, `STE` (Bonde's "first day of swing" rule) |
 
 **Finviz fallback** — when shibui fails or times out:
