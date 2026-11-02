@@ -242,7 +242,14 @@ must never share a filename. Therefore:
   `breadth-snapshot.*` file in your output directory, DELETE it before the push step and say so
   in the reply; otherwise your copy would overwrite #10's intraday read on the branch.
 - Do NOT rename this cron's regime payload to `_regime-intraday.json`. That name belongs to
-  cron #10. `_regime.json` (or `_regime-screener.json`, if the skill writes that name) is yours.
+  cron #10. `_regime.json` is yours AND is the canonical slot: the stock-screener-suite
+  contract has the pre-market brief read `daily-screens/<date>/_regime.json`, and the
+  end-of-day sweep is the authoritative writer of it. If the skill emits the regime payload
+  under another name (it has been writing `_regime-screener.json`), RENAME it to
+  `_regime.json` before the push step. You may ALSO write `_regime-screener.json` as an alias
+  for anything already reading it, but the alias alone is not enough - it leaves
+  `_regime.json` stale or missing, and a missing `_regime.json` is a real gap, not a naming
+  preference.
 - Never delete `breadth-snapshot.md` from the branch. #10's intraday read and this cron's
   end-of-day read are meant to sit side by side in `daily-screens/<date>/`.
 
@@ -359,11 +366,13 @@ if git cat-file -e "origin/main:daily-screens/$DATE/breadth-snapshot.md" 2>/dev/
 else
   echo "INTRADAY: absent (cron #10's breadth-snapshot.md is not on the branch - expected only if #10 did not run today)"
 fi
-if git cat-file -e "origin/main:daily-screens/$DATE/_regime.json" 2>/dev/null || \
-   git cat-file -e "origin/main:daily-screens/$DATE/_regime-screener.json" 2>/dev/null; then
-  echo "REGIME: ok (this cron's regime payload present on origin/main)"
+if git cat-file -e "origin/main:daily-screens/$DATE/_regime.json" 2>/dev/null; then
+  echo "REGIME: ok (_regime.json present on origin/main - the canonical end-of-day slot)"
 else
-  echo "REGIME: FAILED (neither _regime.json nor _regime-screener.json on origin/main)"
+  echo "REGIME: FAILED (_regime.json NOT on origin/main - rename the skill's _regime-screener.json to _regime.json and re-push)"
+  if git cat-file -e "origin/main:daily-screens/$DATE/_regime-screener.json" 2>/dev/null; then
+    echo "REGIME: note (_regime-screener.json is present but the canonical _regime.json is missing)"
+  fi
 fi
 ```
 
