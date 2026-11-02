@@ -580,7 +580,7 @@ def emit_reversal_bullish_sql(date: str) -> str:
     """
     win_start = (date_cls.fromisoformat(date) - timedelta(days=60)).isoformat()
     return f"""
--- Bonde reversal-bullish — CORRECTED published criteria — signal bar {date}
+-- Reversal bullish for {date} — corrected to Bonde's published criteria
 -- Gate values: Pradeep Bonde, stockbee.blogspot.com 2019-11-26
 --   l=minl5 and (o-l)>(c-o) and (c-l)/(h-l)>=.6 and v>=290000 and c>=5 and minv3.1>=100000
 -- T+1-safe shape: the inner CTE is windowed over {win_start}..{date} so LAG() and the
@@ -641,6 +641,8 @@ SELECT symbol, ticker, exchange, date AS signal_date,
        shadow_gt_body,
        c1d AS close_1d_ago, c2d AS close_2d_ago, c3d AS close_3d_ago, c20d AS close_20d_ago,
        low5, adr20, adv30, market_cap,
+       'market_cap $' || ROUND(market_cap / 1000000000, 1) || 'B proxy' AS funds_held,
+       'market_cap $' || ROUND(market_cap / 1000000000, 1) || 'B proxy' AS funds_held_proxy,
        drop_3d, drop_5d, shakeout_vs_prev_close,
        next_day_stop, stop_risk_pct, body_stop_pct, shadow_stop_pct
 FROM scored
