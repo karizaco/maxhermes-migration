@@ -50,6 +50,43 @@ The skill's procedure body lives here:
 Then follow the procedure verbatim, with these Cloud adaptations below.
 
 
+## BONDE GATES (corrected 2026-11-02 — read together with the skill spec)
+
+The gate values in the skill's §5 table are Bonde's **published** ones. Four of them changed on
+2026-11-02 after an audit of the 2026-10-26 signal bar (full write-up:
+`daily-screens/2026-10-27/reversal-bullish-3:55-CORRECTION.md` in karizaco/minimax-cloud-outputs):
+
+1. **DCR ≥ 0.60, not 0.50** — Bonde's published `(c-l)/(h-l) >= .6`, i.e. the close sits in the top
+   40% of the day's range. The old 0.50 floor let dojis with a dominating upper wick through.
+2. **Prior decline = a real washout** — the bar must undercut the prior close by ≥ 1.5% intraday
+   **and** the stock must be down ≥ 3% over the 3 preceding sessions (or ≥ 3% over 5). The old
+   `close < close_2d_ago` was satisfied by a single marginal down day, so a sideways drift passed it.
+3. **The hammer test replaces the tail:body ratio** — `(o-l) > (c-o)` plus lower shadow ≥ 2× upper
+   shadow. The ratio explodes on a near-doji body (15×–17×) and is not a usable gate; quote it as a
+   description, never as a pass/fail.
+4. **Price floor $5, not $15** — Bonde's published `c >= 5`. "Prefer higher priced stocks" is a
+   **ranking** preference applied when ordering the final list, not a filter.
+
+The **stop** is the body low, except on a near-doji body (under 15% of the range) where the signal
+bar's **low** is used — a body-low stop on a doji sits inside the bar's own noise (0.07% wide on
+the 2026-10-26 CBRE bar) and produces false exits. The 2.5% maximum-loss cap is enforced either way.
+
+Write the SQL inline from the skill's §5 table (the local `scripts/screen.py` helper does not exist
+on Cloud). The canonical reference form is `emit-sql reversal_bullish <date>` in the skill's
+`scripts/screen.py` — T+1-safe: 60-day window, `rn = 1` per symbol, `shibui.valuation` reduced to
+each symbol's most recent row, and every gate above applied in the query.
+
+Then do the two things the SQL cannot do:
+
+- **Resolve every candidate against the next session's close** before calling it actionable, and
+  report a *noise breach* (a close a few cents below a doji body stop) separately from a
+  *structural failure* (the next session undercut the signal bar's low). Never report both as
+  "stop hit".
+- **Reduce to 1–3 ideas** the way Bonde does — "the reversal bar has to jump off the chart",
+  "no catalyst, no trade". A floor-exact DCR or a stop-distance tie-breaker is **not** a reason to
+  promote a name.
+
+
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
 
 The fleet-wide instructions live in ONE file, not in every prompt. Fetch it in the same first
