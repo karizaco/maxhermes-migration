@@ -86,8 +86,13 @@ schedule out of the inline preview — you will read the wrong task. The full JS
 to a file on disk. Find it and parse it:
 
 ```bash
-# the newest tool-result chunk file holds the raw JSON of the cron_read above
-CHUNK=$(ls -t /workspace/.mavis/tool-results/*/*/chunks/*.txt 2>/dev/null | head -1)
+# Pick the chunk that actually contains the cron_read output. `ls -t | head -1` is NOT safe:
+# the newest tool-result file may belong to some other tool, and the detector then aborts on
+# unparseable input. Search for a chunk containing a "tasks" array instead.
+CHUNK=""
+for f in $(ls -t /workspace/.mavis/tool-results/*/*/chunks/*.txt 2>/dev/null | head -20); do
+  if grep -q '"tasks"' "$f" 2>/dev/null; then CHUNK="$f"; break; fi
+done
 if [ -z "$CHUNK" ]; then
   echo "ERROR: cron_read output not found on disk"
 else
@@ -183,6 +188,51 @@ nothing. A false "reuse" accusation is worse than no check at all.
 
 Carry the detector's count into the reply: `CONVERSATIONS <n> routines checked, <m> recent
 run(s), <k> distinct conversation(s)`.
+
+## STEP 2c — PROMPT DRIFT (repo vs deployed)
+
+**Why this matters more than schedule drift.** A wrong schedule makes a routine fire on the wrong
+day — loud, visible, and fixed within a day. A *stale prompt* makes the routine run perfectly on
+the right day, with wrong instructions, producing plausible-looking wrong output — silent.
+
+Measured 2026-11-02: **21 of 23 deployed prompts no longer matched their repo file**, and 18 still
+asserted a dead connector-catalog composition and a dead Yahoo-429 condition that the repo had
+already corrected three days earlier. The repo looked finished; the fleet was not running it.
+That gap is exactly what this step makes visible.
+
+```bash
+# $CHUNK is the raw JSON of the cron_read view=list call from STEP 1
+# $REPO is a clone of karizaco/maxhermes-migration at cloud-prompts/cron-prompts/
+REPO="${REPO:-/workspace/mig}"
+python3 - "$CHUNK" "$REPO" <<'PYEOF'
+import hashlib, json, os, sys, urllib.parse
+chunk, repo = sys.argv[1], sys.argv[2]
+try:
+    raw = open(chunk, encoding="utf-8", errors="replace").read()
+    tasks = json.loads(raw).get("response", {}).get("tasks") or json.loads(raw).get("tasks") or []
+except Exception as exc:
+    print(f"PROMPT-DRIFT-CHECK-FAILED: {exc}"); raise SystemExit(0)
+
+drift = 0
+for t in tasks:
+    name = urllib.parse.unquote(t.get("cron_name", ""))
+    path = os.path.join(repo, "cloud-prompts", "cron-prompts", name)
+    if not os.path.exists(path):
+        path = os.path.join(repo, "cloud-prompts", name)
+    if not os.path.exists(path):
+        continue
+    local = open(path, "rb").read()
+    deployed = (t.get("prompt") or "").encode()
+    if hashlib.sha256(local).hexdigest() != hashlib.sha256(deployed).hexdigest():
+        drift += 1
+        print(f"PROMPT-DRIFT {name}: repo {len(local)}B vs deployed {len(deployed)}B")
+print(f"prompt drift: {drift} of {len(tasks)} deployed prompts differ from the repo")
+PYEOF
+```
+
+Report every `PROMPT-DRIFT` line. A drift is NOT repaired here — the repo is the source of truth,
+so the fix is to deploy the repo file, byte-exactly, and re-verify. Say which routines are
+affected.
 
 ## STEP 3 — REPAIR ANY DRIFT
 

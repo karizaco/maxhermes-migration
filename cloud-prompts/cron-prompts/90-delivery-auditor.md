@@ -82,11 +82,25 @@ git rev-parse --short origin/main | sed 's/^/  origin\/main = /'
 # `master` to `main` so a plain `git clone` never lands on a stale tree. This moves a
 # branch POINTER only - it never writes, deletes or rewrites an artifact, and it is
 # fast-forward-only, so it can never lose a commit.
-if git ls-remote --exit-code --heads origin master >/dev/null 2>&1; then
-  if git push -q origin FETCH_HEAD:master 2>/tmp/master.err; then
-    echo "  master mirror: fast-forwarded to main ($(git rev-parse --short FETCH_HEAD))"
+#
+# NOTE the explicit refspec `origin/main:master`. The earlier form used
+# `git push origin FETCH_HEAD:master`, but `git ls-remote` does NOT populate
+# FETCH_HEAD (only `git fetch` does), so that push always failed with
+# "src refspec FETCH_HEAD does not match any".
+#
+# The ancestry gate is what makes it safe: if `master` carries a commit `main` does not
+# (it currently does - a merge commit from 2026-10-30), master is NOT an ancestor of
+# main and the mirror is skipped rather than force-pushed. As of 2026-11-02:
+#   origin/master 2d5e9da  -  NOT an ancestor of origin/main 9666a41  ->  skipped
+if git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+  if git merge-base --is-ancestor origin/master origin/main; then
+    if git push -q origin origin/main:master 2>/tmp/master.err; then
+      echo "  master mirror: fast-forwarded to main ($(git rev-parse --short origin/main))"
+    else
+      echo "  master mirror: skipped (push rejected: $(head -1 /tmp/master.err | tr -d '\r'))"
+    fi
   else
-    echo "  master mirror: skipped (not a fast-forward: $(head -1 /tmp/master.err | tr -d '\r'))"
+    echo "  master mirror: skipped (origin/master has commits main does not - not a fast-forward; resolve the divergence before mirroring)"
   fi
 else
   echo "  master mirror: skipped (master has been retired)"
@@ -511,38 +525,22 @@ artifact branch. **Never push to `main`** — that is the artifact branch, and t
 artifact to contribute to it.
 
 ```bash
-cd /workspace
-export GIT_SSL_CAINFO=/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt
-export SSL_CERT_FILE="$GIT_SSL_CAINFO"
-export CURL_CA_BUNDLE="$GIT_SSL_CAINFO"
-export HOME=/workspace/.home; mkdir -p "$HOME"
-export DATE=$(TZ=America/New_York date +%Y-%m-%d)
-git config --global http.sslCAInfo "$GIT_SSL_CAINFO"
-git config --global user.email "maxhermes-cloud@local"
-git config --global user.name "MaxHermes Cloud Cron"
-git init -q 2>/dev/null || true
-git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git" 2>/dev/null || \
-  git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
-git fetch -q origin main
-rm -rf /workspace/.wt
-git worktree add -f /workspace/.wt origin/main
-mkdir -p /workspace/.wt/_audit
-cp /workspace/_audit/status.json /workspace/.wt/_audit/status.json
-cd /workspace/.wt
-git add _audit/status.json
-STAGED=$(git status --short)
-if [ -z "$STAGED" ]; then
-  echo "push: ABORTED (nothing staged)"
-elif echo "$STAGED" | grep -q '^\s*D'; then
-  echo "push: ABORTED (staged deletions detected — refusing to push)"
-else
-  git commit -q -m "audit $AUDIT_DATE" || echo "nothing to commit"
-  git push -q origin HEAD:refs/heads/audit/status 2>&1 | head -3
-fi
+B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
+for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
+  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
+done
+sh /workspace/push_artifact.sh --out _audit --add _audit/status.json --branch audit/status \
+   --msg "audit $AUDIT_DATE"
+sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
 ```
 
+**The target branch is `audit/status`, not `main`** — the status file lives on its own branch so
+the audit trail does not pollute the artifact branch. The shared script takes the branch as a
+parameter, which is why one implementation serves both this routine and the 21 that push to
+`main`.
+
 **CRITICAL — never use `git add -A` here.** Stage ONLY `_audit/status.json`. A blanket add
-stages every other file on the branch as DELETED.
+stages every other file on the branch as DELETED (measured 2026-10-25: 283 files wiped).
 **Never `git push --force`.** The push target is the `audit/status` branch, not `main`.
 
 ## DELIVERY VERIFICATION (MANDATORY)
