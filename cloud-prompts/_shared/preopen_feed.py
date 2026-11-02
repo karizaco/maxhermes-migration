@@ -312,7 +312,7 @@ def render(res):
             cat = "[UNVERIFIED] " + cat
         lines.append(f"{r['ticker']:<7}{g('premarket_pct')}{g('open_0930_pct')}"
                      f"{g('at_1000_pct')}{g('at_1200_pct')}{g('at_1550_pct')}  "
-                     f"{r['verdict']:<9}{r.get('premarket_verdict','-'):<11}{cat[:70]}")
+                     f"{r['verdict']:<9}{(r.get('premarket_verdict') or '-'):<11}{cat[:70]}")
     return "\n".join(lines)
 
 
