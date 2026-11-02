@@ -23,6 +23,13 @@ because it fires every Monday and simply skips four days a week.
 This cron is the detector and the repairer. It compares the LIVE scheduler against the
 ground truth and fixes any mismatch, then tells the user.
 
+It has a SECOND job, added 2026-11-02: **every routine must create a NEW conversation
+per fire.** A routine bound to a fixed conversation piles every run into one thread,
+which breaks the "fresh session, ephemeral artifact" contract the artifact routines
+depend on and makes the sidebar unreadable. Nothing else in the fleet checks this, and
+a web-GUI save can flip the session binding the same way it collapses a day-of-week
+field.
+
 ## SCHEDULE
 - Deployed schedule: `5 4 * * *` America/New_York — 04:05 ET daily.
 - It runs early and daily on purpose: a corruption must be found and fixed **before** the
@@ -102,11 +109,87 @@ Then run it against the saved `cron_read` output:
 python3 schedule-drift.py --tasks "$CHUNK" ; echo "exit=$?"
 ```
 
-Exit codes: `0` = no drift, `1` = drift found, `2` = input error.
+Exit codes: `0` = no drift and no conversation findings, `1` = findings, `2` = input error.
+
+**Read the prefixes, not just the exit code.** `DRIFT` is schedule drift (repairable),
+`SESSION-MODE` is a conversation-binding violation (report only), `CONV-REUSE` is a
+reused conversation (report only, after confirming it — see STEP 2b).
 
 **The script may need the list envelope unwrapped.** It accepts the raw response object, a
 bare list of tasks, or the tool-result chunk file. If it exits 2, print the file's first 400
 characters and adapt — do not skip the check.
+
+## STEP 2b — CONVERSATION HYGIENE (does every routine create a NEW conversation?)
+
+Two checks. The first is free, the second is the exact proof.
+
+### 2b.1 — static check (free, already done by the detector)
+
+The detector compares each routine's live `session.mode` against the ground truth
+(expected: `new`). Any line starting with `SESSION-MODE` is a violation: that routine is
+bound to a fixed conversation, or to nothing at all.
+
+**Never repair it.** A fixed-conversation binding can be a deliberate choice, and
+rewriting it silently changes how the routine's history reads. Report it and let the
+user decide.
+
+### 2b.2 — exact proof from the run history
+
+`cron_read {"view":"runs","task_id":"<id>"}` returns that task's recent runs, each with
+its own `session_id`. **Two runs of the SAME task carrying the SAME `session_id` means
+the conversation was reused.**
+
+This is the exact proof. The conversation LIST is not: the platform prunes old
+conversations (measured 2026-11-02: only 86 conversations survived for hundreds of
+fires, and a routine's Oct-30 conversation was already gone), so counting
+conversations proves nothing. Use the run history.
+
+Call it once for EVERY routine in the list — not only the ones you suspect:
+
+```
+mcp_invoke  tool_name=cron_read  arguments={"view":"runs","task_id":"<task_id>"}
+```
+
+Take the task_ids from the saved `cron_read` list JSON (STEP 1). Never retype them from
+this prompt, and never guess one.
+
+Then write ONE line per run into a single file, `/workspace/guard/runs.txt`:
+
+```
+<task_id> <session_id> <scheduled_at_ms>
+```
+
+Three values per line, copied VERBATIM from the tool output. No prose, no commas, no
+extra fields, one run per line. A line the detector rejects as malformed is a typo, not
+a finding — it cannot create a false "reuse".
+
+If a call fails or returns no runs, skip that routine. **Never invent a line.**
+
+### 2b.3 — run the detector with the run table
+
+```bash
+cd /workspace/guard
+python3 schedule-drift.py --tasks "$CHUNK" --runs-file runs.txt ; echo "exit=$?"
+```
+
+### 2b.4 — CONFIRM every reuse finding before you report it
+
+A `CONV-REUSE` line rests on numbers you copied by hand. Before reporting it, re-read
+that routine's runs with a FRESH call and confirm the two runs really do carry the
+same `session_id`:
+
+```
+mcp_invoke  tool_name=cron_read  arguments={"view":"runs","task_id":"<id>"}
+```
+
+- Fresh call shows the SAME `session_id` twice → REUSE CONFIRMED. Report it with the
+  session_id and the two scheduled times.
+- Fresh call shows DIFFERENT `session_id`s → your run table had a typo. Drop the
+  finding and say nothing about it. A false "reuse" accusation is worse than no check.
+
+Also carry the detector's count into the reply:
+`CONVERSATIONS <n> routines checked, <m> recent run(s), <k> distinct conversation(s)`.
+That is the evidence the user's answer rests on.
 
 ## STEP 3 — REPAIR ANY DRIFT
 
@@ -145,13 +228,26 @@ The reply is delivered to the user's chat. **Stay silent-ish when there is nothi
 a daily "everything is fine" message trains the user to ignore this routine, which is exactly
 how the #14 gap stayed invisible for a cycle.
 
-- **No drift and nothing else happened:** reply with exactly two lines:
+- **No drift and nothing else happened:** reply with exactly three lines:
   ```
   schedule guard: OK — <n> routines match the ground truth
   drift: 0
+  conversation guard: OK — <routines checked> routines, <fires> recent runs, all created a new conversation
   ```
   `<n>` is the count the detector printed (`checked N routines against the ground truth`) — never a
   hardcoded fleet size, which goes stale whenever a routine is added, removed or recreated.
+  The conversation line comes from the detector's `CONVERSATIONS ...` line. If the
+  conversation check could not run (no run table, the fetch failed), say
+  `conversation guard: NOT CHECKED — <reason>` instead of claiming OK.
+- **Conversation findings (schedule is fine):** report them as their own block:
+  ```
+  schedule guard: OK — <n> routines match the ground truth
+  conversation guard: <n> routine(s) are NOT creating a new conversation
+  <name>: mode='<live>' expected 'new' (task_id <id>)
+  <name>: conversation <session_id> used by 2 runs (scheduled <ts1> and <ts2>) — REUSE CONFIRMED
+  ```
+  Name the routine, the task_id, and the session_id. Say what it means in one clause:
+  every run of that routine lands in the same thread instead of a fresh one.
 - **Drift found and repaired:** report it properly, because it is a real finding:
   ```
   schedule guard: DRIFT REPAIRED — <n> routine(s) had a corrupted day-of-week field
@@ -205,6 +301,12 @@ note: web-GUI saves corrupt the day-of-week field of weekday routines — change
 8. **This routine is read-only with respect to artifacts.** It writes nothing to the outputs
    repo and pushes nothing. It only reads the scheduler and writes the scheduler's own
    schedule field.
+9. **Never repair a session binding.** `cron_update` could rewrite `session.mode`, but a
+   fixed-conversation routine can be a deliberate choice. Report it; let the user decide.
+10. **Confirm every CONV-REUSE finding with a fresh `view=runs` call before reporting it.**
+    The run table is copied by hand. A typo must not become a false accusation.
+11. **Never invent a run-table line.** If a `view=runs` call fails, the routine simply has
+    no evidence in this cycle — that is not a finding.
 
 ================================================================
 END OF CRON PROMPT
