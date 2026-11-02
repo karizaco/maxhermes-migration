@@ -25,6 +25,7 @@ ET = zoneinfo.ZoneInfo("America/New_York")
 # any sibling produced. The third element is the filename suffix used to keep a
 # routine to its OWN artifact.
 ARTIFACTS = {
+ "01-weekly-mcp-health-check": ("mcp-health/YYYY-Wnn.md", "mcp-health", ".md"),
  "02-asia-pre-market-reactions": ("asia-pre-market/{date}.md", "asia-pre-market", ".md"),
  "04-reversal-bullish-3:55": ("daily-screens/{date}/reversal-bullish-3:55.md", "daily-screens", "reversal-bullish-3:55.md"),
  "05-eod-international-daily": ("international-eod/{date}/", "international-eod", ".csv"),
@@ -48,14 +49,22 @@ ARTIFACTS = {
  "90-delivery-auditor": ("_audit/status.json (audit/status branch)", "", "status.json"),
 }
 # weekly routines get a longer staleness tolerance
-TOLERANCE = {"13-macro-calendar-midweek":9, "14-macro-calendar-week-ahead":9,
-              "22-weekly-market-recap-preview":9, "06-stock-screener-pattern-study-backlog":9}
+# Mirrors cron #90's STEP 4b tolerances, which are the contract. A weekly routine fires every
+# 7 days and the audit runs daily, so its age oscillates 0..6 and 7 can never false-positive;
+# 9 delayed every weekly finding by 3 days, which is how #14's missed Sunday stayed invisible.
+TOLERANCE = {"01-weekly-mcp-health-check":7, "13-macro-calendar-midweek":7,
+              "14-macro-calendar-week-ahead":7, "22-weekly-market-recap-preview":7,
+              "06-stock-screener-pattern-study-backlog":7}
 # A routine whose CURRENT schedule has not reached its first fire yet is EXPECTED to be
 # absent — it has never had a scheduled chance to run. Reporting it as stale is a false
 # positive. Keep this in sync with the NOT_YET_FIRED list in cron #90's prompt.
 NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01",
                  "14-macro-calendar-week-ahead": "2026-11-01"}
 DATE_RE = re.compile(r"(20\d\d-\d\d-\d\d)")
+# A WEEK-based filename (mcp-health/2026-W44.md) carries no YYYY-MM-DD. Its ISO week ENDS on
+# the Sunday the routine ran: Jan 4 of a year always falls in ISO week 1, so the Sunday of
+# week w is Jan 4 + (w-1)*7 days.
+WEEK_RE = re.compile(r"(\d{4})-W(\d{2})\.md$")
 
 def key_of(name):
     stem = name[:-3] if name.endswith(".md") else name
@@ -83,6 +92,11 @@ def last_delivered(files, routine):
         if not f.startswith(dirname + "/"): continue
         if not f.endswith(suffix): continue
         for d in DATE_RE.findall(f):
+            if best is None or d > best: best = d
+        m = WEEK_RE.search(f)
+        if m:
+            y, w = int(m.group(1)), int(m.group(2))
+            d = (datetime.date(y, 1, 4) + datetime.timedelta(days=(w - 1) * 7)).isoformat()
             if best is None or d > best: best = d
     return best
 

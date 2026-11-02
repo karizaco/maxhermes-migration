@@ -119,6 +119,7 @@ its absence is `MISSING`, not `weekend_no_us_session`:
 | Audited day | Routine that IS due | Schedule |
 |---|---|---|
 | Saturday (`$AUDIT_DOW` 6) | 06-pattern-study-backlog | `0 15 * * 6` |
+| Sunday (`$AUDIT_DOW` 7) | 01-weekly-mcp-health-check | `0 2 * * 0` |
 | Sunday (`$AUDIT_DOW` 7) | 14-macro-calendar-week-ahead | `0 15 * * 0` |
 | Sunday (`$AUDIT_DOW` 7) | 22-weekly-market-recap-preview | `47 17 * * 0` |
 
@@ -206,7 +207,11 @@ before this run; otherwise it is `not_due` and is not a gap.
 
 For `01-weekly-mcp-health-check` the path uses the **ISO week** of `$AUDIT_DATE`, not the date:
 `mcp-health/$(date -d "$AUDIT_DATE" +%G-W%V).md`. It also appends a row to
-`mcp-health/ledger.md`; the weekly report file is the one to check.
+`mcp-health/ledger.md`; the weekly report file is the one to check. #01's push commit carries no
+`cron <NN>` prefix (its deployed prompt does not specify a commit title), so when you need its
+commit match `mcp-health` in the subject instead of the NN prefix. It writes those two files and
+nothing else, so there is no near-miss variant to hunt for: if the weekly report is absent,
+#01 did not deliver.
 
 **WRITTEN_OFF — gaps the operator has accepted. Do NOT report these again.**
 `WRITTEN_OFF="14-macro-calendar-week-ahead:2026-10-25"`
@@ -281,7 +286,7 @@ cd /workspace/.audit
 # The path regex is ANCHORED to the real artifact layout on origin/main - a loose
 # substring match silently matches nothing and reports a healthy routine as NEVER_DELIVERED.
 # tolerance: 5 = daily or Mon-Fri routine (covers a Fri->Mon weekend gap)
-#            7 = weekly routine (06 Sat, 13 Wed, 14 Sun, 22 Sun)
+#            7 = weekly routine (01 Sun, 06 Sat, 13 Wed, 14 Sun, 22 Sun)
 # Why 7 and not 9: a weekly routine fires every 7 days and this audit runs DAILY, so a
 # healthy weekly routine's age oscillates 0,1,2,3,4,5,6 and NEVER exceeds 6. A tolerance of
 # 7 therefore cannot false-positive on a healthy weekly routine, while a MISSED fire shows
@@ -301,6 +306,7 @@ cd /workspace/.audit
 # 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
 NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01"
 for entry in \
+  "01-weekly-mcp-health-check|^mcp-health/[0-9]{4}-W[0-9]{2}\.md$|7" \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "19-earnings-reminder-daily|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reminders\.md$|5" \
   "15-earnings-reaction-scanner|^earnings/[0-9]{4}-[0-9]{2}-[0-9]{2}-reactions\.md$|5" \
@@ -332,7 +338,13 @@ for entry in \
   fi
   last=$(git ls-tree -r --name-only origin/main \
          | grep -E "$pat" \
-         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | tail -1)
+         | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-W[0-9]{2}' | sort -u | tail -1)
+  # A WEEK token names the ISO week of the Sunday the routine ran. Jan 4 of a year always falls
+  # in ISO week 1, so the Sunday of week w is Jan 4 + (w-1)*7 days. Plain date arithmetic only:
+  # `date -d "2026-W44"` is not portable and fails on some coreutils builds.
+  case "$last" in
+    *-W*) last=$(date -d "$(date -d "${last%%-W*}-01-04" +%F) +$(( (${last##*-W} - 1) * 7 )) days" +%F) ;;
+  esac
   if [ -z "$last" ]; then
     echo "STALE  $routine  NEVER_DELIVERED  (no artifact matching '$pat' on origin/main)"
   else
@@ -356,7 +368,7 @@ done
 
 **Cadence:** the threshold is PER ROUTINE and is carried in the third field of each entry above
 (`routine|path-regex|tolerance`). Daily and Mon-Fri routines use **5** (which covers a Fri->Mon
-weekend gap); the weekly routines (06 Sat, 13 Wed, 14 Sun, 22 Sun) use **7** — a healthy weekly
+weekend gap); the weekly routines (01 Sun, 06 Sat, 13 Wed, 14 Sun, 22 Sun) use **7** — a healthy weekly
 routine's age oscillates 0..6 because this audit runs daily, so 7 can never false-positive and a
 missed fire appears as age 8 one day later. A routine listed as "every day" uses **5** — it
 fires seven days a week, so a gap of more than 5 days is never legitimate.
