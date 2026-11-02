@@ -121,75 +121,51 @@ characters and adapt — do not skip the check.
 
 ## STEP 2b — CONVERSATION HYGIENE (does every routine create a NEW conversation?)
 
-Two checks. The first is free, the second is the exact proof.
+Every routine must run in `session.mode: "new"` — a FRESH conversation per fire. A routine
+bound to a fixed conversation piles every run into one thread, which breaks the fresh-
+session contract the artifact routines depend on. Nothing else in the fleet checks this.
 
-### 2b.1 — static check (free, already done by the detector)
+**2b.1 — static check (free).** The detector compares each routine's live `session.mode`
+with the ground truth (expected `new`). Lines prefixed `SESSION-MODE` are violations.
+**Never repair one** — a fixed-conversation binding can be deliberate. Report it.
 
-The detector compares each routine's live `session.mode` against the ground truth
-(expected: `new`). Any line starting with `SESSION-MODE` is a violation: that routine is
-bound to a fixed conversation, or to nothing at all.
+**2b.2 — exact proof from the run history.** `cron_read {"view":"runs","task_id":"<id>"}`
+returns a task's recent runs, each with its own `session_id`. Two runs of the SAME task
+sharing one `session_id` means the conversation was reused. The conversation LIST cannot
+prove this — the platform prunes old conversations (measured 2026-11-02: 86 conversations
+survived for hundreds of fires).
 
-**Never repair it.** A fixed-conversation binding can be a deliberate choice, and
-rewriting it silently changes how the routine's history reads. Report it and let the
-user decide.
-
-### 2b.2 — exact proof from the run history
-
-`cron_read {"view":"runs","task_id":"<id>"}` returns that task's recent runs, each with
-its own `session_id`. **Two runs of the SAME task carrying the SAME `session_id` means
-the conversation was reused.**
-
-This is the exact proof. The conversation LIST is not: the platform prunes old
-conversations (measured 2026-11-02: only 86 conversations survived for hundreds of
-fires, and a routine's Oct-30 conversation was already gone), so counting
-conversations proves nothing. Use the run history.
-
-Call it once for EVERY routine in the list — not only the ones you suspect:
+Call it ONCE for EVERY routine in the list, taking the task_ids from the saved
+`cron_read` list JSON (STEP 1) — never retype one from this prompt:
 
 ```
 mcp_invoke  tool_name=cron_read  arguments={"view":"runs","task_id":"<task_id>"}
 ```
 
-Take the task_ids from the saved `cron_read` list JSON (STEP 1). Never retype them from
-this prompt, and never guess one.
-
-Then write ONE line per run into a single file, `/workspace/guard/runs.txt`:
+Then write ONE line per run into `/workspace/guard/runs.txt`:
 
 ```
 <task_id> <session_id> <scheduled_at_ms>
 ```
 
-Three values per line, copied VERBATIM from the tool output. No prose, no commas, no
-extra fields, one run per line. A line the detector rejects as malformed is a typo, not
-a finding — it cannot create a false "reuse".
+Three values per line, copied VERBATIM from the tool output — no prose, no commas, one
+run per line. Skip a routine whose call failed; never invent a line.
 
-If a call fails or returns no runs, skip that routine. **Never invent a line.**
-
-### 2b.3 — run the detector with the run table
+**2b.3 — run the detector with the table.**
 
 ```bash
 cd /workspace/guard
 python3 schedule-drift.py --tasks "$CHUNK" --runs-file runs.txt ; echo "exit=$?"
 ```
 
-### 2b.4 — CONFIRM every reuse finding before you report it
+**2b.4 — CONFIRM before reporting.** A `CONV-REUSE` line rests on numbers you copied by
+hand. Re-read that routine's runs with a FRESH `view=runs` call first: the same
+`session_id` twice → REUSE CONFIRMED, report it with the session_id and the two
+scheduled times. Different ids → your table had a typo; drop the finding and say
+nothing. A false "reuse" accusation is worse than no check at all.
 
-A `CONV-REUSE` line rests on numbers you copied by hand. Before reporting it, re-read
-that routine's runs with a FRESH call and confirm the two runs really do carry the
-same `session_id`:
-
-```
-mcp_invoke  tool_name=cron_read  arguments={"view":"runs","task_id":"<id>"}
-```
-
-- Fresh call shows the SAME `session_id` twice → REUSE CONFIRMED. Report it with the
-  session_id and the two scheduled times.
-- Fresh call shows DIFFERENT `session_id`s → your run table had a typo. Drop the
-  finding and say nothing about it. A false "reuse" accusation is worse than no check.
-
-Also carry the detector's count into the reply:
-`CONVERSATIONS <n> routines checked, <m> recent run(s), <k> distinct conversation(s)`.
-That is the evidence the user's answer rests on.
+Carry the detector's count into the reply: `CONVERSATIONS <n> routines checked, <m> recent
+run(s), <k> distinct conversation(s)`.
 
 ## STEP 3 — REPAIR ANY DRIFT
 
