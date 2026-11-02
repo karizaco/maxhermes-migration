@@ -188,6 +188,12 @@ Save every run to:
 - `<slot>` = `preclose` (~15:50, the deployed slot), `midday` (~12:30), or `manual`
 - Include: run time ET, session state, sort note, tier tables, PM gap annex, halt watch, source health table, sources
 - When after-close / AH 8-K / PR material catalysts exist, require an `overnight_carry` section
+- **The `preclose` carry is written before tonight's prints.** Name the watch list — the scheduled
+  reporters that intersect with today's tape — and say plainly that the results land after the
+  carry is written. Do not guess the results and do not list every reporter: the fleet's
+  post-market brief owns the after-close earnings reactions, so the carry's job is to hand off,
+  not to duplicate.
+- Include the fuel-log line in `us-stocks-in-play/logs.jsonl` in the digest's file list
 - On the pre-close slot: load prior digest's `overnight_carry` into the Overnight → pre-close annex
 - **Chat only if** any Tier A or Soft-A, material TECH_WATCH, or material Tier C
 
@@ -261,8 +267,12 @@ RTH: 09:30–16:00 ET.
 
 1. Write `C:\Users\admin\.minimax\projects\coding-shared\research\us-in-play\YYYY-MM-DD-<slot>.md`
 2. Chat only if Tier A / Soft-A / material TECH_WATCH / material Tier C
-3. Append `C:\Users\admin\.minimax\projects\coding-shared\research\logs\jobs.jsonl` per pipeline §7
-4. Append audit log: `us-stocks-in-play target=us-in-play:<date>:<slot> tier_a=<n> soft_a=<n> tech_watch=<n> chat=<yes|no>`
+3. Append **one** line to `us-stocks-in-play/logs.jsonl` in the output repo, per pipeline §7 —
+   fetch the existing file first, then append; never overwrite it. The line carries `tier_a`,
+   `soft_a`, `tech_watch`, `tier_c` and `chat`, so the fuel log and the digest's audit line
+   always agree.
+4. The Windows audit-file line is **skipped on Cloud** — the cron prompt says to skip audit log
+   writes. The fuel-log line in (3) carries the same fields.
 
 ## Anti-patterns
 
