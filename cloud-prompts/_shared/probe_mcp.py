@@ -15,13 +15,19 @@ exist, and one that only knows "the catalog is empty" will miss a financial MCP 
 moment it lands. This probe answers the question once, cheaply, and in a form that
 distinguishes the three states that matter.
 
-THREE STATES — never collapse them
+FOUR STATES — never collapse them
 ----------------------------------
   catalog_ok total=N finance_tools=0   catalog is healthy, no financial MCP yet
   catalog_ok total=N finance_tools=K   a financial MCP HAS LANDED — switch to it
   catalog_unreachable                  the probe itself failed (seen 2026-10-21 as
                                        `error: invalid signature`). This is NOT
                                        evidence that no MCPs exist.
+  probe_unavailable                    the mcode-tools BINARY is absent from this
+                                       sandbox image (verified 2026-11-02: present
+                                       in some Cloud sessions, absent in others).
+                                       This is NOT a finding and NOT evidence about
+                                       the catalog — degrade to the normal source
+                                       ladder and carry on.
 
 USAGE
   probe_mcp.py                 # catalog + bridge packs
@@ -29,19 +35,27 @@ USAGE
   probe_mcp.py --no-bridge     # catalog only (fast; for a per-run probe)
 
 EXIT CODES
-  0 = probe succeeded (regardless of whether MCPs were found)
+  0 = probe succeeded (regardless of whether MCPs were found, and including
+      probe_unavailable — a missing binary is not a failure)
   1 = probe failed (catalog unreachable AND no bridge)
 """
 
 import argparse
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 
-FINANCE_RE = (
+# NOTE: this is a REGEX, and it is matched with .search() below - do not switch back to a
+# literal `k in name` substring test. `sec_?edgar` relies on the `?` making the underscore
+# optional; compared as a literal string it could never match "sec_edgar" and the EDGAR
+# financial MCP would be missed.
+FINANCE_RE = re.compile(
     r"yahoo|tradingview|shibui|stocktwits|financekit|finviz|barchart|market|quote|"
-    r"alpha_vantage|fmp|polygon|tiingo|tipranks|nasdaq|sec_?edgar"
+    r"alpha_vantage|fmp|polygon|tiingo|tipranks|nasdaq|sec_?edgar",
+    re.IGNORECASE,
 )
 BRIDGE = "/workspace/mcp_bridge.py"
 BRIDGE_URL = ("https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/"
@@ -65,6 +79,14 @@ def fetch_bridge():
 
 
 def probe_catalog():
+    # `mcode-tools` is NOT present in every Cloud sandbox image. Verified 2026-11-02: present
+    # at /usr/local/bin/mcode-tools in some sessions (probe prints catalog_ok total=133), absent
+    # in others. A missing probe binary says NOTHING about the catalog - it is not a finding and
+    # must never be recorded as one.
+    if shutil.which("mcode-tools") is None:
+        return {"state": "probe_unavailable",
+                "detail": "mcode-tools not on PATH - the probe binary is absent; "
+                          "this is NOT evidence about the connector catalog"}
     try:
         r = subprocess.run(["mcode-tools", "connector", "tools"],
                            capture_output=True, text=True, timeout=120)
@@ -77,7 +99,7 @@ def probe_catalog():
         return {"state": "catalog_unreachable",
                 "detail": (raw.strip() or r.stderr.strip())[:200]}
     names = [t.get("tool_name", "") for t in tools]
-    fin = [n for n in names if any(k in n.lower() for k in FINANCE_RE.split("|"))]
+    fin = [n for n in names if FINANCE_RE.search(n)]
     return {"state": "catalog_ok", "total": len(names), "finance_tools": len(fin),
             "finance_names": fin[:25],
             "providers": sorted({n.split("__")[1] for n in names if n.count("__") >= 2})}
@@ -114,6 +136,9 @@ def main():
                 f"finance_tools={cat['finance_tools']}")
         if cat["finance_tools"]:
             line += "  <-- A FINANCIAL MCP HAS LANDED — switch source stacks"
+    elif cat["state"] == "probe_unavailable":
+        line = ("probe_unavailable  (the mcode-tools binary is absent from this sandbox — "
+                "NOT a finding, NOT evidence about the catalog; use the normal source ladder)")
     else:
         line = "catalog_unreachable  (probe failure — NOT evidence that no MCPs exist)"
     if "bridge" in out:

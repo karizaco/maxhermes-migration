@@ -64,17 +64,28 @@ MOVER_FIELDS = "symbol,symbolName,lastPrice,priceChange,percentChange,volume,exc
 
 
 def find_chrome():
-    """Locate the chromium build playwright should use."""
+    """Locate the chromium build playwright should use.
+
+    The glob below matches BOTH the older `chromium-*/chrome-linux/chrome` layout and the newer
+    `chromium-*/chrome-linux64/chrome` layout, plus the `headless_shell` binary. An earlier version
+    matched only `chrome-linux/chrome`, so it found nothing on an image that shipped the newer
+    layout and the helper reported "no browser available" even though chromium was present.
+    """
     roots = []
     env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     if env:
         roots.append(env)
     roots += ["/root/.cache/ms-playwright", "/workspace/.home/.cache/ms-playwright",
               os.path.expanduser("~/.cache/ms-playwright")]
+    patterns = ("chromium-*/chrome-linux64/chrome",   # newer layout
+                "chromium-*/chrome-linux/chrome",     # older layout
+                "chromium-*/chrome-linux/headless_shell",
+                "chromium_headless_shell-*/chrome-linux/headless_shell")
     for root in roots:
-        hits = sorted(glob.glob(os.path.join(root, "chromium-*/chrome-linux/chrome")))
-        if hits:
-            return hits[-1]
+        for pat in patterns:
+            hits = sorted(glob.glob(os.path.join(root, pat)))
+            if hits:
+                return hits[-1]
     return None
 
 

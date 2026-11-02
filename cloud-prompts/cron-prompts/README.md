@@ -51,9 +51,11 @@ nothing — no agent invocation is spent discovering it is a weekend.
 - **Credential handling**: `${GITHUB_TOKEN}` only; never a literal PAT. Token unset → skip the push,
   write the artifact, reply.
 - **Data sources**: the `mcp__*` tool names are NOT registered in this runtime. The MCP *servers* are
-  reachable over plain HTTPS JSON-RPC via `_shared/mcp_bridge.py`. Yahoo JSON endpoints return
-  persistent 429; `web_search` (separate egress) and the Nasdaq API work. Full endpoint list and
-  measured status: `_shared/RUNTIME-CONTRACT.md`.
+  reachable over plain HTTPS JSON-RPC via `_shared/mcp_bridge.py`. **Yahoo JSON availability varies
+  by egress** — it was 429 on 2026-10-28 and 200 on 2026-10-31, and on 2026-11-02 one cron session
+  got 429 while another got 200. Try it, fall through on 429/401, and never report it as a standing
+  fact. The bridge's `market-recap`, the TradingView scanner, `web_search` (separate egress) and the
+  Nasdaq API work reliably. Full endpoint list + measured status: `_shared/RUNTIME-CONTRACT.md`.
 - **Zero-fallback policy**: every fallback terminates with stop-and-write. No deeper MCP chains.
 - **Helper scripts**: local Windows Python helpers do not exist on Cloud. Re-implement inline; fetch
   the helper source for reference only.
