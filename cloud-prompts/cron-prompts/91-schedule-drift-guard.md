@@ -202,8 +202,14 @@ That gap is exactly what this step makes visible.
 
 ```bash
 # $CHUNK is the raw JSON of the cron_read view=list call from STEP 1
-# $REPO is a clone of karizaco/maxhermes-migration at cloud-prompts/cron-prompts/
-REPO="${REPO:-/workspace/mig}"
+# The repo is NOT present in a fresh cron sandbox — clone it first.
+mkdir -p /workspace/guard
+if [ ! -d /workspace/guard/mig/.git ]; then
+  git clone -q --depth 1 https://github.com/karizaco/maxhermes-migration.git /workspace/guard/mig 2>/dev/null \
+    || git clone -q --depth 1 https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main /workspace/guard/mig 2>/dev/null \
+    || echo "PROMPT-DRIFT-CHECK-FAILED: repo clone failed"
+fi
+REPO="${REPO:-/workspace/guard/mig}"
 python3 - "$CHUNK" "$REPO" <<'PYEOF'
 import hashlib, json, os, sys, urllib.parse
 chunk, repo = sys.argv[1], sys.argv[2]

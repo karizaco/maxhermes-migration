@@ -543,18 +543,37 @@ parameter, which is why one implementation serves both this routine and the 21 t
 stages every other file on the branch as DELETED (measured 2026-10-25: 283 files wiped).
 **Never `git push --force`.** The push target is the `audit/status` branch, not `main`.
 
-## DELIVERY VERIFICATION (MANDATORY)
+## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
+
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch. Run it again if you
+need to re-check:
 
 ```bash
-cd /workspace/.wt 2>/dev/null || cd /workspace
-export DATE=$(TZ=America/New_York date +%Y-%m-%d)
-git fetch -q origin audit/status
-if git cat-file -e "origin/audit/status:_audit/status.json" 2>/dev/null; then
-  echo "DELIVERY: ok (audit/status:_audit/status.json present)"
-else
-  echo "DELIVERY: FAILED (audit/status:_audit/status.json NOT found)"
-fi
+sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
 ```
+
+A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's
+exit status (always 0) and reports a rejected push as a success. That is why the delivery check
+exists, and why the push script must never be run with `git push … | head -3`.
+
+## DELIVERY
+
+**This routine is one of the three documented reply-format exceptions** (see
+`cloud-prompts/cron-prompts/README.md`): its output is machine-read, so it does NOT use the
+standard prose-opener / `### Signal` / `### Method & caveats` format. It MUST be:
+
+  - ≤ 8 lines.
+  - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>`
+  - One line per gap: `gap: <routine> <label> <path> — <cause>` (the cause comes from STEP 4c;
+    omit the cause only when it could not be determined)
+  - One line: `push: ok (verified)` / `push: skipped (token unset)` / `push: FAILED (<reason>)`
+  - One line: `errors: <n>` — count of audit errors. 0 = clean audit.
+
+**If there are no gaps, say so in one line and stop.** Do not pad the reply with counts of
+routines that are `not_due` — those are working as designed, not news.
+
+No preamble. Tool call → result → write → push → reply.
 
 ## CRITICAL REMINDERS
 1. **This cron is read-only with respect to the artifacts.** It clones, checks, writes a local
