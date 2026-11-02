@@ -15,12 +15,12 @@ for U in "$B/preopen-capture.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes
 done
 ```
 
-Then follow `/workspace/preopen-capture.md` in full.
+Then follow `/workspace/preopen-capture.md` in full. It contains the key check, the Grok call,
+the TradingView ground-truth call, the merge/validation rules and the append-and-push steps.
 
 If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert and has
 expired mid-session before), fall back to `web_fetch` on the SAME url. If both fail, report
-`probe_failed:<reason>` and stop — never improvise the procedure from memory. It contains the key check, the Grok call,
-the TradingView ground-truth call, the merge/validation rules and the append-and-push steps.
+`probe_failed:<reason>` and stop — never improvise the procedure from memory.
 
 ## THIS FIRE
 
