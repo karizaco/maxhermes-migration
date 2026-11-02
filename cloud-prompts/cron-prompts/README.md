@@ -141,5 +141,14 @@ The outputs repo's `default_branch` is still `master`, because GitHub's `default
 changed without repo Administration scope and the PAT does not have it. **This is now mitigated
 rather than outstanding:** `master` is a fast-forward mirror of `main` (same commits), so a plain
 `git clone` lands on current artifacts, and the auditor advances the mirror daily so it cannot
-drift. Setting the default branch to `main` by hand (Settings → Branches → Default branch) would
+drift.
+
+**Re-aligned 2026-11-02.** `master` had diverged: it carried two merge commits (`8bdb2d0`,
+`2d5e9da`) that `main` did not, so it could not be fast-forwarded, and it was missing every
+artifact delivered since 2026-10-30. Verified before touching it — every file on `master` also
+existed on `main`, and `main` was one file ahead; the two extra commits were merges of `main` into
+`master` and carried no unique content. `master` was then advanced to `main`
+(`--force-with-lease`, with `backup/master-pre-tidy-2026-11-02` kept as a rollback point) and the
+31 skip markers were archived to `refs/skipped-markers/` first. A plain `git clone` now lands on
+the current commit instead of a tree 86 files short. Setting the default branch to `main` by hand (Settings → Branches → Default branch) would
 still be tidier — and the auditor's mirror step becomes a no-op on its own.
