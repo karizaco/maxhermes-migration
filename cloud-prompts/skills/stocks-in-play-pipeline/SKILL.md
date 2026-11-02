@@ -168,13 +168,41 @@ the long detail.
 
 ## 7) Fuel log (required after every digest run)
 
-Before ending the run, append **one** JSONL line to `C:\Users\admin\.minimax\projects\coding-shared\research\logs\jobs.jsonl` (create parent dirs if needed). Do not start a new turn just to log; do not message other agents about it.
+Record one JSONL line per digest run, so the fleet has a single, queryable run history.
+
+**On Cloud the fuel log is `<the routine's own output directory>/logs.jsonl`** in the output repo
+(`karizaco/minimax-cloud-outputs`, branch `main`) — e.g. `us-stocks-in-play/logs.jsonl`.
+Per routine, deliberately, **not** one shared file:
+
+- the routine's existing push block already copies its own output directory and stages it, so the
+  fuel log is published with **no prompt change**;
+- two routines firing in the same minute cannot race each other's lines.
+
+**How to append (Cloud):**
+
+1. Fetch the existing file from the remote output repo — `git fetch origin main` then
+   `git show origin/main:<output-dir>/logs.jsonl`. If that path does not exist yet, start empty.
+2. Verify the fetched text ends on a complete JSON line and is not shorter than the remote blob.
+   **If the existing file cannot be read in full, write no fuel-log file at all** and say so in
+   the artifact's Source health — a one-line file pushed over a longer history destroys the log.
+3. Append **one** line for this run and write the result to `<output-dir>/logs.jsonl` inside the
+   artifact directory. The routine's existing push block then publishes it alongside the artifact.
+
+**The line:**
 
 ```json
-{"ts_bkk":"YYYY-MM-DDTHH:MM:SS+07:00","agent":"mavis","kind":"routine","name":"<market> stocks in play <slot>","class":"L","notes":"optional"}
+{"ts_et":"2026-11-02T16:05:00-05:00","ts_bkk":"2026-11-03T04:05:00+07:00","agent":"mavis","kind":"routine","name":"us stocks in play preclose","class":"L","slot":"preclose","date":"2026-11-02","market":"us","tier_a":20,"soft_a":5,"tech_watch":1,"tier_c":5,"chat":"yes","artifact":"us-stocks-in-play/2026-11-02.md","errors":8}
 ```
 
-Use Asia/Bangkok timestamp. `class` is usually **L** for these digests; **M** only if it was a short file-only holiday stub. `kind` is `routine` for scheduled fires, `manual` for user-requested re-runs.
+`ts_et` is the run's US/Eastern timestamp and is authoritative; `ts_bkk` is the legacy
+Asia/Bangkok stamp, kept so existing parsers keep working — note the Bangkok **date rolls to the
+next calendar day** on an evening ET run. `class` is `L` for a normal digest and `M` for a short
+file-only stub (a holiday skip). `kind` is `routine` for a scheduled fire and `manual` for a
+user-requested re-run. `chat` is `yes`/`no` and must match the digest's own audit line.
+
+**This is not the Windows audit log.** The cron prompt's "on Cloud, skip audit log writes"
+instruction applies to the audit file only. The fuel log is the fleet's run history and must be
+written.
 
 ## Anti-patterns
 

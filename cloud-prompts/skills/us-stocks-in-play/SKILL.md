@@ -110,6 +110,23 @@ post-bell print — the cloud RUNTIME-CONTRACT documents the source whose `prima
 to the after-hours print at 16:00 — and state in the artifact whether the numbers are live
 intraday or settled.
 
+### Pre-close two-phase procedure (required)
+
+The `preclose` slot straddles the bell, so run it in two phases and publish **one** digest:
+
+- **Phase 1 (~15:52, live intraday):** discovery, the universe and the floors, the intraday path
+  (open → high → low → where it trades now), the gap annex, and catalyst research. Record the
+  live price and its timestamp.
+- **Phase 2 (after the 16:00 bell, ~16:02):** re-price the tiered names for the **settled**
+  regular-session close and the settled session volume, recompute RVol on the settled volume, and
+  take the close from the source's post-bell, field-flip-safe field. Re-check any name whose tier
+  moved on the settled numbers.
+
+The artifact must state that the numbers are **settled**, and the gap annex must separate a gap
+that **held into the bell** from one that faded. Never publish an intraday price labelled as a
+close. Do not wait for the after-close earnings slate — the fleet's post-market brief owns that;
+the carry hands off to it.
+
 ### Triggers (≥1 after the floor)
 
 | Trigger | Guidance |
