@@ -21,6 +21,13 @@ to, so the conversation list stays scannable.
 4. If the title cannot be set for any reason, carry on with the routine. This step must never
    block, delay, or fail the artifact.
 
+## FETCH FALLBACK (certificate / TLS)
+
+Every `curl` in this routine goes to raw.githubusercontent.com or cdn.jsdelivr.net. If curl fails
+with a certificate/TLS error — the sandbox egress proxy rotates its leaf cert and it has expired
+mid-session before — retry the SAME url with `web_fetch`, which uses a different egress. If both
+fail, say so in the reply and report `errors: 1`; do NOT report a status you did not measure.
+
 ## SCHEDULE
 - Deployed schedule: `0 7 * * *` America/New_York — 07:00 ET daily.
 - Runs at 07:00 ET, which is AFTER every routine that fires before it (the earliest is 06:00 ET,

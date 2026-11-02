@@ -60,8 +60,50 @@ case "$BRANCH" in
     exit 3 ;;
 esac
 
+# --- GitHub connector fallback -------------------------------------------------
+# When the sandbox has no GITHUB_TOKEN, or every git attempt was rejected, deliver the file
+# through the GitHub connector instead: it needs no token in the sandbox, and a file-level
+# write cannot stage deletions the way `git add -A` did on 2026-10-25 (283 files wiped).
+#
+# It has NO equivalent of the 3-attempt race-retry, so it stays a FALLBACK. The git path is
+# still PRIMARY for routines that share a fire minute with a partner.
+connector_fallback() {
+  command -v mcode-tools >/dev/null 2>&1 || {
+    echo "push: connector fallback unavailable (mcode-tools not on PATH)"; return 1; }
+  LOCAL_FILE="${SRC_DIR:-/workspace/$OUT}/$(basename "$ADD")"
+  [ -f "$LOCAL_FILE" ] || LOCAL_FILE="${REPO_DIR:-/workspace}/$ADD"
+  [ -f "$LOCAL_FILE" ] || {
+    echo "push: connector fallback skipped (the artifact is not at $LOCAL_FILE)"; return 1; }
+  HELP=/workspace/push_via_connector.sh
+  # A sibling copy, if the caller fetched both files into one directory.
+  SIB="$(dirname "$0" 2>/dev/null)/push_via_connector.sh"
+  [ -s "$HELP" ] || { [ -s "$SIB" ] && HELP="$SIB"; }
+  if [ ! -s "$HELP" ]; then
+    for U in \
+      "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_via_connector.sh" \
+      "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_via_connector.sh" ; do
+      curl -sL --max-time 30 -o "$HELP.tmp" "$U" 2>/dev/null
+      # A 404 page is a non-empty body that is NOT a script - never run one.
+      if head -1 "$HELP.tmp" 2>/dev/null | grep -q '^#!'; then
+        mv -f "$HELP.tmp" "$HELP"; break
+      fi
+      rm -f "$HELP.tmp"
+    done
+  fi
+  if [ ! -s "$HELP" ] || ! head -1 "$HELP" 2>/dev/null | grep -q '^#!'; then
+    rm -f "$HELP"
+    echo "push: connector fallback skipped (could not fetch push_via_connector.sh)"; return 1; }
+  sh "$HELP" --path "$ADD" --file "$LOCAL_FILE" --branch "$BRANCH" \
+     --msg "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}"
+}
+
 if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "push: skipped (token unset)"
+  echo "push: no GITHUB_TOKEN in the sandbox - trying the GitHub connector"
+  if connector_fallback; then
+    echo "push: ok (connector)"
+    exit 0
+  fi
+  echo "push: skipped (no token and the connector fallback did not land the file - the artifact is STILL in the sandbox)"
   exit 2
 fi
 
@@ -76,6 +118,7 @@ git config --global user.email  "maxhermes-cloud@local" 2>/dev/null || true
 git config --global user.name   "MaxHermes Cloud Cron"      2>/dev/null || true
 
 REPO_DIR="${REPO_DIR:-/workspace}"
+SRC_DIR="${SRC_DIR:-/workspace/$OUT}"
 cd "$REPO_DIR" || { echo "push: FAILED (no repo dir at $REPO_DIR)"; exit 1; }
 
 git init -q 2>/dev/null || true
@@ -109,7 +152,6 @@ for attempt in 1 2 3; do
   # copy the routine's output tree into the worktree.
   # SRC_DIR is where the artifact lives in the sandbox (default /workspace/$OUT); OUT is the
   # same path relative to the repo root.
-  SRC_DIR="${SRC_DIR:-/workspace/$OUT}"
   ADD_DIR=$(dirname "$ADD")
   mkdir -p "$WT/$ADD_DIR" 2>/dev/null || true
   if [ -d "$SRC_DIR" ]; then
@@ -154,6 +196,12 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-echo "push: FAILED (3 attempts rejected - the artifact is STILL in the sandbox at /workspace/$OUT/)"
+echo "push: 3 git attempts rejected - the artifact is STILL in the sandbox at /workspace/$OUT/"
 [ -n "$LAST_ERR" ] && echo "push: last error: $LAST_ERR"
+echo "push: trying the GitHub connector as a fallback"
+if connector_fallback; then
+  echo "push: ok (connector fallback)"
+  exit 0
+fi
+echo "push: FAILED (git refused AND the connector fallback did not land the file)"
 exit 1

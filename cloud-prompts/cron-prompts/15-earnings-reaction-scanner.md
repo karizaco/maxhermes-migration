@@ -69,9 +69,11 @@ curl -sS -w 'HTTP=%{http_code}\n' --max-time 60 \
 head -5 scripts/earnings_reaction_scanner.py
 ```
 
-If that fetch fails, retry once with `-k` (the GitHub cert expires intermittently). If both
-attempts fail, write a stub artifact with `_source=skill_fetch_failed`, report `errors: 1`, stop.
-Never improvise the procedure from memory.
+If that fetch fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert
+and it has expired mid-session before), retry the SAME url with `web_fetch`, which uses a
+different egress. If that fails too, retry once with `-k` (the GitHub cert expires
+intermittently). If all attempts fail, write a stub artifact with `_source=skill_fetch_failed`,
+report `errors: 1`, stop. Never improvise the procedure from memory.
 
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
 
@@ -97,9 +99,11 @@ It contains, and you must follow, all of these:
 - `## ZERO-FALLBACK POLICY`, `## HELPER SCRIPTS (PYTHON)`, `## AUDIT LOG`.
 - `## DELIVERY` — the reply format your final chat message must use.
 
-**If that fetch fails**, write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply
-with the failure. Do NOT improvise the source ladder, the fallback chain or the reply format from
-memory.
+**If that fetch fails** — including a certificate/TLS error on curl, which the sandbox egress
+proxy has produced mid-session before — retry the SAME url with `web_fetch` before giving up. Only
+then write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply with the failure. Do
+NOT improvise the source ladder, the fallback chain or the reply format from memory — those are
+what keep a degraded run honest.
 
 
 ## STEP 3 — RUN THE PIPELINE

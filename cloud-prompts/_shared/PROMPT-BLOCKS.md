@@ -21,12 +21,54 @@ the response format are what keep a degraded run honest.
 
 ---
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## MCP TOOLS AVAILABLE
 
 The **MCP-over-HTTP bridge** (`_shared/mcp_bridge.py` — see PRIMARY SOURCE) is the market-data
 source. Then `web_search`, `web_fetch`, `bash` (curl, python3), `connector__github__*` (repo
-writes). **No `mcp__*` finance tool is registered in this runtime** — do not call one and do not
+writes). **No `mcp__*` finance tool is registered on this runtime** — do not call one and do not
 invent tool names.
+
+**Two finance MCPs are not registered but ARE installable, and they work.** They are local stdio
+servers, not platform tools:
+
+| Server | Tools | What it adds |
+|---|---|---|
+| `tradingview-mcp` | 73 | `egx_stock_screener`, `egx_market_overview`, `rating_filter`, `bollinger_scan`, `multi_timeframe_analysis`, `volume_breakout_scanner` |
+| `financekit-mcp` | 17 | `stock_quote`, `multi_quote`, `correlation_matrix`, `options_chain`, `earnings_calendar`, `sector_rotation`, `market_overview` |
+
+```bash
+DIR=/workspace/tvmcp; mkdir -p "$DIR"
+for P in tradingview-mcp financekit-mcp; do
+  env -u PIP_INDEX_URL -u UV_INDEX_URL \
+    UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_URL="https://pypi.org/simple" \
+    uv pip install --python python3.11 --target "$DIR" "mcp<2" "$P"
+done
+PYTHONPATH="$DIR" "$DIR/bin/tradingview-mcp"     # stdio server; console script is `financekit`
+```
+
+**The `mcp<2` pin is MANDATORY** — the packages bundle mcp 2.x, where `FastMCP` was renamed
+`MCPServer`; without the pin the server dies with `No module named 'mcp.server.fastmcp'`. Note
+that `egx_stock_screener` filters on an **opaque vendor `min_score`** — use it for discovery,
+never as an artifact's published criteria, because a score you cannot explain is a criterion you
+cannot defend. Full recipe, argument shapes and per-routine fit: topic `mcp-bridge-data-quirks`
+and `cloud-prompts/_shared/RUNTIME-CONTRACT.md` section 2d.
 
 ## RUNTIME DATA-SOURCE CONTRACT (read before fetching any data)
 
@@ -118,6 +160,11 @@ quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL ab
 source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
 
 ### Rules
+
+- **A certificate/TLS error is a FETCH failure, not a missing source.** The sandbox egress proxy
+  rotates its leaf cert and it has expired mid-session before; `web_fetch` uses a different
+  egress and still works. On a cert error, retry the SAME url with `web_fetch` before you
+  conclude anything about the source. Only after BOTH fail is it a source failure.
 
 1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
    never successfully queried. Retry once after a short sleep, then fall through the ladder.

@@ -47,6 +47,13 @@ depend on and makes the sidebar unreadable. Nothing else in the fleet checks thi
 a web-GUI save can flip the session binding the same way it collapses a day-of-week
 field.
 
+## FETCH FALLBACK (certificate / TLS)
+
+Every `curl` in this routine goes to raw.githubusercontent.com or cdn.jsdelivr.net. If curl fails
+with a certificate/TLS error — the sandbox egress proxy rotates its leaf cert and it has expired
+mid-session before — retry the SAME url with `web_fetch`, which uses a different egress. If both
+fail, say so in the reply and report `errors: 1`; do NOT report a status you did not measure.
+
 ## SCHEDULE
 - Deployed schedule: `5 4 * * *` America/New_York — 04:05 ET daily.
 - It runs early and daily on purpose: a corruption must be found and fixed **before** the

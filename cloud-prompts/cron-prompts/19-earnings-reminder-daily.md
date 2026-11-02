@@ -82,9 +82,11 @@ It contains, and you must follow, all of these:
   broken source, why the local Windows helpers do not exist, and why there is no audit log.
 - `## DELIVERY` — the reply format your final chat message must use.
 
-**If that fetch fails**, write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply
-with the failure. Do NOT improvise the source ladder, the fallback chain or the reply format from
-memory — those are what keep a degraded run honest.
+**If that fetch fails** — including a certificate/TLS error on curl, which the sandbox egress
+proxy has produced mid-session before — retry the SAME url with `web_fetch` before giving up. Only
+then write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply with the failure. Do
+NOT improvise the source ladder, the fallback chain or the reply format from memory — those are
+what keep a degraded run honest.
 
 
 ## DATA SOURCE — read this before spending turns on MCPs
