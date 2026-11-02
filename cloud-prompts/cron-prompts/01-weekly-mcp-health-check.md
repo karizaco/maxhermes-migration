@@ -90,7 +90,7 @@ bridge `market-recap` `get_quotes`; Yahoo chart; Yahoo screener; TradingView sca
 US Treasury yield-curve CSV. The authoritative endpoint list and measured status is in
 `cloud-prompts/_shared/RUNTIME-CONTRACT.md` section 2a in karizaco/maxhermes-migration.
 
-## 3. Local stdio MCP servers — the install-on-demand surface
+## 4. Local stdio MCP servers — the install-on-demand surface
 
 Two finance MCPs are NOT registered on the platform and are NOT on the Pipeworx gateway, but they
 ARE pip-installable and they work as local stdio servers. They are invisible to every other probe
@@ -165,17 +165,16 @@ tools, `financekit-mcp` = 17 tools.
 losing tools — changes how every digest routine should be run. That is the single most important
 thing this weekly routine can tell you.
 
-## 4. Ledger row
-Append to `mcp-health/ledger.md` on `main`:
-`| <YYYY-MM-DD> | <catalog state> | <packs OK> | <endpoint statuses> | <what changed> |
+## 5. Ledger row
+Append to `mcp-health/ledger.md` on `main` — one row per run, in this shape:
+
+| <YYYY-MM-DD> | <catalog state> | <packs OK> | <endpoint statuses> | <what changed> |
 
 The `what changed` cell MUST name the stdio counts when they moved, e.g.
 `tradingview-mcp 73 tools (NEW), financekit-mcp 17 tools (NEW)`. A row saying "no change" is the
-expected outcome most weeks — that is how the diff becomes readable.`
-"What changed" must say `no change` or name the specific delta. A row saying "no change" is the
 expected outcome most weeks — that is how the diff becomes readable.
 
-## 5. Weekly report
+## 6. Weekly report
 `mcp-health/YYYY-Wnn.md`: the three catalog states, the pack table, the endpoint table, the
 **stdio server table** (server name, tool count, install ok/failed), and a short "changed since
 last week" section.
