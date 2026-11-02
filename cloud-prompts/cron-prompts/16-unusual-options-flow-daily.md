@@ -10,7 +10,9 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
   (eod-international-daily), which also fires at 16:30. Both routines push to the same branch in
   the same minute, and the loser's artifact was lost. Do not move this back to 16:30 without also
   moving #05.
-- The window gate below is `MARKET_HOURS_ONLY` (09-17 ET), so 16:35 ET satisfies it.
+- The market-hours gate that used to live in the window check is gone: the scheduler owns the
+  hour, and 16:35 ET is outside the 09:00-17:00 ET session that gate tested. The only gate left
+  is the market-holiday list below.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
