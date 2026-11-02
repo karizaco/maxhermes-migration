@@ -21,13 +21,14 @@ to, so the conversation list stays scannable.
    block, delay, or fail the artifact.
 
 ## SCHEDULE
-- Original local schedule: 08:30 ET weekdays
+- Original local schedule: `37 7 * * 1-5` America/New_York — 07:37 ET weekdays
 - Deployed schedule: `30 8 * * 1-5` America/New_York — 08:30 ET, Mon-Fri only.
-- The day-of-week field is set in the SCHEDULER, so this routine does not fire
-  at all on weekends: no agent invocation is spent discovering it is a weekend,
-  and no weekend SKIPPED file is written. The in-prompt weekend branch below is
-  kept as a belt-and-braces guard (it costs one line) and is what still handles
-  US market holidays, which no cron expression can express.
+  Moved from 07:37 ET on 2026-10-31 so the artifact lands after cron #19's 06:00 ET
+  earnings reminder, which it reads.
+- The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
+  weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
+  file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
+  express — the market-holiday list.
 - There is no pre-market session on a weekend and this brief has no weekend edition, so it does
   not run on Saturday or Sunday at all. (Retired 2026-10-31 — it used to fire daily and produce a
   scoped WEEKEND brief; see WEEKEND MODE below, kept for reference only and NOT to be used.)

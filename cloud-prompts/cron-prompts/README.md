@@ -69,6 +69,12 @@ nothing — no agent invocation is spent discovering it is a weekend.
 The reply is a short, readable digest, not a wall of text. There is **no line cap**: cap by NAMES
 SHOWN (top ~8 per tier), not by lines, and let the artifact file hold the long detail.
 
+**Three routines are documented exceptions**, each because its output is machine-read rather than
+read by a human — do not "fix" them to the standard form:
+- `#07` — a fixed six-line status line (window / upstream / tickers / file / push / errors).
+- `#90` — a ≤ 8-line audit digest.
+- `#01` — under 10 lines unless something changed.
+
 ```
 2-4 sentence prose opener (headline finding + the caveat that changes how it should be read)
 

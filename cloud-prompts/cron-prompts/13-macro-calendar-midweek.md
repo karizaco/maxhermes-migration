@@ -4,8 +4,9 @@ You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Wi
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
 ## SCHEDULE
-- Original local schedule: Wednesday weekly
-- Schedule is unchanged — only the runtime environment changed.
+- Original local schedule: `0 14 * * 3` America/New_York — Wednesday 14:00 ET.
+- Deployed schedule: `0 14 * * 3` America/New_York — Wednesday 14:00 ET.
+  Unchanged; the scheduler owns the day-of-week, so this fires on Wednesdays only.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
@@ -265,7 +266,7 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
-4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
 ================================================================
 END OF CRON PROMPT

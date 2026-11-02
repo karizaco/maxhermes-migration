@@ -6,11 +6,10 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 ## SCHEDULE
 - Original local schedule: morning
 - Deployed schedule: `0 9 * * 1-5` America/New_York — 09:00 ET, Mon-Fri.
-- The day-of-week field is set in the SCHEDULER, so this routine does not fire
-  at all on weekends: no agent invocation is spent discovering it is a weekend,
-  and no weekend SKIPPED file is written. The in-prompt weekend branch below is
-  kept as a belt-and-braces guard (it costs one line) and is what still handles
-  US market holidays, which no cron expression can express.
+- The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
+  weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
+  file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
+  express — the market-holiday list.
 
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
@@ -314,7 +313,7 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
 2. Use ONLY the tools named in the RUNTIME DATA-SOURCE CONTRACT above (`web_search`, `web_fetch`, `bash`). Do NOT call the `mcp__*` tools — they are not
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
-4. If the cron fires outside its intended window (e.g. holiday, weekend when it should be weekday), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
 ================================================================
 END OF CRON PROMPT

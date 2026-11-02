@@ -4,10 +4,13 @@ You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Wi
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
 ## SCHEDULE
-- Fires 06:00 ET weekdays (America/New_York).
-- The skill pairs with the 07:37 ET pre-market brief (cron #26 fires 08:30 ET). This artifact must
-  land on disk BEFORE that brief reads it. It previously fired 11:30 ET, i.e. after the brief and
-  after the US open — that was a bug, now fixed.
+- Original local schedule: `0 6 * * 1-5` America/New_York — 06:00 ET, Mon-Fri.
+- Deployed schedule: `0 6 * * 1-5` America/New_York — 06:00 ET, Mon-Fri.
+- The skill pairs with the pre-market brief, cron #26, which fires 08:30 ET (`30 8 * * 1-5`) —
+  2h30m after this routine. This artifact must land on disk BEFORE that brief reads it.
+  (#26 originally fired 07:37 ET; it was moved to 08:30 ET on 2026-10-31.)
+- This routine previously fired 11:30 ET, i.e. after the brief and after the US open — that was a
+  bug, now fixed.
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
@@ -333,8 +336,9 @@ Do not narrate tool calls. Tool call → result → write → push → reply.
    against company sources (Rule B). Never recall either from memory.
 4. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral
    unless pushed.
-5. If the cron fires outside its intended window (weekend, US market holiday), exit cleanly with
-   "out-of-window: <reason>". Do NOT run a degraded version.
+5. If the cron fires outside its intended window (a US market holiday — the scheduler owns the
+   day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>".
+   Do NOT run a degraded version.
 
 ================================================================
 END OF CRON PROMPT
