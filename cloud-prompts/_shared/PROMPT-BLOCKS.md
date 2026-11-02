@@ -161,10 +161,10 @@ source and is not rate-limited, so try it before Yahoo. If it fails, fall throug
 
 ### Rules
 
-- **A certificate/TLS error is a FETCH failure, not a missing source.** The sandbox egress proxy
-  rotates its leaf cert and it has expired mid-session before; `web_fetch` uses a different
-  egress and still works. On a cert error, retry the SAME url with `web_fetch` before you
-  conclude anything about the source. Only after BOTH fail is it a source failure.
+> **A certificate/TLS error is a FETCH failure, not a missing source.** The sandbox egress proxy
+> rotates its leaf cert and it has expired mid-session before; `web_fetch` uses a different
+> egress and still works. On a cert error, retry the SAME url with `web_fetch` before you
+> conclude anything about the source. Only after BOTH fail is it a source failure.
 
 1. **A 429/403 is a RATE LIMIT, not a missing symbol.** Never report "no data" for a symbol you
    never successfully queried. Retry once after a short sleep, then fall through the ladder.
