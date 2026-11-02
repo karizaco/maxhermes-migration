@@ -22,3 +22,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Local git worktrees (feature branches) — never commit these
+.worktrees/
