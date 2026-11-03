@@ -97,13 +97,13 @@ case "$DATE" in
           rm -f "$S.tmp"
         done
         if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
-          sh "$S" --out daily-screens --name reversal_bullish_3_55 \
+            sh "$S" --out daily-screens --name reversal_bullish_3_55 \
              --label "Cron #04 reversal-bullish-3:55" \
              --reason "US market holiday ($DATE)" \
              --nn 04 --date "$DATE" || \
              echo "skip-marker push: FAILED (the marker is still in the sandbox)"
         else
-          echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
+            echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
         fi
         echo "out-of-window: US market holiday ($DATE)"
         echo "no artifact; no push"
