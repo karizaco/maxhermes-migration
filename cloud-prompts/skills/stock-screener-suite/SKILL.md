@@ -445,6 +445,48 @@ in `focus.md`:
 - Flag names with `gap_pct > 4` AND `pre_market_volume > 50_000`
 - One chat line per flagged name
 
+#### The Nasdaq pre-market tape is served from a stale HTTP cache - read it defensively
+
+Verified by experiment 2026-11-03 (regular session, 10:09-10:32 ET). `api.nasdaq.com`'s
+`/extended-trading` endpoint sits behind a **shared HTTP cache** that can return a snapshot
+captured much earlier. Measured: the **same URL** returned a 4.5-hour-old vintage
+(AAPL pre-market 05:33:19) alongside a current one (09:30:01) in the same second, and MSFT /
+GOOGL alternated between 05:31-05:33 and 09:30:01 vintages across rapid pulls. Responses carry
+a `cache-hit` header. **A unique query string does NOT reliably bypass it** - 8 pulls with 8
+distinct URLs still alternated between vintages.
+
+**`/info` is the LIVE source, not the stale one.** `primaryData.lastTradeTimestamp` tracks wall
+clock to the minute and its price changes on every pull. Do not discard `/info` on the theory
+that it "flips": a pre-market `$28.00` reading on GEN (2026-11-02) sat *below* the tape's real
+low of $28.13, so it was never an executed trade, not a field flipping.
+
+Rules for this scan:
+
+1. **Never trust a single tape pull.** Pull the endpoint N times (N >= 4) and keep the payload
+   with the **newest internal timestamp** (the latest `tradeDetailTable` clock time, after
+   sorting - the table is served newest-first). A stale vintage can never win a max-timestamp
+   comparison.
+2. **Take the price from `/info` `primaryData` (live)**; use the tape for *which prints actually
+   traded*, the pre-market high/low, and the cumulative volume.
+3. **Prefer the Cboe delayed-quote CDN** as the independent price cross-check:
+   `https://cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json` returns an explicit
+   `last_trade_time` and `timestamp`, so its freshness is verifiable from the payload rather
+   than inferred. It is not subject to the Nasdaq cache.
+4. **Denominator:** use the prior sweep's own `focus.csv` close, cross-checked against
+   TradingView's `close`. Nasdaq's `/info` `secondaryData` drifts intraday (PRCH read 20.68
+   against a true 20.56).
+5. **Volume:** the `infoTable` cumulative counter can itself be faulty (ADT jumped 6,500 ->
+   606,500 mid-session while its complete 71-row tape stayed at 6,726). The trade-detail table
+   is capped at 100 rows, so **when `tape_n < 100` the tape is complete** and can arbitrate a
+   contradictory counter. Prefer the tape sum and record the rejection.
+6. **Take multiple snapshots across the run** (e.g. 08:46 / 08:52 / 08:57 / a paired 09:00
+   pull). They serve as the liveness proof, the max-timestamp source, and the divergence
+   record.
+
+Because a stale vintage can move an individual name's gap by ~2.4pp, publish the margin against
+the trigger: if the widest gap on any source is well inside the 4% band, the flag decision is
+immune to the cache and should be stated as such.
+
 ### 7. Live intraday RVOL re-rank (Sun)
 
 Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deployed cron
