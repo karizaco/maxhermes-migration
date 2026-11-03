@@ -78,6 +78,17 @@ case "$DATE" in
 esac
 echo "window-check: OK ($DATE)"
 ```
+**Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
+line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
+else — do not narrate the tool calls and do not write an artifact:
+
+```
+out-of-window: US market holiday ($DATE)
+file: no artifact (holiday skip — daily-screens/$DATE.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_stock_screener_focus_rvol_09_45.md) | marker push FAILED | marker push skipped (push script unavailable)
+errors: 0
+```
+
 
 ## STEP 2 — SKILL SPEC (fetch once)
 curl -sS -w 'HTTP=%{http_code}\n' https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md -o /tmp/skill.md
@@ -92,16 +103,6 @@ step as the skill spec below, then follow it in full:
 
 ```
 
-**Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
-line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
-else — do not narrate the tool calls and do not write an artifact:
-
-```
-out-of-window: US market holiday ($DATE)
-file: no artifact (holiday skip — daily-screens/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_stock_screener_focus_rvol_09_45.md) | marker push FAILED | marker push skipped (push script unavailable)
-errors: 0
-```
 bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
 for U in "$B/PROMPT-BLOCKS.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md"; do

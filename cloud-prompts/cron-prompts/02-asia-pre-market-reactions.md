@@ -59,7 +59,6 @@ case "$DATE" in
 esac
 echo "window-check: OK ($DATE)"
 ```
-
 **Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
 line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
 else — do not narrate the tool calls and do not write an artifact:
@@ -70,6 +69,7 @@ file: no artifact (holiday skip — asia-pre-market/$DATE.md is intentionally ab
 push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_asia_pre_market_reactions.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
+
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
