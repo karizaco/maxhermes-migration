@@ -60,6 +60,17 @@ esac
 echo "window-check: OK ($DATE)"
 ```
 
+**Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
+line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
+else — do not narrate the tool calls and do not write an artifact:
+
+```
+out-of-window: US market holiday ($DATE)
+file: no artifact (holiday skip — asia-pre-market/$DATE.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_asia_pre_market_reactions.md) | marker push FAILED | marker push skipped (push script unavailable)
+errors: 0
+```
+
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/asia-pre-market-reactions/SKILL.md

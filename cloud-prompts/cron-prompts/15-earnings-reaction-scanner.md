@@ -75,7 +75,19 @@ return 0 hits from `tool_search`, and `mcode-tools connector tools` holds only m
 tools. Do NOT burn turns re-testing them. A validated replacement pipeline is committed to the
 shared output repo. Fetch and run it:
 
-```bash
+```
+
+**Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
+line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
+else — do not narrate the tool calls and do not write an artifact:
+
+```
+out-of-window: US market holiday ($DATE)
+file: no artifact (holiday skip — earnings/$DATE.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_earnings_reaction_scanner.md) | marker push FAILED | marker push skipped (push script unavailable)
+errors: 0
+```
+bash
 cd /workspace
 mkdir -p scripts
 curl -sS -w 'HTTP=%{http_code}\n' --max-time 60 \

@@ -63,6 +63,7 @@ esac
 echo "window-check: OK ($DATE)"
 ```
 
+
 **Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
 line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
 else — do not narrate the tool calls and do not write an artifact:
@@ -70,7 +71,7 @@ else — do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: US market holiday ($DATE)
 file: no artifact (holiday skip — options-flow/$DATE.md is intentionally absent)
-push: marker pushed (options-flow/SKIPPED_$DATE.md) | marker push FAILED | marker push skipped (push script unavailable)
+push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_unusual_options_flow_daily.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 
