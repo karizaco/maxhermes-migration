@@ -424,6 +424,9 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
         H = dict(pool.map(lambda t: (t, nasdaq_history(t, date_str, G["hist_sessions"] + 2,
                                                        include=True)), tickers))
     report["history_source"] = "nasdaq"
+    report["shibui_latest_sessions"] = ["n/a (settled replay)"]
+    report["alignment"] = dict(reference_names=0, live_hits=0, stale_hits=0,
+                               live_ratio=0.0, stale_ratio=0.0)
 
     prelim, results = [], []
     for r in rows:
@@ -445,13 +448,14 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
         ok, checks, mm, hh = evaluate(row, hm)
         if not ok:
             continue
+        mm["checks"] = checks
         entry = m["close"]
         lvl, basis = stop_for(m, entry)
         results.append(dict(ticker=r["name"], desc=r.get("description") or r["name"],
                             exchange=r.get("exchange"), sector=r.get("sector"),
                             mcap=float(r.get("market_cap_basic") or 0),
                             avg_vol_10d=float(r.get("average_volume_10d_calc") or 0),
-                            change_pct=0.0, m=m, h=hh, passes=True))
+                            change_pct=0.0, m=mm, h=hh, passes=True))
     report["candle_gate_survivors"] = len(prelim)
     report["passing"] = len(results)
     for x in results:
@@ -661,15 +665,25 @@ def write_md(path, results, report, bridge):
     A("")
     A("## Session alignment — proof this scan is for today")
     A("")
-    al = report["alignment"]
     A(f"Before computing anything the routine proves which session the scanner is describing:")
     A("")
-    A(f"- TV implied previous close vs shibui's latest settled close: "
-      f"**{al['live_hits']}/{al['reference_names']} agree** ({al['live_ratio']:.1%}) → "
-      f"the scanner is on today's live session.")
-    A(f"- Verdict: **{report['mode']}**.")
+    if report.get("mode") == "SETTLED_REPLAY":
+        A(f"**This is a RECONSTRUCTION, not a live scan.** It was rebuilt at "
+          f"{report.get('started_et','')} from the settled bars for {a}, because the live "
+          f"scanner can only describe the CURRENT session. The entry it describes was that "
+          f"session's close - it is a planning artifact for {a}, not a signal for today.")
+        A("")
+        A(f"- Universe: {report.get('universe_rows')} names from today's scanner "
+          f"(market cap / exchange / type are close enough for a recent date).")
+        A(f"- Bars: Nasdaq settled history for {a} (`_source=nasdaq_settled`).")
+    else:
+        al = report.get("alignment", {})
+        A(f"- TV implied previous close vs shibui's latest settled close: "
+          f"**{al.get('live_hits',0)}/{al.get('reference_names',0)} agree** "
+          f"({al.get('live_ratio',0):.1%}) → the scanner is on today's live session.")
+        A(f"- Verdict: **{report.get('mode')}**.")
     A("")
-    if report["mode"] == "DEGRADED":
+    if report.get("mode", "UNKNOWN") == "DEGRADED":
         A("> **DEGRADED RUN — do not trade this.** The session could not be pinned down.")
         A("")
     A("## Candidates")
@@ -715,13 +729,13 @@ def write_md(path, results, report, bridge):
     A("|---|---|---|")
     for s, f, n in [
         ("1", "NYSE/NASDAQ/AMEX, type=stock, mcap > $5B, close ≥ $5, avg vol(10d) > 1M",
-         report["universe_rows"]),
+         report.get("universe_rows", 0)),
         ("2", "DCR ≥ 0.60 (close in the top 40% of the day's range)",
-         report["candle_gate_survivors"]),
+         report.get("candle_gate_survivors", 0)),
         ("3", "+ published shadow > body, hammer (lower ≥ 2× upper), body ≤ 0.30, volume ≥ 290k",
-         report["candle_gate_survivors"]),
+         report.get("candle_gate_survivors", 0)),
         ("4", "+ 5-day low, decline+washout, ADR ≥ 3%, trend, minv3, avg vol 30d",
-         report["passing"]),
+         report.get("passing", 0)),
     ]:
         A(f"| {s} | {f} | {n} |")
     A("")
