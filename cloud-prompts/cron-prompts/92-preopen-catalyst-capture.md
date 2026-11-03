@@ -22,6 +22,21 @@ If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its
 expired mid-session before), fall back to `web_fetch` on the SAME url. If both fail, report
 `probe_failed:<reason>` and stop — never improvise the procedure from memory.
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] 92-preopen-catalyst-capture` — substitute the date you just resolved.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## THIS FIRE
 
 - **Checkpoint:** the capture writes `preopen-feed/{date}-{HHMM}.jsonl`, where `HHMM` is the ET

@@ -5,7 +5,7 @@
   "_invariant": "Every weekday routine is 1-5. Only genuinely weekly routines carry a single day (0=Sun, 3=Wed, 6=Sat). #90 is daily.",
   "session_mode_invariant": {
     "mode": "new",
-    "why": "Every routine must create a FRESH conversation per fire. A routine bound to a fixed conversation (session.mode=sessionId) piles every run into one thread, which breaks the fresh-session/ephemeral-artifact contract the artifact routines depend on and makes the sidebar unreadable. Verified 2026-11-02: all 23 routines were session.mode=new with an empty session_id. A web-GUI save can flip this the same way it collapses the day-of-week field, so cron #91 checks it every day and REPORTS it - it never auto-repairs a session binding, because a fixed conversation can be a deliberate choice."
+    "why": "Every routine must create a FRESH conversation per fire. A routine bound to a fixed conversation (session.mode=sessionId) piles every run into one thread, which breaks the fresh-session/ephemeral-artifact contract the artifact routines depend on and makes the sidebar unreadable. Verified 2026-11-02: all 25 routines were session.mode=new with an empty session_id. A web-GUI save can flip this the same way it collapses the day-of-week field, so cron #91 checks it every day and REPORTS it - it never auto-repairs a session binding, because a fixed conversation can be a deliberate choice."
   },
   "routines": {
     "01-weekly-mcp-health-check.md": {
@@ -120,6 +120,16 @@
     },
     "91-schedule-drift-guard.md": {
       "schedule": "5 4 * * *",
+      "timezone": "America/New_York",
+      "session_mode": "new"
+    },
+    "92a-preopen-catalyst-capture-0830.md": {
+      "schedule": "30 8 * * 1-5",
+      "timezone": "America/New_York",
+      "session_mode": "new"
+    },
+    "92b-preopen-catalyst-capture-0950.md": {
+      "schedule": "50 9 * * 1-5",
       "timezone": "America/New_York",
       "session_mode": "new"
     }

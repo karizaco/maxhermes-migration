@@ -3,6 +3,21 @@
 You are running as a Cloud Mavis cron on Mavis. Linux sandbox: no PowerShell, no Windows paths.
 Output root: /workspace/ (mkdir -p it if missing).
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] 15-earnings-reaction-scanner` — substitute the date you just resolved.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## SCHEDULE
 Fires 08:00 ET on weekdays: cron `0 8 * * 1-5`, timezone America/New_York.
 This matches the skill's own spec (`0 8 * * 1-5` ET) — 23 min after the pre-market brief,

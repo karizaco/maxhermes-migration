@@ -3,6 +3,23 @@
 You are running as a Cloud Mavis cron. No local filesystem, no PowerShell, no Windows paths.
 Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /workspace/ does not exist, run `mkdir -p /workspace` first).
 
+## CONVERSATION TITLE (do this FIRST, before anything else)
+
+Every scheduled run gets its own conversation — one conversation per fire, never appended to an
+earlier run's conversation. Give this conversation a title that says which day this run belongs
+to, so the conversation list stays scannable.
+
+1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
+2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
+   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
+   Example: `[01-11] 25-ntrt-gap-brief-daily`.
+3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
+   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
+   "session title update", then retry the same `mcp_invoke` call.
+4. If the title cannot be set for any reason, carry on with the routine. This step must never
+   block, delay, or fail the artifact.
+
 ## SCHEDULE
 - Original local schedule: morning
 - Deployed schedule: `0 9 * * 1-5` America/New_York — 09:00 ET, Mon-Fri.
