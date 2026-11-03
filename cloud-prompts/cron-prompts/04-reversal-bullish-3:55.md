@@ -29,6 +29,33 @@ to, so the conversation list stays scannable.
   express — the market-holiday list.
 
 
+## SIGNAL DAY - THIS ROUTINE SCANS **TODAY'S LIVE SESSION**
+
+**The signal bar is TODAY's candle, not yesterday's settled bar.** This routine fires at 15:55 ET,
+when the US session is ~99% complete, so today's open/high/low/close are live and readable NOW.
+Bonde's process is a SAME-DAY scan - *"run the scan between 3.30 and 3.55 PM"*, *"enter between
+3.58 to 4PM or using Market On Close order (MOC)"* - so the signal bar is today's candle and the
+entry is today's close.
+
+**Do NOT resolve the screen date as "shibui's latest settled date".** shibui is end-of-day, so at
+15:55 ET its newest bar is YESTERDAY's. A shibui-only scan measures the previous session's candle
+and points at an entry one session after the signal - and the D-day bar can invalidate the setup
+before the entry ever happens. That one-session lag is a migration artifact, not the playbook:
+the 2026-10-30 run measured Thursday's candle on a Friday and reported DOCU, whose Friday candle
+was a weak close (DCR 0.24). **A screen that reports yesterday's candle as today's signal is
+WRONG, however well-formed its output looks.**
+
+Every run must PROVE which session it is looking at, before computing anything:
+
+```
+implied_previous_close = live_close / (1 + change_pct / 100)
+```
+
+must equal the latest settled close the history source holds for the same symbol. If it does, the
+scanner is on today's live session. If instead the scanner's `close` equals the latest settled
+close, there is NO session to scan (weekend / holiday / pre-open). Anything else is a degraded run
+that must not be traded. Anchor the check to the session SEQUENCE, never to calendar arithmetic.
+
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
 The scheduler owns the day-of-week and the hour, so this block exists for ONE reason: a cron
@@ -117,20 +144,68 @@ The **stop** is the body low, except on a near-doji body (under 15% of the range
 bar's **low** is used — a body-low stop on a doji sits inside the bar's own noise (0.07% wide on
 the 2026-10-26 CBRE bar) and produces false exits. The 2.5% maximum-loss cap is enforced either way.
 
-Write the SQL inline from the skill's §5 table (the local `scripts/screen.py` helper does not exist
-on Cloud). The canonical reference form is `emit-sql reversal_bullish <date>` in the skill's
-`scripts/screen.py` — T+1-safe: 60-day window, `rn = 1` per symbol, `shibui.valuation` reduced to
-each symbol's most recent row, and every gate above applied in the query.
+## LIVE SESSION SCAN + HOW TO RUN IT
 
-Then do the two things the SQL cannot do:
+The screen is implemented as a **cloud-native script in the repo**, and it MUST be executed rather
+than re-implemented by hand - it carries the day-alignment assertion and all twelve gates, and a
+hand-rolled version of it is what produced the wrong-day bug in the first place:
 
-- **Resolve every candidate against the next session's close** before calling it actionable, and
-  report a *noise breach* (a close a few cents below a doji body stop) separately from a
-  *structural failure* (the next session undercut the signal bar's low). Never report both as
-  "stop hit".
-- **Reduce to 1–3 ideas** the way Bonde does — "the reversal bar has to jump off the chart",
+```bash
+mkdir -p /workspace/tools
+curl -sL -o /workspace/tools/reversal_bullish.py \
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py
+wc -c /workspace/tools/reversal_bullish.py          # must be non-zero
+
+# pass the fire's SCHEDULED date (see the OUTPUT section below)
+python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date +%F)"
+```
+
+It writes `reversal-bullish-3:55.{md,csv}` into `/workspace/daily-screens/{date}/` and prints a
+JSON report. **Read that report** - `mode` is `LIVE`, `NO_SESSION`, `DEGRADED` or
+`SETTLED_REPLAY`; `passing` is the candidate count; `history_source` says whether history came
+from shibui or the Nasdaq fallback. Exit code 3 means "no US session today", which is a clean
+outcome, not a failure.
+
+This is the same pattern cron #91 uses with `tools/schedule-drift.py`. The legacy Windows helpers
+under `scripts/` still do not exist on Cloud and must not be executed - this is the one exception.
+
+**Where the data comes from** (the live path needs all three):
+
+| Role | Source |
+|---|---|
+| Live session OHLC for the whole universe + the universe gates | TradingView public scanner, `POST https://scanner.tradingview.com/america/scan`, columns `name, description, close, open, high, low, change, change_abs, volume, average_volume_10d_calc, market_cap_basic, exchange, type, sector` |
+| Settled history (5-day low, ADR, prior closes, average volume) | shibui over the MCP-over-HTTP bridge - one `stock_data_query` per 6 tickers, `QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) <= 30` |
+| History fallback | Nasdaq `GET https://api.nasdaq.com/api/quote/{SYM}/historical?assetclass=stocks&fromdate=…&todate=…&limit=40` (browser `User-Agent`; some cells are the string `N/A`) |
+| Entry quote / session state | `market-recap get_quotes` - `price, day_high, day_low, as_of, market_state` |
+
+**TradingView paging trap - measured 2026-11-03:** `range` paging WITHOUT an explicit `sort`
+returns OVERLAPPING pages - 1500 rows fetched but only 1212 unique, silently losing 288 names.
+Always send `"sort": {"sortBy": "name", "sortOrder": "asc"}`, fetch the whole filtered universe in
+ONE call with `range: [0, 2000]`, and de-duplicate by ticker. The filter key is **`filter`**, not
+`filters`. `type == "stock"` INCLUDES REITs - do not re-filter to common stock.
+
+**shibui's `tools/call` endpoint is NOT always up** - measured 2026-11-03, `tools/list` answered
+while every `tools/call` returned an empty body. The Nasdaq history fallback is not optional.
+
+**This routine's reply must state the session-alignment verdict.** In the shared DELIVERY
+structure, item 3 (`### Method & caveats`) must carry the verdict - `LIVE`, `NO_SESSION`,
+`DEGRADED` or `SETTLED_REPLAY` - and say that the signal is TODAY's live candle. The shared
+`## DELIVERY` block in PROMPT-BLOCKS.md is fleet-wide and is NOT edited by this routine.
+
+**The Finviz fallback cannot serve this scan.** `finviz_reversal_bullish` encodes "today down +
+above SMA50 + liquid + large-cap" and none of Bonde's candle gates, and it returns no candle
+geometry. If the live path is unavailable, report the run as degraded - do not publish a Finviz
+list as today's signal.
+
+Then do the two things the screen cannot do:
+
+- **Reduce to 1-3 ideas** the way Bonde does - "the reversal bar has to jump off the chart",
   "no catalyst, no trade". A floor-exact DCR or a stop-distance tie-breaker is **not** a reason to
-  promote a name.
+  promote a name. Every candidate in the chat reply needs a named catalyst.
+- **On a delayed replay only** (the scheduled date is not today), resolve each candidate against
+  that session's close and report a *noise breach* (a close a few cents below a doji body stop)
+  separately from a *structural failure* (the session undercut the signal bar's low). Never report
+  both as "stop hit".
 
 
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
@@ -215,6 +290,9 @@ exists, and why the push script must never be run with `git push … | head -3`.
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+5. **The signal is TODAY's live session.** Never report yesterday's settled candle as today's signal. If the tool prints `mode: NO_SESSION`, there was no US session - write the no-session artifact, push it, and say so; do NOT substitute the previous session's scan.
+6. **If `mode: DEGRADED`, the artifact is not tradeable.** Say so plainly in the reply. Do not promote names from a degraded run.
+7. **Run `tools/reversal_bullish.py`.** Do not re-implement the gates by hand - the day-alignment assertion is what keeps the signal on the right day.
 
 ================================================================
 END OF CRON PROMPT

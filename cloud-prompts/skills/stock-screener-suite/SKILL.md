@@ -212,17 +212,108 @@ shibui does not have `institutional_holders_count`. Two proxies:
 - "Put stop of less than 2%" — Bonde places the stop at the **low of the candle body** next morning, sized so loss ≤ 2.5%. **On a near-doji body the body low sits inside the bar's own noise** (0.07% away on the 2026-10-26 CBRE bar) and produces false exits, so when `body_ratio < 0.15` the report uses the signal bar's low instead — Bonde sanctions this: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."*
 - "Exit on stop hit if it does not work on 3rd day" — typical hold 1-3-5 days; report a "Day 1 / Day 2 / Day 3+" tag so the trader knows how stale the signal is.
 
-**Resolve every candidate against the next session before calling it actionable.** The SQL's
-`entry_price` is the signal-bar close; the tradeable entry is the next session's close. Two
-different failures must be reported separately: a candidate whose next close is a few cents below a
-doji body stop is a *noise breach*, while a candidate that **undercut the signal bar's low** has
-failed structurally. On 2026-10-26 CBRE closed below a body stop 0.07% wide (the signal low held
-by $0.03, and the stock returned +4.86% over three sessions) while CELH's next session undercut
-the signal low by $0.26 (the setup was genuinely dead). Never report both as "stop hit".
+**The entry is TODAY's close.** The signal bar is today's live candle, so `entry_price` is
+that candle's live price and the tradeable entry is the 16:00 ET close (Bonde enters 3.58–4PM, or
+MOC). The candle is read at ~15:55 ET, so the final print can still move the close, the DCR and
+the stop — say so in the artifact. **There is no "resolve against the next session" step any
+more**: the D-day bar IS the signal, which is the whole point of scanning the live session rather
+than reading yesterday's settled file. A same-day signal is always **Day 1**.
 
-**⚠ shibui is T+1** — at 15:55 ET on the cron day, today's close is usually
-not yet ingested. The SQL must therefore be run against the LATEST available
-date in shibui (`< MAX(date) WHERE date <= today`), not literally today.
+Two caveats the artifact must state: `v >= 290000` is judged on a **partial day's volume**
+(as of ~15:55 ET), so a name that only clears 290k after the close was wrongly excluded; and
+ADR(20) is computed over the 20 **settled** sessions before today, not over a window that
+includes the incomplete live bar.
+
+On a **delayed replay** (the routine rebuilt for a past scheduled date) the signal bar is that
+session's settled close and the entry was that session's close. Report the two failure modes
+separately there, as before: a close a few cents below a doji body stop is a *noise breach*
+(on 2026-10-26 CBRE closed below a body stop 0.07% wide and the stock returned +4.86% over three
+sessions), while a close that **undercut the signal bar's low** is a *structural failure*
+(CELH undercut the signal low by $0.26 and the setup was genuinely dead). Never report both as
+"stop hit".
+
+**THE SIGNAL IS TODAY'S LIVE SESSION — not yesterday's settled bar.** At 15:55 ET the US
+session is ~99% complete, so today's open/high/low/close are readable NOW. Bonde's process is a
+SAME-DAY scan — *"run the scan between 3.30 and 3.55 PM"*, *"enter between 3.58 to 4PM or using
+Market On Close order (MOC)"* — so the signal bar is today's candle and the entry is today's close.
+
+**Do NOT resolve the screen date as "the latest settled date in shibui".** shibui is end-of-day,
+so at 15:55 ET its newest bar is YESTERDAY's. A shibui-only scan measures the previous session's
+candle and points at an entry one session after the signal — and the D-day bar can invalidate the
+setup before the entry ever happens. That one-session lag is an artifact of the data source, not
+of the playbook. It is what the 2026-10-30 run did: it measured Thursday's candle on a Friday and
+reported DOCU, whose Friday candle was a weak close (DCR 0.24). **A screen that reports
+yesterday's candle as today's signal is WRONG, however well-formed its output looks.**
+
+#### THE DAY-ALIGNMENT ASSERTION — the one thing that must never break
+
+A screener that fires at 15:55 must prove WHICH session it is looking at, every run, before it
+computes anything. The proof is arithmetic, not opinion:
+
+```
+implied_previous_close = live_close / (1 + change_pct / 100)
+```
+
+If the scanner is on today's live session, that implied previous close MUST equal the latest
+settled close the history source holds for the same symbol.
+
+| Verdict | Test | Action |
+|---|---|---|
+| **LIVE** | implied previous close == latest settled close, for ≥90% of a reference set | scan today's session |
+| **NO_SESSION** | the scanner's `close` equals the latest settled close instead (weekend / holiday / pre-open) | there is no session to scan — write the no-session artifact and stop; **do not** substitute the previous session's scan |
+| **DEGRADED** | neither | **do not trade it.** Write the artifact flagged `degraded=true`, with no candidates |
+
+Anchor the assertion to the session **SEQUENCE**, never to calendar arithmetic: "one session ago"
+means the previous *trading* session, so weekends and holidays need no special-casing.
+
+#### DATA PATH
+
+| Role | Source | Why |
+|---|---|---|
+| Live session OHLC for the whole universe | **TradingView public scanner** — `POST https://scanner.tradingview.com/america/scan`, columns `name, description, close, open, high, low, change, change_abs, volume, average_volume_10d_calc, market_cap_basic, exchange, type, sector` | during a session these are the CURRENT session's OHLC; `close` is the live price |
+| Universe gates | the same call — `filter` on `market_cap_basic > 5e9`, `exchange in_range [NYSE,NASDAQ,AMEX]`, `type == stock`, `close > 5`, `average_volume_10d_calc > 1e6` | live market cap, so there is no stale-row problem (unlike `shibui.valuation`) |
+| Settled history (5-day low, ADR, prior closes, average volume) | **shibui** over the MCP-over-HTTP bridge — one `stock_data_query` per 6 tickers with `QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) <= 30` | one server, 30 sessions per ticker |
+| History fallback | **Nasdaq** — `GET https://api.nasdaq.com/api/quote/{SYM}/historical?assetclass=stocks&fromdate=…&todate=…&limit=40` | 1 call per ticker; use it when shibui's `tools/call` is unavailable. Needs a browser `User-Agent`; some cells come back as the string `N/A`; Nasdaq 404s on symbols it does not carry |
+| Entry quote / session state | **`market-recap get_quotes`** (bridge) — `price, previous_close, change_pct, volume, day_high, day_low, as_of, market_state` | confirms the session and the entry print |
+
+**TradingView paging trap — measured 2026-11-03:** `range` paging WITHOUT an explicit `sort`
+returns OVERLAPPING pages — 1500 rows fetched but only 1212 unique, silently losing 288 names.
+Always send `"sort": {"sortBy": "name", "sortOrder": "asc"}`, fetch the whole filtered universe in
+ONE call with `range: [0, 2000]`, and de-duplicate by ticker. The filter key is **`filter`**, not
+`filters`. `type == "stock"` INCLUDES REITs — do not re-filter to common stock, and do not filter
+on domicile.
+
+**shibui's `tools/call` endpoint is NOT always up** — measured 2026-11-03, `tools/list` answered
+while every `tools/call` returned an empty body. The history fallback above is not optional.
+
+#### IMPLEMENTATION
+
+The screen is implemented as `tools/reversal_bullish.py` in `karizaco/maxhermes-migration` — the
+same pattern cron #91 uses with `tools/schedule-drift.py`:
+
+```bash
+curl -sL -o /workspace/tools/reversal_bullish.py \
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py
+python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date +%F)"
+```
+
+It fetches the universe, runs the day-alignment assertion, applies every gate above, writes
+`reversal-bullish-3:55.{md,csv}` into the dated directory and prints a JSON report. **Read that
+report**: `mode` is `LIVE`, `NO_SESSION`, `DEGRADED` or `SETTLED_REPLAY`; `passing` is the
+candidate count; `history_source` says whether history came from shibui or the Nasdaq fallback.
+Exit code 3 means "no US session today" — a clean outcome, not a failure. Passing a date other
+than today rebuilds that past session from settled bars and flags it as a reconstruction.
+
+**The Finviz fallback cannot serve this scan.** `finviz_reversal_bullish` encodes "today down +
+above SMA50 + liquid + large-cap" and none of Bonde's candle gates; it also returns no candle
+geometry. It is not a substitute for the live bar — if the live path is unavailable, report the
+run as degraded rather than publishing a Finviz list as today's signal.
+
+**Fallback when the live path is unavailable.** The settled-scan SQL
+(`scripts/screen.py emit-sql reversal_bullish <date>`) remains the reference implementation of the
+gates above, and is what a **delayed replay** or a **degraded** run uses — but a settled scan can
+never produce a same-day entry, so an artifact built that way must say so explicitly and must not
+be presented as today's signal.
 
 - Resolve latest date first via `scripts/screen.py emit-sql resolve_date <date>`
   and substitute `latest_date` into the reversal-bullish SQL.

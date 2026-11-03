@@ -235,6 +235,32 @@ LIMIT 50
 
 ## L. Bonde — Reversal Bullish (3:55 PM)
 
+**This is a SAME-DAY scan of the LIVE session.** At 15:55 ET the US session is ~99% complete, so
+today's open/high/low/close are live, and Bonde's own window (*"run the scan between 3.30 and
+3.55 PM"*, *"enter between 3.58 to 4PM or using Market On Close order (MOC)"*) is achievable
+same-day. **The signal bar IS today's candle and the entry is today's close.**
+
+**Never resolve the screen date as "the latest settled date in shibui".** shibui is end-of-day,
+so at 15:55 ET its newest bar is YESTERDAY's; a shibui-only scan measures the previous session's
+candle and points at an entry one session after the signal — by which time the D-day bar may
+already have invalidated the setup. That one-session lag is an artifact of the data source, not of
+the playbook, and it is what the 2026-10-30 run did: it measured Thursday's candle on a Friday and
+reported DOCU, whose Friday candle was a weak close (DCR 0.24).
+
+**Live candle:** the TradingView public scanner (`POST https://scanner.tradingview.com/america/scan`)
+returns the CURRENT session's `open/high/low/close` for every symbol. **Settled history** (the
+5-day low, ADR, prior closes, average volume) comes from shibui over the MCP bridge, or from
+Nasdaq's `GET https://api.nasdaq.com/api/quote/{SYM}/historical?assetclass=stocks&fromdate=…&todate=…&limit=40`
+when shibui's `tools/call` is unavailable. **Universe gates** come from the same live scanner call
+— live `market_cap_basic` has no stale-row problem, whereas `shibui.valuation` stores multiple rows
+per symbol and can admit a phantom name if the cap filter is applied before the latest-row pick.
+
+**Every run must prove WHICH session it is looking at** (the day-alignment assertion): the
+scanner's implied previous close, `close / (1 + change_pct/100)`, must equal the latest settled
+close the history source holds for the same symbol. If instead the scanner's `close` equals the
+latest settled close, there is no session to scan (weekend / holiday / pre-open). Anchor the
+assertion to the session **SEQUENCE**, never to calendar arithmetic.
+
 **Gate values are Bonde's PUBLISHED ones**, taken from Pradeep Bonde, *stockbee.blogspot.com*
 (2019-11-26), "Reversal Bullish Scan I use":
 
@@ -263,11 +289,27 @@ bar in a range, or an ordinary pause inside a decline — it is not the signal."
 | S | **Stop** | body low `LEAST(open, close)`, **but** if `body_ratio < 0.15` use the signal bar's **low**; the stop must be `<= 2.5%` from the entry | published: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."* A body-low stop on a near-doji sits inside the bar's own noise (0.07% away on the 2026-10-26 CBRE bar) and produces false exits. |
 | U | **Universe** | NYSE/NASDAQ/AMEX, `market_cap > $5B` (proxy for ≥ 1,000 institutional funds), `avg_volume_30d > 1M` | proxy; shibui has no `institutional_holders_count` |
 
-The canonical SQL for all of this is emitted by
-`scripts/screen.py emit-sql reversal_bullish <YYYY-MM-DD>` (T+1-safe: the inner CTE is windowed
-over 60 calendar days so `LAG()` and the 5-day/20-day windows see full history, and the outer
-query takes `rn = 1` per symbol; `shibui.valuation` is de-duplicated to each symbol's most recent
-row so a stale market cap cannot qualify a symbol).
+The implementation is `tools/reversal_bullish.py` in `karizaco/maxhermes-migration` — the same
+pattern cron #91 uses with `tools/schedule-drift.py`. It fetches the live universe, runs the
+day-alignment assertion, applies every gate in this section, and writes the artifact:
+
+```bash
+curl -sL -o /workspace/tools/reversal_bullish.py \
+  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py
+python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date +%F)"
+```
+
+`scripts/screen.py emit-sql reversal_bullish <date>` remains the reference SQL for the gates (the
+inner CTE is windowed over 60 calendar days so `LAG()` and the 5-day/20-day windows see full
+history, the outer query takes `rn = 1` per symbol; `shibui.valuation` is de-duplicated to each
+symbol's most recent row so a stale market cap cannot qualify a symbol). It is a **settled** scan:
+use it for a delayed replay, not for the live entry window.
+
+**TradingView paging trap:** `range` paging WITHOUT an explicit `sort` returns overlapping
+pages — measured 2026-11-03, 1500 rows fetched but only 1212 unique, silently losing 288 names.
+Always send `"sort": {"sortBy": "name", "sortOrder": "asc"}`, fetch the whole filtered universe
+in ONE call with `range: [0, 2000]`, and de-duplicate by ticker. `type == "stock"` includes
+REITs — do not re-filter to common stock.
 
 **Discretionary step is mandatory.** The mechanical screen returns candidates; Bonde's actual
 process then reduces them to **1–3 ideas**: *"reducing down your list to just that 1 or 2 ideas"*,
@@ -276,11 +318,22 @@ process then reduces them to **1–3 ideas**: *"reducing down your list to just 
 reason to promote a name — the 2026-10-26 bar had three passers, of which only one (CELH) was a
 clean qualifier.
 
-**Resolve every candidate against the next session's close before it is called actionable.**
-The SQL's `entry_price` is the signal-bar close; the tradeable entry is the next session's
-close. A candidate whose next-session close is below its stop has failed the setup, not been
-stopped out — and a candidate that *undercut the signal bar's low* has failed structurally, which
-is a different statement from a close a few cents below a doji body stop. Report both.
+**The entry is TODAY's close.** The signal bar is today's live candle, so `entry_price` is that
+candle's live price and the tradeable entry is the 16:00 ET close (Bonde enters 3.58–4PM, or
+MOC). The candle is read at ~15:55 ET, so the final print can still move the close, the DCR and
+the stop — say so in the artifact. **There is no "next session" step any more**: the D-day bar is
+the signal itself, which is the whole point of scanning live rather than reading yesterday's
+settled file.
+
+Two caveats the artifact must state: `v >= 290000` is judged on a **partial day's volume**
+(as of ~15:55 ET), so a name that only clears 290k after the close was wrongly excluded; and
+ADR(20) is computed over the 20 **settled** sessions before today, not over a window that
+includes the incomplete live bar.
+
+On a **delayed replay** the signal bar is that session's settled close and the entry was that
+session's close. Report the two failure modes separately there: a close a few cents below a doji
+body stop is a *noise breach*, and a close that *undercut the signal bar's low* is a *structural
+failure*. Report both.
 
 ## M. Bonde — NTRT / EP continuation (overnight news)
 
