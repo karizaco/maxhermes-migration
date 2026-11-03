@@ -63,7 +63,7 @@ case "$DATE" in
           rm -f "$S.tmp"
         done
         if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
-          sh "$S" --out international-eod --name eod_international_daily \
+            sh "$S" --out international-eod --name eod_international_daily \
              --label "Cron #05 eod-international-daily" \
              --reason "US market holiday ($DATE)" \
              --nn 05 --date "$DATE" || \
