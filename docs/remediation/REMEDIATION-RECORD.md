@@ -1,6 +1,11 @@
 # Cron prompt remediation — implementation record
 
-**Branch:** `feature/cron-prompt-hygiene` in `karizaco/maxhermes-migration`, merged to `main`.
+**Branch:** `feature/cron-prompt-hygiene` in `karizaco/maxhermes-migration`, merged to `main`
+and **deleted on 2026-11-03**. The branch carried nothing that `main` did not already have —
+its tip `8642a99` is a strict ancestor of `main` — and that same commit is preserved by the tag
+`pre-cron5-format-2026-11-03`, which remains the rollback point for the pre-cron5 format
+change. Restoring the branch, if ever needed:
+`git push origin 8642a99:refs/heads/feature/cron-prompt-hygiene`.
 **Date:** 2026-11-02.
 **Scope:** the 13 work packages of `IMPLEMENTATION-PLAN.md`.
 **Final state:** commit `0dd8822` on `main`; all **23/23** prompts deployed to the live scheduler
