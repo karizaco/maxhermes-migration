@@ -235,6 +235,25 @@ commit match `mcp-health` in the subject instead of the NN prefix. It writes tho
 nothing else, so there is no near-miss variant to hunt for: if the weekly report is absent,
 #01 did not deliver.
 
+**RECONSTRUCTED ARTIFACTS — a file that exists but was not produced by that date's run.**
+`options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are reconstructions, not runs.
+Both dates were due and both lost their scheduled run:
+
+- **2026-10-19** — the 16:30 ET fire FAILED at the platform level: status 2,
+  `CRON_EXECUTION_FAILED`, `[1406010011]:explicit model is not registered. cause: <nil>`. No
+  session ever started.
+- **2026-10-26** — the fire ran and the routine declined it. The task's schedule was 22:30 ET
+  while its own `MARKET_HOURS_ONLY=true` window check demanded 09:00–16:00 ET, so the prompt
+  exited `out-of-window: outside market hours (hour=22, expected 09-16 ET)` at 22:33 ET and
+  pushed nothing. The same schedule-versus-gate contradiction was repaired on 2026-10-27 by
+  moving the task to 16:35 ET.
+
+Each file carries the **aggregate** layer (per-underlying option volume from Cboe's historical
+options-data service, market-wide call/put and open interest from Cboe's daily market
+statistics, underlying closes from Yahoo) and **no strike-level V/OI table at all** — expired
+chains are not served by any reachable source. When either date falls in an audit window, label
+it `reconstructed` and state the cause. Do not report either as `MISSING`: the path exists.
+
 **WRITTEN_OFF — gaps the operator has accepted. Do NOT report these again.**
 `WRITTEN_OFF="14-macro-calendar-week-ahead:2026-10-25"`
 Format is `<routine>:<date>`. A gap whose routine AND date both match an entry here is **not a
@@ -491,6 +510,7 @@ For each gap, pick exactly one label:
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 | `written_off` | The operator accepted this gap (see `WRITTEN_OFF`). NOT a finding — record it in the top-level `written_off` array, never in `gaps`. |
 | `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
+| `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are the only two. |
 
 ## STEP 6 — WRITE THE STATUS FILE
 
@@ -523,7 +543,9 @@ they never appear in `gaps` and never affect `audit_status`.
 `roster_desync` IS a finding: it means the roster table is wrong, so report it even when no
 artifact is missing.
 `audit_status` is `gaps_found` when any gap has label `MISSING`, `present_but_empty` or
-`roster_desync`, and `ok` otherwise. A `MISSING` gap is a genuine, actionable finding — name the routine and the
+`roster_desync`, and `ok` otherwise. A `reconstructed` gap does **not** change `audit_status` — the
+path exists and the date is covered — but it is always reported in `gaps` and named in the reply,
+so a rebuilt file is never mistaken for a clean run. A `MISSING` gap is a genuine, actionable finding — name the routine and the
 exact path so it can be reproduced.
 
 ## GIT PUSH (OPTIONAL)

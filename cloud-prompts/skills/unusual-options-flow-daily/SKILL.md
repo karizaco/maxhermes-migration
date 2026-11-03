@@ -154,7 +154,51 @@ answer if you ignore them.
 7. **Contract count is not economic size.** Roughly half the kept volume can sit in contracts
    whose theoretical value is below $0.05 — real contracts, trivial premium dollars. Report the
    share of kept volume in sub-$0.05 contracts alongside the headline, and give the
-   economically meaningful read separately. *(Established 2026-10-30: 49.5% of kept volume.)*
+   economically meaningful read alongside it. *(Established 2026-10-30: 49.5% of kept volume.)*
+
+8. **A lost day is only partly recoverable — the aggregate layer is archival, the strike layer is
+   not.** If a scheduled run produces no artifact, the strike-level book for that date is
+   **gone for good**: Yahoo's options endpoint returns HTTP 200 with an *empty* contract list for
+   every expired expiry (verified 2026-11-03 for the 2026-10-19 and 2026-10-23 expiries), and
+   Cboe's delayed-quote service serves only the live session. Per-strike volume, open interest,
+   IV and moneyness cannot be recovered for a past date by any reachable source.
+
+   The **aggregate** layer *can* be recovered, and it is exact. Cboe's historical options-data
+   service returns per-underlying daily volume for any past date, split by venue:
+
+   ```
+   https://www.cboe.com/us/options/market_statistics/historical_data/download/class/
+     ?reportType=volume&volumeType=sum&volumeAggType=daily
+     &symbolType=underlying&symbol=<SYM>
+     &startDate=<YYYY-MM-DD>&endDate=<YYYY-MM-DD>
+     &exchanges=CBOE&exchanges=BATS&exchanges=C2&exchanges=EDGX
+   ```
+
+   It returns CSV: `Trade Date, Underlying, Product Type, Exchange, Volume`. Send
+   `Referer: https://www.cboe.com/us/options/market_statistics/historical_data/` and a browser
+   `User-Agent`, or the request is refused. The `all_symbols` variant of the same endpoint
+   (`.../download/all_symbols/?reportType=volume&month=<M>&year=<Y>&volumeType=sum&volumeAggType=daily&exchanges=...`)
+   returns every underlying for a month at once and is the faster way to confirm a total.
+
+   Two caveats on that number. It is **unfiltered** — every strike and every expiry, not the
+   V/OI survivors — and it covers **only the four Cboe-operated venues**, whereas this series
+   reads Yahoo's chain, which spans every US venue. The ratio between the archival total and
+   the published artifacts' kept-contract count therefore mixes a venue scope with a filter and
+   ranges 0.38–1.50 across the dates where both exist. It is a sanity range, not a conversion
+   factor. The total also includes corporate-action-adjusted series (Cboe class names prefixed
+   with a digit, e.g. `2IWM`); disclose the adjusted share rather than silently folding it in.
+
+   Market-wide call/put volume and open interest for a past date come from Cboe's daily market
+   statistics, `https://www.cboe.com/us/options/market_statistics/daily/?mkt=cone&dt=<DATE>`.
+   The page is client-rendered, so read it with a headless browser; it yields the call/put
+   volume and OI split per product class, and Cboe's own published put/call ratios.
+
+   **When you rebuild a lost day, label it a RECONSTRUCTION in the title and lead section 0 with
+   that fact**, state what the file cannot contain and why, and put the run's actual cause in
+   the file. Do not present a reconstruction as if the original run had produced it, and do not
+   publish a V/OI figure for a date where none can be computed. The reference reconstructions
+   are `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md`.
+   *(Established 2026-11-03, rebuilding the two lost sessions.)*
 
 ## Method of record
 
@@ -181,6 +225,12 @@ provisional and cannot be recomputed, because raw chains are not retained betwee
 
 **Expiry window — 4 earliest expiries.** See convention 3. The window's calendar dates differ per
 underlying and per run; reconstruct it from the contract symbols rather than from a listed date.
+
+**A reconstruction is not a run.** A rebuilt day carries the aggregate volume layer and the
+market-wide call/put picture, and it says plainly that it is a reconstruction. It must never
+carry a V/OI figure, and it must never be counted as an original run when comparing series. The
+two reference cases are `options-flow/2026-10-19.md` (run failed at the platform level) and
+`options-flow/2026-10-26.md` (ran and self-skipped outside its own market-hours gate).
 
 **Declare the method in every artifact.** Each file must state, in its header, the primary chain
 source, the cross-check source, the pre-cut rule, the expiry-window rule, and a
