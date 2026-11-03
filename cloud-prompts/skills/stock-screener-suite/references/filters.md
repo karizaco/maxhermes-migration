@@ -233,8 +233,7 @@ prior-year base is non-positive:
 ```sql
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '<resolved_date>'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '<resolved_date>')
 ),
 fq AS (
   SELECT symbol, date AS fq_date, eps_growth_yoy, revenue_growth_yoy

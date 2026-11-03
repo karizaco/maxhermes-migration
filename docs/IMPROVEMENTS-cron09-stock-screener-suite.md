@@ -127,11 +127,45 @@ sweep SQL, so non-equities cannot reach the tiering stage at all.
 
 ---
 
-## 7. Open items
+## 7. Live validation — done, and it caught a regression the offline lint could not
 
-- **Live re-validation against shibui is deferred.** The server was rate-limited for the
-  whole session (HTTP 429, `retry-after: 2177`). The SQL was validated offline and by
-  construction; the live run is queued behind the quota wall.
+The shibui quota wall (HTTP 429, `retry-after: 2177`) cleared at 09:28 UTC, and every
+emitter was then executed live against the real server for data date 2026-10-27:
+
+| Emitter | Rows | Time | Result |
+|---|---|---|---|
+| `prefilter` | 200 | 1.3 s | ok |
+| `sweep_stockbee` | 130 | 10.9 s | ok |
+| `sweep_qullamaggie` | 69 | 15.1 s | ok — **RS book 55 rows, non-empty** |
+| `sweep_peoplewish` | 200 | 2.7 s | ok |
+| `breadth` | 7 | 3.8 s | ok |
+
+Every per-origin column set was checked for **name** uniformity and **value** semantics:
+the A-branch `chg_pct` is a real ≥4% move, the B-branch `dcr_pct` is a real 0-100
+close-location (and its `chg_pct` is NULL — the defect-5 collision is gone), the K-branch
+`trend_intensity` ≥ 1.05 with `base_width_pct` ≤ 8% and `volume` NULL, the Qullamägi
+branches carry gap_pct / gain_5d / loss_5d in their own slots, and `atr_252d_avg` is a
+genuine trailing average instead of a copy of `atr_14`. All 336 sweep candidates have a
+valuation row and clear the $300M floor — the non-equity exclusion holds end to end.
+
+**The live run caught a regression the offline lint could not.** The market-cap floor
+moved *into* the sweep SQL, and the `mc` CTE I wrote for it took the latest valuation row
+per symbol with `QUALIFY ROW_NUMBER() ... = 1` over `date <= '<d>'` — which scans all
+**18.9M** valuation rows on every sweep. Stockbee and Qullamägi blew past the bridge's
+90-second timeout. Two changes fixed it:
+
+- `mc` now joins a **single date**, `MAX(date) <= '<resolved>'`. `valuation` has a primary
+  key on `(symbol, date)`, so one date is one row per symbol; the lookup is ~8× cheaper and
+  is also *safer*, because it cannot admit a stale cap.
+- The Qullamägi sweep joined `technical_indicators` for an `atr_14` that **no branch used** —
+  a 3M-row join for a column that was thrown away. Dropped.
+
+**The lesson worth keeping:** an offline linter proves the SQL's *shape*, not its *cost*.
+A query can be perfectly well-formed and still be too slow to run — and here the slowness
+was invisible until the database was reachable. The lint now checks the shape; only a live
+run checks the clock. Note too that the linter earned its keep during this very fix: it
+caught the dangling `t.` alias left behind by the join removal, before it could reach the
+server.
 - `references/crons.md` still carries the local-Mavis schedule table; it should note the
   Cloud runtime's slot.
 - The `finviz-url` builders remain in `screen.py` although Finviz is unreachable from the
@@ -145,6 +179,7 @@ sweep SQL, so non-equities cannot reach the tiering stage at all.
 ## 8. Reverting
 
 ```
+git revert <this commit>   # the live-validation performance fix
 git revert b6d711e          # the repair + guard
 git checkout 9db5860 -- cloud-prompts/skills/stock-screener-suite/   # previous skill state
 ```

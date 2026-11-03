@@ -327,8 +327,7 @@ def emit_prefilter_sql(date: str) -> str:
 -- Pre-filter for {date}
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '{date}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 )
 SELECT q.symbol, q.close, q.exchange, q.volume AS today_volume, mc.market_cap
 FROM shibui.stock_quotes q
@@ -360,8 +359,7 @@ def emit_sweep_sql_stockbee(date: str) -> str:
 -- Stockbee sweep for {date}: 4% breakout + EP9M + Anticipation
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '{date}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
 today AS (
   SELECT q.symbol, q.date, q.open, q.high, q.low, q.close, q.volume,
@@ -445,12 +443,10 @@ def emit_sweep_sql_qullamaggie(date: str) -> str:
 -- Qullamägi sweep for {date}: multi-timeframe RS + EP + 5d movers
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '{date}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
 hist AS (
   SELECT q.symbol, q.date, q.open, q.high, q.low, q.close, q.volume,
-     t.atr_14,
      LAG(q.close, 5)  OVER w AS close_5d_ago,
      LAG(q.close, 21) OVER w AS close_21d_ago,
      LAG(q.close, 63) OVER w AS close_63d_ago,
@@ -460,7 +456,6 @@ hist AS (
      AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) * 100 AS adr_pct_20d,
      AVG(q.close * q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adv_dollar_20d
   FROM shibui.stock_quotes q
-  JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
   JOIN mc ON mc.symbol = q.symbol AND mc.market_cap > 300000000
   WHERE q.date BETWEEN DATE '{date}' - INTERVAL '430 days' AND '{date}'
 AND q.exchange IN ('NYSE','NASDAQ','AMEX')
@@ -541,8 +536,7 @@ def emit_sweep_sql_peoplewish(date: str) -> str:
 -- peoplewish sweep for {date}: ADR + dollar volume + velocity
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '{date}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
 hist AS (
   SELECT q.symbol, q.date, q.close, q.volume,
@@ -589,8 +583,7 @@ def emit_breadth_sql(date: str) -> str:
 -- Breadth + ATR extension + index-below-20sma flag for {date}
 WITH mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
-  WHERE date <= '{date}'
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
 idx_hist AS (
   SELECT q.symbol, q.ticker, q.date, q.close,

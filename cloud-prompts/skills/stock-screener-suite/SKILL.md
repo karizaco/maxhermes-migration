@@ -145,9 +145,14 @@ ETFs clear momentum and volume screens purely through leverage, and two 2× TSLA
 (TSLG, TSLL) had reached Tier-A before the floor was enforced. A name with no valuation
 row cannot demonstrate the floor, so it is out of the equity universe.
 
-> The market-cap lookup takes the **latest valuation row per symbol first** and only
-> then applies the cap. `shibui.valuation` keeps several rows per symbol per date, so
-> filtering on the cap first admits stale rows whose cap was once above the threshold.
+> **The market-cap lookup is a single-date join, and it has to be.** `shibui.valuation`
+> has a primary key on `(symbol, date)`, so one date yields exactly one row per symbol —
+> and that date is `MAX(date) <= the resolved date`, so it self-adjusts if valuation lags.
+> The obvious alternative — take the latest row per symbol with
+> `QUALIFY ROW_NUMBER() ... = 1` over `date <= '<d>'` — scans all **18.9M** valuation rows
+> and took every sweep past the 90-second bridge timeout. The single-date form is
+> equivalent for the cap floor and is ~8× faster. It is also *safer*: filtering on the cap
+> before picking the latest row admits stale rows whose cap was once above the threshold.
 
 ### 2. Run the 10 sub-screens in **two parallel batches**
 
