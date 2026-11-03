@@ -196,14 +196,20 @@ python3 /workspace/correlation_report.py \
    into `tldr.txt` / `deviations.txt`; every table comes from the script.
 2. **The renderer is not a source.** It formats `mats.json`; it never fetches data. If a
    comparison window is missing, omit that section rather than hand-filling it.
-3. **A live quote feed may only be used if it is quoting the snapshot's own date.** The
-   renderer enforces this; otherwise the intraday column falls back to the partial bar from
-   the snapshot's own series. Injecting today's prices into an older snapshot is a silent
-   date error.
+3. **A live quote may only be used if the QUOTE ITSELF is stamped with the snapshot's date.**
+   Check each quote's own `as_of` field — NOT the feed's retrieval timestamp. Before the
+   open a feed returns the PREVIOUS session's close with a fresh retrieval stamp, so a
+   retrieval-date check passes it and silently labels yesterday's move as "today". The
+   renderer drops any quote whose `as_of` date differs from the snapshot date and falls back
+   to the partial bar from the snapshot's own series, labelled with that bar's date.
+   Injecting the wrong session's prices into a dated artifact is a silent date error.
 4. **Check the rendered file for malformed tables before pushing.** A literal `|` inside a
    cell (e.g. `max |Δ|`) breaks the table — write `max abs diff`.
 5. The level-correlation appendix is a **local Pearson** and is a supplement only. The
    published matrix is the server-side returns matrix; the artifact must say so.
+6. **The performance table's window return is measured from the close BEFORE the window's
+   first session** — that is the base of the matrix's first return observation. Starting the
+   return at the first in-window close is one bar short of the matrix it describes.
 
 ## Hard rules
 - Use only `financekit.correlation_matrix`. Do not compute correlations manually from `price_history` calls — that's redundant and slower.

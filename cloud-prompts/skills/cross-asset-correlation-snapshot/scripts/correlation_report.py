@@ -193,7 +193,12 @@ def render_returns(series, start, end, syms, quotes=None):
     def ret(s):
         rows = {d: v for d, v, _ in series[s]}
         keys = sorted(rows)
-        a = max([k for k in keys if k <= start], default=keys[0])
+        # The matrix's FIRST return observation is (first in-window session) /
+        # (the session before it) - 1. So the window return must be measured from
+        # the close BEFORE the first in-window session, otherwise the performance
+        # column is one bar short of the matrix it is supposed to describe.
+        before = [k for k in keys if k < start]
+        a = max(before) if before else keys[0]
         b = max([k for k in keys if k <= end])
         return (rows[b] / rows[a] - 1) * 100, a, b
     def wret(s, d0, d1):
@@ -219,9 +224,12 @@ def render_returns(series, start, end, syms, quotes=None):
         keys = sorted(rows)
         live = "—"
         if quotes and s in quotes.get("quotes", {}):
-            live = f"{quotes['quotes'][s]['change_pct']:+.2f}%"
+            q = quotes["quotes"][s]
+            live = f"{q['change_pct']:+.2f}% (live)"
         elif len(keys) >= 2:
-            live = f"{(rows[keys[-1]] / rows[keys[-2]] - 1) * 100:+.2f}%"
+            # label the bar date — before the open the last available bar is the
+            # PREVIOUS session, so an unlabelled "intraday" column would be wrong
+            live = f"{(rows[keys[-1]] / rows[keys[-2]] - 1) * 100:+.2f}% ({keys[-1][5:]})"
         lines.append(f"| **{s}** | {NAMES[s]} | {r:+.2f}% | {lw:+.2f}% | {live} |")
     return "\n".join(lines)
 
@@ -281,15 +289,28 @@ def main():
     series = json.load(open(args.series)) if args.series else None
     quotes = json.load(open(args.quotes)) if args.quotes else None
 
-    # DATE GUARD: a live quote feed is only used if it is actually quoting the
-    # snapshot's own date. Otherwise it would inject TODAY's prices into a
-    # snapshot whose window ended on an earlier session — a silent date error.
+    # DATE GUARD: a live quote is only used if the QUOTE ITSELF is stamped with the
+    # snapshot's own date (per-quote `as_of`), not merely fetched on that date.
+    # Before the open, a feed returns the PREVIOUS session's close with a fresh
+    # retrieval timestamp — a retrieval-date check would pass it and silently label
+    # yesterday's move as "today". A quote whose as_of date differs from the
+    # snapshot date is a stale print and is dropped.
     quotes = None
     if args.quotes:
         q = json.load(open(args.quotes))
-        qdate = (q.get("retrieved_at") or "")[:10]
-        if qdate == args.date:
-            quotes = q
+        raw = q.get("quotes", {})
+        # the bridge returns a LIST of quote objects; be tolerant of a dict too
+        if isinstance(raw, dict):
+            items = list(raw.values())
+        else:
+            items = list(raw)
+        dated = {
+            it.get("symbol"): it for it in items
+            if it.get("symbol") and (it.get("as_of") or "")[:10] == args.date
+        }
+        if dated:
+            quotes = dict(q)
+            quotes["quotes"] = dated
 
     iso = args.iso_week
     d = date.fromisoformat(args.date)
