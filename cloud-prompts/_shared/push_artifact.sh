@@ -29,6 +29,7 @@
 #   --branch  target branch (default: main). Cron #90 pushes to audit/status.
 #   --msg     commit message. Overrides the derived default.
 #   --nn      routine number. Overrides the derived default.
+#   --src-dir where the files live in the sandbox. Defaults to /workspace/<out>.
 #
 # WHAT GETS STAGED — the whole output tree, NOT just --add
 # ----------------------------------------------------------
@@ -51,7 +52,7 @@
 #   3 = refused (bad args, or staged deletions detected)
 set -u
 
-OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""
+OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""; SRC_DIR_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)    OUT="${2:-}";   shift 2 ;;
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH="${2:-}"; shift 2 ;;
     --msg)    MSG="${2:-}";   shift 2 ;;
     --nn)     NN="${2:-}";    shift 2 ;;
+    --src-dir) SRC_DIR_ARG="${2:-}"; shift 2 ;;
     *) echo "push_artifact.sh: unknown argument '$1'" >&2; exit 3 ;;
   esac
 done
@@ -77,9 +79,20 @@ case "$BRANCH" in
     echo "push_artifact.sh: --branch must be a plain branch name (got '$BRANCH')" >&2
     exit 3 ;;
 esac
+# --out is a repo-RELATIVE directory, which may be nested (e.g. refs/skipped-markers).
+# It was previously restricted to a single plain name. That restriction was
+# rejected as unusable for the skipped-fire marker path, which lives in a
+# subdirectory; no routine passed a nested --out before, so relaxing it is
+# additive. What is still refused: absolute paths, "..", wildcards, whitespace
+# and anything starting with "-" (which git would read as an option).
 case "$OUT" in
-  ''|*' '*|'-'*|'/'*|*'/'|*'//'*)
-    echo "push_artifact.sh: --out must be a plain directory name (got '$OUT')" >&2
+  ''|*' '*|'-'*)
+    echo "push_artifact.sh: --out must be a relative path with no spaces and not start with '-' (got '$OUT')" >&2
+    exit 3 ;;
+  .)
+    : ;;  # documented usage: --out . means the repo root
+  /*|*/../*|*/..|..|../*|*'*'*|*'?'*)
+    echo "push_artifact.sh: --out must be a safe relative path (got '$OUT')" >&2
     exit 3 ;;
 esac
 
@@ -197,7 +210,7 @@ git config --global user.email  "maxhermes-cloud@local" 2>/dev/null || true
 git config --global user.name   "MaxHermes Cloud Cron"      2>/dev/null || true
 
 REPO_DIR="${REPO_DIR:-/workspace}"
-SRC_DIR="${SRC_DIR:-/workspace/$OUT}"
+SRC_DIR="${SRC_DIR_ARG:-${SRC_DIR:-/workspace/$OUT}}"
 cd "$REPO_DIR" || { echo "push: FAILED (no repo dir at $REPO_DIR)"; exit 1; }
 
 git init -q 2>/dev/null || true

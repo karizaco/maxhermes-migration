@@ -25,20 +25,35 @@ On a holiday the market is closed and there is nothing to report.
 #   2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03
 #   2026-09-07 2026-11-26 2026-12-25
 # Half-days (07:00 13:00 ET) are trading days and still report — do NOT skip them.
-# The date is the fire's SCHEDULED date, not the execution date. If this is a
-# delayed replay (the platform re-dispatches a session whose quota was exhausted),
-# rebuild for the scheduled date and say so in the artifact - do not skip.
+#
+# The skip marker is written AND PUSHED by the shared script, so a deliberate
+# skip leaves a trace on the outputs repo instead of dying in the sandbox. A
+# marker that never leaves the sandbox is indistinguishable from a failed run.
+# The marker lives in refs/skipped-markers/, outside every routine's output
+# directory, so it can never be mistaken for a delivered artifact.
 DATE=$(TZ=America/New_York date +%Y-%m-%d)
 case "$DATE" in
     2026-01-01|2026-01-19|2026-02-16|2026-04-03|2026-05-25|2026-06-19|2026-07-03|2026-09-07|2026-11-26|2026-12-25)
-        mkdir -p /workspace/$DATE
-        cat > /workspace/$DATE/SKIPPED_earnings_reaction_scanner.md <<EOF
-# Cron #15 earnings_reaction_scanner — SKIPPED
-- Date (ET): $DATE
-- Time (ET): $(TZ=America/New_York date +%H:%M)
-- Reason: US market holiday ($DATE)
-- No artifact produced.
-EOF
+        S=/workspace/skip_marker.sh
+        for U in \
+          "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh" \
+          "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh" ; do
+          curl -sL --max-time 30 -o "$S.tmp" "$U" 2>/dev/null
+          # A 404 page is a non-empty body that is NOT a script - never run one.
+          if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!'; then
+            mv -f "$S.tmp" "$S"; break
+          fi
+          rm -f "$S.tmp"
+        done
+        if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
+          sh "$S" --out earnings --name earnings_reaction_scanner \
+             --label "Cron #15 earnings-reaction-scanner" \
+             --reason "US market holiday ($DATE)" \
+             --nn 15 --date "$DATE" || \
+             echo "skip-marker push: FAILED (the marker is still in the sandbox)"
+        else
+          echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
+        fi
         echo "out-of-window: US market holiday ($DATE)"
         echo "no artifact; no push"
         exit 0

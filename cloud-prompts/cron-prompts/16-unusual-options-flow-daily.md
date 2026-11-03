@@ -26,44 +26,37 @@ On a holiday the market is closed and there is nothing to report.
 #   2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03
 #   2026-09-07 2026-11-26 2026-12-25
 # Half-days (07:00 13:00 ET) are trading days and still report — do NOT skip them.
+#
+# The skip marker is written AND PUSHED by the shared script, so a deliberate
+# skip leaves a trace on the outputs repo instead of dying in the sandbox. A
+# marker that never leaves the sandbox is indistinguishable from a failed run.
+# The marker lives in refs/skipped-markers/, outside every routine's output
+# directory, so it can never be mistaken for a delivered artifact.
 DATE=$(TZ=America/New_York date +%Y-%m-%d)
 case "$DATE" in
     2026-01-01|2026-01-19|2026-02-16|2026-04-03|2026-05-25|2026-06-19|2026-07-03|2026-09-07|2026-11-26|2026-12-25)
-        # Write the skip marker INSIDE options-flow/ AND PUSH IT. A marker left only in the
-        # sandbox is invisible to everyone else, which is how a deliberate skip becomes
-        # indistinguishable from a failed run — that is exactly the 2026-10-26 case, where
-        # neither an artifact nor a marker exists and only the scheduler's run history shows
-        # the fire happened.
-        #
-        # The filename deliberately does NOT match the auditor's artifact pattern
-        # (^options-flow/YYYY-MM-DD\.md$), so a skip marker can never be mistaken for a
-        # delivered artifact. Cron #90 knows the holiday list and labels the absent artifact
-        # `possible_holiday`; this file is the human-auditable evidence for that label.
-        mkdir -p /workspace/options-flow
-        cat > "/workspace/options-flow/SKIPPED_${DATE}.md" <<EOF
-# Cron #16 unusual-options-flow-daily — SKIPPED
-- Date (ET): $DATE
-- Time (ET): $(TZ=America/New_York date +%H:%M)
-- Reason: US market holiday ($DATE) — no US cash session, so there is no options flow to report.
-- No artifact produced: options-flow/$DATE.md is intentionally absent.
-- This marker IS the audit trail for the skip. The routine fired and declined; it did not fail.
-EOF
-        echo "out-of-window: US market holiday ($DATE)"
-        # Push the marker. A push failure must NOT turn a correct skip into a failed run, so
-        # every failure path here still exits 0 and still says what happened.
-        B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-        for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-          [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U" 2>/dev/null
-        done
-        if [ -s /workspace/push_artifact.sh ]; then
-          if sh /workspace/push_artifact.sh --out options-flow --add "options-flow/SKIPPED_${DATE}.md" --branch main; then
-            echo "skip-marker push: ok (options-flow/SKIPPED_${DATE}.md on origin/main)"
-          else
-            echo "skip-marker push: FAILED (marker is still in the sandbox at options-flow/SKIPPED_${DATE}.md)"
+        S=/workspace/skip_marker.sh
+        for U in \
+          "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh" \
+          "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh" ; do
+          curl -sL --max-time 30 -o "$S.tmp" "$U" 2>/dev/null
+          # A 404 page is a non-empty body that is NOT a script - never run one.
+          if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!'; then
+            mv -f "$S.tmp" "$S"; break
           fi
+          rm -f "$S.tmp"
+        done
+        if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
+          sh "$S" --out options-flow --name unusual_options_flow_daily \
+             --label "Cron #16 unusual-options-flow-daily" \
+             --reason "US market holiday ($DATE)" \
+             --nn 16 --date "$DATE" || \
+             echo "skip-marker push: FAILED (the marker is still in the sandbox)"
         else
-          echo "skip-marker push: SKIPPED (push script unavailable; marker is still in the sandbox at options-flow/SKIPPED_${DATE}.md)"
+          echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
         fi
+        echo "out-of-window: US market holiday ($DATE)"
+        echo "no artifact; no push"
         exit 0
         ;;
 esac
