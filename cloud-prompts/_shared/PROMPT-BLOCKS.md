@@ -157,7 +157,26 @@ failed call can never be mistaken for data. **Pass tool args as a FILE, not inli
 quoting corrupts the JSON. Server/tool reference: the RUNTIME-CONTRACT.md URL above.
 
 **Order of attack: MCP bridge -> `web_search` -> curl ladder.** The bridge is the richest
-source and is not rate-limited, so try it before Yahoo. If it fails, fall through.
+source, so try it before Yahoo. If it fails, fall through.
+
+**THE BRIDGE IS METERED — the data is not rate-limited, the gateway is.** The Pipeworx
+allowance is **50 tool calls/day per egress IP, shared across the whole fleet** (200/day with a
+free key: `X-API-Key` / `?apikey=`; store it as `PIPEWORX_API_KEY` and `_shared/mcp_bridge.py`
+sends it automatically). Every call costs one unit **regardless of how many symbols it returns** —
+so **batch size, not symbol count, is what matters**.
+
+Two rules that follow from it:
+
+- **Never pull per-symbol history in a loop.** Use `_shared/rvol_fetch.py` (polygon-io
+  `grouped_daily`): **one call returns OHLCV for every US symbol for one date**, so ten calls give
+  a trailing-10-session volume denominator for the whole market instead of one call per ticker.
+- **A volume read minutes after the bell is NOT final** — the closing auction consolidates
+  later, and an understated numerator understates RVol and dollar volume (measured 0.7-30.2% low
+  on 2026-11-02). Take the session-volume numerator from a settled source (`grouped_daily` or
+  shibui), or label it as a snapshot in the artifact.
+
+Full detail, including the exact `X-RateLimit-*` headers to read on failure: RUNTIME-CONTRACT.md
+section 1e.
 
 ### Rules
 

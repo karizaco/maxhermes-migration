@@ -51,7 +51,7 @@ directly over JSON-RPC. See `mcp_bridge.py` in this directory. Packs confirmed r
 |---|---|---|
 | `stocktwits` | `https://gateway.pipeworx.io/stocktwits/mcp` | 53 tools. **Pack-specific**: `chart_data` (OHLCV), `trending`, `discover_tools`. **No `sentiment` tool** (the earlier contract row claiming one was wrong). |
 | `shibui` | `https://mcp.shibui.finance/mcp` | 12 tools — `stock_data_query` (history to 1962, fundamentals, screeners, EDGAR), `get_database_schema`, `load_*_workflow`, `export_to_excel`. **No `get_quotes`.** |
-| **`market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` | **48 tools. `get_quotes` (batch quotes), `top_movers`, `market_snapshot`, `price_history`.** Yahoo-sourced prices, not rate-limited. |
+| **`market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` | **48 tools. `get_quotes` (batch quotes), `top_movers`, `market_snapshot`, `price_history`.** Yahoo-sourced prices. Data is not rate-limited; the **gateway quota is** — see §1e. |
 | `cftc-cot` | `https://gateway.pipeworx.io/cftc-cot/mcp` | CFTC Commitments of Traders positioning |
 | `tradier` | `https://gateway.pipeworx.io/tradier/mcp` | `tradier_quote` |
 | `fmp` | `https://gateway.pipeworx.io/fmp/mcp` | `stock_screener` — **requires the user's own FMP API key** as `_apiKey` |
@@ -95,6 +95,76 @@ A genuinely independent cross-check needs two different **tools** on two differe
 
 Verified 2026-11-02: both returned SPY close 755.72 from their own hosts.
 
+## 1e. The Pipeworx gateway quota — and the two fixes (verified 2026-11-03)
+
+The gateway's **data** is not rate-limited; the **gateway** is. Every tool call is metered.
+
+### The quota, measured from the response headers
+
+Every gateway response carries the counter:
+`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Used`, `X-RateLimit-Reset`,
+`X-RateLimit-Tier`.
+
+| Tier | Limit | How to get it |
+|---|---|---|
+| `anonymous` | **50 tool calls / day** | nothing — the default |
+| `byo` | **200 tool calls / day** | `X-API-Key: <key>` header **or** `?apikey=<key>` query param |
+
+- **The pool is PER EGRESS IP and shared with every other caller on that IP.** The Cloud sandbox
+  egress rotates across ~2 IPs, so the fleet effectively has ~2 counters and a call can succeed
+  on one IP and fail on the next.
+- The counter **resets at 00:00 UTC** (`X-RateLimit-Reset`), not at local midnight — an evening
+  ET fleet can exhaust the pool before its last routine runs.
+- **`Authorization: Bearer` does NOT raise the tier.** Only `X-API-Key` and `?apikey=` do.
+- Most tools cost **one quota unit per call regardless of symbol count**
+  (`credits: 50, usd: $0.005, basis: list`). **Batch size, not symbol count, is what matters.**
+- The **free key is a GitHub signup** at https://pipeworx.io/signup. Store it as
+  `PIPEWORX_API_KEY` in the platform secret store — the secret store IS the env-injection path.
+  `_shared/mcp_bridge.py` now reads it from the environment and sends the header automatically.
+- **The failure mode is confusing**: calls succeed for hours, then one arbitrary call returns
+  `{"error":"rpc_failed", ..., "Today's 50 free anonymous calls are used up"}`. The counter is
+  only visible in headers the bridge previously discarded. **Read the headers when a call fails**
+  and report `failed:gateway_quota(resets=<ts>)`, not "no data available".
+
+### Fix A — `polygon-io grouped_daily`: the whole market's OHLCV in ONE call
+
+`{"date":"YYYY-MM-DD"}` → OHLCV for **every** US symbol for one date (12,600+ names, ~1.8 MB) in
+**one call**. **Ten calls give a trailing-10-session volume denominator for the entire market**,
+replacing one `chart_data` call per ticker.
+
+Verified 2026-11-03: the trailing-10 average computed from `grouped_daily` reproduces the
+`stocktwits chart_data` denominator to **max 0.000075%** across 209 names — the same series, so
+RVol stays comparable with previously published digests.
+
+```bash
+python3 /workspace/rvol_fetch.py --date 2026-11-02 --sessions 10 --out avg10.json
+```
+
+**Serialize the calls** — Massive (upstream) allows **5 requests/minute on a key shared across
+ALL Pipeworx callers**, so space them ~13 s apart. `rvol_fetch.py` does this and backs off on
+HTTP 429.
+
+### Fix B — the same calls expose a SETTLED-VOLUME bug (read this before publishing a pre-close digest)
+
+`get_quotes` / `chart_data` session volume read at ~16:01 ET is **not final**: the closing-auction
+volume consolidates later. Measured on 2026-11-02, published volumes ran **0.7%–30.2% low**
+(median ~8%) versus the settled figure, with **shibui** (`mcp.shibui.finance` — a different host)
+and **`polygon-io grouped_daily`** independently agreeing on the higher number.
+
+Because RVol = session volume ÷ trailing-10 average, an understated numerator **understates RVol**.
+On 2026-11-02 that moved **7 names across the Tier-A RVol ≥ 2.0 threshold** (EL 1.96→2.32,
+NXT 1.85→2.26, VG 1.73→2.16, CRH 1.47→2.11, FROG 1.82→2.07, VLTO 1.56→2.05, ABNB 1.51→2.03).
+Dollar volume is understated by the same factor, which also shifts the within-tier ranking.
+
+**Rules for a pre-close digest:**
+1. Take the session-volume numerator from a **settled** source — `polygon-io grouped_daily` (1 call
+   for the whole market) or shibui — not from a 16:01 ET bridge snapshot.
+2. If a live snapshot volume is published, **say so in the artifact** ("session volume as of
+   16:01 ET, pre-consolidation") and treat its RVol as a floor.
+3. `grouped_daily` also returns `o/h/l/c` per symbol, so it cross-checks a day's settled close in
+   **one call** instead of 40.
+
+
 ## 2. Measured endpoint status
 
 ### 2a. Re-measured 2026-10-31 (current)
@@ -107,7 +177,7 @@ Verified 2026-11-02: both returned SPY close 755.72 from their own hosts.
 
 | Source | Endpoint | Status |
 |---|---|---|
-| **bridge `market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` → `get_quotes` | **200 OK — batch quotes with `previous_close`, `change_pct`, `volume`, `day_high/low`, `as_of`, `market_state`. Not rate-limited. Now the preferred quote source.** |
+| **bridge `market-recap`** | `https://gateway.pipeworx.io/market-recap/mcp` → `get_quotes` | **200 OK — batch quotes with `previous_close`, `change_pct`, `volume`, `day_high/low`, `as_of`, `market_state`.** The **data** is not rate-limited; the **gateway** is — see §1e. Now the preferred quote source. |
 | **bridge `market-recap`** | → `top_movers` | **200 OK** — ranked movers with price/change/volume/exchange. Replaces the Finviz movers screener. |
 | **bridge `market-recap`** | → `market_snapshot` | **200 OK** — multi-region snapshot (indices, yields, FX, futures) in one call. |
 | bridge `stocktwits` | `https://gateway.pipeworx.io/stocktwits/mcp` | **200 OK** — `chart_data` returned SPY OHLCV, trending. **Pack-specific**: `chart_data`, `trending`, `discover_tools`. **No `sentiment` tool.** |

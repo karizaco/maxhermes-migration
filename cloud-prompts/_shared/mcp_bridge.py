@@ -37,6 +37,7 @@ EXIT CODES
 """
 
 import json
+import os
 import subprocess
 import sys
 
@@ -66,17 +67,29 @@ def resolve(server):
     return None
 
 
+# Optional Pipeworx API key. Free tier = 200 calls/day vs 50 anonymous.
+# The key raises the metered tier on EVERY pack, so it must be read from the
+# environment (the platform secret store is the env-injection path) and never
+# hardcoded here.
+API_KEY = os.environ.get("PIPEWORX_API_KEY", "").strip()
+
+
 def rpc(url, method, params=None, timeout=TIMEOUT):
     """One JSON-RPC round trip. Returns a parsed dict, or an error dict."""
     body = {"jsonrpc": "2.0", "id": 1, "method": method}
     if params is not None:
         body["params"] = params
+    headers = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+    ]
+    if API_KEY:
+        headers.append(f"X-API-Key: {API_KEY}")
     try:
         p = subprocess.run(
             [
                 "curl", "-s", "-N", "--max-time", str(timeout), "-X", "POST", url,
-                "-H", "Content-Type: application/json",
-                "-H", "Accept: application/json, text/event-stream",
+            ] + [x for h in headers for x in ("-H", h)] + [
                 "-d", json.dumps(body),
             ],
             capture_output=True, text=True, timeout=timeout + 15,

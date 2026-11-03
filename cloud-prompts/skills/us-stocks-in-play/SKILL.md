@@ -254,6 +254,34 @@ Discover on the **trigger**, not on the close-to-close move. A name that gapped 
    and state that denominator. A screener's own RVol column uses a different denominator and is
    not comparable across sources.
 
+#### RVol and session volume: use the market-wide feed, not per-symbol history (2026-11-03)
+
+**Do NOT pull one `chart_data` call per ticker.** Each is one metered gateway call and the
+anonymous Pipeworx allowance is **50 calls/day shared across the whole fleet** — a 209-name RVol
+denominator alone burned 245 calls and exhausted the pool mid-run.
+
+Use the shared helper `_shared/rvol_fetch.py` (polygon-io `grouped_daily`): **one call returns
+OHLCV for every US symbol for one date**, so ten calls give a trailing-10-session volume
+denominator for the whole market. It reproduces the `chart_data` denominator to **0.000075%**
+across 209 names, so RVol stays comparable with previously published digests.
+
+```bash
+python3 /workspace/rvol_fetch.py --date <YYYY-MM-DD> --sessions 10 --out avg10.json
+```
+
+**The session-volume numerator must be SETTLED.** A volume read from the quote bridge at
+~16:01 ET is **not final** — the closing auction consolidates later. Measured 2026-11-02:
+published volumes ran **0.7%–30.2% low** (median ~8%) versus the settled figure, and because
+RVol divides by a fixed denominator, **RVol is understated too** — 7 names crossed the Tier-A
+RVol ≥ 2.0 threshold once settled (EL 1.96→2.32, NXT 1.85→2.26, VG 1.73→2.16, CRH 1.47→2.11,
+FROG 1.82→2.07, VLTO 1.56→2.05, ABNB 1.51→2.03). Dollar volume is understated by the same
+factor, which also shifts the within-tier ranking.
+
+So: take the numerator from `polygon-io grouped_daily` (which also returns `o/h/l/c`, so one call
+cross-checks the whole day's settled close) or from shibui — **not** from a 16:01 ET bridge
+snapshot. If a live snapshot volume is published, label it as such in the artifact and treat its
+RVol as a floor. See `_shared/RUNTIME-CONTRACT.md` §1e.
+
 ### Pass 1b — Premarket / gap annex (also relevant at 15:50 — gaps that held into the close)
 
 1. **TheStockCatalyst** `https://www.thestockcatalyst.com/NYSEPMMovers` — primary PM annex.
