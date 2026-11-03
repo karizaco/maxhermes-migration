@@ -45,6 +45,13 @@
 # A sibling routine's file in the same directory is already on the branch and unchanged, so it
 # is not staged. Files are never deleted: `cp -r` only adds to the worktree.
 #
+# DEFAULT-BRANCH MIRROR
+#   After a successful push to `main`, this script also fast-forwards `master` (the repo's
+#   GitHub default branch, which cannot be changed without Administration scope) to the
+#   pushed tip. Pointer-only, fast-forward-only, ancestry-gated, and strictly best-effort:
+#   it never touches an artifact and it can never fail the push above. See
+#   mirror_default_branch() below.
+#
 # EXIT CODES
 #   0 = pushed, and the path verified present on origin/<branch>
 #   1 = push failed after 3 attempts — the artifact is STILL in the sandbox; say so
@@ -52,7 +59,7 @@
 #   3 = refused (bad args, or staged deletions detected)
 set -u
 
-OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""; SRC_DIR_ARG=""
+OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""; NM=""; SRC_DIR_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)    OUT="${2:-}";   shift 2 ;;
@@ -138,7 +145,9 @@ ART_DATE=$(printf '%s' "$ADD" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
 
 if [ -z "$MSG" ]; then
   if [ -n "$NN" ]; then
-    MSG="cron $NN $NM $ART_DATE"
+    # ${NM:-$OUT} — NM is only set when the routine is derived from the artifact path.
+    # A caller that passes --nn without --msg must not trip `set -u` on an unset NM.
+    MSG="cron $NN ${NM:-$OUT} $ART_DATE"
   else
     MSG="cron $OUT $ART_DATE"
   fi
@@ -207,6 +216,44 @@ connector_fallback() {
     echo "push: connector fallback skipped (the artifact is not at $LOCAL_FILE)"; return 1; }
   sh "$HELP" --path "$ADD" --file "$LOCAL_FILE" --branch "$BRANCH" \
      --msg "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}"
+}
+
+# --- keep the repo's DEFAULT branch (master) in step with main --------------------
+# GitHub's `default_branch` for the outputs repo is `master`, and it CANNOT be changed
+# without repository Administration scope - the cron token does not have it, so it is a
+# standing constraint, not an oversight. Every routine pushes to `main`, so without this
+# anyone who opens the repo URL or runs a bare `git clone` lands on a tree that is a day
+# behind the artifacts.
+#
+# `master` is therefore kept as a fast-forward MIRROR of `main`:
+#   * pointer-only  - it moves a branch pointer; it never writes, deletes or rewrites an artifact
+#   * fast-forward  - it can only move master FORWARD, so it can never lose a commit
+#   * ancestry-gated - if `master` holds a commit the target does not, the mirror is SKIPPED,
+#                      never force-pushed
+#
+# This runs AFTER the routine's own push, on every push to `main`, so the default branch
+# trails `main` by minutes rather than by a day. It is strictly best-effort: every step is
+# guarded and the function always returns 0, because a mirror failure must NEVER fail an
+# artifact push.
+mirror_default_branch() {
+  TARGET="${1:-}"
+  [ -n "$TARGET" ] || return 0
+  git fetch -q origin "+refs/heads/master:refs/remotes/origin/master" 2>/dev/null || \
+    git fetch -q origin master 2>/dev/null || true
+  if ! git rev-parse --verify --quiet origin/master >/dev/null 2>&1; then
+    echo "  master mirror: skipped (no master branch on the remote)"
+    return 0
+  fi
+  if ! git merge-base --is-ancestor origin/master "$TARGET" 2>/dev/null; then
+    echo "  master mirror: skipped (origin/master has commits the pushed tip does not - not a fast-forward)"
+    return 0
+  fi
+  if git push -q origin "$TARGET:refs/heads/master" 2>/tmp/master_mirror.err; then
+    echo "  master mirror: fast-forwarded to $(git rev-parse --short "$TARGET" 2>/dev/null)"
+  else
+    echo "  master mirror: skipped (push rejected: $(head -1 /tmp/master_mirror.err 2>/dev/null | tr -d '\r'))"
+  fi
+  return 0
 }
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
@@ -307,9 +354,17 @@ for attempt in 1 2 3; do
 
   # Capture the exit status DIRECTLY. Never `git push ... | head -3` — that returns head's
   # status (always 0) and reports a rejected push as a success.
+  # The sha we are about to push is the mirror's target: it is `main`'s new tip, and
+  # `master` can only be fast-forwarded to it.
+  PUSHED_SHA="$(git rev-parse HEAD 2>/dev/null)"
   if git push -q origin "HEAD:refs/heads/$BRANCH" 2>/tmp/push_artifact.err; then
     echo "push: ok (attempt $attempt)"
     cd "$REPO_DIR"; rm -rf "$WT"
+    # Keep the repo's default branch in step. Only for pushes to `main` - cron #90 pushes
+    # to `audit/status` and must never touch `master` from there.
+    if [ "$BRANCH" = "main" ] && [ -n "${PUSHED_SHA:-}" ]; then
+      mirror_default_branch "$PUSHED_SHA"
+    fi
     # Verify what actually landed, not merely that the push exited 0.
     git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || \
       git fetch -q origin "$BRANCH" 2>/dev/null || true
