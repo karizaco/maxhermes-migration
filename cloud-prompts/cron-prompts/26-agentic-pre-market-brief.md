@@ -163,8 +163,8 @@ sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market.md --bran
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls
-`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
@@ -182,8 +182,8 @@ exists, and why the push script must never be run with `git push … | head -3`.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. **This routine runs on WEEKDAYS only** (`30 8 * * 1-5`). The scheduler never starts a weekend
    run, and there is no weekend brief to produce. If the window check skips (a US market
-   holiday), exit cleanly with "out-of-window: <reason>" and write the SKIPPED file — on a
-   holiday a skipped fire is correct behaviour, not a failure.
+   holiday), exit cleanly with "out-of-window: <reason>" and write the skip marker via
+   `skip_marker.sh` — on a holiday a skipped fire is correct behaviour, not a failure.
 5. Every percentage in the brief must trace to a fetched value or a cited source. Do not invent numbers. Audit before rendering.
 
 ================================================================

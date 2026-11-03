@@ -76,6 +76,7 @@ case "$DATE" in
 esac
 echo "window-check: OK ($DATE)"
 ```
+
 **Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
 line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
 else — do not narrate the tool calls and do not write an artifact:
@@ -86,7 +87,6 @@ file: no artifact (holiday skip — us-stocks-in-play/$DATE.md is intentionally 
 push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_us_stocks_in_play.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
-
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
@@ -158,7 +158,7 @@ Write the artifact to:
   `/workspace/us-stocks-in-play/{date}.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
@@ -183,8 +183,8 @@ sh /workspace/verify_delivery.sh --path us-stocks-in-play/{date}.md --branch mai
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls
-`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash

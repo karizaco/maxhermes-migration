@@ -56,6 +56,7 @@ case "$DATE" in
 esac
 echo "window-check: OK ($DATE)"
 ```
+
 **Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
 line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
 else — do not narrate the tool calls and do not write an artifact:
@@ -66,7 +67,6 @@ file: no artifact (holiday skip — macro-calendar/$DATE.md is intentionally abs
 push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_macro_calendar_midweek.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
-
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
@@ -139,8 +139,8 @@ sh /workspace/verify_delivery.sh --path macro-calendar/{date}-midweek.md --branc
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls
-`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
