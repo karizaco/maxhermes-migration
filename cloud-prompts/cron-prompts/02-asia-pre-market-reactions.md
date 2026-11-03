@@ -117,7 +117,7 @@ Write the artifact to:
   `/workspace/asia-pre-market/{date}.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
@@ -142,8 +142,8 @@ sh /workspace/verify_delivery.sh --path asia-pre-market/{date}.md --branch main
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls
-`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash

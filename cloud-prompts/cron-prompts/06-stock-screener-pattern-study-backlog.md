@@ -141,8 +141,8 @@ sh /workspace/verify_delivery.sh --path daily-screens/{date}/weekly-ipo.md --bra
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls
-`verify_delivery.sh` and only reports `push: ok` when the path is present on the remote branch.
+The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
+and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
