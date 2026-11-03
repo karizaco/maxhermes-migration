@@ -147,81 +147,6 @@ the instrument but false as a statement about the day. Keep the rows as the sour
 instrument's last trade date, state the count in the report, and exclude them from every movers
 list.
 
-
-### The machine-readable companions
-
-`summary.md` is for a human. Three files beside it make the session queryable by
-code, and the archive is not comparable across days without them.
-
-**`_manifest.json` — required.** The CSVs alone cannot tell a consumer the
-universe size, the floor that was applied, the unit of `market_cap`, or how many
-rows did not trade. Those change between sessions, so they must be recorded
-per session:
-
-```json
-{
-  "date": "2026-11-03",
-  "generated_at": "<ISO-8601 UTC>",
-  "market_cap_unit": "USD",
-  "price_currency": "listing (the `currency` column)",
-  "fx": {"table": {"EUR": 1.1178, "JPY": 0.006348}, "source": "<url + date>"},
-  "floors_usd": {"au": {"floor_usd": 300000000, "min_volume": 100000}},
-  "regions": {
-    "au": {"universe_rows": 1552, "unique_instruments": 1552, "written": 302,
-           "excluded_no_market_cap": 4, "excluded_below_floor": 1246,
-           "carryover_rows": 0, "off_official_rows": 0, "file": "au.csv"}
-  },
-  "totals": {"universe_rows": 0, "unique_instruments": 0, "written": 0,
-             "excluded_no_market_cap": 0, "excluded_below_floor": 0,
-             "carryover_rows": 0},
-  "invariants": {"unique_instruments == written + excluded_no_market_cap + excluded_below_floor": true}
-}
-```
-
-The invariant is the point of the file: **every unique instrument lands in
-exactly one bucket** — written, excluded for a missing cap, or excluded by the
-floor. If the three numbers do not reconcile, one of them is wrong; say so in
-the report rather than publishing a manifest that does not add up. If a field
-cannot be computed, **omit it — never guess it**.
-
-**`_excluded.json` — the rows with no reported market cap.** The units contract
-above excludes them from the CSV, because a row that cannot be screened against
-a floor has no place in a screened file. Excluding is not deleting: list them
-here with their fields, so the exclusion is recoverable without re-pulling the
-universe.
-
-```json
-{"date": "2026-11-03",
- "regions": {"au": {"ASX:XXX": {"reason": "no_market_cap_reported",
-                                "name": "...", "close": "1.23",
-                                "volume": "5000", "change_pct": "0",
-                                "currency": "AUD"}}}}
-```
-
-**How to build `_carryover.json`.** The requirement is stated above; the method
-is what makes it repeatable.
-
-1. Build a Yahoo symbol per row from the venue (`.AX`, `.T`, `.TO`, `.DE`,
-   `.PA`, `.AS`, `.BR`, `.LS`, `.HE`, `.CO`, `.MC`, `.MI`, `.AT`; replace `_`
-   with `-`). Skip class-suffixed symbols (`.PR`, `.P`) — no reliable mapping.
-2. Fetch `v7/finance/spark` in batches of **12** (the URL-length limit) and read
-   `meta.regularMarketTime`, converting with `meta.gmtoffset` — **Yahoo's own
-   offset, never a hand-rolled exchange offset**.
-3. `local_date != <DATE>` → the instrument had no session on the date.
-4. `confirmed: true` when the screener's `volume` equals Yahoo's
-   `meta.regularMarketVolume` for that last session — both feeds are carrying
-   the same earlier session. When it is false the screener shows a non-zero
-   volume but Yahoo has no bar for today: usually still a carry-over, sometimes
-   a Yahoo coverage gap.
-
-**Traps.** Yahoo appends a duplicate live bar for ASX and stamps ASX daily bars
-at the session *open* in UTC — group bars by local session date, never by bar
-index. Compare `change_pct` against Yahoo's `regularMarketChangePercent`; do
-**not** reconstruct a prior close and compare that, because dividend and split
-adjustments change the reference basis. The stale `change_pct` is **not** edited
-in the CSV — it is the instrument's last session move, not a fabrication — but it
-must be indexed, counted in the manifest, and called out in `## Caveats`.
-
 The cron prompt is intentionally short (~1.5KB). All orchestration logic lives in `run_intl_cron.py` with two CLI subcommands:
 
 ### `run_intl_cron.py plan` — pure planning, no MCP calls
@@ -260,7 +185,46 @@ Three cache files, all under `research\`:
 
 - **`universe_cache\<region>\tickers.json`** — ticker universe per region, TTL=7 days. Refreshed by `pull_international.py` running the screener; consumed by `stock_prices` daily.
 - **`enrichment_cache\cache.json`** — per-ticker `{volume, pe_ratio, sector}` with field-level TTLs (default 1d/30d/30d). Refreshed by `finalize` after Yahoo calls; consulted by `plan` to decide what to enrich.
-- **`holiday_calendar`** — in-process per-exchange holidays for 2025-27 (`holiday_calendar.py`). 16 regions × 3 years, used by `plan` to skip non-trading days.
+- **`holiday_calendar`** — in-process per-exchange holidays for 2025-27 (`holiday_calendar.py`). 16 regions × 3 years, used by `plan` to skip non-trading days. **It is a hint, not a fact** — see the calendar guard above; `scripts/market_session_probe.py` is what decides.
+
+## Holiday calendars are a HINT — verify the session before skipping a region (international run)
+
+This section applies to the **international** run (cron #05), the only one that skips regions.
+`holiday_calendar.py` is a hand-maintained table of 16 exchanges x 3 years, and it **has been
+wrong in a way that deleted a real trading session**: Greece's Ochi Day was listed as 2026-10-27
+instead of 10-28, and the ATHEX was open and traded on 10-27 (Yahoo daily bars for ALPHA.AT,
+EUROB.AT, TPEIR.AT, GEKTERNA.AT, MOH.AT and ETE.AT all carry a 10-27 session). Six dates in the
+Greek list were wrong, all of the same class of error — a mis-derived Orthodox date or a shifted
+national holiday. The Greece list was corrected on 2026-11-03 against Euronext Athens' own
+holiday table, but **the same class of error can exist in any of the sixteen tables, and none of
+them is machine-verified.**
+
+**So never skip a region on the calendar alone.** `scripts/market_session_probe.py` answers the
+question the calendar only guesses at — *did this market actually trade on this date?* — from
+the exchange's own session bars:
+
+```bash
+python3 market_session_probe.py --region eu-gr --date 2026-10-27
+# VERDICT region=eu-gr date=2026-10-27 traded=yes source=ALPHA.AT last_bar=2026-10-27
+```
+
+The rules:
+
+- **`traded=yes` → INCLUDE the region.** The market traded. A calendar that says otherwise is
+  wrong: include the region, and report the calendar error in the artifact's `## Caveats` and in
+  the reply. This is exactly the 2026-10-27 Greece case.
+- **`traded=no` → the market did not trade.** Skip it, and say so in `## Source health`.
+- **`traded=unknown` → you do not know.** A source that could not be reached, a date outside the
+  fetched window, or a date after the last session. **Unknown is never a licence to skip.** Treat
+  it as a trading day, write the region, and note the uncertainty. Only a confirmed `no` may
+  remove a region from the artifact.
+- Run the probe for **every** region the calendar would skip, not just the ones that look
+  doubtful. A skip is a deletion from the historical record and it needs a positive
+  confirmation.
+
+The probe covers the 16 regions of this skill. There is no Yahoo index symbol for the ATHEX, so
+Greece probes a liquid ATHEX constituent (`ALPHA.AT`) instead. Use `--audit --from … --to …` to
+sweep a whole date range across every region at once.
 
 ## Compute optimization summary
 
@@ -311,7 +275,7 @@ All four stages can run in parallel — the only dependency is that Yahoo enrich
 - **Never use `research/watchlist.yaml` as the universe** — that's personal trade tracking.
 - Never overwrite an existing day's file.
 - Never include position data, P&L, or anything account-specific — pure market data only.
-- If a data source fails for a ticker, write the row with empty numeric fields (do NOT write `"N/A"`). **Exception — the international artifact:** a row the source reports no market cap for is excluded rather than written blank (see the units contract above), and is listed in `_excluded.json` so the exclusion stays recoverable.
+- If a data source fails for a ticker, write the row with empty numeric fields (do NOT write `"N/A"`).
 - Do not invent values for missing fields.
 - `market_cap` is USD and the prices are in the listing currency — see the units contract above.
   Do not change either without restating the affected sessions.
@@ -327,5 +291,4 @@ All four stages can run in parallel — the only dependency is that Yahoo enrich
 
 - **Cross-listed tickers** (CA:RY, JP:8306, TW:2330, AU:BHP, DE:SAP) appear in both US and intl CSVs with potentially different `change_pct` (different close times). No dedupe yet. (Pending improvement.)
 - **CSVs are uncompressed** — ~14MB/day × 250 trading days = ~3.5GB/year. (Pending improvement: gzip.)
-- **The 2026-10-26 international artifact was restated on 2026-11-03** into the house convention (USD `market_cap`, per-region USD floor applied after conversion, no-cap rows excluded, `summary.md` replacing `<date>.meta.md`). The original is preserved in git history at commit `9291938`. That restatement also corrected an inverted CAD rate in the original run's FX table, which had overstated every Canadian market cap by ~1.97x; the published CSVs carried listing-currency caps and were never affected, but the run's Canadian liquidity filter was too loose.
 - **Top-N coverage gap** — non-top-500 tickers have blank volume/pe/sector. Raising top-N to 1500 cuts schema coverage from ~5% to ~15% of rows but triples Yahoo call cost. (Pending: enable once volume TTL is raised.)

@@ -364,27 +364,55 @@ HOLIDAYS: dict[str, dict[int, list[date]]] = {
             date(2027, 12, 27), date(2027, 12, 28),
         ],
     },
+    # Athens Exchange (ATHEX).
+    #
+    # CORRECTED 2026-11-03. The previous list had SIX wrong dates, all of the
+    # same class of error — a mis-derived Orthodox date or a shifted national
+    # holiday — and one of them was a FALSE holiday that silently deleted a
+    # real trading session:
+    #   2026-10-27 listed instead of 10-28 (Ochi Day) -> the ATHEX was OPEN
+    #     on 10-27 and traded (Yahoo daily bars for ALPHA.AT, EUROB.AT,
+    #     TPEIR.AT, GEKTERNA.AT, MOH.AT and ETE.AT all carry a 10-27 session).
+    #   2027-10-26 instead of 10-28 (Ochi Day)
+    #   2027-04-09 instead of 04-30 (Good Friday, Orthodox)
+    #   2027-06-07 instead of 06-21 (Whit Monday)
+    #   2025-02-03, 2026-02-02, 2027-02-01, 2027-02-15 — spurious "Clean
+    #     Monday" entries (Clean Monday is Orthodox Easter minus 48 days)
+    #   2025-03-25, 2026-03-25, 2027-03-25 — Independence Day was MISSING
+    #   Orthodox Easter Monday was missing for 2026 (04-13)
+    #   Christmas Eve (12-24) was missing for all three years
+    #
+    # Source: Euronext Athens' own market-holiday table and Trading Calendar
+    # (athens.euronext.com/en/trade/trading-model/calendar), cross-checked
+    # against the Bank of Greece bank-holiday list, timeanddate and
+    # publicholidays.gr. Greece observes BOTH the Catholic and the Orthodox
+    # Easter weekends, which is why four Easter dates appear.
+    #
+    # VERIFY, DO NOT TRUST: scripts/market_session_probe.py answers "did this
+    # region actually trade on this date?" from Yahoo's session bars. Run it
+    # before skipping a region on this table.
     "eu-gr": {  # Athens Exchange
         2025: [
-            date(2025, 1, 1), date(2025, 1, 6), date(2025, 2, 3),
-            date(2025, 2, 27), date(2025, 4, 18), date(2025, 4, 21),
-            date(2025, 4, 25), date(2025, 5, 1),
-            date(2025, 6, 9), date(2025, 8, 15),
-            date(2025, 10, 28), date(2025, 12, 25), date(2025, 12, 26),
+            date(2025, 1, 1), date(2025, 1, 6), date(2025, 2, 27),
+            date(2025, 3, 25), date(2025, 4, 18), date(2025, 4, 21),
+            date(2025, 5, 1), date(2025, 6, 9), date(2025, 8, 15),
+            date(2025, 10, 28), date(2025, 12, 24), date(2025, 12, 25),
+            date(2025, 12, 26),
         ],
         2026: [
-            date(2026, 1, 1), date(2026, 1, 6), date(2026, 2, 2),
-            date(2026, 2, 23), date(2026, 4, 3), date(2026, 4, 6),
-            date(2026, 4, 10), date(2026, 5, 1),
+            date(2026, 1, 1), date(2026, 1, 6), date(2026, 2, 23),
+            date(2026, 3, 25), date(2026, 4, 3), date(2026, 4, 6),
+            date(2026, 4, 10), date(2026, 4, 13), date(2026, 5, 1),
             date(2026, 6, 1), date(2026, 8, 15),
-            date(2026, 10, 27), date(2026, 12, 25), date(2026, 12, 28),
+            date(2026, 10, 28), date(2026, 12, 24), date(2026, 12, 25),
+            date(2026, 12, 28),
         ],
         2027: [
-            date(2027, 1, 1), date(2027, 1, 6), date(2027, 2, 1),
-            date(2027, 2, 15), date(2027, 3, 26), date(2027, 3, 29),
-            date(2027, 4, 9), date(2027, 5, 1),
-            date(2027, 6, 7), date(2027, 8, 15),
-            date(2027, 10, 26), date(2027, 12, 27), date(2027, 12, 28),
+            date(2027, 1, 1), date(2027, 1, 6), date(2027, 3, 15),
+            date(2027, 3, 25), date(2027, 3, 26), date(2027, 3, 29),
+            date(2027, 4, 30), date(2027, 5, 3), date(2027, 6, 21),
+            date(2027, 8, 15), date(2027, 10, 28), date(2027, 12, 24),
+            date(2027, 12, 25), date(2027, 12, 27), date(2027, 12, 28),
         ],
     },
 }

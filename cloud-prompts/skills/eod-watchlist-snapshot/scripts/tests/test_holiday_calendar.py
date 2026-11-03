@@ -165,3 +165,58 @@ class TestUnknownRegion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGreeceCorrected20261103(unittest.TestCase):
+    """Regression tests for the 2026-11-03 Greece correction.
+
+    Six dates in the Greek list were wrong. One of them - Ochi Day listed as
+    2026-10-27 instead of 10-28 - was a FALSE holiday that deleted a real
+    trading session: the ATHEX was open and traded on 2026-10-27. Source:
+    Euronext Athens' own market-holiday table.
+    """
+
+    def setUp(self):
+        self.cal = HolidayCalendar()
+
+    def test_ochi_day_2026_is_oct_28(self):
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2026, 10, 28)))
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2027, 10, 28)))
+
+    def test_the_athex_traded_on_2026_10_27(self):
+        """The regression itself: 2026-10-27 must be a TRADING day."""
+        self.assertTrue(self.cal.is_trading_day("eu-gr", date(2026, 10, 27)))
+        self.assertTrue(self.cal.is_trading_day("eu-gr", date(2026, 10, 26)))
+        self.assertTrue(self.cal.is_trading_day("eu-gr", date(2026, 10, 29)))
+
+    def test_independence_day_is_present_in_every_year(self):
+        for y in (2025, 2026, 2027):
+            self.assertFalse(self.cal.is_trading_day("eu-gr", date(y, 3, 25)),
+                             f"{y}-03-25 (Independence Day) must be a holiday")
+
+    def test_orthodox_clean_monday(self):
+        # Clean Monday is Orthodox Easter minus 48 days.
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2025, 2, 27)))
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2026, 2, 23)))
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2027, 3, 15)))
+
+    def test_orthodox_good_friday_and_easter_monday(self):
+        for d in (date(2025, 4, 18), date(2025, 4, 21),
+                  date(2026, 4, 10), date(2026, 4, 13),
+                  date(2027, 4, 30), date(2027, 5, 3)):
+            self.assertFalse(self.cal.is_trading_day("eu-gr", d), str(d))
+
+    def test_catholic_easter_is_also_a_holiday(self):
+        """Greece observes BOTH the Catholic and the Orthodox Easter weekends."""
+        for d in (date(2026, 4, 3), date(2026, 4, 6),
+                  date(2027, 3, 26), date(2027, 3, 29)):
+            self.assertFalse(self.cal.is_trading_day("eu-gr", d), str(d))
+
+    def test_whit_monday_2027(self):
+        self.assertFalse(self.cal.is_trading_day("eu-gr", date(2027, 6, 21)))
+        self.assertTrue(self.cal.is_trading_day("eu-gr", date(2027, 6, 22)))
+
+    def test_christmas_eve_is_a_holiday(self):
+        for y in (2025, 2026, 2027):
+            self.assertFalse(self.cal.is_trading_day("eu-gr", date(y, 12, 24)),
+                             f"{y}-12-24 (Christmas Eve) must be a holiday")
