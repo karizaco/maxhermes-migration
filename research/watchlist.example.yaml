@@ -1,0 +1,39 @@
+# EXAMPLE — the user's personal watchlist.
+#
+# This file is a SCHEMA EXAMPLE, not a live watchlist. It is deliberately not named
+# `watchlist.yaml` and it is not published: a file with no real tickers in it would make the
+# routine publish an empty "Watchlist" section every morning.
+#
+# To publish:
+#   1. copy this file, fill in your tickers;
+#   2. commit it to karizaco/minimax-cloud-outputs at `refs/watchlist.yaml` on branch `main`
+#      (stage ONLY that path — never `git add -A` in that repo);
+#   3. verify: curl -s -o /dev/null -w "%{http_code}\n" \
+#        https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml
+#
+# Full instructions and the rationale: research/watchlist.README.md
+#
+# Consumed by:
+#   cron #26  agentic-pre-market-brief   → the brief's watchlist section
+#   cron #19  earnings-reminder-daily    → the "Your watchlist" section
+#
+# Rules:
+#   - ticker is the plain US symbol ("AAPL", not "NASDAQ:AAPL").
+#   - earnings_flag: true marks a name the earnings reminder always highlights.
+#   - note is free text carried into the brief.
+#   - unknown keys are ignored, so the file can grow without a routine change.
+
+version: 1
+updated: 2026-11-03
+
+watchlist:
+  # - ticker: AAPL
+  #   note: "core holding"
+  #   earnings_flag: true
+  # - ticker: NVDA
+  # - ticker: ORCL
+  #   note: "watch the AI-capex financing, not the demand"
+  # - ticker: LKNCY
+  #   note: "OTC — the america screener does not cover it; quoted separately"
+  # - ticker: AMD
+  #   earnings_flag: true

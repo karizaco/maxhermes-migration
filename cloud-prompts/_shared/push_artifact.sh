@@ -59,11 +59,11 @@
 #   3 = refused (bad args, or staged deletions detected)
 set -u
 
-OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""; NM=""; SRC_DIR_ARG=""
+OUT=""; ADD=""; ADD_ALL=""; BRANCH="main"; MSG=""; NN=""; NM=""; SRC_DIR_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)    OUT="${2:-}";   shift 2 ;;
-    --add)    ADD="${2:-}";   shift 2 ;;
+    --add)    ADD="${2:-}";   ADD_ALL="$ADD_ALL ${2:-}"; shift 2 ;;
     --branch) BRANCH="${2:-}"; shift 2 ;;
     --msg)    MSG="${2:-}";   shift 2 ;;
     --nn)     NN="${2:-}";    shift 2 ;;
@@ -110,8 +110,15 @@ esac
 #
 # The number is derived from the artifact path, so it is deterministic instead of depending on
 # the agent remembering to pass --msg. This table is the same mapping the roster uses.
+# NOTE: --add OVERWRITES, so $ADD holds only the LAST path given. With several --add paths the
+# routine number used to be derived from that last path alone, so a second path (a companion
+# CSV, say) silently wiped the number out of the commit subject — and cron #90's triage greps
+# subjects for "cron (#)?NN ", which then reports a DELIVERED artifact as MISSING. Deriving from
+# the FIRST path that matches the table fixes that. A single --add caller is unaffected: one
+# path, same answer as before.
 if [ -z "$NN" ]; then
-  case "$ADD" in
+  for _addp in $ADD_ALL; do
+  case "$_addp" in
     asia-pre-market/*)                  NN=02; NM=asia-pre-market-reactions ;;
     earnings/*-reminders.md)            NN=19; NM=earnings-reminder-daily ;;
     earnings/*-reactions.md)            NN=15; NM=earnings-reaction-scanner ;;
@@ -136,11 +143,17 @@ if [ -z "$NN" ]; then
     _audit/status.json)                 NN=90; NM=delivery-auditor ;;
     *)                                  NN="";  NM="" ;;
   esac
+  [ -n "$NN" ] && break
+  done
 fi
 
 # The subject's date is the ARTIFACT's date, taken from the artifact path — not the execution
 # date. On a delayed replay those differ, and cron #90 greps commits by the audited date.
-ART_DATE=$(printf '%s' "$ADD" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+ART_DATE=""
+for _addp in $ADD_ALL; do
+  ART_DATE=$(printf '%s' "$_addp" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+  [ -n "$ART_DATE" ] && break
+done
 [ -n "$ART_DATE" ] || ART_DATE=$(TZ=America/New_York date +%Y-%m-%d)
 
 if [ -z "$MSG" ]; then

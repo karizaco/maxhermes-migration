@@ -21,17 +21,21 @@ to, so the conversation list stays scannable.
    block, delay, or fail the artifact.
 
 ## SCHEDULE
-- Original local schedule: `37 7 * * 1-5` America/New_York — 07:37 ET weekdays
+- Original local schedule: `37 7 * * 1-5` America/New_York — 07:37 ET weekdays. The first Cloud
+  deployment ran `30 7 * * 1-5` (07:30 ET); the run history for 2026-10-28 → 2026-10-30 shows
+  07:30 ET.
 - Deployed schedule: `30 8 * * 1-5` America/New_York — 08:30 ET, Mon-Fri only.
-  Moved from 07:37 ET on 2026-10-31 so the artifact lands after cron #19's 06:00 ET
-  earnings reminder, which it reads.
+  Moved from 07:30 ET on 2026-10-31 so the artifact lands AFTER cron #19's 06:00 ET earnings
+  reminder: cron #19 publishes `earnings/{date}-reminders.md` on the outputs repo and the skill
+  spec reads that file for §9. The ordering is the point — do not move this fire earlier than
+  06:30 ET, and do not move it back to 07:30 without re-checking that dependency.
 - The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
   weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
   file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
   express — the market-holiday list.
 - There is no pre-market session on a weekend and this brief has no weekend edition, so it does
-  not run on Saturday or Sunday at all. (Retired 2026-10-31 — it used to fire daily and produce a
-  scoped WEEKEND brief; see WEEKEND MODE below, kept for reference only and NOT to be used.)
+  not run on Saturday or Sunday at all. The daily WEEKEND brief was retired on 2026-10-31; there
+  is no weekend mode in this prompt.
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
@@ -86,7 +90,7 @@ else — do not narrate the tool calls and do not write an artifact:
 
 ```
 out-of-window: US market holiday ($DATE)
-file: no artifact (holiday skip — daily-briefs/$DATE.md is intentionally absent)
+file: no artifact (holiday skip — daily-briefs/$DATE-pre-market.md is intentionally absent)
 push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_agentic_pre_market_brief.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
@@ -144,7 +148,12 @@ do NOT write a SKIPPED marker, and say in the artifact that it is a reconstructi
 A replay is normal, not an error.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
-If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/daily-briefs/` subdirectory, with `{date}` as part of each filename.
+The skill ships TWO outputs and both are required:
+  `/workspace/daily-briefs/{date}-pre-market.md`   — the brief
+  `/workspace/daily-briefs/{date}-pre-market.csv`  — the machine-readable screen the tables are
+                                                     built from (one row per name seen in the
+                                                     pre-market screens). It must never contradict
+                                                     the markdown.
 
 ## GIT PUSH (OPTIONAL)
 
@@ -153,8 +162,12 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
+# ONE --add, and it is the .md. The script stages the routine's WHOLE output tree, so the
+# companion CSV rides along in the same commit — you do NOT need a second --add, and passing
+# one is actively harmful: --add OVERWRITES, so a second path wipes the routine number out of
+# the commit subject, and cron #90 attributes a push by grepping subjects for "cron (#)?26 ".
+# A delivered artifact would then be reported as MISSING.
 sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market.md --branch main
-sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market.md --branch main
 ```
 
 **If the push script cannot be fetched**, use the inline fallback in
@@ -168,12 +181,32 @@ and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
-sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market.md --branch main
+sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market.md --branch main --nn 26
 ```
 
 A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's
 exit status (always 0) and reports a rejected push as a success. That is why the delivery check
 exists, and why the push script must never be run with `git push … | head -3`.
+
+`--nn 26` also checks that the commit which last touched the path carries the routine number in
+its subject. **Exit 4 means the file IS on the branch but the subject is not attributable** —
+cron #90's triage greps subjects for `cron (#)?26 ` and will report that artifact as MISSING.
+Fix FORWARD with another commit whose subject carries the number (re-push with the `.md` `--add`);
+do NOT force-push `main` — `master` mirrors it fast-forward, and rewriting a `main` commit breaks
+that mirror permanently.
+
+**Confirm by API as well**, because the script's check reads a remote-tracking ref that can be
+stale after a race with a sibling routine in the same minute (cron #08 shares this fire minute):
+
+```bash
+curl -s "https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/daily-briefs/{date}-pre-market.md?ref=main" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('API:', d.get('size'), 'bytes' if d.get('size') else d.get('message'))"
+```
+
+If the API says the file is absent while the script said `DELIVERY: ok`, the push lost that race:
+re-fetch, re-copy, re-commit on top of the new tip and push again (the script retries internally; a
+final manual re-push is acceptable). Report the outcome honestly — an artifact that is not on the
+branch is a FAILED delivery whatever the platform's run record says.
 
 ## CRITICAL REMINDERS
 1. Skill URL above MUST be fetched first. If the fetch fails, write a stub artifact with `_source=skill_fetch_failed` and reply with the failure. Do NOT improvise the procedure from memory.
@@ -185,6 +218,15 @@ exists, and why the push script must never be run with `git push … | head -3`.
    holiday), exit cleanly with "out-of-window: <reason>" and write the skip marker via
    `skip_marker.sh` — on a holiday a skipped fire is correct behaviour, not a failure.
 5. Every percentage in the brief must trace to a fetched value or a cited source. Do not invent numbers. Audit before rendering.
+6. The skill spec PINS the screen — the universe, the liquidity gate, the quality floor, and the
+   column contract between `premarket_*` and the prior session's `change`. Do not re-derive or
+   improvise them. Two runs have already published different screens, and one published
+   yesterday's session moves under a "Pre-market gaps" heading.
+7. Cron #19 publishes `earnings/{date}-reminders.md` on the outputs repo at 06:00 ET. READ IT for
+   §9 — it carries the BMO/AMC split and per-name EPS/revenue estimates. Do not rebuild the
+   earnings roster from search when that file is there.
+8. The commit subject must carry the routine number — `cron 26 <name> <date>`. Pass `--add` ONCE
+   (the `.md` path) and confirm the subject after the push. See DELIVERY VERIFICATION above.
 
 ================================================================
 END OF CRON PROMPT
