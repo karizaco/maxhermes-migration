@@ -77,6 +77,14 @@ curl -s --max-time 30 -X POST https://scanner.tradingview.com/america/scan \
 **This half is not optional.** Grok supplies the *reason*; the scanner supplies the *number*.
 Never take a price from Grok.
 
+**The `halted` column is NOT measurable — never report a halt count from it.** Measured
+2026-11-03: `halted` is `null` for EVERY US row (120/120 in an unfiltered top-120-by-volume
+scan, out of 20,149), and a scan filtered on `halted` matches nothing in EITHER direction
+(`halted=true` → `totalCount: 0`; `halted=false` → `totalCount: 0`). So "0 halted" is not a
+finding — it is the absence of a value. Cron #17 independently reports that LULD / limit status
+is unverifiable ("both halt feeds are dead"). Report the halt state as **not measurable**; never
+print a count that looks like a measurement.
+
 ### 5. Merge and validate
 
 - Parse Grok's reply into records; drop any line without a ticker.
@@ -122,8 +130,13 @@ the other #92 fire land in the same commit without being clobbered.
 
 ## REPLY
 
-Under 6 lines. Name the checkpoint, the number of records written, how many names the scanner
-flagged with `halted`, and one line for push status and `errors: <n>`.
+Under 6 lines. Name the checkpoint, the number of records written, the scanner's halt state, and
+one line for push status and `errors: <n>`.
+
+**The halt state is `not measurable`, never `0`.** The scanner's `halted` column is null for every
+row (see step 4), so there is no count to report. Write
+`halted: not measurable (TV halted column is null for every row)`. A `0` there reads as "no name
+was halted" — a measurement that was never taken — and the consumer will carry it as a finding.
 
 ## RULES
 
