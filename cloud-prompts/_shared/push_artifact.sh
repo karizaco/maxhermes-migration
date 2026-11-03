@@ -162,9 +162,7 @@ connector_fallback() {
   command -v mcode-tools >/dev/null 2>&1 || {
     echo "push: connector fallback unavailable (mcode-tools not on PATH)"; return 1; }
   LOCAL_FILE="${SRC_DIR:-/workspace/$OUT}/$(basename "$ADD")"
-  [ -f "$LOCAL_FILE" ] || LOCAL_FILE="${REPO_DIR:-/workspace}/$ADD"
-  [ -f "$LOCAL_FILE" ] || {
-    echo "push: connector fallback skipped (the artifact is not at $LOCAL_FILE)"; return 1; }
+  [ -e "$LOCAL_FILE" ] || LOCAL_FILE="${REPO_DIR:-/workspace}/$ADD"
   HELP=/workspace/push_via_connector.sh
   # A sibling copy, if the caller fetched both files into one directory.
   SIB="$(dirname "$0" 2>/dev/null)/push_via_connector.sh"
@@ -185,6 +183,28 @@ connector_fallback() {
     rm -f "$HELP"
     echo "push: connector fallback skipped (could not fetch push_via_connector.sh)"; return 1
   fi
+  # A routine whose deliverable is a FOLDER (cron #05 writes
+  # international-eod/<DATE>/: 16 region CSVs + summary.md + the machine-readable
+  # companions) has no single file for the connector. Push every file in it, one
+  # call each, so the folder is delivered as completely as the git path delivers it.
+  if [ -d "$LOCAL_FILE" ]; then
+    _n=0
+    for _f in "$LOCAL_FILE"/*; do
+      [ -f "$_f" ] || continue
+      if ! sh "$HELP" --path "$ADD/$(basename "$_f")" --file "$_f" --branch "$BRANCH" \
+           --msg "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}"; then
+        echo "push: connector fallback failed on $ADD/$(basename "$_f")"
+        return 1
+      fi
+      _n=$((_n + 1))
+    done
+    [ "$_n" -gt 0 ] || {
+      echo "push: connector fallback skipped (no files in $LOCAL_FILE)"; return 1; }
+    echo "push: connector fallback delivered $_n file(s) from $ADD"
+    return 0
+  fi
+  [ -f "$LOCAL_FILE" ] || {
+    echo "push: connector fallback skipped (the artifact is not at $LOCAL_FILE)"; return 1; }
   sh "$HELP" --path "$ADD" --file "$LOCAL_FILE" --branch "$BRANCH" \
      --msg "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}"
 }

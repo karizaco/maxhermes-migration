@@ -150,7 +150,14 @@ This routine's deliverable is a **directory**, not a single file:
 
     /workspace/international-eod/{date}/<region>.csv    one per region, 16 in all
     /workspace/international-eod/{date}/summary.md        the report
+    /workspace/international-eod/{date}/_manifest.json    machine-readable per-day facts
+    /workspace/international-eod/{date}/_excluded.json    rows excluded for a missing cap
     /workspace/international-eod/{date}/_carryover.json   rows that did not trade, machine-readable
+
+`_manifest.json` and `_excluded.json` are specified in the skill's "The machine-readable
+companions" section: the manifest carries the universe size, the floor, the `market_cap`
+unit and the counts that let a consumer reconcile the session, and `_excluded.json` lists
+the rows the source reports no market cap for so their exclusion stays recoverable.
 
 `summary.md` carries these sections in this order. Do not rename them — cron #90's auditor and
 the downstream briefs key on them.

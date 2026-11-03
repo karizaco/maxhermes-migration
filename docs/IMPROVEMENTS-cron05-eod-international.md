@@ -116,7 +116,44 @@ CAD 0.7117944, DKK 0.1488804, TWD 0.0308604 — and says so in `## Source health
 against `frankfurter.dev` for 2026-10-27: the five currencies it carries agree within 0.2%.
 `frankfurter.dev` does not carry TWD.
 
-## 7. What was NOT changed
+## 8. The 2026-10-26 artifact was restated (2026-11-03)
+
+`2026-10-26` was the last international session still in the pre-house convention:
+listing-currency `market_cap`, the full universe, and `<date>.meta.md`. It is now
+restated the same way §5 restated `2026-10-27`:
+
+- `market_cap` in USD, converted with the 2026-10-26 rate table measured at 16:33 ET.
+- The per-region USD floors applied after conversion; rows the source reports no cap
+  for are excluded, not written blank — 187 of them, listed in `_excluded.json`.
+- `2026-10-26.meta.md` → `summary.md`, carrying the eight house sections.
+- 3,469 rows written across 13 regions (tw, eu-at and eu-ie were closed that day),
+  within ±5 rows per region of the 2026-10-27 session on the same floors.
+
+**A defect in the original run's FX table was found during the restatement.** CAD was
+stored as 1.402160 — the `USDCAD=X` quote, which is CAD per USD — without inverting
+it, so every Canadian market cap was overstated by ~1.97x and the run's Canadian
+liquidity filter was ~2x too loose. The published CSVs are unaffected (they carry
+listing-currency `market_cap` and no conversion at all), but the restatement uses the
+corrected rate (CAD 0.713222). Share-count reconciliation settles the direction:
+`market_cap_basic / close` returns Royal Bank 1,374m, Toronto-Dominion 1,677m,
+BMO 689m and Shopify 1,288m — the real share counts, which means the screener's cap
+is in the listing currency and the conversion must use USD-per-CAD.
+
+`USDCAD=X` and `USDDKK=X` quote local-per-USD and must be inverted; `EURUSD=X`,
+`AUDUSD=X` and `USDJPY=X` do not need inverting (the JPY one is inverted for the
+opposite reason — it quotes JPY per USD).
+
+Two new files now ship with the international artifact:
+
+- `_manifest.json` — the universe size, the floor, the `market_cap` unit, the FX
+  table, and per-region counts, with the invariant
+  `unique_instruments == written + excluded_no_market_cap + excluded_below_floor`.
+  Without it the archive is not comparable across sessions: the universe size and
+  the unit are not derivable from the CSVs alone.
+- `_excluded.json` — the rows with no reported market cap, so an exclusion that is
+  invisible in the CSV is still recoverable.
+
+## 9. What was NOT changed
 
 - No other routine's deployed prompt was touched. The 18-prompt repo → platform sync is a
   separate task and is not approved.
@@ -124,3 +161,7 @@ against `frankfurter.dev` for 2026-10-27: the five currencies it carries agree w
 - The `holiday_calendar.py` defect (Greece's Ochi Day listed as 2026-10-27 instead of 10-28) is
   **still open** — it is in the shared skill scripts, so the fix belongs in a separate change
   with its own verification, not inside a formatting pass.
+- `push_artifact.sh`'s **connector** fallback now handles a directory deliverable (it used to
+  give up on one, which meant cron #05 had no fallback at all when the git path failed). The git
+  path is unchanged and remains primary; the connector has no race-retry, so it is still the
+  fallback of last resort.
