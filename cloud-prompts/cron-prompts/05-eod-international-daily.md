@@ -6,6 +6,8 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 ## SCHEDULE
 - Original local schedule: `35 16 * * 1-5` America/New_York — 16:35 ET weekdays
 - Deployed schedule: `30 16 * * 1-5` America/New_York — 16:30 ET, Mon-Fri.
+- The hour moved from 16:35 to 16:30 on 2026-10-29, when #16 took 16:35 to clear a push race
+  on the same branch. **Keep the two in step:** if #16 moves again, move this one too.
 - The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
   weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
   file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
@@ -95,6 +97,46 @@ A replay is normal, not an error.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
 If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/international-eod/{date}/` subdirectory, with `{date}` as part of each filename.
+
+## REPORT FORMAT (what this artifact must contain)
+
+This routine's deliverable is a **directory**, not a single file:
+
+    /workspace/international-eod/{date}/<region>.csv    one per region, 16 in all
+    /workspace/international-eod/{date}/summary.md        the report
+    /workspace/international-eod/{date}/_carryover.json   rows that did not trade, machine-readable
+
+`summary.md` carries these sections in this order. Do not rename them — cron #90's auditor and
+the downstream briefs key on them.
+
+1. **Title, then a "Read this first" blockquote.** Give the row count, the regions covered, and
+   the two facts that change how the file reads: `market_cap` is written in **USD** while
+   `open`/`high`/`low`/`close` stay in the **listing currency** (`currency` says which), and rows
+   the source reports no market cap for are **excluded rather than written blank**.
+2. **`## Coverage`** — one table: `Region | Venues | Universe | Unique instruments | Written |
+   Floor (USD) | No cap | Off-official rows`, with a totals row. `Universe` is everything the
+   source returns for that country; `Unique instruments` collapses multi-venue listings of the
+   same instrument to one row; `Written` is what survives the floor.
+3. **`## Market context`** — one table of index levels (`Index | Close | Change | Day | Source`),
+   then one table of regional breadth computed from the snapshot itself
+   (`Region | Rows | Median | Up / down / flat | Min | Max`). The breadth table is what shows that
+   an index move and the typical name disagree — report both, never the index alone.
+4. **`## Top movers`** — one consolidated table of the largest absolute moves among liquid names
+   (`Region | Ticker | Name | Change | Close | Volume | Mkt cap (USD) | Catalyst`), then a second
+   table with one row per region for the largest mover in that region. The `Catalyst` cell says
+   what you actually sourced, or "no company-specific release found" — never an unattributed
+   guess.
+5. **`## Method`** — the universe rules, the per-region floors, the FX table with its source and
+   its date, and the venue-collapse rule.
+6. **`## Caveats`** — every structural caveat that changes how the numbers read, including rows
+   whose close is a carry-over from an earlier session.
+7. **`## Source health`** — one table: `Source | Query / URL | Status | Result`. Mandatory, even
+   when every source was healthy.
+8. **`## Files`** — the file list and the schema.
+
+**The chat reply leads with a markdown table of all 16 region index levels**
+(`region | index | close | change`) — sixteen comparable numeric rows is exactly the case a
+table exists for — then the movers, one ticker per line, then the caveats and the push line.
 
 ## GIT PUSH (OPTIONAL)
 

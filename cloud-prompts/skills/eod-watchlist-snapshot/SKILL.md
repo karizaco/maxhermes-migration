@@ -69,6 +69,50 @@ Numeric columns formatted to 4 sig figs; empty cell if data missing (don't write
 
 For non-top-N tickers, `volume` / `pe_ratio` / `sector` may be blank (TradingView screener strips them). The enrichment cache fills them in for the top-N per region (default 500).
 
+## Units, floors and the market-cap contract (READ BEFORE WRITING ANY CSV)
+
+**`market_cap` is written in USD. `open`/`high`/`low`/`close` stay in the listing currency**, and
+the `currency` column says which. This is a hard rule: the same column has been written two ways
+in this archive, and a consumer cannot tell from the file which one it is holding.
+
+- **TradingView's `market_cap_basic` is in the LISTING CURRENCY, not USD.** Verified 2026-11-03:
+  a server-side filter of `market_cap_basic > 300000000` on the Japan endpoint still returns names
+  whose market cap is ¥385m — the field is compared as a JPY number, so a "¥300m" floor keeps
+  essentially every listed Japanese company. Share-count reconciliation settles the unit directly:
+  `market_cap_basic / close` returns the issuer's real share count for SAP (1.1626bn), Toyota
+  (11.900bn), TSMC (25.770bn) and Genmab (59.11m) — all in local currency.
+- **So the per-region USD floors CANNOT be handed to the screener as server-side filters.**
+  `scripts/screener_filters.py` describes the field as USD; that comment is wrong. Convert first,
+  then filter locally:
+
+      usd_cap = market_cap_basic * FX[listing_currency]
+      keep the row iff usd_cap >= floor_usd[region]   (and volume >= min_volume, where the region has one)
+
+  `screener_filters.usd_floor_for_region(region)` returns the `(floor_usd, min_volume)` pair.
+  Treat `filters_for_region()` as a filter over the **local-currency** number, never as the USD floor.
+- **The floors, in USD, applied AFTER conversion:**
+
+  | region | floor (USD) | extra volume gate |
+  |---|---|---|
+  | `au` | $300M | ≥ 100,000 |
+  | `jp` | $300M | — |
+  | `tw` | $200M | — |
+  | `ca` | $200M | — |
+  | `eu-de` | $300M | ≥ 50,000 |
+  | `eu-fr` `eu-it` `eu-es` `eu-nl` `eu-be` `eu-at` | $100M | — |
+  | `eu-ie` | $200M | — |
+  | `eu-fi` `eu-dk` | $100M | — |
+  | `eu-pt` `eu-gr` | $50M | — |
+
+- **A row whose market cap the source does not report is EXCLUDED, not written blank.** A row with
+  no cap cannot be tested against a floor, so writing it puts an unscreenable row in a screened
+  file. Publish the excluded count per region in the Coverage table.
+- **Never change the unit of this column silently.** If a run writes it differently from the
+  previous session, say so in the artifact and in `## Source health`, and restate the earlier
+  session. A series that switches unit mid-stream reads as a market event that never happened.
+- **Check any change to this contract with a share-count reconciliation**, not with a length or a
+  spot check: `market_cap_basic / close` must land on the issuer's real share count.
+
 ## Steps — US universe (cron `0a87adbe…`)
 
 1. Paginate `mcp__shibui-finance__stock_data_query` 25 times: `LIMIT 200 OFFSET 0, 200, …, 4800`, filter `country_iso='US'`, join `stock_quotes` for OHLCV on the target date, join `valuation` (market_cap) and `fundamentals_derived_daily` (trailing_pe).
@@ -78,6 +122,30 @@ For non-top-N tickers, `volume` / `pe_ratio` / `sector` may be blank (TradingVie
 **Why shibui, not TradingView, for US?** The international TradingView screener response strips `volume` / `pe_ratio` / `sector`. The shibui JOIN schema (`stock_quotes` + `valuation` + `fundamentals_derived_daily`) gives the full CSV row in one query. Swapping US to TradingView would lose three columns.
 
 ## Steps — International (cron `5edfb4aa…`) — v2 + compute-opt flow
+
+### The tables an international artifact must carry
+
+Beyond the CSVs, the international artifact ships a `summary.md` whose structure is specified in
+the cron prompt. Three of its tables are computed from the written rows and are the ones that
+make the file readable:
+
+- **Coverage** — `Region | Venues | Universe | Unique instruments | Written | Floor (USD) |
+  No cap | Off-official rows`. `Universe` is everything the source returns for that country;
+  `Unique instruments` collapses multi-venue listings of one instrument to a single row;
+  `Written` is what survives the floor. Totals row included.
+- **Regional breadth** — `Region | Rows | Median | Up / down / flat | Min | Max`, computed from
+  the written rows. An index move and the typical name regularly disagree; publish both.
+- **Sector rotation** — mean and median `change_pct` per sector over the liquid subset. It
+  explains the tape better than any index level, and it is cheap because it uses the same rows.
+- **Top movers** — largest absolute moves among liquid names, with a `Catalyst` cell that says
+  what was actually sourced, or "no company-specific release found". Never an unattributed guess.
+
+**Carry-over rows (instruments that did not trade) are disclosed, not hidden.** The screener
+returns the last session's close and change for a row that did not trade today, which is true of
+the instrument but false as a statement about the day. Keep the rows as the source returned them
+(the schema is fixed at 14 columns), list the affected tickers in `_carryover.json` with each
+instrument's last trade date, state the count in the report, and exclude them from every movers
+list.
 
 The cron prompt is intentionally short (~1.5KB). All orchestration logic lives in `run_intl_cron.py` with two CLI subcommands:
 
@@ -170,6 +238,8 @@ All four stages can run in parallel — the only dependency is that Yahoo enrich
 - Never include position data, P&L, or anything account-specific — pure market data only.
 - If a data source fails for a ticker, write the row with empty numeric fields (do NOT write `"N/A"`).
 - Do not invent values for missing fields.
+- `market_cap` is USD and the prices are in the listing currency — see the units contract above.
+  Do not change either without restating the affected sessions.
 - Every cron fallback branch must **accept the partial result, write the artifact, and stop** — never chain deeper MCP calls.
 
 ## Out of scope

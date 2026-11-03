@@ -220,16 +220,31 @@ the artifact file, not in the chat.
    changes how it should be read. Complete sentences; no label lists, no clipped fragments.
 2. **`### Signal`** — tiered bullets, ONE ticker per line, each line a short clause naming the
    catalyst or setup (e.g. `- BA -10.8% — Q3 adj EPS -$0.34 vs -$0.21 est; 737 Max ramp pushed
-   to H2-27`). Follow the skill's chat rules for tier order, flags and the audit line.
-   Lead with the top movers and the count of names, and give the source and any lag.
-   State how many further names are in the artifact file.
+   to H2-27`). Follow the skill's chat rules for tier order, flags and the audit line **where the
+   skill defines them; where it does not, order by absolute move, biggest first, and say nothing
+   about a catalyst you did not source**. Lead with the top movers and the count of names, and
+   give the source and any lag. State how many further names are in the artifact file.
 3. **`### Method & caveats`** — 2-4 bullets: source(s), lag, universe/screen size, and every
    degraded or blocked source. Name what could not be verified.
-4. **`### Files`** — one line per file written, with its sandbox path.
+4. **`### Files`** — one line per file written, with its sandbox path. When a routine writes many
+   files of one kind (16 per-region CSVs), group them on one line and name the pattern — do not
+   spend twenty lines on a list the reader cannot use. The full list belongs in the artifact.
 5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
    `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for
    `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
    0 = clean run. The absent `mcp__*` tools are NOT an error and must not be
    counted.
+
+**Formatting rules — the reply is rendered in a chat client, not read as a diff.**
+- Use a compact markdown **table** whenever there are 3+ comparable numeric rows (index
+  levels, sector rotation, futures, breadth). Header row, `|---|` separator, numbers
+  right-aligned. A table beats prose for anything the reader is going to compare.
+- Keep every bullet to **one short line**. Never cram three facts into a 300-character
+  line with two em-dashes and three numbers — split it into two bullets, or move the
+  detail to the artifact file.
+- Bold only the numbers that carry the story (the headline move, the level that matters),
+  not every figure in the table.
+- Blank line between the header and the first bullet under it, so the section renders as a
+  heading rather than a run-on block.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
