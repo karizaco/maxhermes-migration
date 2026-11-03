@@ -11,6 +11,25 @@ Reference for how the 5-stylist outputs collapse into a single actionable watchl
 | **Focus** | 12 | Master ∩ (appears in ≥ **2** distinct stylists) ∪ (top-5 velocity names) ∪ (passes full 2LYNCH + EP criteria) |
 | **Tier-A** | 8 | Focus ∩ (appears in ≥ **3** distinct stylists) |
 
+## The five stylist buckets
+
+`n_stylists` counts distinct **stylists**, not screen hits. There are exactly five
+buckets, and the thresholds above are calibrated against them ("≥ 3 stylists (out of 5)"):
+
+| Bucket | Stylist | Sub-screens that feed it |
+|---|---|---|
+| `stockbee` | Pradeep Bonde | 4% breakout, EP9M volume, anticipation (coil) |
+| `qullamaggie` | Kristjan Kullamägi | RS leaders, gap up (EP), 5d gainers, 5d losers |
+| `jeff_sun` | Jeff Sun (CFTe) | CANSLIM **and** the volume-breakout proxy |
+| `hernandez` | Ariel Hernandez | theme → group leaders |
+| `peoplewish` | Alec Riffle | ADR + dollar volume + velocity |
+
+**The volume-breakout screen counts as Jeff Sun, not as a sixth bucket.** It is his
+volume proxy (the skill's own origin map says so), and counting it separately would let
+one stylist's two screens masquerade as two independent opinions — a name hitting both
+would score 2 stylist hits instead of 1. That matters at the Focus threshold (≥2):
+under the old mapping a name could reach Focus on one stylist's two screens alone.
+
 **Why 2 / 3 instead of the original 3 / 4:** the original thresholds counted
 `convergence_score` (UNIQUE ORIGIN LABELS), not UNIQUE STYLISTS. With 5
 stylists × 2-3 origin labels each = 10-15 origins, `convergence ≥ 4`
@@ -21,18 +40,27 @@ The new thresholds count UNIQUE STYLISTS (`n_stylists` field on the
 `Candidate` dataclass) — see `scripts/screen.py:_STYLIST_FROM_ORIGIN` for
 the mapping. Expected Tier-A size in a normal regime: 3-8 names. Tunable
 in one place: `FOCUS_THRESHOLD_STYLISTS` and `TIER_A_THRESHOLD_STYLISTS`
-constants in `scripts/screen.py`.
-
-## Setup-confirming pattern tags
+constants in `scripts/screen.py`; the size caps are `FOCUS_MAX` (12) and
+`TIER_A_MAX` (8). When more than 8 names clear the Tier-A bar the list is
+truncated and `_results.json` reports `tier_a_truncated: true` together
+with the untruncated pool size, so a truncated day is visible rather than
+silent.
 
 ## Setup-confirming pattern tags
 
 A name gets a tag if at least one of these matches:
 
-- **compression** — `(atr_10 / atr_50) < 0.6` AND `close > sma20`
+- **compression** — `avg((high-low)/close, 10) / avg((high-low)/close, 50) < 0.6` AND `close > sma20`
 - **gap-up ready** — `(open - prev_close) / prev_close > 0.04` AND `(volume / avg_volume_20d) > 2`
 - **MACD cross-up** — `MACD_hist > 0` AND `MACD_hist[1] <= 0`
 - **higher-low base** — `low > low_5d_ago` AND `(high_5d - low_5d) / close < 0.08`
+
+> **Implementation note.** shibui's `technical_indicators` has no `atr_10` / `atr_50`
+> columns, so the compression tag uses the price-based contraction ratio above — which is
+> the skill's own formula in `references/filters.md` §J — rather than an ATR ratio. It has
+> no `sma_10` either, so the "within 2% of the 10-day MA" Stalk gate uses `wma_10` as the
+> 10-day proxy alongside `sma_20`. Both substitutions are documented in the SQL that
+> implements them.
 
 ## Skip-rule flag attachment
 

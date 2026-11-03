@@ -49,13 +49,39 @@ vault.
 - Today's date (US/Eastern). If Saturday/Sunday, jump straight to weekly refresh.
 - Account size from `$env:ACCOUNT_SIZE_USD` (fallback: `50000`). Used for peoplewish's
   account-relative $vol floor.
-- Check vault for today's cache file
-  `C:/Users/admin/<user>/research/markets/daily-screens/<YYYY-MM-DD>/_summary.md`.
-  If present and `force=False`, short-circuit: load the cached CSV and report. Otherwise
-  create the lock file.
-- **Run `scripts/screen.py plan <cron_date> --resolve-latest --out <scratch>/plan.json`**
+- **Check the cache first.** `python scripts/screen.py cache <cron_date>` prints whether
+  this date's sweep already produced a complete output set. If it is complete and the
+  resolved data date has not moved, stop — do not re-spend the ~20 MCP calls. A cache is
+  only valid while `_cache.json`'s `data_as_of` still matches what shibui resolves to, so
+  pass `--resolved-date` to `plan --use-cache` and the comparison is automatic.
+- Otherwise create the lock file and run
+  `python scripts/screen.py plan <cron_date> --resolve-latest --out <scratch>/plan.json`
   (T+1-safe flow — see 0.5). This makes the daily sweep self-heal when shibui's data
   ingestion lags the cron fire time. See "⚠ shibui is T+1 — daily sweep" below.
+
+### 0.4. Validate the SQL before you run it (offline, no MCP)
+
+Five defects shipped in this skill's own `scripts/screen.py` and were only found by
+running the queries against the live database. Three failed loudly; **two were silent** —
+a lookback window shorter than the `LAG` it needs (the whole RS book came back empty and
+looked like a quiet tape) and a `UNION ALL` that published one metric under another
+metric's column header.
+
+`scripts/sql_lint.py` checks the SQL's shape with no database and no third-party
+dependency, so it works even when shibui is unreachable or rate-limited:
+
+```
+python scripts/sql_lint.py --emitted --date <YYYY-MM-DD>   # lint this skill's own emitters
+python scripts/smoke_test.py --date <YYYY-MM-DD>            # full offline check, < 5s
+```
+
+**Run `sql_lint.py` before every sweep.** It fails on: a missing CTE separator, UNION
+branches with mismatched column counts, UNION branches with mismatched column NAMES, an
+identifier that resolves to nothing, a `LAG`/`LEAD` offset wider than the query's own
+lookback window, a missing `LIMIT`, a division without `NULLIF()`, and date arithmetic on
+a bare string literal. `smoke_test.py` additionally asserts that the linter still
+catches the five historical defects (fixtures in `scripts/testdata/`), so the guard
+cannot silently stop working.
 
 ### 0.5. Resolve the latest available date (T+1 handling — daily sweep only)
 
@@ -109,6 +135,20 @@ SQL against shibui-finance that returns the universe matching the union of:
 This cuts ~9,500 tickers to a few thousand in a single MCP call. The screen recipes in
 `references/filters.md` all assume this pre-filtered universe.
 
+**The market-cap floor is now applied inside the sweep SQL too**, not only in this
+pre-filter step. Each sweep query joins `shibui.valuation` latest-row-first and requires
+`market_cap > 300_000_000`, so non-equities cannot reach the tiering stage at all.
+
+That matters: 67 of 530 candidates in the 2026-10-28 run had no market-cap row — 52
+ETFs (mostly 2×/3× leveraged products), 14 preferred shares and one microcap. Leveraged
+ETFs clear momentum and volume screens purely through leverage, and two 2× TSLA ETFs
+(TSLG, TSLL) had reached Tier-A before the floor was enforced. A name with no valuation
+row cannot demonstrate the floor, so it is out of the equity universe.
+
+> The market-cap lookup takes the **latest valuation row per symbol first** and only
+> then applies the cap. `shibui.valuation` keeps several rows per symbol per date, so
+> filtering on the cap first admits stale rows whose cap was once above the threshold.
+
 ### 2. Run the 10 sub-screens in **two parallel batches**
 
 Run `scripts/screen.py sweep --date <YYYY-MM-DD>` which executes:
@@ -128,14 +168,34 @@ Run `scripts/screen.py sweep --date <YYYY-MM-DD>` which executes:
 - One `mcp__tradingview-advanced__volume_breakout_scanner` for KSE-style "momentum
   + volume" cross-check on the USA list.
 
+### 2.5. Add the same-day print column (optional but recommended)
+
+The screen is built on shibui's last **ingested** close, which is normally one session
+behind the cron day. Every screen metric therefore describes yesterday's tape, while the
+trader is acting on today. Close that gap with one batched step:
+
+```
+python scripts/same_day_prints.py --from-csv <scratch>/master.csv --out-dir <scratch>
+```
+
+It fetches the official 4:00 PM print for every candidate from the Nasdaq public quote
+API and writes `_same-day-prints.json` + `same-day-prints.md`. The `Session` column
+distinguishes the official close (`official_close`) from a merely last trade
+(`last_trade`), and carries the print's date, so a stale print is visible rather than
+silently presented as today's move. This step is best-effort: if it fails, the sweep
+still stands — it adds context, it does not gate the run.
+
 ### 3. Compute breadth / regime snapshot (one shibui SQL + one TV call)
 
-`scripts/breadth.py --date <YYYY-MM-DD>` returns:
+The breadth SQL is emitted by `scripts/screen.py emit-sql breadth <date>` (there is no
+`scripts/breadth.py` — it was never published, and the 2026-11-03 sweep found it 404s).
+It returns:
 
-- `% S&P 500 above 20-DMA` (shibui SQL — one query for all 500 names)
+- `% of large caps above 20-DMA` (shibui SQL — the large-cap proxy, since shibui has no
+  SPX-constituents table)
 - ATR% extension from 50-MA on `SPY / RSP / QQQ / QQQE / IWM` (shibui SQL — five rows)
-- VIX / VXVCLS ratio (one `tradingview-advanced yahoo_price` call)
-- Sector rotation (one `financekit sector_rotation` call)
+- VIX / VIX3M ratio (one delayed-quote call)
+- Sector rotation (sector/industry ETF relative strength)
 
 Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus a `regime.json`:
 ```json
@@ -161,10 +221,27 @@ Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus a `regime.json`:
 - `daily-screens/<date>/high-short-float.md`   — Sun weekly refresh (Sundays only)
 - `daily-screens/<date>/master.md`            — deduped union (≤ 200 tickers)
 - `daily-screens/<date>/stalk.md`             — Master ∩ (price within 2% of 10/20-DMA)
-- `daily-screens/<date>/focus.md`             — Master ∩ (≥3 stylist flags OR top-5 velocity)
-- `daily-screens/<date>/tier-a.md`            — Master ∩ (≥4 stylist flags), with regime flag
+- `daily-screens/<date>/focus.md`             — Focus: Master ∩ (≥ **2** distinct stylists) ∪ top-5 velocity (≤ 12)
+- `daily-screens/<date>/tier-a.md`            — Tier-A: Focus ∩ (≥ **3** distinct stylists) (≤ 8), with regime flag
 - `daily-screens/<date>/_summary.md`          — human-readable digest
 - `daily-screens/<date>/_regime.json`         — breadth/regime payload
+- `daily-screens/<date>/_results.json`        — **machine-readable** companion: every candidate with its
+                                               origins, stylist buckets, skip flags and metrics, plus the tier
+                                               lists, the regime, and the counts. Downstream routines read
+                                               this instead of re-parsing Markdown.
+- `daily-screens/<date>/_cache.json`          — cache marker (cron date, resolved data date, counts) used by
+                                               `screen.py cache` / `plan --use-cache` to avoid repeating a
+                                               completed sweep.
+
+**Stylist buckets — five of them.** `n_stylists` counts distinct *stylists*, not screen
+hits: `stockbee`, `qullamaggie`, `jeff_sun`, `hernandez`, `peoplewish`. The
+TradingView volume-breakout screen counts as **Jeff Sun** (it is his volume proxy), so
+one stylist's two screens cannot masquerade as two independent opinions. A name hitting
+Stockbee 4% *and* Stockbee EP9M is one stylist with two hits.
+
+**Thresholds:** Focus ≥ 2 stylists (cap 12), Tier-A ≥ 3 stylists (cap 8). Tier-A is
+derived from Focus; when more than 8 names clear the bar the list is truncated and
+`_results.json` reports `tier_a_truncated: true` with the untruncated pool size.
 
 ### 5. 3:55 PM ET Reversal Bullish (Bonde)
 
@@ -384,23 +461,38 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
 
 ## Data sources — what actually lives where
 
-The five financial MCPs we use are registered in `~/.minimax/mcp.json`. **None are local files.** Before assuming any architecture, read the config:
+**Two runtimes, two different tool sets.** The MCP tool names in the original spec are
+registered on the *local* Mavis install (`~/.minimax/mcp.json`), not in the Cloud runtime
+where these crons actually fire. "The tool name is not registered" is **not** "the source
+is unavailable" — read the runtime contract before declaring a source dead.
 
-| MCP | Transport | Where it lives |
+| Source | Local Mavis (stdio MCP) | Cloud runtime (what the cron actually uses) |
 |---|---|---|
-| `tradingview` | stdio (npx) | Local npx subprocess — Unofficial TradingView screener |
-| `tradingview-advanced` | stdio (uv) | Local uv subprocess — 30+ tools |
-| `yahoo-finance` | stdio (npx) | Local npx subprocess — Yahoo API wrapper |
-| `financekit` | stdio (uvx) | Local uvx subprocess — indicators, sector rotation |
-| **`shibui-finance`** | **streamable-http** | **Remote: `https://mcp.shibui.finance/mcp`. DuckDB on their server, 9,900+ US equities, 31M+ daily bars, 56 indicators.** |
+| `shibui-finance` | `mcp__shibui-finance__stock_data_query` | Same server over HTTPS JSON-RPC via `cloud-prompts/_shared/mcp_bridge.py` — `python3 mcp_bridge.py shibui stock_data_query args.json` |
+| `tradingview` | `mcp__tradingview__screen_stocks` / `screen_etf` | TradingView's per-country scanner HTTP API: `POST https://scanner.tradingview.com/america/scan` (no auth, no rate limit) |
+| `tradingview-advanced` | `mcp__tradingview-advanced__*` | Not reachable. The scanner API covers most of it; the CBOE delayed-quote CDN covers the index quotes |
+| `yahoo-finance` | `mcp__yahoo-finance__*` | JSON endpoints return HTTP 429 from the Cloud egress; the quote *page* still renders |
+| `financekit` | `mcp__financekit__sector_rotation` | Not reachable — sector rotation is computed from TradingView ETF relative strength instead |
 
-**The shibui-finance call we make most:** `mcp__shibui-finance__stock_data_query` — submits a DuckDB SQL string, gets JSON rows back. The 64-year dataset lives on their server, not ours.
+**shibui specifics.** `https://mcp.shibui.finance/mcp` — DuckDB on their server, ~10,384
+US securities, 31.7M daily bars, 61 technical indicators, quarterly fundamentals. The
+call we make most is `stock_data_query`: submit a DuckDB SQL string, get JSON rows back.
+The `user_prompt` argument is **mandatory** (stats only; never affects execution).
 
 **Practical limits discovered in test runs:**
 - Data is end-of-day, T+1 day. Today's bar appears next morning.
 - 200-row LIMIT per query (server-enforced).
-- No `ipo_date`, no `short_interest_pct_float`, no `institutional_holders_count` columns. Fall back to Finviz for those.
+- **Rate limiting is real**: shibui answers `HTTP 429` with a `retry-after` header when
+  the daily quota is spent (it was spent on 2026-11-03 by a morning sweep plus the other
+  routines that share the server). A 429 is not a broken query — wait out the
+  `retry-after` and re-run; do not rewrite the SQL.
+- No `ipo_date`, no `short_interest_pct_float`, no `institutional_holders_count` columns.
+  `fundamentals_derived_quarterly` DOES have `eps_growth_yoy` / `revenue_growth_yoy`
+  (decimal fractions — 0.25 means 25%), which is where CANSLIM's growth criteria come
+  from in the Cloud runtime.
 - No SPX-constituents table. Use large-cap (mcap > $10B) proxy for breadth.
+- `stock_quotes.symbol` is venue-suffixed (`AAPL.NASDAQ`); `stock_quotes.ticker` is bare
+  (`AAPL`). An `IN` filter on the wrong column returns **zero rows silently**.
 
 For full schema + SQL rules, see `references/filters.md`.
 
@@ -408,11 +500,13 @@ For full schema + SQL rules, see `references/filters.md`.
 
 | Stage | Primary MCP calls | Batched? | Tier-2 fallback |
 |---|---|---|---|
-| 0. Cache check | 0 | local vault | — |
+| 0. Cache check | 0 | local file read | — |
+| 0.4 SQL lint | 0 | offline, no MCP | — |
 | 1. Pre-filter | 1 | shibui SQL | — |
-| 2a. Sweep SQL | 1 | shibui SQL with 8 CTEs `UNION ALL` | per-style Finviz URL (one per style) |
+| 2a. Sweep SQL | 3 | one `UNION ALL` per stylist group (Stockbee / Qullamägi / peoplewish) | per-style Finviz URL (one per style) |
 | 2b. TV screens | 3 | one parallel batch (CANSLIM + sector ETF + volume breakout) | per-screen Finviz URL |
-| 3. Breadth | 4 | one parallel batch (shibui SQL + VIX/VXV yahoo_price + sector_rotation) | Finviz groups + yahoo quote page |
+| 3. Breadth | 3 | one parallel batch (shibui SQL + VIX/VIX3M + sector RS) | Finviz groups + yahoo quote page |
+| 2.5 Same-day prints | 1 batched | one Nasdaq `/info` request per candidate, 12 at a time | skip — the sweep stands without it |
 | 4. Reversal bullish | 1 | shibui SQL inline with the 15:55 entry alert | `finviz_reversal_bullish()` |
 | 5. Pre-market gapper | **1 (batched)** | `finviz_premarket_gap_url(tickers)` → one `web_fetch` | per-ticker `stock_extended_hours` |
 | 6. Live RVOL rerank | **1 (batched)** | `stock_prices` with comma-separated `EXCHANGE:SYMBOL` list | per-ticker `coin_analysis` |
@@ -428,9 +522,20 @@ See `references/fallbacks.md` for the full decision matrix. Short version:
 1. **MCP** — primary, fastest, most structured.
 2. **Finviz GET screener** (`web_fetch`) — free, no auth, ~200 rows per query. URL builders
    in `scripts/screen.py` (`finviz_bonde_4pct()`, `finviz_peoplewish()`, …) and the
-   `finviz-url <kind>` subcommand.
-3. **TradingView public symbol-search JSON** (`web_fetch`) — symbol metadata + last price.
-4. **Yahoo Finance quote page** (`web_fetch`) — last-resort HTML parse.
+   `finviz-url <kind>` subcommand. **In the Cloud runtime Finviz is behind a Cloudflare
+   challenge (HTTP 403 from both `curl` and `web_fetch`), so this rung is unavailable
+   there — go to rung 3.**
+3. **TradingView scanner API** (`POST https://scanner.tradingview.com/america/scan`) —
+   no auth, no rate limit, and one call returns every schema field the skill needs
+   (close/open/high/low/volume/change/market_cap_basic/exchange/sector/Perf.1M/3M/6M).
+   It is also *richer* than the MCP wrapper, adding `premarket_volume`,
+   `average_volume_10d_calc` and `relative_volume_10d_calc`.
+4. **Nasdaq public quote API** (`api.nasdaq.com/api/quote/{SYM}/info`) — the official
+   4:00 PM close, the same-day print column and the market cap.
+5. **CBOE delayed-quote CDN** (`cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json`) —
+   index levels for the regime read.
+6. **Yahoo Finance quote page** (`web_fetch`) — last-resort HTML parse (the JSON
+   endpoints are HTTP 429 from the Cloud egress).
 
 The Agent logs `_source=mcp | finviz_fallback | tv_fallback | yahoo_fallback` per row so we
 can see when the chain fires. Rule: try MCP first; fall back only on explicit
@@ -444,30 +549,65 @@ can see when the chain fires. Rule: try MCP first; fall back only on explicit
 - Stalk/Focus output: invalidate at 18:30 ET every day, re-tier.
 - Master list: invalidate Sunday 17:47 ET only.
 
+**The implemented cache.** `scripts/screen.py cache <date>` reports the state of a date's
+outputs; `scripts/screen.py plan <date> --use-cache [--resolved-date <d>]` short-circuits
+a repeat fire. The marker is `_cache.json`, written by `consume`, and it records the
+resolved data date. A cache is valid only while the resolved data date has not moved —
+so a later shibui ingestion (the T+1 catch-up) correctly invalidates it rather than
+serving a stale sweep. The check is a local file read: it costs nothing and it removes
+~20 MCP calls from a repeat fire.
+
 ## Output contract
 
 Each daily directory contains:
 - one Markdown per stylist (named after the trader)
 - merged `master.md`, `stalk.md`, `focus.md`, `tier-a.md`
 - `_summary.md` digest + `_regime.json` payload
+- `_results.json` machine-readable candidate set (tiers, origins, stylist buckets,
+  skip flags, metrics) — **the file downstream routines should read**
+- `_cache.json` cache marker
 - one CSV per Markdown for downstream consumption
+- optionally `same-day-prints.md` / `_same-day-prints.json` (the "what it did today"
+  column) and `reconciliation.md` / `_reconciliation.json` (the outcome panel)
 
 `_summary.md` is what the pre-market brief reads. Top of file has 4 bullet rows:
 1. Regime state
-2. Tier-A names (convergence ≥ 4)
+2. Tier-A names (≥ 3 distinct stylists)
 3. Today's parabolic short/long candidates
 4. 3:55 PM reversal-bullish list (after 15:55 ET)
 
 ## Failure handling
 
 - If shibui SQL times out: fall back to TV screens only, mark output `degraded=true`.
+- If shibui answers **HTTP 429**: it is a quota wall, not a broken query. Honour the
+  `retry-after` header and retry; do not rewrite the SQL and do not silently publish a
+  partial sweep.
+- If a sub-screen returns **zero rows**, treat it as a failure, not a quiet tape. The
+  RS book came back empty for a month because its lookback window was shorter than the
+  `LAG(close, 252)` it needed — a silent zero that reads exactly like "nothing passed".
+  `sql_lint.py` catches that shape offline; at runtime, cross-check the row count against
+  the previous session before publishing.
 - If TV screen hits rate limit: skip that sub-screen, mark in summary, continue.
-- If yahoo-price fails for breadth index: skip ATR-extension read, regime still computable
+- If the growth columns come back null (as TradingView's do for US equities): rebuild
+  CANSLIM on shibui's `fundamentals_derived_quarterly.eps_growth_yoy` /
+  `revenue_growth_yoy` rather than publishing an empty screen.
+- If the index quote fails for breadth: skip ATR-extension read, regime still computable
   from breadth + index-vs-MA alone.
+
+## Scoring the book (optional, weekly)
+
+`scripts/reconcile.py --date <signal-date> --from-csv <master.csv> --out-dir <dir>` pulls
+the sessions *after* a signal date out of shibui and reports each candidate's 1/3/5
+session forward return against the benchmark's return over the same window. Sessions
+that have not happened yet are reported as pending, not as zero. Without this loop a
+screen cannot be judged, only believed.
 
 ## References
 
 - `references/filters.md` — exact filter expressions for each sub-screen
 - `references/crons.md` — cron definitions (prompt + schedule + agent_name)
 - `references/tiering.md` — Master / Stalk / Focus logic + skip-rule flags
-- `references/fallbacks.md` — full fallback chain (MCP → Finviz → TV public → Yahoo HTML)
+- `references/fallbacks.md` — full fallback chain (MCP → Finviz → TV scanner → Nasdaq → CBOE → Yahoo HTML)
+- `references/agent-output-shape.md` — the JSON shape `consume` expects
+- `scripts/sql_lint.py` — offline structural lint for the SQL this skill emits
+- `scripts/smoke_test.py` — the offline check to run before merging a change

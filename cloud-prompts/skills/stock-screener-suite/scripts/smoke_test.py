@@ -182,6 +182,63 @@ def main(argv: list[str] | None = None) -> int:
         f"(breadth={regime.get('breadth_pct_spx')}, size_cut={regime.get('size_cut_pct')})"
     )
 
+    # --- SQL lint: the SQL this skill emits must be structurally sound -------
+    # Five defects shipped in screen.py and were only caught by running the
+    # queries against the live database. Two of them were silent (an empty
+    # result set, and one metric published under another metric's header).
+    # The lint runs offline, so it works even when shibui is unreachable.
+    try:
+        import sql_lint
+
+        emitters = [
+            ("prefilter", screen.emit_prefilter_sql),
+            ("sweep_stockbee", screen.emit_sweep_sql_stockbee),
+            ("sweep_qullamaggie", screen.emit_sweep_sql_qullamaggie),
+            ("sweep_peoplewish", screen.emit_sweep_sql_peoplewish),
+            ("breadth", screen.emit_breadth_sql),
+            ("reversal_bullish", screen.emit_reversal_bullish_sql),
+            ("resolve_date", screen.emit_resolve_date_sql),
+            ("weekly", screen.emit_weekly_sql),
+        ]
+        lint_errors = 0
+        for label, fn in emitters:
+            issues = [i for i in sql_lint.lint_sql(fn(args.date), args.date) if i.severity == "ERROR"]
+            lint_errors += len(issues)
+            failures += (0 if not issues else 1)
+            detail = issues[0].message if issues else ""
+            lines.append(
+                f"  {PASS if not issues else FAIL}  sql-lint {label:20s} "
+                f"({detail[:90] if issues else 'clean'})"
+            )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  sql-lint raised {type(e).__name__}: {e}")
+
+    # --- SQL lint regression: the linter must still catch the known defects -
+    # If the linter ever stops flagging these, it has stopped protecting the
+    # skill — so this is asserted, not merely logged.
+    try:
+        sys.path.insert(0, str(_SCRIPT_DIR / "testdata"))
+        import broken_sweep_sql
+        import sql_lint
+
+        detected: set[str] = set()
+        for _name, sql in broken_sweep_sql.CASES.items():
+            for issue in sql_lint.lint_sql(sql, broken_sweep_sql.DATE):
+                if issue.severity == "ERROR":
+                    detected.add(issue.code)
+        expected = {"L001", "L002", "L003", "L004", "L005"}
+        missing = sorted(expected - detected)
+        failures += (0 if not missing else 1)
+        lines.append(
+            f"  {PASS if not missing else FAIL}  sql-lint regression: broken fixtures "
+            f"still detected ({', '.join(sorted(detected))})"
+            + (f" — MISSING {missing}" if missing else "")
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  sql-lint regression raised {type(e).__name__}: {e}")
+
     # Final summary
     if not args.quiet or failures:
         print("\n".join(lines))

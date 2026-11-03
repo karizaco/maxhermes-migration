@@ -5,6 +5,41 @@ table names). `screen_stocks` and `screen_etf` live in the base `mcp__tradingvie
 namespace; `coin_analysis` and `volume_breakout_scanner` live in `mcp__tradingview-advanced__`.
 There is NO `mcp__tradingview-advanced__screen_etf` — using that name returns "Tool not found".
 
+## ⚠ The canonical SQL is in `scripts/screen.py` — not in this file
+
+This page states each screen's *intent*. The **runnable** SQL is emitted by the skill's
+own emitters, and those are the copy to use:
+
+```
+python scripts/screen.py emit-sql sweep_stockbee   2026-10-27
+python scripts/screen.py emit-sql sweep_qullamaggie 2026-10-27
+python scripts/screen.py emit-sql sweep_peoplewish  2026-10-27
+python scripts/screen.py emit-sql prefilter         2026-10-27
+python scripts/screen.py emit-sql breadth           2026-10-27
+```
+
+The snippets below are written against a shorthand table (`shibui.daily`) and use
+conceptual column names (`close_252`, `avg_volume_30d`, `sma150`). **shibui has no
+`shibui.daily` table** and none of those columns exist. The real schema is:
+
+| Concept used below | Real shibui expression |
+|---|---|
+| `shibui.daily` | `shibui.stock_quotes` joined to `shibui.technical_indicators` on `(symbol, date)` |
+| `prev_close` | `LAG(q.close) OVER (PARTITION BY q.symbol ORDER BY q.date)` |
+| `close_252` | `LAG(q.close, 252) OVER w` — and the alias is `close_252d_ago` |
+| `avg_volume_30d` | `AVG(q.volume) OVER (... ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)` |
+| `sma200` / `sma150` | `sma_200` exists; **`sma_150` does not** |
+| `date = CURRENT_DATE` | `date = '<resolved_date>'` — shibui is T+1, so resolve the date first |
+| `market_cap` | `shibui.valuation.market_cap`, latest row per symbol first |
+
+**Five defects in the published emitters were repaired on 2026-11-03** — three hard
+failures (a missing CTE comma, alias names that did not match their definitions, a
+`UNION ALL` whose branches had different column counts) and two silent ones (a lookback
+window shorter than the `LAG(close, 252)` it needed, which returned an **empty** RS book
+that read like a quiet tape; and a `UNION ALL` publishing one metric under another
+metric's column header). `scripts/sql_lint.py` now checks all of that offline — run it
+before you run a sweep.
+
 Pre-filter applied to every sub-screen unless noted:
 
 ```sql
@@ -13,6 +48,11 @@ WHERE close > 3
   AND avg_volume_30d > 100_000
   AND exchange IN ('NYSE','NASDAQ','AMEX')
 ```
+
+The market-cap floor is applied **inside** the sweep SQL as well (each sweep joins
+`shibui.valuation` latest-row-first and requires `market_cap > 300_000_000`), so ETFs,
+preferreds and other non-equities without a valuation row cannot reach the tiering
+stage. See `SKILL.md` §1 for why that matters.
 
 ## A. Stockbee — Bonde 4% Breakout
 
@@ -51,16 +91,24 @@ GROUP BY symbol
 
 ## C. Qullamägi — Multi-timeframe RS leaders
 
-One combined query:
+One combined query. **The runnable form is `emit-sql sweep_qullamaggie`** — it carries
+two corrections this sketch does not:
+
+- the aliases are `close_252d_ago` / `close_126d_ago` / `close_63d_ago` / `close_21d_ago`
+  (the sketch used `close_252` etc., which binds to nothing);
+- the lookback window must cover **252 trading sessions**. A window of ~9 months is only
+  ~231 sessions, which leaves `close_252d_ago` NULL and returns an **empty** result set
+  with no error at all. The emitter uses a relative 430-calendar-day window, which is
+  ~296 sessions — comfortably more than 252.
 
 ```sql
 WITH rs AS (
   SELECT
     symbol,
-    (close / NULLIF(close_252, 0) - 1) * 100 AS rs_12m,
-    (close / NULLIF(close_126, 0) - 1) * 100 AS rs_6m,
-    (close / NULLIF(close_63, 0) - 1) * 100 AS rs_3m,
-    (close / NULLIF(close_21, 0) - 1) * 100 AS rs_1m,
+    (close / NULLIF(close_252d_ago, 0) - 1) * 100 AS rs_12m,
+    (close / NULLIF(close_126d_ago, 0) - 1) * 100 AS rs_6m,
+    (close / NULLIF(close_63d_ago, 0) - 1) * 100 AS rs_3m,
+    (close / NULLIF(close_21d_ago, 0) - 1) * 100 AS rs_1m,
     avg((high - low) / close, 20) * 100 AS adr_pct,
     avg(close * volume, 20) AS adv_dollar
   FROM shibui.daily
@@ -170,6 +218,60 @@ Use `mcp__tradingview__screen_stocks` with this filter set in **one** call:
 This is one MCP call that covers Jeff Sun's "Strongest Mover" + CANSLIM-style screen
 single-handedly.
 
+### ⚠ The two growth columns are null for every US name — rebuild on shibui
+
+TradingView's scanner accepts `earnings_growth_quarterly_yoy` and
+`sales_growth_quarterly_yoy` without error but returns **null** for them on every US
+equity, so this filter set matches **zero rows** on any given day. Measured across the
+2,623 US names above $1B market cap: 0 matches. `earnings_growth_yoy` and
+`sales_growth_yoy` are equally empty. The other columns are fine.
+
+The equivalent screen is built on shibui's quarterly fundamentals instead — the growth
+fields there are **decimal fractions** (0.25 means 25%), and they are NULL when the
+prior-year base is non-positive:
+
+```sql
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '<resolved_date>'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+fq AS (
+  SELECT symbol, date AS fq_date, eps_growth_yoy, revenue_growth_yoy
+  FROM shibui.fundamentals_derived_quarterly
+  WHERE date <= '<resolved_date>'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+qd AS (
+  SELECT q.symbol, q.date, q.close, t.rsi_14,
+         LAG(q.close) OVER (PARTITION BY q.symbol ORDER BY q.date) AS prev_close
+  FROM shibui.stock_quotes q
+  JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
+  WHERE q.date BETWEEN DATE '<resolved_date>' - INTERVAL '14 days' AND '<resolved_date>'
+    AND q.exchange IN ('NYSE','NASDAQ','AMEX')
+)
+SELECT qd.symbol, qd.close, (qd.close/NULLIF(qd.prev_close,0)-1)*100 AS chg_pct, qd.rsi_14,
+       fq.eps_growth_yoy, fq.revenue_growth_yoy, fq.fq_date, mc.market_cap
+FROM qd
+JOIN mc ON mc.symbol = qd.symbol
+JOIN fq ON fq.symbol = qd.symbol
+WHERE qd.date = '<resolved_date>'
+  AND mc.market_cap > 1000000000 AND qd.close > 5
+  AND qd.prev_close IS NOT NULL AND qd.close/NULLIF(qd.prev_close,0) > 1
+  AND qd.rsi_14 BETWEEN 40 AND 80
+  AND fq.eps_growth_yoy > 0.25 AND fq.revenue_growth_yoy > 0.25
+ORDER BY (qd.close/NULLIF(qd.prev_close,0)-1) DESC LIMIT 200
+```
+
+Note the `LAG` window spans a **date range**, not a single date. Filtering the CTE to one
+date before the window leaves `prev_close` NULL for every row and the query returns
+nothing.
+
+For **relative volume**, prefer shibui's `technical_indicators.volume_ma_20` over
+TradingView's `average_volume_10d_calc`: the latter runs 6-16% tighter than a true
+trailing-10 average, so TradingView relative volumes are overstated. Treat TV's number
+as a ranking, not a ratio.
+
 ## I. Hernandez — Theme → Group → Leaders (ETF RS first)
 
 Step 1 — one base-namespace MCP call (ETF screener lives in `tradingview__`, NOT `tradingview-advanced__`):
@@ -191,9 +293,25 @@ Step 2 — within the top 3 sector ETFs, pull stocks via shibui SQL filtered by 
 tag. Sector mapping via `mcp__tradingview__lookup_symbols(["XLF","XLK","XLE",...])`
 once, then cached.
 
+**In the Cloud runtime, shibui's `general_info` carries the GICS mapping directly** —
+no `lookup_symbols` call and no sector cache needed:
+
+| Column | Meaning |
+|---|---|
+| `gics_sector` | the sector bucket (Energy, Health Care, Information Technology, …) |
+| `gics_industry_group` | the industry group inside it (Software & Services, Biotechnology, Energy, …) |
+| `gics_industry` / `gics_sub_industry` | finer still |
+
+So the theme → group funnel becomes: rank the sector/industry ETFs by composite
+1M/3M/6M relative strength, map the top three to their GICS bucket, then select the
+leaders inside that bucket with a shibui query joining `shibui.general_info`. The
+2026-10-28 run's themes were IGV (software), IBB (biotechnology) and XLE (energy).
+
 Step 3 — fundamentals overlay, **one batched** `mcp__yahoo-finance__get_financial_statements`
 call per candidate (yahoo-finance accepts only one ticker per call, so this is N calls
-— cap at top 30 candidates).
+— cap at top 30 candidates). In the Cloud runtime, Yahoo's JSON endpoints are HTTP 429 —
+use shibui's `fundamentals_derived_quarterly` / `fundamentals_derived_daily` instead, or
+skip the overlay and say so in the artifact.
 
 ## J. Sun — compression / VCP screen
 
@@ -422,7 +540,23 @@ Flag `late_cycle` when any of these is > 6×.
 
 ```python
 vix = mcp__tradingview-advanced__yahoo_price('^VIX')['price']
-vxv = mcp__tradingview-advanced__yahoo_price('^VXV')['price']
+vxv = mcp__tradingview-advanced__yahoo_price('^VIX3M')['price']
 ratio = vix / vxv
 # ratio > 1.0 => uncertainty, caution
 ```
+
+**Use `^VIX3M`, not `^VXX`/`^VXV`** — the long-end VIX has no live data, so a ratio
+built on it is not computable. `scripts/screen.py compute_regime()` implements the
+comparison as `VIX / VIX3M`.
+
+In the Cloud runtime, `mcp__tradingview-advanced__yahoo_price` does not exist and
+Yahoo's JSON endpoints are HTTP 429. Use the CBOE delayed-quote CDN instead — it
+answers without auth:
+
+```bash
+curl -s https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json    # -> data.close
+curl -s https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX3M.json  # -> data.close
+```
+
+The regime payload's `uncertainty` flag is `VIX / VIX3M > 1.0`. A reading of 0.88 means
+the front end carries no stress premium over the long end.

@@ -9,6 +9,35 @@
 | 3 | TradingView public symbol-search (`symbol-search.tradingview.com/symbol_search/?text=`) | Free JSON, no auth; symbol metadata + last price | 1 `web_fetch` | Per-symbol lookup, not a screener |
 | 4 | Yahoo Finance quote page (`finance.yahoo.com/quote/<TICKER>`) | Free HTML; current price, key stats, OHLC table | 1 `web_fetch` per ticker | Heavy HTML; use as last resort |
 
+## Cloud runtime — the chain is different, and the tiers are not all reachable
+
+The chain above describes the **local Mavis** install, where the stdio MCPs are
+registered. In the Cloud runtime none of those MCP tool names exist, and two of the
+fallback rungs are blocked. Verified 2026-11-03 from the Cloud sandbox:
+
+| Need | Local Mavis | Cloud runtime | Status |
+|---|---|---|---|
+| shibui SQL | `mcp__shibui-finance__stock_data_query` | `python3 cloud-prompts/_shared/mcp_bridge.py shibui stock_data_query args.json` | ✅ works; **HTTP 429 with `retry-after` when the daily quota is spent** — wait it out, do not rewrite the SQL |
+| TradingView screener | `mcp__tradingview__screen_stocks` / `screen_etf` | `POST https://scanner.tradingview.com/america/scan` | ✅ works; richer than the MCP wrapper (`premarket_volume`, `average_volume_10d_calc`, `relative_volume_10d_calc`) |
+| TradingView advanced | `mcp__tradingview-advanced__*` | — | ❌ not reachable, and the MCP bridge exposes no tradingview server |
+| Yahoo | `mcp__yahoo-finance__*` | JSON endpoints | ❌ HTTP 429 from this egress; the quote *page* still renders |
+| Index levels (VIX) | `mcp__tradingview-advanced__yahoo_price` | `https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json` | ✅ works, no auth |
+| Same-day official prints | `mcp__tradingview-advanced__stock_extended_hours` | `https://api.nasdaq.com/api/quote/{SYM}/info` | ✅ works; `scripts/same_day_prints.py` wraps it |
+| Finviz (tier 2) | `web_fetch` finviz.com | `web_fetch` finviz.com | ❌ **HTTP 403 Cloudflare challenge** from both `curl` and `web_fetch` |
+
+**Consequence:** in the Cloud runtime the usable chain is
+**MCP/bridge → TradingView scanner → Nasdaq → CBOE → Yahoo page**. Finviz is not
+available at all, so a task that depends on it must be re-sourced (short interest and
+IPO date have no shibui equivalent and no Finviz fallback — say so in the artifact
+rather than shipping an empty table).
+
+**`mcp__tradingview__screen_stocks` vs the scanner API.** The scanner API takes a
+positional column list and returns `{"totalCount": N, "data": [{"s": "NASDAQ:AAPL",
+"d": [...]}]}` with **no `columns` array** — zip `d` against your own column list or
+every row comes back empty. The `type` filter must be applied (`"type": "stock"`), and
+`market_cap_basic` is in the instrument's **local currency**, so a USD floor has to be
+converted with FX.
+
 ## Tier 2 — Finviz URL builders
 
 Finviz's screener is query-string driven and returns a server-rendered HTML table. We can construct URLs from the filter set we use in the MCP screens.

@@ -93,6 +93,44 @@ def vault_exists(date: str, root: Path = DEFAULT_VAULT) -> bool:
     return (p / "_summary.md").exists()
 
 
+def cache_status(date: str, root: Path = DEFAULT_VAULT) -> dict:
+    """Is the day's sweep already done, and on which data date?
+
+    The 18:30 ET sweep is expensive (~20 MCP calls). A re-fire on the same
+    calendar day should not repeat it. The cache marker `_cache.json` records
+    the resolved data date, so a later fire that sees shibui's data date
+    unchanged can short-circuit; a changed data date means new information and
+    the sweep must run again.
+    """
+    root = Path(root) if root is not None else DEFAULT_VAULT
+    p = vault_dir(date, root)
+    marker = p / "_cache.json"
+    out = {
+        "cron_date": date,
+        "vault": str(p),
+        "cache_file": str(marker),
+        "cache_present": marker.exists(),
+        "complete": vault_exists(date, root),
+        "data_as_of": None,
+        "valid": False,
+        "reason": "",
+    }
+    if not marker.exists():
+        out["reason"] = "no cache marker"
+        return out
+    try:
+        meta = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception as exc:
+        out["reason"] = f"cache marker unreadable: {exc}"
+        return out
+    out["data_as_of"] = meta.get("data_as_of")
+    out["counts"] = meta.get("counts")
+    out["complete"] = (p / "_summary.md").exists() and (p / "_results.json").exists()
+    out["valid"] = bool(out["complete"])
+    out["reason"] = "cached run is complete" if out["valid"] else "cache marker present but outputs incomplete"
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tier-2 fallback: Finviz URL builders
 # ---------------------------------------------------------------------------
@@ -277,75 +315,106 @@ RESOLVED_DATE_PLACEHOLDER = "__RESOLVED_DATE__"
 def emit_prefilter_sql(date: str) -> str:
     """Single shibui SQL for the universe pre-filter.
 
-    Schema: stock_quotes (OHLCV) + valuation (market_cap) + technical_indicators joined
-    on (symbol, date). LIMIT 200 enforced by the server.
+    Schema: stock_quotes (OHLCV) + valuation (market_cap) joined on symbol.
+    LIMIT 200 enforced by the server.
+
+    The market-cap lookup takes the LATEST valuation row per symbol FIRST
+    and only then applies the cap filter. `shibui.valuation` keeps multiple
+    rows per symbol per date, so filtering on the cap before the latest-row
+    pick admits stale rows whose cap was once above the threshold.
     """
     return f"""
 -- Pre-filter for {date}
-SELECT q.symbol, q.close, q.exchange, q.volume AS today_volume, v.market_cap
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+)
+SELECT q.symbol, q.close, q.exchange, q.volume AS today_volume, mc.market_cap
 FROM shibui.stock_quotes q
-JOIN shibui.valuation v ON q.symbol = v.symbol AND q.date = v.date
+JOIN mc ON mc.symbol = q.symbol
 WHERE q.date = '{date}'
   AND q.exchange IN ('NYSE', 'NASDAQ', 'AMEX')
   AND q.close > 3
-  AND v.market_cap > 300000000
+  AND mc.market_cap > 300000000
   AND q.volume > 100000
-ORDER BY v.market_cap DESC
+ORDER BY mc.market_cap DESC
 LIMIT 200
 """.strip()
 
 
+
+
 def emit_sweep_sql_stockbee(date: str) -> str:
-    """Stockbee group: 4% breakout + EP9M + Anticipation. Single shibui call, UNION ALL."""
+    """Stockbee group: 4% breakout + EP9M + Anticipation. Single shibui call, UNION ALL.
+
+    Every branch emits the SAME explicitly-named column set. A UNION ALL
+    takes its output column names from the FIRST branch, so branches with
+    ad-hoc names silently publish one metric under another metric's header
+    (the EP9M close-location value used to appear under `chg_pct`).
+
+    The market-cap pre-filter floor is applied inside the query so the
+    equity universe is enforced at the source, not after the merge.
+    """
     return f"""
 -- Stockbee sweep for {date}: 4% breakout + EP9M + Anticipation
-WITH today AS (
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+today AS (
   SELECT q.symbol, q.date, q.open, q.high, q.low, q.close, q.volume,
-         t.atr_14,
-         LAG(q.close) OVER (PARTITION BY q.symbol ORDER BY q.date)  AS prev_close,
-         LAG(q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date) AS prev_volume,
-         AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS atr_7d,
-         AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 64 PRECEDING AND CURRENT ROW) AS atr_65d,
-         MAX(q.high) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 9 PRECEDING AND CURRENT ROW) AS max_high_10d,
-         MIN(q.low)  OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 9 PRECEDING AND CURRENT ROW) AS min_low_10d
+     t.atr_14,
+     LAG(q.close) OVER (PARTITION BY q.symbol ORDER BY q.date)  AS prev_close,
+     LAG(q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date) AS prev_volume,
+     AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS atr_7d,
+     AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 64 PRECEDING AND CURRENT ROW) AS atr_65d,
+     MAX(q.high) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 9 PRECEDING AND CURRENT ROW) AS max_high_10d,
+     MIN(q.low)  OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 9 PRECEDING AND CURRENT ROW) AS min_low_10d
   FROM shibui.stock_quotes q
   JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
-  WHERE q.date BETWEEN '2026-07-23' AND '{date}'
-    AND q.exchange IN ('NYSE','NASDAQ','AMEX')
-)
+  JOIN mc ON mc.symbol = q.symbol AND mc.market_cap > 300000000
+  WHERE q.date BETWEEN DATE '{date}' - INTERVAL '150 days' AND '{date}'
+AND q.exchange IN ('NYSE','NASDAQ','AMEX')
+),
 A_stockbee_4pct AS (
   SELECT 'A_stockbee_4pct' AS origin, symbol, close, volume,
-         (close / NULLIF(prev_close, 0) - 1) * 100 AS chg_pct
+     (close / NULLIF(prev_close, 0) - 1) * 100 AS chg_pct,
+     NULL AS dcr_pct, NULL AS trend_intensity, NULL AS base_width_pct
   FROM today
   WHERE date = '{date}'
-    AND prev_close IS NOT NULL AND prev_close > 0
-    AND close / prev_close >= 1.04
-    AND volume > prev_volume
-    AND volume >= 100000
-    AND close >= 3
+AND prev_close IS NOT NULL AND prev_close > 0
+AND close / NULLIF(prev_close, 0) >= 1.04
+AND volume > prev_volume
+AND volume >= 100000
+AND close >= 3
   ORDER BY chg_pct DESC
   LIMIT 50
 ),
 B_stockbee_ep9m AS (
   SELECT 'B_stockbee_ep9m' AS origin, symbol, close, volume,
-         (close - low) / NULLIF(high - low, 0) * 100 AS dcr_pct
+     NULL AS chg_pct,
+     (close - low) / NULLIF(high - low, 0) * 100 AS dcr_pct,
+     NULL AS trend_intensity, NULL AS base_width_pct
   FROM today
   WHERE date = '{date}'
-    AND volume >= 8900000
-    AND close >= 3
+AND volume >= 8900000
+AND close >= 3
   ORDER BY volume DESC
   LIMIT 50
 ),
 K_stockbee_anticipation AS (
-  SELECT 'K_stockbee_anticipation' AS origin, symbol, close,
-         atr_7d / NULLIF(atr_65d, 0) AS trend_intensity,
-         (max_high_10d - min_low_10d) / NULLIF(close, 0) AS base_width_pct
+  SELECT 'K_stockbee_anticipation' AS origin, symbol, close, NULL AS volume,
+     NULL AS chg_pct, NULL AS dcr_pct,
+     atr_7d / NULLIF(atr_65d, 0) AS trend_intensity,
+     (max_high_10d - min_low_10d) / NULLIF(close, 0) AS base_width_pct
   FROM today
   WHERE date = '{date}'
-    AND atr_7d / NULLIF(atr_65d, 0) >= 1.05
-    AND (max_high_10d - min_low_10d) / NULLIF(close, 0) <= 0.08
-    AND prev_close IS NOT NULL
-    AND close / prev_close < 1.04
+AND atr_7d / NULLIF(atr_65d, 0) >= 1.05
+AND (max_high_10d - min_low_10d) / NULLIF(close, 0) <= 0.08
+AND prev_close IS NOT NULL
+AND close / NULLIF(prev_close, 0) < 1.04
   ORDER BY trend_intensity DESC
   LIMIT 30
 )
@@ -357,77 +426,102 @@ LIMIT 200
 """.strip()
 
 
+
+
 def emit_sweep_sql_qullamaggie(date: str) -> str:
-    """Qullamägi group: RS leaders + EP + 5d gainers + 5d losers. Single shibui call."""
+    """Qullamägi group: RS leaders + EP + 5d gainers + 5d losers. Single shibui call.
+
+    Two traps this query used to fall into, both silent:
+      * the lookback window was hardcoded to '2025-12-01' (~231 trading
+        days) while the RS screen needs LAG(close, 252), so every
+        close_252d_ago was NULL and the whole RS book came back EMPTY.
+        The window is now relative to the target date and long enough
+        (~430 calendar days) for 252 trading days with headroom.
+      * the CTE aliased close_252d_ago / close_126d_ago / close_63d_ago /
+        close_21d_ago while the SELECT and WHERE referenced close_252 /
+        close_126 / close_63 / close_21, which is a Binder Error.
+    """
     return f"""
 -- Qullamägi sweep for {date}: multi-timeframe RS + EP + 5d movers
-WITH hist AS (
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+hist AS (
   SELECT q.symbol, q.date, q.open, q.high, q.low, q.close, q.volume,
-         t.atr_14,
-         LAG(q.close, 5)  OVER w AS close_5d_ago,
-         LAG(q.close, 21) OVER w AS close_21d_ago,
-         LAG(q.close, 63) OVER w AS close_63d_ago,
-         LAG(q.close, 126) OVER w AS close_126d_ago,
-         LAG(q.close, 252) OVER w AS close_252d_ago,
-         LAG(q.close) OVER w AS prev_close,
-         AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) * 100 AS adr_pct_20d,
-         AVG(q.close * q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adv_dollar_20d
+     t.atr_14,
+     LAG(q.close, 5)  OVER w AS close_5d_ago,
+     LAG(q.close, 21) OVER w AS close_21d_ago,
+     LAG(q.close, 63) OVER w AS close_63d_ago,
+     LAG(q.close, 126) OVER w AS close_126d_ago,
+     LAG(q.close, 252) OVER w AS close_252d_ago,
+     LAG(q.close) OVER w AS prev_close,
+     AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) * 100 AS adr_pct_20d,
+     AVG(q.close * q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adv_dollar_20d
   FROM shibui.stock_quotes q
   JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
-  WHERE q.date >= '2025-12-01'  -- ~9 months, covers 252 trading days
-    AND q.exchange IN ('NYSE','NASDAQ','AMEX')
+  JOIN mc ON mc.symbol = q.symbol AND mc.market_cap > 300000000
+  WHERE q.date BETWEEN DATE '{date}' - INTERVAL '430 days' AND '{date}'
+AND q.exchange IN ('NYSE','NASDAQ','AMEX')
   WINDOW w AS (PARTITION BY q.symbol ORDER BY q.date)
-)
+),
 C_qullamaggie_rs AS (
   SELECT 'C_qullamaggie_rs' AS origin, symbol, close,
-         (close / NULLIF(close_252, 0) - 1) * 100 AS rs_12m,
-         (close / NULLIF(close_126, 0) - 1) * 100 AS rs_6m,
-         (close / NULLIF(close_63, 0) - 1) * 100 AS rs_3m,
-         (close / NULLIF(close_21, 0) - 1) * 100 AS rs_1m,
-         adr_pct_20d, adv_dollar_20d
+     (close / NULLIF(close_252d_ago, 0) - 1) * 100 AS rs_12m,
+     (close / NULLIF(close_126d_ago, 0) - 1) * 100 AS rs_6m,
+     (close / NULLIF(close_63d_ago, 0) - 1) * 100 AS rs_3m,
+     (close / NULLIF(close_21d_ago, 0) - 1) * 100 AS rs_1m,
+     adr_pct_20d, adv_dollar_20d, NULL AS m1, NULL AS m2
   FROM hist
   WHERE date = '{date}'
-    AND adv_dollar_20d >= 20000000
-    AND adr_pct_20d >= 4.5
-    AND close_252 IS NOT NULL AND close_126 IS NOT NULL AND close_63 IS NOT NULL AND close_21 IS NOT NULL
-    AND ((close / close_21 - 1) >= 0.25 OR (close / close_63 - 1) >= 0.50 OR (close / close_126 - 1) >= 1.50)
+AND adv_dollar_20d >= 20000000
+AND adr_pct_20d >= 4.5
+AND close_252d_ago IS NOT NULL AND close_126d_ago IS NOT NULL
+AND close_63d_ago IS NOT NULL AND close_21d_ago IS NOT NULL
+AND ((close / NULLIF(close_21d_ago, 0) - 1) >= 0.25 OR (close / NULLIF(close_63d_ago, 0) - 1) >= 0.50 OR (close / NULLIF(close_126d_ago, 0) - 1) >= 1.50)
   ORDER BY rs_3m DESC
   LIMIT 60
 ),
 D_qullamaggie_ep AS (
   SELECT 'D_qullamaggie_ep' AS origin, symbol, close,
-         (open / NULLIF(prev_close, 0) - 1) * 100 AS gap_pct,
-         volume / NULLIF(adv_dollar_20d / NULLIF(close, 0), 0) AS vol_ratio
+     NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
+     NULL AS adr_pct_20d, adv_dollar_20d,
+     (open / NULLIF(prev_close, 0) - 1) * 100 AS m1,
+     volume / NULLIF(adv_dollar_20d / NULLIF(close, 0), 0) AS m2
   FROM hist
   WHERE date = '{date}'
-    AND prev_close IS NOT NULL AND prev_close > 0
-    AND open / prev_close >= 1.10
-    AND adv_dollar_20d >= 50000000
-  ORDER BY gap_pct DESC
+AND prev_close IS NOT NULL AND prev_close > 0
+AND open / NULLIF(prev_close, 0) >= 1.10
+AND adv_dollar_20d >= 50000000
+  ORDER BY m1 DESC
   LIMIT 30
 ),
 E_qullamaggie_5d_gainers AS (
   SELECT 'E_qullamaggie_5d_gainers' AS origin, symbol, close,
-         (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS gain_5d,
-         adr_pct_20d
+     NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
+     adr_pct_20d, adv_dollar_20d,
+     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2
   FROM hist
   WHERE date = '{date}'
-    AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
-    AND (close / close_5d_ago - 1) >= 0.25
-    AND adv_dollar_20d >= 50000000
-  ORDER BY gain_5d DESC
+AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
+AND (close / NULLIF(close_5d_ago, 0) - 1) >= 0.25
+AND adv_dollar_20d >= 50000000
+  ORDER BY m1 DESC
   LIMIT 30
 ),
 F_qullamaggie_5d_losers AS (
   SELECT 'F_qullamaggie_5d_losers' AS origin, symbol, close,
-         (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS loss_5d
+     NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
+     NULL AS adr_pct_20d, adv_dollar_20d,
+     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2
   FROM hist
   WHERE date = '{date}'
-    AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
-    AND (close / close_5d_ago - 1) <= -0.25
-    AND (close / close_5d_ago - 1) >= -0.50
-    AND adv_dollar_20d >= 50000000
-  ORDER BY loss_5d ASC
+AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
+AND (close / NULLIF(close_5d_ago, 0) - 1) <= -0.25
+AND (close / NULLIF(close_5d_ago, 0) - 1) >= -0.50
+AND adv_dollar_20d >= 50000000
+  ORDER BY m1 ASC
   LIMIT 30
 )
 SELECT * FROM C_qullamaggie_rs
@@ -439,24 +533,32 @@ LIMIT 200
 """.strip()
 
 
+
+
 def emit_sweep_sql_peoplewish(date: str) -> str:
     """peoplewish: ADR% > 5% + Dollar Volume > $50M, sort by velocity. Single shibui call."""
     return f"""
 -- peoplewish sweep for {date}: ADR + dollar volume + velocity
-WITH hist AS (
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+hist AS (
   SELECT q.symbol, q.date, q.close, q.volume,
-         LAG(q.close, 14) OVER w AS close_14d_ago,
-         AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) * 100 AS adr_pct_20d,
-         AVG(q.close * q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adv_dollar_20d
+     LAG(q.close, 14) OVER w AS close_14d_ago,
+     AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) * 100 AS adr_pct_20d,
+     AVG(q.close * q.volume) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS adv_dollar_20d
   FROM shibui.stock_quotes q
-  WHERE q.date >= '2026-08-15'  -- ~30 days, covers 14-day LAG + 20-day rolling window
-    AND q.exchange IN ('NYSE','NASDAQ','AMEX')
+  JOIN mc ON mc.symbol = q.symbol AND mc.market_cap > 300000000
+  WHERE q.date BETWEEN DATE '{date}' - INTERVAL '120 days' AND '{date}'
+AND q.exchange IN ('NYSE','NASDAQ','AMEX')
   WINDOW w AS (PARTITION BY q.symbol ORDER BY q.date)
 )
 SELECT 'G_peoplewish' AS origin, symbol, close,
-       adr_pct_20d,
-       adv_dollar_20d,
-       (close / NULLIF(close_14d_ago, 0) - 1) * 100 AS velocity_14d
+   adr_pct_20d,
+   adv_dollar_20d,
+   (close / NULLIF(close_14d_ago, 0) - 1) * 100 AS velocity_14d
 FROM hist
 WHERE date = '{date}'
   AND adr_pct_20d >= 5
@@ -464,9 +566,6 @@ WHERE date = '{date}'
 ORDER BY velocity_14d DESC
 LIMIT 200
 """.strip()
-
-
-# Legacy single-call sweep — kept for back-compat with the SQL subcommand choices.
 def emit_sweep_sql(date: str) -> str:
     """Default sweep SQL (uses the Stockbee group)."""
     return emit_sweep_sql_stockbee(date)
@@ -477,30 +576,50 @@ def emit_breadth_sql(date: str) -> str:
 
     Uses large-cap (market_cap > 10B) as the breadth proxy instead of a hardcoded
     constituents list (no sp500_constituents table exists in shibui).
+
+    Two corrections over the previous version:
+      * the large-cap population joins valuation on SYMBOL, not on (symbol, date).
+        `shibui.valuation` keeps several rows per symbol per date, so the old
+        join double-counted symbols (biasing the breadth percentage) and could
+        admit a symbol on a stale market-cap row.
+      * the 252-day average ATR is computed over a real trailing window instead
+        of a one-row window, which previously made it identical to atr_14.
     """
     return f"""
 -- Breadth + ATR extension + index-below-20sma flag for {date}
-WITH idx AS (
-  SELECT q.symbol, q.close,
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date <= '{date}'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+),
+idx_hist AS (
+  SELECT q.symbol, q.ticker, q.date, q.close,
          t.sma_20, t.sma_50, t.atr_14,
-         AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW) AS atr_252d_avg
+         AVG(t.atr_14) OVER (PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW) AS atr_252d_avg,
+         ROW_NUMBER() OVER (PARTITION BY q.symbol ORDER BY q.date DESC) AS rn
   FROM shibui.stock_quotes q
   JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
   WHERE q.ticker IN ('SPY','RSP','QQQ','QQQE','IWM')
-    AND q.date = '{date}'
+    AND q.date BETWEEN DATE '{date}' - INTERVAL '430 days' AND '{date}'
+),
+idx AS (
+  SELECT symbol, ticker, close, sma_20, sma_50, atr_14, atr_252d_avg
+  FROM idx_hist
+  WHERE rn = 1 AND date = '{date}'
 ),
 largecap AS (
   SELECT q.symbol, q.close,
          t.sma_20
   FROM shibui.stock_quotes q
   JOIN shibui.technical_indicators t ON q.symbol = t.symbol AND q.date = t.date
-  JOIN shibui.valuation v ON q.symbol = v.symbol AND q.date = v.date
+  JOIN mc ON mc.symbol = q.symbol
   WHERE q.date = '{date}'
     AND q.exchange IN ('NYSE','NASDAQ','AMEX')
-    AND v.market_cap > 10000000000
+    AND mc.market_cap > 10000000000
 ),
 largecap_breadth AS (
-  SELECT AVG(CASE WHEN close > sma_20 THEN 1.0 ELSE 0.0 END) * 100 AS pct
+  SELECT COUNT(*) AS n_lc,
+         AVG(CASE WHEN close > sma_20 THEN 1.0 ELSE 0.0 END) * 100 AS pct
   FROM largecap
 ),
 idx_summary AS (
@@ -510,7 +629,7 @@ idx_summary AS (
   FROM idx
 )
 SELECT 'largecap_breadth' AS metric,
-       NULL AS symbol,
+       NULL AS ticker,
        NULL AS close,
        NULL AS sma_20,
        NULL AS sma_50,
@@ -519,29 +638,18 @@ SELECT 'largecap_breadth' AS metric,
        NULL AS extension_pct,
        NULL AS pct_above_sma_20,
        NULL AS pct_above_sma_50,
-       (SELECT pct FROM largecap_breadth) AS breadth_pct_largecap
+       (SELECT pct FROM largecap_breadth) AS breadth_pct_largecap,
+       (SELECT n_lc FROM largecap_breadth) AS n_largecap
 UNION ALL
-SELECT 'index_above_sma_summary' AS metric,
-       NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+SELECT 'index_above_sma_summary', NULL, NULL, NULL, NULL, NULL, NULL, NULL,
        (SELECT pct_above_sma_20 FROM idx_summary),
-       (SELECT pct_above_sma_50 FROM idx_summary),
-       NULL
+       (SELECT pct_above_sma_50 FROM idx_summary), NULL, NULL
 UNION ALL
-SELECT 'index_atr_extension' AS metric,
-       symbol,
-       close,
-       sma_20,
-       sma_50,
-       atr_14,
-       atr_252d_avg,
-       (close - sma_50) / NULLIF(sma_50, 0) * 100 AS extension_pct,
-       NULL, NULL,
-       NULL
+SELECT 'index_atr_extension', ticker, close, sma_20, sma_50, atr_14, atr_252d_avg,
+       (close - sma_50) / NULLIF(sma_50, 0) * 100, NULL, NULL, NULL, NULL
 FROM idx
-ORDER BY metric, symbol
+ORDER BY metric, ticker
 """.strip()
-
-
 def emit_reversal_bullish_sql(date: str) -> str:
     """Bonde 3:55 PM reversal-bullish SQL — CORRECTED to Bonde's PUBLISHED criteria.
 
@@ -958,18 +1066,37 @@ class Candidate:
 # Map origin labels (already namespaced "<stylist>_<subquery>" in SQL output
 # or written by `tier_candidates` for TV sub-screens) to a short stylist
 # tag so we can count unique STYLISTS, not unique sub-screens.
+#
+# There are FIVE stylist buckets, matching references/tiering.md's
+# thresholds ("≥ 3 stylists (out of 5)"):
+#
+#   stockbee    Pradeep Bonde
+#   qullamaggie Kristjan Kullamägi
+#   jeff_sun    Jeff Sun — his CANSLIM screen AND his volume-breakout proxy
+#   hernandez   Ariel Hernandez
+#   peoplewish  Alec Riffle
+#
+# The volume-breakout screen is folded into `jeff_sun` rather than counted as
+# a sixth bucket: it is Jeff Sun's volume proxy, and counting it separately
+# would let one stylist's two screens masquerade as two independent opinions
+# (a name hitting both would score 2 stylist hits, not 1).
 _STYLIST_FROM_ORIGIN = {
     "A_stockbee_4pct": "stockbee",
     "B_stockbee_ep9m": "stockbee",
     "K_stockbee_4pct_with_volume": "stockbee",
+    "K_stockbee_anticipation": "stockbee",
     "C_qullamaggie_rs": "qullamaggie",
     "D_qullamaggie_ep": "qullamaggie",
     "E_qullamaggie_5d_gainers": "qullamaggie",
     "F_qullamaggie_5d_losers": "qullamaggie",
     "G_peoplewish": "peoplewish",
-    "TV_volume_breakout": "tv_volume_breakout",  # Jeff Sun's volume proxy
-    "jeff_sun_canslim": "jeff_sun_canslim",
+    "TV_volume_breakout": "jeff_sun",   # Jeff Sun's volume proxy
+    "jeff_sun_canslim": "jeff_sun",
+    "H_hernandez_theme": "hernandez",
 }
+
+# The five stylist buckets, for validation and for the summary line.
+STYLIST_BUCKETS = ("stockbee", "qullamaggie", "jeff_sun", "hernandez", "peoplewish")
 
 
 def tier_candidates(
@@ -1055,6 +1182,8 @@ def _compute_skip_flags(d: dict) -> dict[str, bool]:
 # top-velocity" filter. Tunable in one place from `references/tiering.md`.
 FOCUS_THRESHOLD_STYLISTS = 2   # appears in ≥ 2 stylists
 TIER_A_THRESHOLD_STYLISTS = 3  # appears in ≥ 3 stylists (out of 5)
+FOCUS_MAX = 12                 # references/tiering.md size cap
+TIER_A_MAX = 8                 # references/tiering.md size cap
 
 
 def select_focus(candidates: dict[str, Candidate]) -> dict[str, Candidate]:
@@ -1087,8 +1216,19 @@ def select_tier_a(candidates: dict[str, Candidate]) -> dict[str, Candidate]:
     counted UNIQUE ORIGINS, not unique stylists) produced only USDE.NASDAQ —
     a 3-stylist × 4-origin hit that was misleadingly labelled "convergence 4".
     With `n_stylists ≥ 3`, expect 3-8 names per day in a normal regime and
-    the `_summary.md` label "≥ 3 stylists" matches what the trader sees."""
-    return {s: c for s, c in candidates.items() if c.n_stylists >= TIER_A_THRESHOLD_STYLISTS}
+    the `_summary.md` label "≥ 3 stylists" matches what the trader sees.
+
+    Capped at TIER_A_MAX (8) per references/tiering.md's size cap. The cap is
+    applied AFTER the threshold, so on a broad day the list is truncated — the
+    truncation is reported in `_results.json` as `tier_a_truncated`."""
+    hits = {s: c for s, c in candidates.items() if c.n_stylists >= TIER_A_THRESHOLD_STYLISTS}
+    if len(hits) <= TIER_A_MAX:
+        return hits
+    ranked = sorted(
+        hits.items(),
+        key=lambda kv: (-kv[1].n_stylists, -(kv[1].data.get("velocity_14d") or 0), kv[0]),
+    )
+    return dict(ranked[:TIER_A_MAX])
 
 
 def compute_regime(breadth_rows: list, vix: float | None, vix3m: float | None) -> dict:
@@ -1257,6 +1397,26 @@ def write_summary(path: Path, regime: dict, tier_a: dict, short_cands: list, lon
 # ---------------------------------------------------------------------------
 
 def cmd_plan(args: argparse.Namespace) -> int:
+    # Same-day short-circuit: if today's sweep already ran and produced a
+    # complete output set, do not spend the ~20 MCP calls again unless the
+    # caller forces it. The resolved data date is compared too, so a later
+    # ingestion (shibui's T+1 catch-up) invalidates the cache.
+    if getattr(args, "use_cache", False):
+        status = cache_status(args.date, getattr(args, "vault", None) or DEFAULT_VAULT)
+        if status.get("valid"):
+            resolved = getattr(args, "resolved_date", None)
+            if resolved and status.get("data_as_of") and resolved != status["data_as_of"]:
+                print(
+                    f"cache for {args.date} is stale: cached data_as_of="
+                    f"{status['data_as_of']} but shibui now resolves to {resolved}; "
+                    f"re-running the sweep"
+                )
+            else:
+                print(json.dumps(status, indent=2))
+                print("CACHE HIT — outputs already exist for this date; nothing to do.")
+                return 0
+        else:
+            print(f"no usable cache for {args.date} ({status.get('reason')}); running the sweep.")
     plan = build_sweep_plan(args.date, resolve_latest=args.resolve_latest)
     out = args.out or "plan.json"
     Path(out).write_text(plan.to_json())
@@ -1265,6 +1425,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if plan.cron_date:
         label += f", resolve_latest=True (cron_date={plan.cron_date})"
     print(f"Plan written to {out}: {label}")
+    return 0
+
+
+def cmd_cache(args: argparse.Namespace) -> int:
+    """Report the cache state for a date (JSON on stdout)."""
+    status = cache_status(args.date, Path(args.vault) if args.vault else DEFAULT_VAULT)
+    print(json.dumps(status, indent=2))
     return 0
 
 
@@ -1376,6 +1543,58 @@ def cmd_consume(args: argparse.Namespace) -> int:
     # Regime payload
     (out_dir / "_regime.json").write_text(json.dumps(regime, indent=2))
 
+    # Machine-readable companion. Downstream routines (pre-market brief,
+    # weekly recap, setup journal) read this instead of re-parsing Markdown,
+    # so a wording change in a .md file can never silently break them.
+    tier_a_pool = {s for s, c in focus.items() if c.n_stylists >= TIER_A_THRESHOLD_STYLISTS}
+    results_payload = {
+        "date": args.date,
+        "data_as_of": data.get("data_as_of") or args.date,
+        "regime": regime,
+        "stylist_buckets": list(STYLIST_BUCKETS),
+        "thresholds": {
+            "focus_stylists": FOCUS_THRESHOLD_STYLISTS,
+            "focus_max": FOCUS_MAX,
+            "tier_a_stylists": TIER_A_THRESHOLD_STYLISTS,
+            "tier_a_max": TIER_A_MAX,
+        },
+        "counts": {
+            "candidates": len(candidates),
+            "focus": len(focus),
+            "tier_a": len(tier_a),
+            "short_candidates": len(short_cands),
+            "long_reversal_candidates": len(long_reversal_cands),
+        },
+        "tier_a_pool": len(tier_a_pool),
+        "tier_a_truncated": len(tier_a_pool) > len(tier_a),
+        "tier_a": sorted(tier_a),
+        "focus": sorted(focus),
+        "short_candidates": short_cands,
+        "long_reversal_candidates": long_reversal_cands,
+        "candidates": [
+            {
+                "symbol": sym,
+                "origins": c.origins,
+                "stylists": sorted({_STYLIST_FROM_ORIGIN.get(o, o) for o in c.origins}),
+                "n_stylists": c.n_stylists,
+                "convergence_score": c.convergence_score,
+                "flags": {k: v for k, v in c.flags.items() if v},
+                "data": c.data,
+            }
+            for sym, c in sorted(candidates.items())
+        ],
+    }
+    (out_dir / "_results.json").write_text(json.dumps(results_payload, indent=2, default=str))
+
+    # Cache marker: the next run reads this to decide whether the day's work
+    # is already done (same date, same resolved data date).
+    (out_dir / "_cache.json").write_text(json.dumps({
+        "cron_date": args.date,
+        "data_as_of": data.get("data_as_of") or args.date,
+        "regime": {k: regime.get(k) for k in ("size_cut_pct", "uncertainty", "late_cycle")},
+        "counts": results_payload["counts"],
+    }, indent=2))
+
     # Summary
     write_summary(out_dir / "_summary.md", regime, tier_a, short_cands, long_reversal_cands, reversal_rows)
 
@@ -1426,6 +1645,31 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    plan_p.add_argument(
+        "--use-cache",
+        action="store_true",
+        help=(
+            "Short-circuit when this date's sweep already produced a complete "
+            "output set. The cached resolved data date is compared with "
+            "--resolved-date, so a later shibui ingestion invalidates the cache."
+        ),
+    )
+    plan_p.add_argument(
+        "--resolved-date",
+        dest="resolved_date",
+        default=None,
+        help="The data date shibui resolved to (from the preflight query), used to invalidate a stale cache.",
+    )
+    plan_p.add_argument(
+        "--vault",
+        default=None,
+        help="Vault root that holds <date>/ directories (default: the local vault path).",
+    )
+
+    cache_p = sub.add_parser("cache", help="report whether a date's sweep is already done")
+    cache_p.add_argument("date")
+    cache_p.add_argument("--vault", default=None, help="Vault root that holds <date>/ directories")
+
     sql_p = sub.add_parser("emit-sql", help="emit a single shibui SQL string")
     sql_p.add_argument("kind", choices=["prefilter", "sweep", "sweep_stockbee", "sweep_qullamaggie", "sweep_peoplewish", "breadth", "reversal_bullish", "weekly", "resolve_date"])
     sql_p.add_argument("date")
@@ -1470,6 +1714,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_emit_sql(args)
     if args.cmd == "consume":
         return cmd_consume(args)
+    if args.cmd == "cache":
+        return cmd_cache(args)
     if args.cmd == "finviz-url":
         return _cmd_finviz_url(args)
     if args.cmd == "finviz-parse":
