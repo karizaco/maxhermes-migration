@@ -146,8 +146,22 @@ locally-computed matrix while implying the server-side one was used.
 `mats.json` written by `correlation_matrix.py` and emits the complete markdown report.
 
 ```bash
-SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
-curl -sL -o /workspace/correlation_report.py "$SKILL/correlation_report.py"
+# FETCH LADDER — jsDelivr FIRST. raw.githubusercontent.com caches a branch per file
+# and its invalidation LAGS BY MINUTES-TO-HOURS after a push, so a cron can run a
+# STALE spec or a STALE renderer. jsDelivr re-resolves the branch on every request.
+# Always verify what you fetched — never assume the first URL gave you the new bytes.
+SKILL_PATH=cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
+for U in \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$SKILL_PATH/correlation_report.py" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$SKILL_PATH/correlation_report.py" ; do
+  curl -sL --max-time 60 -o /workspace/correlation_report.py "$U" 2>/dev/null
+  # a 404 body is a non-empty body that is NOT a script — never run one
+  head -1 /workspace/correlation_report.py 2>/dev/null | grep -q '^#!' && break
+done
+# VERIFY the fetched copy is current, not a cached older one: the current renderer
+# date-guards live quotes on the quote's own `as_of` stamp.
+grep -q 'as_of' /workspace/correlation_report.py \
+  || echo "WARNING: stale renderer (raw/jsDelivr cache) — the intraday column and the window-return base may be one bar off"
 
 # 1) the matrix (server-side), then the two comparison windows
 python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
