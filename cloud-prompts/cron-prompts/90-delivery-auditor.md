@@ -185,6 +185,16 @@ a skip.
   2026-11-02 onward is judged against the roster table below. If a prompt's SCHEDULE block says
   `1-5` but the scheduler field says `1`, the SCHEDULE block and this roster are the contract.
 
+- **2026-10-31 / 2026-11-02** — three routines were ADDED, so they cannot be audited for
+  earlier dates. **#91 (schedule-drift-guard, `5 4 * * *`, daily)** was created 2026-10-31 and
+  has **no artifact** — it is a self-check like #90, so list its schedule but never check a path
+  for it. **#92a (preopen-catalyst-capture, 08:30)** and **#92b (the 09:50 checkpoint)** were
+  created 2026-11-02; both write `preopen-feed/{date}-{HHMM}.jsonl`, so the expected paths are
+  `preopen-feed/{date}-0830.jsonl` and `preopen-feed/{date}-0950.jsonl` — **the time is part of
+  the filename**, and a missing file at the wrong checkpoint time is a near-miss, not a gap.
+  All three have **first fire 2026-11-03**. For `$AUDIT_DATE` before 2026-11-03 they are
+  `not_yet_fired`, NOT `MISSING`.
+
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
 artifact on a holiday is `possible_holiday`, not a failure. The 2026 NYSE closures are in the
@@ -207,12 +217,15 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 01-weekly-mcp-health-check | `0 2 * * 0` | `mcp-health/{ISO-week}.md` | Sun |
 | 19-earnings-reminder-daily | `0 6 * * 1-5` | `earnings/{date}-reminders.md` | Mon-Fri |
 | 02-asia-pre-market-reactions | `30 6 * * 1-5` | `asia-pre-market/{date}.md` | Mon-Fri |
+| 91-schedule-drift-guard | `5 4 * * *` | (no artifact — self-check routine) | every day |
 | 90-delivery-auditor | `0 7 * * *` | (no artifact — this cron) | every day |
 | 15-earnings-reaction-scanner | `0 8 * * 1-5` | `earnings/{date}-reactions.md` | Mon-Fri |
 | 26-agentic-pre-market-brief | `30 8 * * 1-5` | `daily-briefs/{date}-pre-market.md` | Mon-Fri |
 | 08-pre-market-gapper | `30 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
+| 92a-preopen-catalyst-capture | `30 8 * * 1-5` | `preopen-feed/{date}-0830.jsonl` | Mon-Fri |
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
 | 07-focus-rvol-09:45 | `45 9 * * 1-5` | `daily-screens/{date}/focus-rvol-snapshot.md` | Mon-Fri |
+| 92b-preopen-catalyst-capture | `50 9 * * 1-5` | `preopen-feed/{date}-0950.jsonl` | Mon-Fri |
 | 12-cross-asset-correlation | `0 10 * * 1-5` | `cross-asset/{date}.md` | Mon-Fri |
 | 10-breadth-snapshot | `0 14 * * 1-5` | `daily-screens/{date}/breadth-snapshot.md` | Mon-Fri |
 | 13-macro-calendar-midweek | `0 14 * * 3` | `macro-calendar/{date}-midweek.md` | Wed |
@@ -226,6 +239,11 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 22-weekly-market-recap-preview | `47 17 * * 0` | `weekly/{date}-preview.md` | Sun |
 | 09-daily-sweep-18:30 | `30 18 * * 1-5` | `daily-screens/{date}/daily-sweep.md` | Mon-Fri |
 | 23-agentic-post-market-brief | `30 22 * * 1-5` | `daily-briefs/{date}-post-market.md` | Mon-Fri |
+
+**Two rows have no path and must never be checked for one:** `90-delivery-auditor` and
+`91-schedule-drift-guard` are self-checks — they report in the chat and push nothing to the
+artifact branch. Their rows are in the table so their schedules stay tracked, and that is all.
+Checking `origin/main:(no artifact …)` would report a false `MISSING` every single day.
 
 For `01-weekly-mcp-health-check` the path uses the **ISO week** of `$AUDIT_DATE`, not the date:
 `mcp-health/$(date -d "$AUDIT_DATE" +%G-W%V).md`. It also appends a row to
@@ -345,7 +363,7 @@ cd /workspace/.audit
 # instance is a SEPARATE historical gap (a lost push race) and is not a stale finding.
 # VERIFICATION DEADLINE: if macro-calendar/2026-11-01-week-ahead.md is absent after
 # 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
-NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01"
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01 91-schedule-drift-guard:2026-11-03 92a-preopen-catalyst-capture:2026-11-03 92b-preopen-catalyst-capture:2026-11-03"
 for entry in \
   "01-weekly-mcp-health-check|^mcp-health/[0-9]{4}-W[0-9]{2}\.md$|7" \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
@@ -355,6 +373,8 @@ for entry in \
   "08-pre-market-gapper|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/pre-market-gapper\.md$|5" \
   "25-ntrt-gap-brief-daily|^ntrt/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "07-focus-rvol-09:45|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/focus-rvol-snapshot\.md$|5" \
+  "92a-preopen-catalyst-capture|^preopen-feed/[0-9]{4}-[0-9]{2}-[0-9]{2}-0830\.jsonl$|5" \
+  "92b-preopen-catalyst-capture|^preopen-feed/[0-9]{4}-[0-9]{2}-[0-9]{2}-0950\.jsonl$|5" \
   "12-cross-asset-correlation|^cross-asset/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "10-breadth-snapshot|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/breadth-snapshot\.md$|5" \
   "13-macro-calendar-midweek|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-midweek\.md$|7" \
