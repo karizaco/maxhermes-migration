@@ -150,7 +150,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/breadth-snapshot.md --branch main
+sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/breadth-snapshot.md --branch main --msg "cron 10 stock-screener-breadth-snapshot {date}" --nn 10
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/breadth-snapshot.md --branch main
 ```
 

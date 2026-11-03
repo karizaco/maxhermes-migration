@@ -20,12 +20,29 @@
 # a shared-fire-minute race land on a later attempt.
 #
 # USAGE
-#   push_artifact.sh --out <output-dir> --add <repo-relative-path> [--branch <branch>] [--msg <text>]
+#   push_artifact.sh --out <output-dir> --add <repo-relative-path> [--branch <branch>] [--msg <text>] [--nn <NN>]
 #
 #   --out     the routine's output directory, relative to the repo root (e.g. daily-screens)
-#   --add     the exact repo-relative path to stage. NEVER '.', NEVER a wildcard.
+#   --add     the routine's PRIMARY artifact path. Used for the delivery check and to derive
+#             the routine identity. The routine's WHOLE output tree is staged, not just this
+#             file — see "WHAT GETS STAGED" below.
 #   --branch  target branch (default: main). Cron #90 pushes to audit/status.
-#   --msg     commit message (default: "cron <out> <date>")
+#   --msg     commit message. Overrides the derived default.
+#   --nn      routine number. Overrides the derived default.
+#
+# WHAT GETS STAGED — the whole output tree, NOT just --add
+# ----------------------------------------------------------
+# The pre-2026-11-02 per-prompt blocks did `git add <own-dir>`: one commit per routine,
+# carrying every file the routine produced. The first version of this script staged only the
+# single `--add` path, which broke every MULTI-FILE routine: cron #09 produces 27 files, so
+# only one landed per push and the agent had to push 27 times — 61 commits on 2026-11-02, each
+# regenerating the artifact's `generated_et` timestamp so the previous push was stale by the
+# next check. It ended in a push loop.
+#
+# The worktree is built from origin/<branch>, so staging the routine's output directory stages
+# exactly the files that DIFFER from the branch — the routine's own artifacts, and nothing else.
+# A sibling routine's file in the same directory is already on the branch and unchanged, so it
+# is not staged. Files are never deleted: `cp -r` only adds to the worktree.
 #
 # EXIT CODES
 #   0 = pushed, and the path verified present on origin/<branch>
@@ -34,13 +51,14 @@
 #   3 = refused (bad args, or staged deletions detected)
 set -u
 
-OUT=""; ADD=""; BRANCH="main"; MSG=""
+OUT=""; ADD=""; BRANCH="main"; MSG=""; NN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --out)    OUT="${2:-}";   shift 2 ;;
     --add)    ADD="${2:-}";   shift 2 ;;
     --branch) BRANCH="${2:-}"; shift 2 ;;
     --msg)    MSG="${2:-}";   shift 2 ;;
+    --nn)     NN="${2:-}";    shift 2 ;;
     *) echo "push_artifact.sh: unknown argument '$1'" >&2; exit 3 ;;
   esac
 done
@@ -58,6 +76,66 @@ case "$BRANCH" in
   ''|*' '*|'-'*|'/'*|*'/'|*'//'*)
     echo "push_artifact.sh: --branch must be a plain branch name (got '$BRANCH')" >&2
     exit 3 ;;
+esac
+case "$OUT" in
+  ''|*' '*|'-'*|'/'*|*'/'|*'//'*)
+    echo "push_artifact.sh: --out must be a plain directory name (got '$OUT')" >&2
+    exit 3 ;;
+esac
+
+# --- routine identity -------------------------------------------------------
+# The commit subject must carry the routine NUMBER: cron #90's near-miss triage greps commits
+# for "cron (#)?NN " to attribute a push to a routine. Without the number a routine's push is
+# invisible to the auditor and a delivered artifact is reported as MISSING.
+#
+# The number is derived from the artifact path, so it is deterministic instead of depending on
+# the agent remembering to pass --msg. This table is the same mapping the roster uses.
+if [ -z "$NN" ]; then
+  case "$ADD" in
+    asia-pre-market/*)                  NN=02; NM=asia-pre-market-reactions ;;
+    earnings/*-reminders.md)            NN=19; NM=earnings-reminder-daily ;;
+    earnings/*-reactions.md)            NN=15; NM=earnings-reaction-scanner ;;
+    daily-briefs/*-pre-market.md)       NN=26; NM=agentic-pre-market-brief ;;
+    daily-briefs/*-post-market.md)      NN=23; NM=agentic-post-market-brief ;;
+    daily-screens/*/pre-market-gapper.md)   NN=08; NM=stock-screener-pre-market-gapper ;;
+    daily-screens/*/focus-rvol-snapshot.md) NN=07; NM=stock-screener-focus-rvol-09:45 ;;
+    daily-screens/*/breadth-snapshot.md)    NN=10; NM=stock-screener-breadth-snapshot ;;
+    daily-screens/*/reversal-bullish-3:55.md) NN=04; NM=reversal-bullish-3:55 ;;
+    daily-screens/*/weekly-ipo.md)      NN=06; NM=stock-screener-pattern-study-backlog ;;
+    daily-screens/*/daily-sweep.md)     NN=09; NM=stock-screener-daily-sweep-18:30 ;;
+    cross-asset/*)                      NN=12; NM=cross-asset-correlation-snapshot ;;
+    macro-calendar/*-midweek.md)        NN=13; NM=macro-calendar-midweek ;;
+    macro-calendar/*-week-ahead.md)     NN=14; NM=macro-calendar-week-ahead ;;
+    ntrt/*)                             NN=25; NM=ntrt-gap-brief-daily ;;
+    options-flow/*)                     NN=16; NM=unusual-options-flow-daily ;;
+    us-stocks-in-play/*)                NN=17; NM=us-stocks-in-play ;;
+    us-eod/*)                           NN=20; NM=eod-watchlist-csv-snapshot ;;
+    international-eod/*)                NN=05; NM=eod-international-daily ;;
+    weekly/*-preview.md)                NN=22; NM=weekly-market-recap-preview ;;
+    preopen-feed/*)                     NN=92; NM=preopen-catalyst-capture ;;
+    _audit/status.json)                 NN=90; NM=delivery-auditor ;;
+    *)                                  NN="";  NM="" ;;
+  esac
+fi
+
+# The subject's date is the ARTIFACT's date, taken from the artifact path — not the execution
+# date. On a delayed replay those differ, and cron #90 greps commits by the audited date.
+ART_DATE=$(printf '%s' "$ADD" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+[ -n "$ART_DATE" ] || ART_DATE=$(TZ=America/New_York date +%Y-%m-%d)
+
+if [ -z "$MSG" ]; then
+  if [ -n "$NN" ]; then
+    MSG="cron $NN $NM $ART_DATE"
+  else
+    MSG="cron $OUT $ART_DATE"
+  fi
+fi
+
+# A literal {date} in the --msg is replaced with the ARTIFACT's date, so the prompt does not
+# depend on the agent substituting the placeholder correctly. The date comes from the artifact
+# path, so on a delayed replay it is the scheduled date, not the execution date.
+case "$MSG" in
+  *"{date}"*) MSG=$(printf '%s' "$MSG" | sed "s|{date}|$ART_DATE|g") ;;
 esac
 
 # --- GitHub connector fallback -------------------------------------------------
@@ -123,15 +201,23 @@ SRC_DIR="${SRC_DIR:-/workspace/$OUT}"
 cd "$REPO_DIR" || { echo "push: FAILED (no repo dir at $REPO_DIR)"; exit 1; }
 
 git init -q 2>/dev/null || true
+# REMOTE_URL exists so the script can be tested against a local bare repo. The cron prompts
+# never set it, so the production target is always the GitHub outputs repo.
+REMOTE_URL="${REMOTE_URL:-https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git}"
 if ! git remote get-url origin >/dev/null 2>&1; then
-  git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
+  git remote add origin "$REMOTE_URL"
 else
-  git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/karizaco/minimax-cloud-outputs.git"
+  git remote set-url origin "$REMOTE_URL"
 fi
 
 LAST_ERR=""
 for attempt in 1 2 3; do
-  git fetch -q origin "$BRANCH" 2>/dev/null || true
+  # NOTE: fetch the branch into its remote-tracking ref EXPLICITLY. A bare `git fetch origin
+  # main` updates FETCH_HEAD but does NOT advance refs/remotes/origin/main in a shallow clone,
+  # so a later `git cat-file origin/main:<path>` would read a STALE ref and report a delivery
+  # failure for an artifact that is actually on the branch.
+  git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || \
+    git fetch -q origin "$BRANCH" 2>/dev/null || true
   git worktree prune 2>/dev/null || true
   # NOTE: no $RANDOM - it is a bashism and `set -u` makes it fatal under dash.
   WT="${REPO_DIR}/.wt.$$.$attempt"
@@ -161,20 +247,30 @@ for attempt in 1 2 3; do
   fi
 
   cd "$WT" || { rm -rf "$WT"; continue; }
-  # Stage ONLY the named path. Never `git add -A`: in a fresh worktree that stages every
-  # other file on the branch as DELETED (2026-10-25: 283 files wiped).
-  git add -- "$ADD" 2>/dev/null || true
-  STAGED="$(git status --short)"
+  # Stage the routine's WHOLE output tree, so every file it produced lands in ONE commit.
+  # The worktree was built from origin/<branch>, so this stages exactly what DIFFERS from the
+  # branch — the routine's own artifacts. A sibling routine's file in the same directory is
+  # already on the branch and unchanged, so it is not staged. Never `git add -A`: in a fresh
+  # worktree that stages every other file on the branch as DELETED (2026-10-25: 283 files
+  # wiped).
+  git add -- "$OUT" 2>/dev/null || true
+  STAGED="$(git diff --cached --name-only 2>/dev/null)"
   if [ -z "$STAGED" ]; then
+    # Nothing differs from the branch. Either the artifact is already there byte-identical
+    # (a re-run that produced the same output) or the routine wrote nothing.
+    if git cat-file -e "origin/$BRANCH:$ADD" 2>/dev/null; then
+      echo "push: ok (no change - $ADD is already on origin/$BRANCH)"
+      cd "$REPO_DIR"; rm -rf "$WT"; exit 0
+    fi
     echo "push: ABORTED (nothing staged - the artifact was not copied into the worktree)"
     cd "$REPO_DIR"; rm -rf "$WT"; exit 1
   fi
-  if echo "$STAGED" | grep -q '^ *D'; then
+  if git diff --cached --name-status 2>/dev/null | grep -q '^D'; then
     echo "push: ABORTED (staged deletions detected - refusing to push)"
     cd "$REPO_DIR"; rm -rf "$WT"; exit 3
   fi
 
-  git commit -q -m "${MSG:-cron $OUT $(TZ=America/New_York date +%Y-%m-%d)}" 2>/dev/null || true
+  git commit -q -m "$MSG" 2>/dev/null || true
 
   # Capture the exit status DIRECTLY. Never `git push ... | head -3` — that returns head's
   # status (always 0) and reports a rejected push as a success.
@@ -182,9 +278,11 @@ for attempt in 1 2 3; do
     echo "push: ok (attempt $attempt)"
     cd "$REPO_DIR"; rm -rf "$WT"
     # Verify what actually landed, not merely that the push exited 0.
-    if git fetch -q origin "$BRANCH" 2>/dev/null && \
-       git cat-file -e "origin/$BRANCH:$ADD" 2>/dev/null; then
-      echo "DELIVERY: ok (origin/$BRANCH:$ADD present)"
+    git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || \
+      git fetch -q origin "$BRANCH" 2>/dev/null || true
+    if git cat-file -e "origin/$BRANCH:$ADD" 2>/dev/null; then
+      N=$(git ls-tree -r --name-only "origin/$BRANCH" -- "$OUT" 2>/dev/null | wc -l)
+      echo "DELIVERY: ok (origin/$BRANCH:$ADD present; $OUT now holds $N file(s))"
       exit 0
     fi
     echo "DELIVERY: FAILED (push exited 0 but origin/$BRANCH:$ADD is absent)"

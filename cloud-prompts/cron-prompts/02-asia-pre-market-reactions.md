@@ -103,7 +103,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out asia-pre-market --add asia-pre-market/{date}.md --branch main
+sh /workspace/push_artifact.sh --out asia-pre-market --add asia-pre-market/{date}.md --branch main --msg "cron 02 asia-pre-market-reactions {date}" --nn 02
 sh /workspace/verify_delivery.sh --path asia-pre-market/{date}.md --branch main
 ```
 

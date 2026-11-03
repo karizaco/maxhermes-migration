@@ -101,8 +101,19 @@ consumer can merge them oldest-first.
 Then push with the shared helper:
 
 ```bash
-bash /workspace/push_artifact.sh /workspace/preopen-feed/${DATE}.jsonl preopen-feed/${DATE}.jsonl
+for U in \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
+  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U" 2>/dev/null
+done
+sh /workspace/push_artifact.sh --out preopen-feed --add preopen-feed/${DATE}-${CP}.jsonl \
+   --branch main --msg "cron 92 preopen-catalyst-capture ${DATE}-${CP}" --nn 92
 ```
+
+**The helper takes NAMED flags** (`--out`, `--add`, `--branch`, `--msg`, `--nn`) — it does not
+accept positional arguments, and a call that omits them is refused. `--add` is the checkpoint file
+this fire wrote; the helper stages the whole `preopen-feed/` tree, so the sibling checkpoints from
+the other #92 fire land in the same commit without being clobbered.
 
 (If that helper is absent, fetch it from
 `cloud-prompts/_shared/push_artifact.sh` in `karizaco/maxhermes-migration`.)

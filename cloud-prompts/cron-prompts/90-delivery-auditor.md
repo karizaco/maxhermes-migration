@@ -537,8 +537,11 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
+# Recompute AUDIT_DATE HERE: this is a separate shell from the one that set it in STEP 3, so a
+# variable set there does not survive into this block.
+AUDIT_DATE=$(TZ=America/New_York date -d "yesterday" +%Y-%m-%d)
 sh /workspace/push_artifact.sh --out _audit --add _audit/status.json --branch audit/status \
-   --msg "audit $AUDIT_DATE"
+   --msg "cron 90 delivery-auditor $AUDIT_DATE" --nn 90
 sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
 ```
 
