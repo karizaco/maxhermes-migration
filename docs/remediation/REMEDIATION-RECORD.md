@@ -257,6 +257,39 @@ The point of the whole exercise: a corrected repo changes nothing until it is de
 **Result: all 23 prompts deployed and verified byte-identical to their repo files, with no
 non-prompt field changed on any task.**
 
+> **Post-deploy correction (2026-11-03).** The fleet is now **25 routines** — a concurrent
+> agent added `#92a`/`#92b` (pre-open catalyst capture) and rewrote `#01`, `#91` and `#04`. The
+> final state is **25/25 prompts byte-identical** to their repo blobs, all 25 on
+> `America/New_York`, all `enabled`, all `session.mode=new`.
+>
+> Two defects were found only by the first post-deploy fires, and both are now fixed:
+>
+> 1. **The shared push script staged only the single `--add` path.** That is correct for the 18
+>    single-file routines and wrong for the multi-file ones. `#09` produces 27 files, so only one
+>    landed per push and the agent had to push 27 times: **61 commits on `origin/main` in 17
+>    minutes** on 2026-11-02, each regenerating the artifact's `generated_et` timestamp so the
+>    previous push was already stale by the next check — a push loop that ended only when the
+>    agent stopped. The script now stages the routine's whole output tree, restoring the
+>    pre-2026-11-02 `git add <own-dir>` behaviour: one commit per routine. Verified against a
+>    local bare repo — 28 files in ONE commit, sibling routines' files untouched, zero deletions.
+> 2. **The commit subject carried no routine number.** `#90`'s near-miss triage greps commits for
+>    `cron (#)?NN ` to attribute a push to a routine, so a subject like `cron daily-screens
+>    2026-11-02` makes a *delivered* artifact report as MISSING. The script now derives the
+>    number from the artifact path (one table, checked against every live `--add` path) and the
+>    date from the path too — the ARTIFACT's date, not the execution date, which differ on a
+>    delayed replay.
+>
+> **A third defect was mine and is worth recording: a `cron_update` carrying only `task_id` +
+> `prompt` reset the timezone to `Etc/GMT-7`** on two tasks — `#90` would have fired at 19:00
+> ET instead of 07:00, and `#04` at 20:55 instead of 15:55. This is the UTC+7 landmine the
+> project already knew about, but it fires on a *prompt* update too, not only on a `schedule`
+> update. The fix is to send `timezone` in the same call, and to re-check it after every
+> deploy. Both tasks were repaired and verified.
+>
+> **And a fourth, about the deploy method itself:** two hand-pastes were byte-exact in LENGTH
+> but wrong in content — `#90` got `[01-11]` where the repo said `[31-10]`, and `#04` had one
+> line reflowed. A length check is not a byte check; only SHA-256 over the raw bytes is proof.
+
 Verified against a **fresh `cron_read view=list`** taken after the last write — not against the
 read-back of the write itself, which would only prove the write landed where it was aimed:
 
@@ -266,7 +299,9 @@ read-back of the write itself, which would only prove the write landed where it 
 | Non-prompt fields changed (`schedule`, `timezone`, `enabled`, `session.mode`, `model`, `project_id`, `task_id`, `created_at`, `run_count`) | **0 of 23** |
 | `session.mode` | `new` on all 23 (no routine bound to a fixed conversation) |
 | `timezone` | `America/New_York` on all 23 (no silent `Etc/GMT-7` reset) |
-| A **fresh clone** of the repo matches the live scheduler | 23 / 23 |
+| A **fresh clone** of the repo matches the live scheduler | 25 / 25 (after the `#92` additions) |
+| Commit subjects carry the routine number (`cron NN …`) | every live `--add` path resolved through the script's table | 23 / 23 |
+| `timezone` after every deploy | `America/New_York` | 25 / 25 |
 | `next_run` | unchanged on 22; `#15`'s advanced one day, because its 08:00 ET fire had passed |
 
 The repo is now the single source of truth *and* the live fleet is running it. A fresh
