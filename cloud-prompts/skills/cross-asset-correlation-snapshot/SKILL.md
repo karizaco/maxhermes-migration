@@ -56,6 +56,11 @@ Quarterly review for additions (e.g. XLE for energy, HYG for credit) — note in
    3. Highlight pairs: top 3 strongest |corr|, top 3 weakest |corr|
    4. Week-over-week delta (if prior week exists)
    5. Source health (VIX included/dropped, any call failure)
+
+   **On Cloud, do NOT hand-format any of these tables.** Generate the whole artifact with
+   `scripts/correlation_report.py` — see "Output formatting" below. Hand-typed tables drift
+   run to run, and a correlation matrix is a COMPARISON artifact whose value depends on being
+   byte-comparable with last week's file.
 7. **Append audit line:** `correlation-snapshot target=correlations:<iso_week> universe=<n> regime=<tag> regime_shift=<yes|no>`.
 
 ## Cloud adaptation (agent.minimax.io) — READ THIS ON CLOUD
@@ -134,6 +139,71 @@ excluded date. If the partial bar's effect is quantified, say so.
 `shibui` server-side matrix -> local Pearson on Yahoo closes -> `web_search` per symbol.
 **Record which path produced the published matrix in Source health.** Do not silently ship a
 locally-computed matrix while implying the server-side one was used.
+
+## Output formatting — the renderer (Cloud)
+
+**The artifact's tables are generated, not typed.** `scripts/correlation_report.py` reads the
+`mats.json` written by `correlation_matrix.py` and emits the complete markdown report.
+
+```bash
+SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
+curl -sL -o /workspace/correlation_report.py "$SKILL/correlation_report.py"
+
+# 1) the matrix (server-side), then the two comparison windows
+python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
+  --window-start <YYYY-MM-DD> --window-end <YYYY-MM-DD> --basis adjclose --cross-check \
+  --out /workspace/data_cross/mats.json
+python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
+  --window-start <6mo-before-prior-week> --window-end <prior-week-end> --basis adjclose \
+  --out /workspace/data_cross/mats_prevweek.json
+
+# 2) write the two PROSE sections to files (prose is hand-written; tables are not)
+cat > /workspace/tldr.txt <<'EOF'
+...TL;DR prose...
+EOF
+cat > /workspace/deviations.txt <<'EOF'
+...deviations-from-spec bullets...
+EOF
+
+# 3) render
+python3 /workspace/correlation_report.py \
+  --current /workspace/data_cross/mats.json \
+  --prior   /workspace/data_cross/mats_prevweek.json \
+  --partial /workspace/data_cross/mats_partial.json \
+  --series  /workspace/data_cross/series.json \
+  --tl-dr /workspace/tldr.txt --deviations /workspace/deviations.txt \
+  --date <YYYY-MM-DD> --iso-week <YYYY-Wnn> --fire-et <HH:MM> \
+  --regime "<regime tag>" --out /workspace/cross-asset/<YYYY-MM-DD>.md
+```
+
+### What the renderer adds (and why)
+
+- **Semantic colour via emoji blocks.** GitHub strips `style=` from markdown and the chat
+  renders GFM, so ANSI/HTML colour is impossible. The renderer uses magnitude bands instead:
+  🟥 ≥ 0.70 strong · 🟧 0.60–0.70 · 🟨 0.40–0.60 · 🟩 0.20–0.40 · 🟦 < 0.20 uncorrelated.
+  Sign stays in the number; colour encodes magnitude only.
+- **Magnitude bars** (`███████░`, 8 steps) next to each pair, and a flat ranked heatmap list
+  of all 28 pairs — easier to scan on a phone than an 8×8 grid.
+- **Severity-coded flags** — ✅ no shift · ⚠️ borderline · 🔴 REGIME_SHIFT — so the
+  hedge-relevant facts pop instead of hiding in prose.
+- **Sign-aware delta arrows** (➕/➖) on the week-over-week table.
+- **Determinism.** Every table has the same columns, the same order and the same band
+  thresholds on every run, which is what makes week-over-week comparison meaningful.
+
+### Rules for the renderer
+
+1. **Never hand-write a table.** Prose (TL;DR, deviations, regime tag) may be written by hand
+   into `tldr.txt` / `deviations.txt`; every table comes from the script.
+2. **The renderer is not a source.** It formats `mats.json`; it never fetches data. If a
+   comparison window is missing, omit that section rather than hand-filling it.
+3. **A live quote feed may only be used if it is quoting the snapshot's own date.** The
+   renderer enforces this; otherwise the intraday column falls back to the partial bar from
+   the snapshot's own series. Injecting today's prices into an older snapshot is a silent
+   date error.
+4. **Check the rendered file for malformed tables before pushing.** A literal `|` inside a
+   cell (e.g. `max |Δ|`) breaks the table — write `max abs diff`.
+5. The level-correlation appendix is a **local Pearson** and is a supplement only. The
+   published matrix is the server-side returns matrix; the artifact must say so.
 
 ## Hard rules
 - Use only `financekit.correlation_matrix`. Do not compute correlations manually from `price_history` calls — that's redundant and slower.
