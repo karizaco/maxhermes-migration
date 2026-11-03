@@ -27,9 +27,15 @@ fallback rungs are blocked. Verified 2026-11-03 from the Cloud sandbox:
 
 **Consequence:** in the Cloud runtime the usable chain is
 **MCP/bridge → TradingView scanner → Nasdaq → CBOE → Yahoo page**. Finviz is not
-available at all, so a task that depends on it must be re-sourced (short interest and
-IPO date have no shibui equivalent and no Finviz fallback — say so in the artifact
-rather than shipping an empty table).
+available at all, so a task that depends on it must be re-sourced — and for the two
+screens that were routed to Finviz (recent IPOs, high short float) the re-source is
+shibui, not a dead end: `general_info.ipo_date` and `ownership_stats.short_percent_float`
+(both verified live 2026-11-03).
+
+**TradingView cannot serve short interest.** Every short column it exposes
+(`short_ratio`, `short_percentage_of_shares_outstanding`, `short_float`,
+`short_interest`, `days_to_cover`) comes back **null for every US name** — the same
+failure class as its earnings-growth columns. shibui's `ownership_stats` is the source.
 
 **`mcp__tradingview__screen_stocks` vs the scanner API.** The scanner API takes a
 positional column list and returns `{"totalCount": N, "data": [{"s": "NASDAQ:AAPL",

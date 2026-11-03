@@ -828,19 +828,54 @@ ORDER BY symbol
 
 
 def emit_weekly_sql(date: str) -> str:
-    """Weekly refresh placeholder.
+    """Weekly refresh: recent IPOs + high short interest. One shibui call.
 
-    Schema note: shibui does NOT have IPO date or short_interest_pct_float
-    columns. Both are served via the Finviz tier-2 fallback (see
-    `references/fallbacks.md`). This SQL is a no-op stub kept for back-compat
-    with the `emit-sql weekly` subcommand.
+    The old version of this function was a stub that said "shibui does NOT
+    have IPO date or short-interest columns - fall back to Finviz". That was
+    true when the skill was written and is now stale: shibui carries
+    `general_info.ipo_date` and `ownership_stats.short_percent_float` (both
+    verified live 2026-11-03). Finviz is Cloudflare-403 from the Cloud
+    runtime in any case, so the fallback was never reachable there.
+
+    Both branches emit the SAME explicitly-named column set, because a UNION
+    ALL takes its output column names from the FIRST branch.
     """
     return f"""
--- Weekly refresh for {date}: shibui has no IPO date or short-interest columns.
--- Fall back to Finviz URL builders:
---   finviz_ipo_recent() and finviz_high_short_float() from screen.py.
--- See references/fallbacks.md for the chain.
-SELECT 'fallback_to_finviz' AS note, '{date}' AS date
+-- Weekly refresh for {date}: recent IPOs + high short interest
+WITH mc AS (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
+),
+ipo AS (
+  SELECT 'ipo' AS kind, g.symbol, g.name AS label, g.ipo_date AS event_date,
+         mc.market_cap, NULL AS short_percent_float, NULL AS shares_float,
+         NULL AS volume, g.gics_sector AS sector, g.type AS security_type
+  FROM shibui.general_info g
+  JOIN mc ON mc.symbol = g.symbol
+  WHERE g.ipo_date >= DATE '{date}' - INTERVAL '365 days'
+    AND g.type = 'Common Stock'
+    AND mc.market_cap > 1000000000
+  ORDER BY g.ipo_date DESC
+  LIMIT 50
+),
+hsf AS (
+  SELECT 'high_short_float' AS kind, o.symbol, NULL AS label, NULL AS event_date,
+         mc.market_cap, o.short_percent_float, o.shares_float,
+         q.volume, g.gics_sector AS sector, g.type AS security_type
+  FROM shibui.ownership_stats o
+  JOIN mc ON mc.symbol = o.symbol
+  JOIN shibui.general_info g ON g.symbol = o.symbol
+  JOIN shibui.stock_quotes q ON q.symbol = o.symbol AND q.date = '{date}'
+  WHERE o.short_percent_float > 0.20
+    AND mc.market_cap > 1000000000
+    AND q.volume > 1000000
+  ORDER BY o.short_percent_float DESC
+  LIMIT 30
+)
+SELECT * FROM ipo
+UNION ALL SELECT * FROM hsf
+ORDER BY kind, event_date DESC NULLS LAST, short_percent_float DESC NULLS LAST, symbol
+LIMIT 200
 """.strip()
 
 

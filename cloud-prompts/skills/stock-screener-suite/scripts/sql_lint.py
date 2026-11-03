@@ -87,6 +87,14 @@ GENERAL_INFO_COLUMNS = {
     "gics_sub_industry", "sic_code", "sic_sector", "sic_industry",
     "description", "cik", "filer_category", "is_smaller_reporting",
     "is_emerging_growth",
+    # verified live 2026-11-03 - the IPO screen reads ipo_date from here
+    "ipo_date", "isin", "fiscal_year_end", "full_time_employees", "location",
+    "company_website", "sec_filing_website", "phone", "logo_url",
+    "reporting_currency", "has_company_details",
+}
+OWNERSHIP_STATS_COLUMNS = {
+    "symbol", "ticker", "exchange", "percent_insiders", "percent_institutions",
+    "shares_float", "short_percent_float",
 }
 FUNDAMENTALS_QUARTERLY_COLUMNS = {
     "symbol", "ticker", "date", "exchange", "eps_growth_yoy", "revenue_growth_yoy",
@@ -100,6 +108,7 @@ BASE_COLUMNS = (
     | TECHNICAL_INDICATOR_COLUMNS
     | VALUATION_COLUMNS
     | GENERAL_INFO_COLUMNS
+    | OWNERSHIP_STATS_COLUMNS
     | FUNDAMENTALS_QUARTERLY_COLUMNS
 )
 

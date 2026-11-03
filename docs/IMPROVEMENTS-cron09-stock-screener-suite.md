@@ -171,12 +171,52 @@ server.
 - The `finviz-url` builders remain in `screen.py` although Finviz is unreachable from the
   Cloud egress. They are still correct for the local runtime, so they stay — but the
   fallbacks doc now says plainly that tier 2 is unavailable in the Cloud.
-- The Sunday-only IPO and high-short-float refreshes have no shibui equivalent and no
-  reachable Finviz fallback. They need a source or an explicit "not available" state.
+- ~~The Sunday-only IPO and high-short-float refreshes have no shibui equivalent and no
+  reachable Finviz fallback.~~ **Wrong, and now fixed** — see §8.
 
 ---
 
-## 8. Reverting
+## 8. A stale note, corrected: the IPO and short-float refreshes DO have a shibui source
+
+This audit originally recorded that the Sunday-only IPO and high-short-float refreshes had
+"no reachable source in the Cloud runtime". That was **wrong**, and the way it was wrong is
+worth recording.
+
+The claim came from the skill's own §N/§O, which said shibui has no IPO-date or
+short-interest columns and routed both screens to Finviz. I had verified that **Finviz was
+403** and then concluded the screens had no source — without ever testing whether shibui
+actually had the data. The note was stale; shibui's schema has grown since the skill was
+written. Verified live on 2026-11-03:
+
+| Screen | shibui source | Verified |
+|---|---|---|
+| Recent IPOs | `shibui.general_info.ipo_date` | 20 recent IPOs returned (MSGR 2026-10-21, VYLR 2026-10-01, ACCV 2026-09-30 …) |
+| High short float | `shibui.ownership_stats.short_percent_float` | 5,388 of 5,868 rows populated (~92%); 384 names over 20%; top of list VG 83.8%, MMED 63.8%, LCID 57.2% |
+
+`emit_weekly_sql` was a stub that returned the literal string `fallback_to_finviz`. It now
+emits real SQL for both screens in one call — 80 rows in 1.7 s — and the IPO and
+short-float branches carry the same explicit column set, ordered IPOs newest-first and
+short float highest-first.
+
+**TradingView genuinely cannot serve the short-float screen**, so it was never the answer:
+every short column it exposes (`short_ratio`, `short_percentage_of_shares_outstanding`,
+`short_float`, `short_interest`, `days_to_cover`) comes back **null for every US name** —
+the same failure class as its earnings-growth columns.
+
+Two caveats carried into the spec: `ownership_stats` is a **current snapshot** with no
+`date` column, so the short-float screen cannot be replayed for a past date and there is no
+`days_to_cover`; and `percent_institutions` can exceed 100% on the same rows (RH 105.2%,
+WOLF 139.0%), so it is not usable as a sanity filter without a tolerance.
+
+**The lesson is the one this whole audit is about:** a note in a spec is a *claim*, not
+evidence. The 2026-10-28 run proved the spec wrong five times about its own SQL; this
+proved it wrong twice more about its own data sources. Neither would have surfaced without
+running the query — the same discipline that caught the five SQL defects caught these two
+false claims.
+
+---
+
+## 9. Reverting
 
 ```
 git revert <this commit>   # the live-validation performance fix

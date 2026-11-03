@@ -459,30 +459,65 @@ post-market move > 4% with > 50k volume. One call per ticker, capped at Focus li
 
 ## N. Sun — IPO weekly refresh
 
+**shibui DOES have the IPO date** — `shibui.general_info.ipo_date` (verified live
+2026-11-03). The old note that shibui has no IPO date, and that this screen must fall back
+to Finviz, was stale: the schema has grown since the skill was written, and Finviz is
+Cloudflare-403 from the Cloud runtime anyway.
+
 ```sql
-SELECT symbol, ipo_date, market_cap, sector
-FROM shibui.reference
-WHERE ipo_date > CURRENT_DATE - INTERVAL '365 days'
-  AND market_cap > 1_000_000_000
-ORDER BY ipo_date DESC
+-- Recent US IPOs, common stock only, above a $1B market cap
+SELECT g.symbol, g.name, g.ipo_date, g.exchange, g.type,
+       v.market_cap, g.gics_sector, g.gics_industry
+FROM shibui.general_info g
+JOIN (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{resolved_date}')
+) v ON v.symbol = g.symbol
+WHERE g.ipo_date >= DATE '{resolved_date}' - INTERVAL '365 days'
+  AND g.type = 'Common Stock'
+  AND v.market_cap > 1000000000
+ORDER BY g.ipo_date DESC
 LIMIT 50
 ```
 
-Run only on Sundays.
+Run only on Sundays. Note `general_info.type` — filter to `Common Stock` or the list fills
+with ETFs and SPACs that also have an `ipo_date`.
 
 ## O. Sun — High Short Float weekly refresh
 
+**shibui DOES have short interest** — `shibui.ownership_stats.short_percent_float`
+(verified live 2026-11-03: 5,388 of 5,868 rows populated, ~92%). It is a **decimal
+fraction** (0.15 means 15%), and values above 1.0 occur.
+
 ```sql
-SELECT symbol, short_interest_pct_float, days_to_cover
-FROM shibui.reference
-WHERE short_interest_pct_float > 20
-  AND adv_dollar_20d > 50_000_000
-ORDER BY short_interest_pct_float DESC
+-- Highest short interest as a share of float, with liquidity and size gates
+SELECT o.symbol, o.short_percent_float, o.shares_float, o.percent_institutions,
+       v.market_cap, q.volume
+FROM shibui.ownership_stats o
+JOIN (
+  SELECT symbol, market_cap FROM shibui.valuation
+  WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{resolved_date}')
+) v ON v.symbol = o.symbol
+JOIN shibui.stock_quotes q
+  ON q.symbol = o.symbol AND q.date = '{resolved_date}'
+WHERE o.short_percent_float > 0.20
+  AND v.market_cap > 1000000000
+  AND q.volume > 1000000
+ORDER BY o.short_percent_float DESC
 LIMIT 30
 ```
 
-Run only on Sundays. shibui may not have `days_to_cover` directly — drop it if not
-present, sort by `short_interest_pct_float`.
+Run only on Sundays. Two caveats worth knowing:
+
+- `ownership_stats` is a **current snapshot** — it has no `date` column, so this screen
+  cannot be replayed for a past date. There is no `days_to_cover` either; drop it.
+- `percent_institutions` can exceed 100% on the same rows (RH 105.2%, WOLF 139.0%), so do
+  not use it as a sanity filter without a tolerance.
+
+**TradingView cannot serve this screen** — every short-interest column it exposes
+(`short_ratio`, `short_percentage_of_shares_outstanding`, `short_float`, `short_interest`,
+`days_to_cover`) comes back **null for every US name**, exactly like its earnings-growth
+columns. shibui is the source.
 
 ## P. Skip-rule flag columns (post-process every result)
 

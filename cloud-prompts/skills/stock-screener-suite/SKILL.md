@@ -491,8 +491,15 @@ The `user_prompt` argument is **mandatory** (stats only; never affects execution
   the daily quota is spent (it was spent on 2026-11-03 by a morning sweep plus the other
   routines that share the server). A 429 is not a broken query — wait out the
   `retry-after` and re-run; do not rewrite the SQL.
-- No `ipo_date`, no `short_interest_pct_float`, no `institutional_holders_count` columns.
-  `fundamentals_derived_quarterly` DOES have `eps_growth_yoy` / `revenue_growth_yoy`
+- **It DOES have `general_info.ipo_date`** (recent US IPOs, verified live 2026-11-03) and
+  **`ownership_stats.short_percent_float`** (a decimal fraction — 0.15 means 15%; ~92%
+  populated; the table is a current snapshot with no `date` column, so it cannot be
+  replayed for a past date). The Sunday IPO and high-short-float refreshes therefore run
+  from shibui, not from Finviz — the old note that they needed Finviz was stale, and
+  Finviz is Cloudflare-403 from the Cloud runtime anyway.
+- It has **no `institutional_holders_count`**, but `ownership_stats.percent_institutions`
+  is the better proxy for "held by ≥ 1,000 funds" that the old spec asked for.
+- `fundamentals_derived_quarterly` has `eps_growth_yoy` / `revenue_growth_yoy`
   (decimal fractions — 0.25 means 25%), which is where CANSLIM's growth criteria come
   from in the Cloud runtime.
 - No SPX-constituents table. Use large-cap (mcap > $10B) proxy for breadth.
