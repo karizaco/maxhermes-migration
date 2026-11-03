@@ -284,7 +284,17 @@ def main():
     syms = cur_doc.get("tickers", SYMS)
     syms = [s for s in SYMS if s in syms] or SYMS
 
-    prior = json.load(open(args.prior))["matrix_returns"] if args.prior else None
+    # The prior-week matrix normally lives in the SAME file as the current one
+    # (correlation_matrix.py --prior-window embeds it as `matrix_returns_prior`).
+    # Fall back to a separate --prior file for older layouts.
+    prior = None
+    if args.prior:
+        pd_ = json.load(open(args.prior))
+        prior = pd_.get("matrix_returns_prior") or pd_.get("matrix_returns")
+    elif "matrix_returns_prior" in cur_doc:
+        prior = cur_doc["matrix_returns_prior"]
+    if prior is None and "matrix_returns_prior" in cur_doc:
+        prior = cur_doc["matrix_returns_prior"]
     partial = json.load(open(args.partial))["matrix_returns"] if args.partial else None
     series = json.load(open(args.series)) if args.series else None
     quotes = json.load(open(args.quotes)) if args.quotes else None
@@ -401,6 +411,7 @@ regime_shift: {shift_flag}
 max_pair_move: {maxd:.4f}
 server_side: true
 engine: {cur_doc.get('engine')}
+window_end_derived_from_data: {str(cur_doc.get('window', {}).get('end_derived_from_data', False)).lower()}
 vix_included: {'yes' if '^VIX' in syms else 'no'}
 errors: 0
 ---

@@ -267,12 +267,75 @@ FROM wide
     return sql
 
 
+
+# ----------------------------------------------------------------- window logic
+def now_et():
+    """Current time in US/Eastern (the exchange's calendar)."""
+    return datetime.datetime.now(NY)
+
+
+def auto_window_end(series_map, tickers):
+    """Derive the last COMPLETED session from the DATA — never from a model's judgement.
+
+    This exists because a model-chosen window end silently produced a stale artifact on
+    2026-11-03: the run published the window ending 2026-10-30 (the previous day's window)
+    even though Yahoo's series contained the 2026-11-02 bar. The rule below is mechanical:
+
+      * if the current ET time is BEFORE today's 16:00 close, today's bar is IN PROGRESS,
+        so the last completed session is the latest session strictly before today;
+      * at or after 16:00 ET, today's bar is a close and is used;
+      * on a weekend or market holiday the latest bar is already earlier than today, so the
+        "before today" rule picks it up unchanged.
+
+    ^VIX is EXCLUDED from the session calendar: it prints overnight and can carry a bar for a
+    session the ETFs do not have.
+    """
+    today = now_et().date()
+    calendar = [sy for sy in tickers if not sy.startswith("^")] or list(tickers)
+    latest = None
+    for t in calendar:
+        if not series_map.get(t):
+            continue
+        d = max(series_map[t])
+        latest = d if latest is None or d > latest else latest
+    if latest is None:
+        raise ValueError("auto_window_end: no price series")
+    latest_d = datetime.date.fromisoformat(latest)
+    before_close = now_et().hour < 16 or (now_et().hour == 16 and now_et().minute == 0
+                                           and now_et().second < 30)
+    if latest_d >= today and before_close:
+        # today's bar is in progress -> drop it
+        prior = None
+        for t in calendar:
+            for d in series_map.get(t, {}):
+                dd = datetime.date.fromisoformat(d)
+                if dd < today and (prior is None or dd > prior):
+                    prior = dd
+        if prior is None:
+            raise ValueError("auto_window_end: no completed session before today")
+        return prior
+    return latest_d
+
+
+def months_back(d, n=6):
+    y, m = d.year, d.month - n
+    if m <= 0:
+        m += 12
+        y -= 1
+    return datetime.date(y, m, d.day)
+
 # ----------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="SPY,QQQ,IWM,TLT,GLD,UUP,EEM")
-    ap.add_argument("--window-end", required=True, help="YYYY-MM-DD, last COMPLETED session")
+    ap.add_argument("--window-end", required=True,
+                    help="YYYY-MM-DD for the last COMPLETED session, or 'auto' to DERIVE it "
+                         "from the data (recommended — a hand-picked date silently shipped a "
+                         "stale window on 2026-11-03)")
     ap.add_argument("--window-start", default=None, help="YYYY-MM-DD (default: 6 months back)")
+    ap.add_argument("--prior-window", action="store_true",
+                    help="also compute the MATCHED-LENGTH prior-week window (end - 7 days) "
+                         "and embed it in the output file, so no date arithmetic is needed")
     ap.add_argument("--rolled-end", default=None, help="second window end for a roll comparison")
     ap.add_argument("--basis", default="adjclose", choices=["adjclose", "close"])
     ap.add_argument("--cross-check", action="store_true", help="also run the shibui raw-close cross-check")
@@ -280,28 +343,42 @@ def main():
     args = ap.parse_args()
 
     tickers = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    end = datetime.date.fromisoformat(args.window_end)
-    if args.window_start:
-        start = datetime.date.fromisoformat(args.window_start)
-    else:
-        # 6 calendar months back from the window end
-        y, m = end.year, end.month - 6
-        if m <= 0:
-            m += 12
-            y -= 1
-        start = datetime.date(y, m, end.day)
 
     if not ensure_bridge():
         print(json.dumps({"error": "bridge_fetch_failed"}))
         return 1
 
-    # --- fetch prices, then clip each series to the requested window
-    series_map, statuses = {}, []
+    # --- fetch the FULL series first: with --window-end auto the window end is
+    #     DERIVED from the data, so it cannot be known before the fetch.
+    full_map, statuses = {}, []
     for t in tickers:
-        s, st = yahoo_series(t, basis=args.basis)
-        series_map[t] = {d: v for d, v in s.items() if start.isoformat() <= d <= end.isoformat()}
-        st["window_rows"] = len(series_map[t])
+        ser, st = yahoo_series(t, basis=args.basis)
+        full_map[t] = ser
         statuses.append(st)
+
+    auto_used = False
+    if str(args.window_end).strip().lower() == "auto":
+        try:
+            end = auto_window_end(full_map, tickers)
+        except Exception as exc:
+            print(json.dumps({"error": "auto_window_end_failed", "detail": str(exc)}))
+            return 1
+        auto_used = True
+    else:
+        end = datetime.date.fromisoformat(args.window_end)
+
+    if args.window_start:
+        start = datetime.date.fromisoformat(args.window_start)
+    else:
+        start = months_back(end, 6)
+
+    # --- clip each series to the window
+    series_map = {}
+    for t in tickers:
+        series_map[t] = {d: v for d, v in full_map[t].items()
+                         if start.isoformat() <= d <= end.isoformat()}
+    for st in statuses:
+        st["window_rows"] = len(series_map.get(st["symbol"], {}))
 
     dates = common_dates(series_map)
     if len(dates) < 30:
@@ -321,13 +398,37 @@ def main():
 
     result = {
         "window": {"start": dates[0], "end": dates[-1], "n_sessions": len(dates),
-                   "n_return_obs": int(row["n_obs"]), "basis": args.basis},
+                   "n_return_obs": int(row["n_obs"]), "basis": args.basis,
+                   "requested_end": args.window_end,
+                   "end_derived_from_data": auto_used,
+                   "derived_at_et": now_et().strftime("%Y-%m-%d %H:%M %Z")},
         "tickers": tickers,
         "matrix_returns": matrix,
         "sources": statuses,
         "server_side": True,
         "engine": "shibui.stock_data_query (DuckDB corr(), one call)",
     }
+
+    # --- matched-length prior-week window (same length, shifted one week)
+    if args.prior_window:
+        pend = end - datetime.timedelta(days=7)
+        pstart = months_back(pend, 6)
+        pmap = {t: {d: v for d, v in full_map[t].items()
+                    if pstart.isoformat() <= d <= pend.isoformat()} for t in tickers}
+        pdates = common_dates(pmap)
+        if len(pdates) >= 30:
+            psql = build_sql(pmap, pdates, tickers, args.basis)
+            prow = shibui_sql(psql, f"{len(tickers)}-asset correlation matrix, prior-week window")
+            if not isinstance(prow, dict) and prow:
+                prow = prow[0]
+                result["window_prior"] = {"start": pdates[0], "end": pdates[-1],
+                                          "n_sessions": len(pdates),
+                                          "n_return_obs": int(prow["n_obs"]),
+                                          "basis": args.basis}
+                result["matrix_returns_prior"] = matrix_from_row(prow, tickers)
+                result["prior_sources"] = []
+        else:
+            result["window_prior"] = {"error": "insufficient_common_dates", "n": len(pdates)}
 
     # --- rolled window
     if args.rolled_end:

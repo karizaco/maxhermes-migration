@@ -163,13 +163,14 @@ done
 grep -q 'as_of' /workspace/correlation_report.py \
   || echo "WARNING: stale renderer (raw/jsDelivr cache) — the intraday column and the window-return base may be one bar off"
 
-# 1) the matrix (server-side), then the two comparison windows
+# 1) the matrix (server-side) AND the matched-length prior-week window, in ONE call.
+#    --window-end auto DERIVES the last completed session FROM THE DATA. Never pass a
+#    hand-picked window end: on 2026-11-03 a hand-picked 2026-10-30 silently published
+#    the previous day's window (a duplicate of the 2026-11-02 artifact) even though
+#    Yahoo's series contained the 2026-11-02 bar.
 python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
-  --window-start <YYYY-MM-DD> --window-end <YYYY-MM-DD> --basis adjclose --cross-check \
+  --window-end auto --prior-window --basis adjclose --cross-check \
   --out /workspace/data_cross/mats.json
-python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
-  --window-start <6mo-before-prior-week> --window-end <prior-week-end> --basis adjclose \
-  --out /workspace/data_cross/mats_prevweek.json
 
 # 2) write the two PROSE sections to files (prose is hand-written; tables are not)
 cat > /workspace/tldr.txt <<'EOF'
@@ -182,7 +183,6 @@ EOF
 # 3) render
 python3 /workspace/correlation_report.py \
   --current /workspace/data_cross/mats.json \
-  --prior   /workspace/data_cross/mats_prevweek.json \
   --partial /workspace/data_cross/mats_partial.json \
   --series  /workspace/data_cross/series.json \
   --tl-dr /workspace/tldr.txt --deviations /workspace/deviations.txt \
@@ -203,6 +203,21 @@ python3 /workspace/correlation_report.py \
 - **Sign-aware delta arrows** (➕/➖) on the week-over-week table.
 - **Determinism.** Every table has the same columns, the same order and the same band
   thresholds on every run, which is what makes week-over-week comparison meaningful.
+
+### The window end is derived, never chosen
+
+`--window-end auto` computes the last COMPLETED session from the fetched series: if the
+current ET time is before today's 16:00 close, today's bar is in progress and is dropped;
+otherwise today's bar is a close and is used. `^VIX` is excluded from the session calendar
+(it prints overnight and can carry a bar the ETFs lack). `--prior-window` adds the
+matched-length prior-week window (end − 7 days) to the same output file, so **no date
+arithmetic is done by hand anywhere**.
+
+**Never pass a hand-picked `--window-end`.** A hand-picked date on 2026-11-03 published the
+window ending 2026-10-30 — the previous day's window — so the matrix and the whole
+week-over-week delta were a duplicate of the 2026-11-02 artifact, and nothing in the output
+looked wrong. The artifact then carried `window_end_derived_from_data: false`, which is how
+you spot it.
 
 ### Rules for the renderer
 
