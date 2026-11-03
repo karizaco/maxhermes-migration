@@ -120,7 +120,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out cross-asset --add cross-asset/{date}.md --branch main --msg "cron 12 cross-asset-correlation-snapshot {date}" --nn 12
+sh /workspace/push_artifact.sh --out cross-asset --add cross-asset/{date}.md --branch main
 sh /workspace/verify_delivery.sh --path cross-asset/{date}.md --branch main
 ```
 

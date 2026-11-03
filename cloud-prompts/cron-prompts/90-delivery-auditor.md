@@ -541,7 +541,7 @@ done
 # variable set there does not survive into this block.
 AUDIT_DATE=$(TZ=America/New_York date -d "yesterday" +%Y-%m-%d)
 sh /workspace/push_artifact.sh --out _audit --add _audit/status.json --branch audit/status \
-   --msg "cron 90 delivery-auditor $AUDIT_DATE" --nn 90
+   --msg "cron 90 delivery-auditor $AUDIT_DATE"
 sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
 ```
 

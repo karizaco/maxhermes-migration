@@ -100,7 +100,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out macro-calendar --add macro-calendar/{date}-week-ahead.md --branch main --msg "cron 14 macro-calendar-week-ahead {date}" --nn 14
+sh /workspace/push_artifact.sh --out macro-calendar --add macro-calendar/{date}-week-ahead.md --branch main
 sh /workspace/verify_delivery.sh --path macro-calendar/{date}-week-ahead.md --branch main
 ```
 

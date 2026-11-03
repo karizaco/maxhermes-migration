@@ -103,7 +103,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out international-eod --add international-eod/{date} --branch main --msg "cron 05 eod-international-daily {date}" --nn 05
+sh /workspace/push_artifact.sh --out international-eod --add international-eod/{date} --branch main
 sh /workspace/verify_delivery.sh --path international-eod/{date} --branch main
 ```
 
