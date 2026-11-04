@@ -214,7 +214,10 @@ nothing else.
 
 Working path, in order:
 1. Intraday RVOL (preferred, matches the skill step 7): Yahoo chart API, ONE symbol per call:
-   https://query1.finance.yahoo.com/v8/finance/chart/SYMBOL?interval=5m&range=1d
+   https://query1.finance.yahoo.com/v8/finance/chart/SYMBOL?interval=5m&range=1mo
+   `range=1mo` returns about 21 sessions of 5-minute bars in one response, which is what the
+   time-of-day-normalised metric needs (10 prior sessions plus today). Use `range=1d` only if you
+   want today's bars alone and are NOT computing `rvol_tod_normalised`.
    Yahoo does NOT accept comma-separated symbols (404) and rate-limits (429) under load:
    sleep 1s between calls, retry once on 429.
 2. Fallback, daily relative volume proxy: TradingView public scanner
@@ -238,24 +241,44 @@ no_intraday_bars - never silently substitute a daily value.
 - `rvol_intraday_live` = cumulative session volume to the last completed bar / average daily
   volume over 10 days. This is the RAW ratio. At 09:45 ET only 15 of 390 session minutes have
   elapsed, so it is mechanically ~1/26 of the meaningful value and CANNOT reach 3 before the
-  lunch bell for any name.
-- `rvol_projected_eod` = `rvol_intraday_live` / (elapsed session minutes / 390). Pace-adjusted:
-  if the name holds this pace it ends the session at that relative volume. THIS is the number the
-  bucket threshold applies to. Never publish it as a bare 'RVOL'.
+  lunch bell for any name. Publish it for reference; NEVER bucket on it.
+- `rvol_tod_normalised` = THE metric. How hot is this name right now versus its OWN 10-session
+  norm for this same clock window:
+  rvol_tod_normalised = (cumulative volume 09:30 -> the fire's bar, today)
+                         / (mean cumulative volume over 09:30 -> the SAME clock window across the
+                            prior 10 sessions)
+                         x (mean full-day volume across those prior 10 sessions
+                            / TV average_volume_10d_calc)
+  The last factor puts the number in the same units as #09's completed-session relative volume,
+  so the two are directly comparable. 1.0 = a normal morning for that name.
+  One Yahoo call per symbol gives all of it: `interval=5m&range=1mo` returns about 21 sessions
+  of bars in one response. If fewer than 10 prior sessions are present, re-fetch with
+  `range=3mo` (Yahoo serves 5m history for 60 days). Sum each prior session's bars over the SAME
+  09:30 -> fire-time window you used for today, not over its whole day.
+- WHY NOT TIME-SCALED: dividing by elapsed TIME assumes volume accrues evenly across the session.
+  It does not. Measured on 2026-11-02 and 2026-11-03, the first 15 minutes carried a MEDIAN 8.2%
+  of the day's volume (5.7% to 18.1% across names) against 3.8% for time-even accrual, so a
+  time-scaled projection over-states the session by roughly 2x. Across those two sessions it
+  flagged 6 names and 4 of them ended the day BELOW a normal relative volume. The
+  time-of-day-normalised metric had less than half the error (MAE 0.381 and 0.474 against 1.112
+  and 1.199 for the time-scaled form).
 - NAME CLASH: cron #09's `focus.csv` already publishes `rvol_<date>` = the COMPLETED session's
   relative volume. That is a different quantity from either number above. Refer to it as
   `rvol_session_eod` when you compare them.
 
 ## STEP 6 — BUCKETS AND ALERT
-Sort focus tickers by `rvol_projected_eod` desc.
-- RVOL Required: `rvol_projected_eod` >= 3
+Sort focus tickers by `rvol_tod_normalised` desc.
+- RVOL Required: `rvol_tod_normalised` >= 1.5
 - Liquid: everything else
-Publish `rvol_intraday_live` beside it in the same table so the reader sees both numbers.
+`rvol_tod_normalised` = 1.0 is that name's own normal morning, so 1.5 means 50% hotter than its
+own 10-session norm at the same hour. Publish `rvol_intraday_live` beside it in the same table
+so the reader sees both numbers.
 
 **A CROSSING NEEDS A PRIOR READING — read the previous session's artifact.**
 `daily-screens/<previous session>/focus-rvol-snapshot.csv` (written by this routine, and by the
-2026-10-28 run) carries the previous session's per-ticker RVOL. If it exists, compare per ticker:
-a ticker CROSSED when its previous value was < 3 and today's `rvol_projected_eod` is >= 3.
+2026-10-28 run) carries the previous session's per-ticker metric. If it exists, compare per
+ticker: a ticker CROSSED when its previous value was < 1.5 and today's `rvol_tod_normalised` is
+>= 1.5.
 Name every crossing ticker in the chat — that is the one alert this routine owes.
 If no previous artifact exists there is no baseline: say so, publish no crossing alert, and write
 `alerts: none (no prior reading available)` in the artifact. A crossing claimed without a prior
@@ -275,8 +298,8 @@ Front-matter, exact keys in this order:
 `lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size` and `names_unpriced` are
 numbers, not strings. `upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
 
-Then a table — symbol | close | rvol_intraday_live | rvol_projected_eod | bucket | data
-timestamp — sorted by `rvol_projected_eod` desc. Then a counts block (universe size, Required
+Then a table — symbol | close | rvol_intraday_live | rvol_tod_normalised | bucket | data
+timestamp — sorted by `rvol_tod_normalised` desc. Then a counts block (universe size, Required
 count, Liquid count, crossings). Then `## Alerts` (name the crossing tickers, or write 'none' and
 say why). Then `## Universe change` (names that entered or left the focus list vs the previous
 sweep). Then the method actually used, then `## Source health`, then any degradation.
