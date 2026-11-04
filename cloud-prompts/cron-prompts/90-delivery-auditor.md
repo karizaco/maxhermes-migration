@@ -23,10 +23,12 @@ to, so the conversation list stays scannable.
 
 ## FETCH FALLBACK (certificate / TLS)
 
-Every `curl` in this routine goes to raw.githubusercontent.com or cdn.jsdelivr.net. If curl fails
-with a certificate/TLS error — the sandbox egress proxy rotates its leaf cert and it has expired
-mid-session before — retry the SAME url with `web_fetch`, which uses a different egress. If both
-fail, say so in the reply and report `errors: 1`; do NOT report a status you did not measure.
+Every `curl` in this routine goes to the GitHub **contents API** first — it is the only source
+that is not CDN-cached — with raw.githubusercontent.com and cdn.jsdelivr.net as fallbacks. If curl
+fails with a certificate/TLS error — the sandbox egress proxy rotates its leaf cert and it has
+expired mid-session before — retry the SAME url with `web_fetch`, which uses a different egress.
+If both fail, say so in the reply and report `errors: 1`; do NOT report a status you did not
+measure.
 
 ## SCHEDULE
 - Deployed schedule: `0 7 * * *` America/New_York — 07:00 ET daily.
@@ -596,20 +598,22 @@ artifact to contribute to it.
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-D=/workspace/push_artifact.sh
-for U in \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
-  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
-     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
-    mv -f "$D.tmp" "$D"; break
-  fi
-  rm -f "$D.tmp"
+for F in push_artifact.sh verify_delivery.sh; do
+  D=/workspace/$F
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+    if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+       && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+      mv -f "$D.tmp" "$D"; break
+    fi
+    rm -f "$D.tmp"
+  done
+  [ -s "$D" ] || echo "$F fetch FAILED - the DELIVERY step cannot verify its own push"
 done
-[ -s "$D" ] || echo "push_artifact.sh fetch FAILED - the DELIVERY step cannot push its artifact"
 # Recompute AUDIT_DATE HERE: this is a separate shell from the one that set it in STEP 3, so a
 # variable set there does not survive into this block.
 AUDIT_DATE=$(TZ=America/New_York date -d "yesterday" +%Y-%m-%d)
@@ -629,9 +633,10 @@ stages every other file on the branch as DELETED (measured 2026-10-25: 283 files
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
-The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
-and only reports `push: ok` when the path is present on the remote branch. Run it again if you
-need to re-check:
+`push_artifact.sh` reports `push: ok` when the path is **present** on the remote branch — that is
+an **existence** check. The stronger check is `verify_delivery.sh`, which compares the SHA-256 of
+the remote blob against the local file — and it is **fetched by the block above**, because a
+helper that is only *called* is not on disk. Always run it:
 
 ```bash
 sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
