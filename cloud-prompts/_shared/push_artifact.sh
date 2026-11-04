@@ -1,4 +1,5 @@
 #!/bin/sh
+# PUSH_ARTIFACT_VERSION: 2026-11-04.1
 # POSIX sh (dash-compatible) - runs identically under `sh` or `bash`.
 # push_artifact.sh — the ONE push implementation for the cron fleet.
 #
@@ -58,6 +59,37 @@
 #   2 = no GITHUB_TOKEN — push skipped; the caller writes the artifact and replies
 #   3 = refused (bad args, or staged deletions detected)
 set -u
+
+# --- SELF-HEAL (2026-11-04) -----------------------------------------------------
+# WHY: the fleet's prompt fetch blocks use `[ -s file ] || curl`, which can NEVER reach
+# its own fallback — the FIRST successful download satisfies the guard, so the second URL
+# is dead code. Measured 2026-11-04: raw.githubusercontent served a STALE blob for >17
+# minutes after a push (jsDelivr was fresh), so a routine firing in that window ran a
+# STALE push script. This re-fetches ITSELF from the authoritative, non-CDN-cached
+# contents API and re-execs the fresh copy if the remote is newer.
+# Guarded by an env var so it can NEVER loop, and it is a no-op when the remote is
+# identical or older. One extra API call per push (~1s).
+if [ -z "${_PUSH_ARTIFACT_HEALED:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+  _PA_TMP=/tmp/_push_artifact_selfheal.sh
+  curl -sL --max-time 20 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$_PA_TMP" \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" 2>/dev/null
+  if [ -s "$_PA_TMP" ] && head -1 "$_PA_TMP" 2>/dev/null | grep -q '^#!'; then
+    _PA_LOC_V=$(sed -n 's/^# PUSH_ARTIFACT_VERSION: //p' "$0" 2>/dev/null | head -1)
+    _PA_REM_V=$(sed -n 's/^# PUSH_ARTIFACT_VERSION: //p' "$_PA_TMP" 2>/dev/null | head -1)
+    _PA_LOC_V=${_PA_LOC_V:-0.0.0}; _PA_REM_V=${_PA_REM_V:-0.0.0}
+    _PA_NEW=$(printf '%s\n%s\n' "$_PA_LOC_V" "$_PA_REM_V" | sort -V | tail -1)
+    if [ "$_PA_REM_V" != "$_PA_LOC_V" ] && [ "$_PA_NEW" = "$_PA_REM_V" ]; then
+      _PA_HEALED="$(dirname "$0" 2>/dev/null)/.push_artifact.healed.sh"
+      cp "$_PA_TMP" "$_PA_HEALED" 2>/dev/null && {
+        _PUSH_ARTIFACT_HEALED=1; export _PUSH_ARTIFACT_HEALED
+        echo "push_artifact: self-healed $ _PA_LOC_V -> $_PA_REM_V (from the contents API)"
+        exec sh "$_PA_HEALED" "$@"
+      }
+    fi
+  fi
+  rm -f "$_PA_TMP"
+fi
 
 OUT=""; ADD=""; ADD_ALL=""; BRANCH="main"; MSG=""; NN=""; NM=""; SRC_DIR_ARG=""
 while [ $# -gt 0 ]; do
