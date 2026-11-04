@@ -82,7 +82,26 @@ IWM, GLD, TLT, plus the top 5 S&P 500 names by market cap (AAPL, MSFT, NVDA, GOO
 3. **Call per underlying.** `mcp__tradingview-advanced__stock_options_unusual_activity(symbol, top_n=10, min_volume=100, expiries=4)` for each. Concurrency: serial, ~3 calls/sec.
    > **Cloud adaptation.** That MCP tool does **not** exist in the Cloud runtime — see
    > `## MCP TOOLS AVAILABLE` in the shared `PROMPT-BLOCKS.md`. In Cloud, take the chain from the
-   > sources named in `## Method of record` below and reproduce the same semantics locally:
+   > sources named in `9. **The economic read is premium dollars, not contract counts.** A contract count weights every
+   contract equally, and on a busy session most of them are penny prints: on 2026-11-04, **57.1%** of
+   the kept set's volume sat in contracts with `theo` < $0.05. That set's headline put/call was
+   **0.74 (CALL)** while the same set weighted by `volume x theo` was **3.47 to puts**, and **82.3% of
+   all premium changed hands in ITM contracts**. Publish **both** numbers: the contract-count ratio is
+   the series' comparable figure, the premium-dollar ratio is the economically meaningful one. Never
+   publish the contract-count tag alone on a day when the two disagree - that is how the 2026-11-02
+   artifact shipped a tag that contradicted its own prose.
+   *(Established 2026-11-04.)*
+
+10. **IV is degenerate on a 0DTE row after the close.** A same-day option has essentially no time
+    value left once the cash session ends, so Cboe's IV on those rows is an artifact of the closing
+    print rather than a volatility estimate. Measured 2026-11-04: on the 12 economically real rows with
+    DTE > 0 the Cboe-vs-Yahoo IV gap is a median **4.2 vol points** (max 8.9), but on same-day rows it
+    reaches **206 vol points** (NVDA 210C: Cboe 243.6% vs Yahoo 37.5%, `theo` $0.0000, `delta` 0.0000,
+    last trade $0.01 after a -99.3% session). Flag every 0DTE row's IV as not interpretable rather than
+    quoting it bare, and quote Yahoo's IV where both exist and the contract still has time value.
+    *(Established 2026-11-04.)*
+
+## Method of record` below and reproduce the same semantics locally:
    > `top_n=10` per underlying (ranked by **volume**), `min_volume=100`, 4 expiries per underlying.
 4. **Aggregate per-ticker** into rows:
    - ticker, underlying_price, side (call|put), strike, expiry, volume, open_interest, v_oi_ratio, last_price, iv, in_the_money, moneyness_pct, expires_in_days
@@ -206,13 +225,20 @@ The headline metric is a put/call volume ratio. That number is only comparable a
 the method is identical, and three things changed underneath this series between 2026-10-16 and
 2026-10-30 — the chain source, the pre-cut rule and the expiry window. Each is now fixed.
 
-**Chain source — Cboe primary, Nasdaq cross-check.** Use the Cboe delayed-quote CDN chain as the
-primary tape and Nasdaq's public option-chain endpoint as the independent second tape. Yahoo's
-JSON endpoints return HTTP 429 from this egress (measured 2026-10-28), which is why the
-2026-10-29 and 2026-10-30 runs had to run on Cboe alone. Yahoo remains useful for underlying
-prices and for the deep-ITM IV in convention 6. **If the primary source changes, that is a
-methodology change and must be logged in the artifact** — a different tape carries a different
-open-interest denominator, so the ratio is not comparable across it.
+**Chain source — Cboe primary, Yahoo options cross-check.** Use the Cboe delayed-quote CDN chain as
+the primary tape and **Yahoo's options v7 endpoint** as the independent second tape:
+`query1.finance.yahoo.com/v7/finance/options/{SYM}?date={epoch}`, one call per expiry in the window
+(crumb handshake; auth via a **cookie jar** passed with `curl -b`, not a `Cookie:` header).
+**Nasdaq's public option-chain endpoint is dead** — HTTP 404 with an empty body on every attempt
+since 2026-11-02 (re-confirmed 2026-11-04, 3/3 attempts), so do not name it as the cross-check and do
+not report option volume/OI as uncorroborated: the Yahoo tape carries it. Yahoo's own `openInterest`
+agreed with Cboe's on **80/80** contracts on 2026-11-04, and its `inTheMoney` confirmed the side-aware
+ITM rule on **80/80**. Yahoo's JSON endpoints return HTTP 429 from *some* egresses (measured
+2026-10-28) but served options and chart data normally on 2026-11-04 — **probe every run** and fall
+through only on a real failure. Yahoo remains useful for underlying prices and for the IV in
+conventions 6 and 10. **If the primary source changes, that is a methodology change and must be logged
+in the artifact** — a different tape carries a different open-interest denominator, so the ratio is not
+comparable across it.
 
 **Pre-cut rule — volume, not V/OI.** The skill calls each underlying with `top_n=10` but does not
 state what the ten are ranked by, and the choice changes the answer: the V/OI cut is
@@ -231,6 +257,13 @@ market-wide call/put picture, and it says plainly that it is a reconstruction. I
 carry a V/OI figure, and it must never be counted as an original run when comparing series. The
 two reference cases are `options-flow/2026-10-19.md` (run failed at the platform level) and
 `options-flow/2026-10-26.md` (ran and self-skipped outside its own market-hours gate).
+
+**Bias tag thresholds (fixed — re-derive from the 10-28/29/30 files, never from the previous
+artifact).** Put/call volume ratio **< 0.85 -> CALL**, **> 1.20 -> PUT**, otherwise **MIXED**. The tag
+names the side that *dominates* the ratio, so a low ratio is a CALL tag. The 2026-11-02 artifact
+inverted both tags (0.84 tagged `PUT`, 2.69 tagged `CALL`), which contradicted its own prose and the
+10-28/29/30 files; its numbers were fine, only the tag strings read reversed. State the thresholds
+inside every artifact so the tag is auditable without the history.
 
 **Declare the method in every artifact.** Each file must state, in its header, the primary chain
 source, the cross-check source, the pre-cut rule, the expiry-window rule, and a
