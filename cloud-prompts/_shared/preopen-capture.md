@@ -1,5 +1,5 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
-<!-- PROCEDURE_VERSION: 2026-11-04.1 -->
+<!-- PROCEDURE_VERSION: 2026-11-04.2 -->
 
 Runs three times per session-day (08:30, 09:20, 09:50 ET). Writes an append-only **catalyst
 tape** that cron #17 (`us-stocks-in-play`, 15:50 ET) reads to explain *why* a stock moved and
@@ -55,73 +55,90 @@ export TS=$(TZ=America/New_York date +%Y-%m-%dT%H:%M:%S%:z)
 export XAI_BASE=https://api.x.ai/v1
 
 # 3a. RESOLVE THE MODEL ID FROM THE ACCOUNT'S OWN MODEL LIST — never hardcode a slug.
-# xAI retires models: the 2026-05-15 retirement took grok-4-0709 and the grok-4-fast
-# variants to grok-4.3 (the slugs still resolve, but they redirect and re-price).
-# GET /v1/models is a listing call, not an inference call, so it is not billed.
-MODEL=$(curl -s --max-time 25 "${XAI_BASE}/models" \
-  -H "Authorization: Bearer ${XAI_API_KEY}" \
-  | python3 -c '
-import sys,json
-try: ids=[m.get("id","") for m in json.load(sys.stdin).get("data",[])]
+# Measured 2026-11-04 with a real key: the account reaches 13 models and plain
+# `grok-4` is NOT among them (the retired slugs re-price on redirect). GET /v1/models
+# is a listing call, not an inference call, so it is not billed.
+curl -s --max-time 25 "${XAI_BASE}/models" -H "Authorization: Bearer ${XAI_API_KEY}" -o /tmp/grok_models.json
+python3 - <<'PYMODEL'
+import json
+try: ids=[m.get("id","") for m in json.load(open("/tmp/grok_models.json")).get("data",[])]
 except Exception: ids=[]
-pref=("grok-4.3","grok-4.7","grok-4.6","grok-4.5","grok-4")
+pref=("grok-4.3","grok-4.7","grok-4.6","grok-4.5")
 hit=next((p for p in pref if p in ids), None)
-print(hit or (ids[0] if ids else "grok-4"))
-')
+open("/tmp/grok_model.txt","w").write(hit or (ids[0] if ids else "grok-4.3"))
+PYMODEL
+MODEL=$(cat /tmp/grok_model.txt)
 echo "grok model: ${MODEL}"
 
-# 3b. Build and send. max_search_results BOUNDS the live-search fan-out; without it
-# the call searches web AND X with no ceiling, and X is billed per POST fetched
-# ($5/1k posts, $10/1k profiles) while web is $5/1k calls. 12 is the bounded default —
-# the reply reports num_sources_used every fire, so it can be tuned from real numbers.
-cat > /tmp/grok.json <<'EOF'
-{"model":"__MODEL__","temperature":0.1,
- "search_parameters":{"max_search_results":12},
- "messages":[{"role":"user","content":"You are a US equity market catalyst feed. RIGHT NOW, list US-listed stocks (NYSE/NASDAQ/AMEX, ticker under 6 chars) that are moving materially pre-market or at the open. For each, return JSON ONLY, one object per line, no prose: {\"ticker\":\"\",\"name\":\"\",\"pct\":0.0,\"price\":0.0,\"cat\":\"acquisition|merger|earnings|guidance|fda|trial|offering|halt|downgrade|guidance-cut|spin|dividend|other\",\"why\":\"one clause, <=140 chars, stating the specific catalyst\",\"ref\":\"source URL\",\"conf\":\"high|medium|low\"}. Only include names with a move beyond roughly 3% pre-market or a genuinely material corporate catalyst. If there is no US pre-market session (weekend/holiday), return nothing. Do NOT include your own commentary."}]}
+# 3b. THE LEGACY LIVE-SEARCH PATH IS DEAD. `search_parameters` on /v1/chat/completions
+# still appears in the REST reference, but the API REJECTS it:
+#   {"error":"Live search is deprecated. Please switch to the Agent Tools API"}
+# so the call must use the Responses API with server-side tools.
+#   max_tool_calls  = the COST CEILING on the search fan-out (12 measured $0.05/checkpoint)
+#   max_output_tokens = bounds the reply
+#   reasoning_effort=low  = this is extraction, not deep reasoning
+cat > /tmp/grok_prompt.txt <<'EOF'
+You are a US equity market catalyst feed. RIGHT NOW, list US-listed stocks (NYSE/NASDAQ/AMEX, ticker under 6 chars) that are moving materially pre-market or at the open. For each, return JSON ONLY, one object per line, no prose: {"ticker":"","name":"","pct":0.0,"price":0.0,"cat":"acquisition|merger|earnings|guidance|fda|trial|offering|halt|downgrade|guidance-cut|spin|dividend|other","why":"one clause, <=140 chars, stating the specific catalyst","ref":"source URL","conf":"high|medium|low"}. Only include names with a move beyond roughly 3% pre-market or a genuinely material corporate catalyst. If there is no US pre-market session (weekend/holiday), return nothing. Do NOT include your own commentary.
 EOF
-sed -i "s/__MODEL__/${MODEL}/" /tmp/grok.json
+python3 - <<'PYPAYLOAD'
+import json
+payload={"model":open("/tmp/grok_model.txt").read().strip(),
+ "reasoning_effort":"low",
+ "input":[{"role":"user","content":open("/tmp/grok_prompt.txt",encoding="utf-8").read().strip()}],
+ "tools":[{"type":"web_search"},{"type":"x_search"}],
+ "max_output_tokens":4000,"max_tool_calls":12}
+json.dump(payload,open("/tmp/grok_payload.json","w"))
+PYPAYLOAD
 
-curl -s --max-time 90 "${XAI_BASE}/chat/completions" \
+curl -s --max-time 120 "${XAI_BASE}/responses" \
   -H "Authorization: Bearer ${XAI_API_KEY}" -H "Content-Type: application/json" \
-  --data @/tmp/grok.json > /tmp/grok_out.json
+  --data @/tmp/grok_payload.json > /tmp/grok_out.json
 
-# 3c. FAIL CLOSED, and measure the real cost of this call.
-python3 - <<'PY'
+# 3c. FAIL CLOSED, and report the EXACT cost. The API returns it: 10,000,000,000 ticks = $1.
+python3 - <<'PYUSE'
 import json,sys
 ok=False
 try:
     d=json.load(open("/tmp/grok_out.json"))
-    if isinstance(d,dict) and d.get("error"):
-        sys.stderr.write("GROK_ERROR "+json.dumps(d["error"])[:300]+"\n")
+    err=d.get("error")
+    if err:
+        sys.stderr.write("GROK_ERROR "+json.dumps(err)[:300]+"\n")
     else:
-        txt=(d.get("choices") or [{}])[0].get("message",{}).get("content") or ""
+        txt="".join(c.get("text","") for it in (d.get("output") or [])
+                    for c in (it.get("content") or []) if c.get("type")=="output_text")
         ok=bool(txt.strip())
         u=d.get("usage") or {}
-        print("GROK_OK chars=%d num_sources_used=%s prompt_tokens=%s completion_tokens=%s"%(
-            len(txt),u.get("num_sources_used"),u.get("prompt_tokens"),u.get("completion_tokens")))
+        st=u.get("server_side_tool_usage_details") or {}
+        print("GROK_OK status=%s chars=%d cost=$%.4f in_tok=%s out_tok=%s web=%s x_calls=%s x_posts=%s"%(
+            d.get("status"), len(txt), (u.get("cost_in_usd_ticks") or 0)/1e10,
+            u.get("input_tokens"), u.get("output_tokens"),
+            st.get("web_search_calls"), st.get("x_search_calls"), st.get("x_posts_fetched")))
+        open("/tmp/grok_reply.txt","w").write(txt)
 except Exception as e:
     sys.stderr.write("GROK_PARSE_FAILED "+str(e)[:200]+"\n")
 open("/tmp/grok_ok","w").write("1" if ok else "0")
-PY
+PYUSE
 ```
 
-`search_parameters` is what gives Grok live web + X access — that is the entire reason this
-routine exists and the reason a plain `web_search` cannot replace it.
+**The legacy live-search path is dead — verified by a live call 2026-11-04.**
+`search_parameters` on `/v1/chat/completions` is still printed in the REST reference, but the API
+answers `{"error":"Live search is deprecated. Please switch to the Agent Tools API"}`. The
+Responses API with server-side tools (`web_search`, `x_search`) is the working path. **A doc page
+that still lists a parameter is not evidence the backend honours it — probe the endpoint.**
 
-**It is CURRENT, not legacy (verified 2026-11-04 against docs.x.ai).** `search_parameters` is
-documented on BOTH `/v1/chat/completions` and `/v1/responses`, with `mode` (`off|on|auto`),
-`sources`, `max_search_results`, `return_citations` and `from_date`/`to_date` filters. Chat
-Completions is marked *Deprecated* in favour of the Responses API, but it still serves, and the
-Responses API accepts the SAME `search_parameters` object — so the endpoint choice is a
-recommendation, not a blocker. Do not "migrate" this routine off `search_parameters` on the
-strength of a stale note; migrate only with a live call to prove the new shape.
+**Why the two-source split.** Grok can hallucinate a ticker or a percentage. The scanner gives
+ground truth on prices. Therefore: **prices are only ever taken from the scanner; Grok supplies
+the reason, never the number.** A Grok record whose `pct` disagrees with the scanner by more than
+2pp is written with `"conf":"unverified"` and the consumer prints it as unconfirmed.
 
-**What the search actually costs.** The server-side tool path (`tools:[{type:web_search}]`) is
-priced explicitly — web $5/1k calls, X $5/1k posts + $10/1k profiles, and a post returned by two
-searches counts twice. The `search_parameters` path bills by `num_sources_used`, which the usage
-block reports and step 3c prints. **That number is the per-fire cost signal** — the per-run
-estimates in the plan document are stale and understate the bill by roughly 6x, because they
-counted tokens only and ignored the per-source and per-post fees.
+**What the search actually costs.** Measured 2026-11-04 on `grok-4.3`, two live calls:
+**$0.0514 and $0.0476 per checkpoint** (3 web searches each, ~25k input / ~2k output tokens,
+21-24 s) — about **$0.10/day at two checkpoints, ~$2.20/month** at 21 sessions, and materially
+more on a day when the model leans on X ($5/1k posts). The API returns the exact figure in
+`usage.cost_in_usd_ticks` (10,000,000,000 ticks = $1), so the per-fire cost is a MEASUREMENT, not
+an estimate — step 3c prints it. Published rates: web $5/1k calls, X $5/1k posts + $10/1k
+profiles, grok-4.3 $1.25/$2.50 per 1M tokens. `max_tool_calls` is the ceiling that keeps it
+bounded.
 
 ### 4. TradingView scanner — the ground-truth half
 
@@ -199,9 +216,10 @@ the other #92 fire land in the same commit without being clobbered.
 Under 6 lines. Name the checkpoint, the number of records written, the scanner's halt state, and
 one line for push status and `errors: <n>`.
 
-Also report the MEASURED cost of the Grok call from step 3c — `model`, `num_sources_used`,
-`prompt_tokens`, `completion_tokens` — folded into the records line. That is the real per-fire
-cost signal; the estimates in the plan document are stale.
+Also report the MEASURED cost of the Grok call from step 3c — `model`, the dollar cost, the
+web/x call counts and the token counts — folded into the records line. That is the real per-fire
+cost signal; the estimates in the plan document are stale. If the call failed, say so and write
+nothing.
 
 **The halt state is `not measurable`, never `0`.** The scanner's `halted` column is null for every
 row (see step 4), so there is no count to report. Write
