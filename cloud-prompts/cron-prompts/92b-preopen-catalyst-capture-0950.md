@@ -10,9 +10,38 @@ the skill spec, then follow it in full:
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/preopen-capture.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen-capture.md"; do
-  [ -s /workspace/preopen-capture.md ] || curl -sL -o /workspace/preopen-capture.md "$U" 2>/dev/null
-done
+J=https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen-capture.md
+# Fetch BOTH mirrors and take the one carrying the HIGHEST PROCEDURE_VERSION marker.
+# A CDN can serve a stale blob: measured 2026-11-04, raw.githubusercontent was >17 minutes
+# behind jsDelivr after a push, and the old single-pass loop could NEVER reach its fallback,
+# because the first successful download satisfied the file-exists guard. A version marker,
+# not an exit code, decides which copy is current.
+rm -f /tmp/pc_a.md /tmp/pc_b.md
+curl -sL --max-time 30 -o /tmp/pc_a.md "$B/preopen-capture.md" 2>/dev/null
+curl -sL --max-time 30 -o /tmp/pc_b.md "$J" 2>/dev/null
+python3 - <<'PYEOF'
+import re
+best=None;bv=None
+for f in ("/tmp/pc_a.md","/tmp/pc_b.md"):
+    try: t=open(f,encoding="utf-8",errors="replace").read()
+    except Exception: continue
+    if not t.strip(): continue
+    m=re.search(r"PROCEDURE_VERSION:\s*(\d{4})-(\d{2})-(\d{2})\.(\d+)",t)
+    v=(int(m.group(1)+m.group(2)+m.group(3)),int(m.group(4))) if m else (-1,-1)
+    if bv is None or v>bv: bv=v;best=f
+if best:
+    # read+write, NOT os.replace: /tmp and /workspace are on DIFFERENT filesystems and
+    # rename(2) across them fails with EXDEV (caught by test 2026-11-04).
+    open("/workspace/preopen-capture.md","w",encoding="utf-8").write(
+        open(best,encoding="utf-8",errors="replace").read())
+    print("procedure: version %s.%s from %s"%(bv[0],bv[1],best))
+else:
+    open("/workspace/preopen-capture.md","w").write(
+        "PROCEDURE_FETCH_FAILED: no copy of preopen-capture.md could be fetched from "
+        "raw.githubusercontent or jsDelivr.\nStop here. Report `probe_failed:procedure_fetch` "
+        "and write NOTHING.\n")
+    print("procedure: FETCH FAILED")
+PYEOF
 ```
 
 Then follow `/workspace/preopen-capture.md` in full. It contains the key check, the Grok call,

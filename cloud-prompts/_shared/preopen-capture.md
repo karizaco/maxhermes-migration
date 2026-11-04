@@ -1,4 +1,5 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
+<!-- PROCEDURE_VERSION: 2026-11-04.1 -->
 
 Runs three times per session-day (08:30, 09:20, 09:50 ET). Writes an append-only **catalyst
 tape** that cron #17 (`us-stocks-in-play`, 15:50 ET) reads to explain *why* a stock moved and
