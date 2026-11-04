@@ -77,6 +77,16 @@ case "$DATE" in
         ;;
 esac
 echo "window-check: OK ($DATE)"
+# CLOCK ASSERTION — this routine is worthless off-clock. Before the 2026-10-24 repair it
+# fired at 22:45 ET for 13 consecutive days (timezone Etc/GMT-7 = UTC+7), and the old
+# check silently wrote a SKIPPED file at 22:45 and called it a day. If the ET clock is
+# outside the live session, STOP and say so instead of publishing a closed-tape snapshot.
+HM=$(TZ=America/New_York date +%H%M)
+if [ "$HM" -lt 0930 ] || [ "$HM" -gt 1100 ]; then
+    echo "out-of-window: off-clock fire (ET $HM, expected 09:30-11:00)"
+    echo "no artifact; no push"
+    exit 0
+fi
 ```
 **Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
 line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
@@ -91,7 +101,10 @@ errors: 0
 
 
 ## STEP 2 — SKILL SPEC (fetch once)
-curl -sS -w 'HTTP=%{http_code}\n' https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md -o /tmp/skill.md
+curl -sS -w 'HTTP=%{http_code}\n' https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md -o /workspace/skill.md
+**Save it under /workspace, NOT /tmp.** The Cloud `read` tool cannot open /tmp — it returns
+"workspace path escapes Cloud Host root" — so a spec that lands in /tmp is unreadable and the run
+stalls on a file it already has. `cat`/`sed`/`grep` on /workspace files work fine.
 If that fails, retry once with -k (the GitHub cert has expired intermittently). Read the file in full
 and follow the procedure with the Cloud adaptations below. If both attempts fail: write a stub
 artifact with _source: skill_fetch_failed, report errors: 1, stop. Never improvise from memory.
@@ -154,11 +167,31 @@ for d in /workspace/daily-screens/$DATE /workspace/daily-screens/$YDAY; do
 done
 ls -1t /workspace/daily-screens/*/focus.md 2>/dev/null | head -3
 Also check master.md in the same dirs for the wider universe.
-If no focus.md exists the run FAILED, it is not 'degraded but fine'. Write the artifact with
-status: failed_no_upstream_focus_list, upstream: missing, list what you did find under
+
+**THREE DATES, THREE FIELDS — never collapse them into one.**
+- `fire_date` — this fire's date, resolved from the run's `scheduled_at_ms`.
+- `focus_dir_date` — the date in the folder the focus list was found in.
+- `screen_data_date` — the sweep's OWN header line `Screen data_date: <date> (shibui T+1)`.
+  READ IT from the focus.md header. Never infer it from the folder name, and never infer it
+  from the calendar gap: cron #09 fires on WEEKDAYS ONLY, so on a Monday the newest list is
+  Friday's sweep — a ONE-session lag, which is normal, not a degradation. The degradation is
+  the shibui ingestion lag inside `screen_data_date`, which reached 3 sessions on 2026-11-02.
+- `lag_sessions` — the number of TRADING sessions between `screen_data_date` and `fire_date`.
+  Report the count. A calendar-day difference is NOT a session count.
+
+The roster also turns over almost completely between sweeps — the 10-30 and 11-02 focus lists
+shared exactly ONE name — so a stale list is not a cosmetic problem.
+
+**If no focus.md exists ANYWHERE, do not simply fail.** Build a FALLBACK UNIVERSE from the
+TradingView scanner: US stocks with `relative_volume_10d_calc` >= 1.5 and market cap > $300M,
+top 12 by that column. Set `universe_source: fallback_tv_screener`, publish the snapshot, and
+say in the artifact that the universe is a fallback. A degraded screen beats no screen, and most
+of October's fires had no focus list at all. Only if the scanner also fails: write the artifact
+with status: failed_no_upstream_focus_list, upstream: missing, list what you did find under
 daily-screens/, report errors: 1, and stop. Do not push an empty snapshot as if it were a screen.
-If a focus.md is found, report its path AND the data-date in its header. The sweep data date can lag
-the fire date; that lag must appear in your artifact header.
+
+If a focus.md IS found: report its path, `focus_dir_date`, `screen_data_date` and `lag_sessions`.
+If `lag_sessions` > 1, set status: degraded_stale_focus_list (see the status list in STEP 7).
 
 ## STEP 5 — RVOL PER FOCUS TICKER
 Do NOT use mcp__tradingview_advanced__*, mcp__tradingview__* or mcp__yahoo_finance__*. They are
@@ -166,33 +199,92 @@ provably absent in Cloud sessions: mcode-tools connector tools returns partial=f
 provider_failures=[], with only connector__matrix__* and connector__email_workbench_credentials__*,
 and tool_search returns 0 hits for every finance keyword. Do not burn turns re-testing them.
 
+**SOURCE OF RECORD — one field, one source. Never mix them.**
+| field | source | note |
+|---|---|---|
+| last price / close | bridge `market-recap get_quotes` | `market_state: open` proves a live session |
+| session volume (cumulative) | Yahoo chart 5m bars, summed to the last COMPLETED bar | Yahoo `chartPreviousClose` is a cross-check |
+| 10-day average daily volume (the denominator) | TV scanner `average_volume_10d_calc` | DENOMINATOR ONLY |
+| full-day relative volume | TV scanner `relative_volume_10d_calc` | fallback proxy only — label it `rvol_proxy_daily` |
+
+**TRAP — the TV scanner's LIVE columns lag the session. Never use them for a live field.**
+Measured 2026-11-02: TV `volume` 1,144,478 vs Yahoo 2,615,246 (ADT) and 5,806 vs 58,577 (DFIN);
+TV `close` 9.87 vs bridge 9.88. Minutes-to-hours stale. TV supplies the denominator here and
+nothing else.
+
 Working path, in order:
 1. Intraday RVOL (preferred, matches the skill step 7): Yahoo chart API, ONE symbol per call:
    https://query1.finance.yahoo.com/v8/finance/chart/SYMBOL?interval=5m&range=1d
-   RVOL = cumulative volume today / average daily volume over 10 days. Take the denominator from the
-   TV scanner column average_volume_10d_calc. Yahoo does NOT accept comma-separated symbols (404)
-   and rate-limits (429) under load: sleep 1s between calls, retry once on 429.
+   Yahoo does NOT accept comma-separated symbols (404) and rate-limits (429) under load:
+   sleep 1s between calls, retry once on 429.
 2. Fallback, daily relative volume proxy: TradingView public scanner
    POST https://scanner.tradingview.com/america/scan with verified TLS, column
    relative_volume_10d_calc. If you use this, label the metric rvol_proxy_daily in the artifact.
    It is NOT intraday RVOL and the artifact must say so.
 
+**TWO RECIPES THAT ARE ALREADY SOLVED — do not rediscover them.**
+- TradingView scanner FILTER: a `{"left":"name","operation":"in","right":[...]}` filter returns
+  HTTP 400 on this endpoint (verified 2026-11-02). Pull the full universe instead — body
+  `{"columns":[...],"range":[0,20000]}`, ~19,900 rows — and filter locally for your tickers.
+  One request, no filter.
+- Yahoo IN-PROGRESS BAR: the last bar of the day is stamped with the CURRENT wall-clock time and
+  its volume is still 0. Keeping it UNDERSTATES session volume. Drop every bar whose timestamp is
+  later than the last COMPLETED 5-minute bar, and say in the artifact that you did.
+
 Record the data timestamp for every symbol from the payload. A symbol with no intraday bars yet gets
-no_intraday_bars - never silently substitute a daily value. ETFs and overnight-traded symbols can
-carry an in-progress bar: drop bars dated after the session date and note that you did.
+no_intraday_bars - never silently substitute a daily value.
+
+**THE METRIC — publish BOTH numbers, and name them differently.**
+- `rvol_intraday_live` = cumulative session volume to the last completed bar / average daily
+  volume over 10 days. This is the RAW ratio. At 09:45 ET only 15 of 390 session minutes have
+  elapsed, so it is mechanically ~1/26 of the meaningful value and CANNOT reach 3 before the
+  lunch bell for any name.
+- `rvol_projected_eod` = `rvol_intraday_live` / (elapsed session minutes / 390). Pace-adjusted:
+  if the name holds this pace it ends the session at that relative volume. THIS is the number the
+  bucket threshold applies to. Never publish it as a bare "RVOL".
+- NAME CLASH: cron #09's `focus.csv` already publishes `rvol_<date>` = the COMPLETED session's
+  relative volume. That is a different quantity from either number above. Refer to it as
+  `rvol_session_eod` when you compare them.
 
 ## STEP 6 — BUCKETS AND ALERT
-Sort focus tickers by RVOL desc. RVOL Required = RVOL >= 3. Liquid = the rest.
-If any ticker crossed from below 1 to above 3, emit one chat alert naming it.
+Sort focus tickers by `rvol_projected_eod` desc.
+- RVOL Required: `rvol_projected_eod` >= 3
+- Liquid: everything else
+Publish `rvol_intraday_live` beside it in the same table so the reader sees both numbers.
+
+**A CROSSING NEEDS A PRIOR READING — read the previous session's artifact.**
+`daily-screens/<previous session>/focus-rvol-snapshot.csv` (written by this routine, and by the
+2026-10-28 run) carries the previous session's per-ticker RVOL. If it exists, compare per ticker:
+a ticker CROSSED when its previous value was < 3 and today's `rvol_projected_eod` is >= 3.
+Name every crossing ticker in the chat — that is the one alert this routine owes.
+If no previous artifact exists there is no baseline: say so, publish no crossing alert, and write
+`alerts: none (no prior reading available)` in the artifact. A crossing claimed without a prior
+reading is a fabrication, not a signal.
+
 An empty bucket is a real result. Report it as an empty bucket with counts, not as a failure.
 
 ## STEP 7 — WRITE THE ARTIFACT
-Write /workspace/daily-screens/DATE/focus-rvol-snapshot.md (create the dir; DATE = today ET).
-Front-matter: date, cron, fire_time_et, data_date, source, method, status, upstream focus.md path.
-Then a table: symbol | close | RVOL | bucket | data timestamp.
-Then counts, the method actually used, and any degradation.
-status must be exactly one of: ok, degraded_daily_rvol_proxy, failed_no_upstream_focus_list,
-failed_no_data.
+Write TWO files in /workspace/daily-screens/DATE/ (create the dir; DATE = today ET):
+  focus-rvol-snapshot.md
+  focus-rvol-snapshot.csv      <- one row per ticker, machine-readable
+
+Front-matter, exact keys in this order:
+  date, cron, fire_time_et, fire_date, focus_dir_date, screen_data_date, lag_sessions,
+  universe_source, universe_size, elapsed_minutes, session_fraction, source, method,
+  metric_def, bucket_rule, status, upstream, names_unpriced
+`lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size` and `names_unpriced` are
+numbers, not strings. `upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
+
+Then a table — symbol | close | rvol_intraday_live | rvol_projected_eod | bucket | data
+timestamp — sorted by `rvol_projected_eod` desc. Then a counts block (universe size, Required
+count, Liquid count, crossings). Then `## Alerts` (name the crossing tickers, or write "none" and
+say why). Then `## Universe change` (names that entered or left the focus list vs the previous
+sweep). Then the method actually used, then `## Source health`, then any degradation.
+The CSV carries the same columns as the table, one row per ticker, plus the upstream `stylists`
+and `flags` columns when the focus list provided them.
+
+status must be exactly one of: ok, degraded_stale_focus_list, degraded_daily_rvol_proxy,
+degraded_universe_fallback, failed_no_upstream_focus_list, failed_no_data.
 
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
@@ -231,11 +323,12 @@ exit status (always 0) and reports a rejected push as a success. That is why the
 exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY (the only thing delivered to the chat)
-Six lines, no preamble:
+Seven lines, no preamble:
 focus-rvol-09:45 (cron #07) - DATE TIME_ET
 window: passed | skipped (reason)
-upstream: FOCUS_MD_PATH | missing
+upstream: FOCUS_MD_PATH (lag N session(s)) | missing | fallback_tv_screener
 tickers: N | RVOL Required: N | Liquid: N | method: METHOD
+alerts: NAME, NAME | none (no prior reading)
 file: PATH (BYTES B, written) | no artifact
 push: ok | skipped (token unset) | failed (reason)
 errors: N
