@@ -1,5 +1,5 @@
 #!/bin/sh
-# PUSH_ARTIFACT_VERSION: 2026-11-04.1
+# PUSH_ARTIFACT_VERSION: 2026-11-04.2
 # POSIX sh (dash-compatible) - runs identically under `sh` or `bash`.
 # push_artifact.sh — the ONE push implementation for the cron fleet.
 #
@@ -142,6 +142,10 @@ esac
 #
 # The number is derived from the artifact path, so it is deterministic instead of depending on
 # the agent remembering to pass --msg. This table is the same mapping the roster uses.
+# A routine whose artifact path matches NO pattern gets NN="" and a subject with no number at
+# all ("cron daily-briefs <date>"), which cron #90's triage reports as MISSING. That is why
+# every path a routine can produce needs a row here -- and why a caller should still pass
+# --nn explicitly: the table can only be fixed by a push, the flag travels with the call.
 # NOTE: --add OVERWRITES, so $ADD holds only the LAST path given. With several --add paths the
 # routine number used to be derived from that last path alone, so a second path (a companion
 # CSV, say) silently wiped the number out of the commit subject — and cron #90's triage greps
@@ -156,6 +160,7 @@ if [ -z "$NN" ]; then
     earnings/*-reactions.md)            NN=15; NM=earnings-reaction-scanner ;;
     daily-briefs/*-pre-market.md)       NN=26; NM=agentic-pre-market-brief ;;
     daily-briefs/*-pre-market.csv)      NN=26; NM=agentic-pre-market-brief ;;
+    daily-briefs/*-pre-market-refresh.md) NN=26b; NM=agentic-pre-market-brief-refresh ;;
     daily-briefs/*-post-market.md)      NN=23; NM=agentic-post-market-brief ;;
     daily-screens/*/pre-market-gapper.md)   NN=08; NM=stock-screener-pre-market-gapper ;;
     daily-screens/*/focus-rvol-snapshot.md) NN=07; NM=stock-screener-focus-rvol-09:45 ;;

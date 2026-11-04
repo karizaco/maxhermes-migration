@@ -75,23 +75,32 @@ A replay is normal, not an error.
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-D=/workspace/push_artifact.sh
-for U in \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
-  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
-     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
-    mv -f "$D.tmp" "$D"; break
-  fi
-  rm -f "$D.tmp"
+# Fetch BOTH helpers. verify_delivery.sh is a separate script: it is NOT shipped inside
+# push_artifact.sh and push_artifact.sh does not fetch it, so a block that downloads only
+# push_artifact.sh leaves the mandatory verification step as a silent no-op.
+for F in push_artifact.sh verify_delivery.sh; do
+  D="/workspace/$F"
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+    if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+       && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+      mv -f "$D.tmp" "$D"; break
+    fi
+    rm -f "$D.tmp"
+  done
+  [ -s "$D" ] || echo "$F fetch FAILED"
 done
-[ -s "$D" ] || echo "push_artifact.sh fetch FAILED - the DELIVERY step cannot push its artifact"
+[ -s /workspace/push_artifact.sh ] || echo "push_artifact.sh fetch FAILED - the DELIVERY step cannot push its artifact"
 # ONE --add. The script stages the routine's whole output tree, and a second --add would
 # overwrite the first and wipe the routine number out of the commit subject.
-sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market-refresh.md --branch main
+# --nn 26b is MANDATORY. Without it the subject is "cron daily-briefs <date>" with no routine
+# number, and cron #90's triage greps subjects for "cron (#)?26b " and reports a delivered
+# artifact as MISSING (this happened on the 2026-11-04 fire: push exit 0, verify exit 4).
+sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26b
 sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26b
 ```
 

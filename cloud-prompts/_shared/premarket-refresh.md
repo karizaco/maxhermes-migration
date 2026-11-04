@@ -140,9 +140,19 @@ Write to `/workspace/daily-briefs/{date}-pre-market-refresh.md`, then push with 
 helper, staging only `daily-briefs/`:
 
 ```bash
-sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market-refresh.md --branch main
-sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26
+sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26b
+sh /workspace/verify_delivery.sh --path daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26b
 ```
+
+`--nn 26b` is MANDATORY on the push. The push script derives the commit subject's routine
+number from a path table, and that table did not have a row for `*-pre-market-refresh.md`, so
+the subject came out as `cron daily-briefs <date>` with no number — and cron #90's triage
+greps subjects for `cron (#)?26b `, so it reported a delivered artifact as MISSING. Passing
+`--nn` puts the number in the subject regardless of what the table knows.
+
+`verify_delivery.sh` is a SEPARATE helper: it is not shipped inside `push_artifact.sh` and
+`push_artifact.sh` does not fetch it. If the prompt's fetch block only downloads
+`push_artifact.sh`, the verification step is a silent no-op. Fetch both.
 
 `--add` is passed ONCE. The script stages the routine's whole output tree, so the morning brief
 and its CSV are not re-staged (they are already on the branch), and a second `--add` would
