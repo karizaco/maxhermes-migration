@@ -262,23 +262,14 @@ exit status (always 0) and reports a rejected push as a success. That is why the
 exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY
-The final reply (the only thing delivered to the chat) MUST use this structure. There is **no
-line cap** — cap by NAMES SHOWN (top ~8 per tier), not by lines. Long-form detail belongs in
-the artifact file, not in the chat.
+The reply format is the house standard in `cloud-prompts/_shared/PROMPT-BLOCKS.md` — fetch that
+file with the shared-instructions block above and follow its `## DELIVERY` section (prose opener,
+`### Signal`, `### Method & caveats`, `### Files`, `### Push / errors`).
 
-1. **Prose opener** — 2-4 sentences: the headline finding of the run, then the caveat that most
-   changes how it should be read. Complete sentences; no label lists, no clipped fragments.
-2. **`### Signal`** — tiered bullets, ONE ticker per line, each line a short clause naming the
-   catalyst or setup. Follow the skill's chat rules for tier order, flags and the audit line.
-   Lead with the top movers and the count of names, and give the source and any lag.
-   State how many further names are in the artifact file.
-3. **`### Method & caveats`** — 2-4 bullets: source(s), lag, universe/screen size, and every
-   degraded or blocked source. Name what could not be verified.
-4. **`### Files`** — one line per file written, with its sandbox path.
-5. **`### Push / errors`** — one line for push status (`push: ok (verified)` /
-   `push: skipped (token unset)` / `push: FAILED (<reason>)`) and one line for
-   `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
-   0 = clean run. The absent `mcp__*` tools are NOT an error and must not be counted.
+Do NOT keep a local copy of the reply format here. This prompt used to carry one, and it had
+already drifted from the shared file — two copies of one standard is exactly how a routine ends
+up answering in a format nobody else expects. The shared file is fetched at run time, so a fix
+to the standard lands on the next fire with no redeploy.
 
 Do not narrate tool calls. Tool call → result → write → push → reply.
 

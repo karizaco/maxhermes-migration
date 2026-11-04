@@ -6,7 +6,11 @@ being copied into 20 prompts. Each prompt keeps only what is specific to its own
 (schedule, window check, skill URL, output path, push target) and points here for the rest.
 
 **This file is authoritative for the sections it contains.** If a routine's own prompt and this
-file disagree on a rule here, this file wins.
+file disagree on a rule here, this file wins — with ONE carve-out: `## DELIVERY` below is the
+house STANDARD reply format, not an override. The routines listed in
+`cloud-prompts/cron-prompts/README.md` as machine-read exceptions (#07, #90, #01, #92a, #92b)
+keep their OWN reply format, and their own prompt wins for them. Do not "normalise" an
+exception to the standard form — that is a regression, not a fix.
 
 USAGE — fetch it in the same first step as the skill spec:
 
@@ -234,6 +238,12 @@ Local Mavis wrote an audit line to a Windows audit file after every run.
 The final reply (the only thing delivered to the chat) MUST use this structure. There is **no
 line cap** — cap by NAMES SHOWN (top ~8 per tier), not by lines. Long-form detail belongs in
 the artifact file, not in the chat.
+
+**This is the STANDARD format.** Five routines are documented exceptions because their output is
+machine-read rather than read by a human: #07 (a fixed status line), #90 (an audit digest),
+#01 (a health check), #92a and #92b (pre-open checkpoints). They keep their own reply format
+from their own prompt — do not "fix" them to this one. The list, with the reason for each,
+is in `cloud-prompts/cron-prompts/README.md`.
 
 1. **Prose opener** — 2-4 sentences: the headline finding of the run, then the caveat that most
    changes how it should be read. Complete sentences; no label lists, no clipped fragments.
