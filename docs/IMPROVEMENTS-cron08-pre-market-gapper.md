@@ -123,3 +123,134 @@ and nothing more.
 3. §6 — add "TV `premarket_change` is a range/extreme measure, not a last print; publish
    `premarket_volume`/`_high`/`_low` only".
 4. §6 — require a `% of 30-day average volume` column so a thin gap cannot be read as a real move.
+
+---
+
+# RETROSPECTIVE — 2026-11-04 evening: the seven names that gapped and never made the cut
+
+Requested after the 2026-11-04 fire: *"DUOL, LMB, AZO, MELI, YOU, KD, HELE gapped and were not
+in the list — why, and what rules would have caught them?"* This section is the retrospective, run
+**after the 2026-11-04 close**, so it has the full-day outcome for every pre-market name — which
+the 08:30 run could not have had. All numbers below are from the TradingView scanner (same source
+as the routine), the prior sweep's own outputs, cron #92's pre-open catalyst tape, and shibui.
+
+## 1. Why the seven did not make the cut
+
+**The universe was the wrong universe.** The gapper only looks at the **prior sweep's Focus list**
+(12 names, cron #09 at 2026-11-03 18:30 ET, screen data date 2026-11-02). All seven names were
+absent from `focus.csv`, `stalk.csv`, `master.csv` **and** from the sweep's 868-name candidate
+universe — they passed the pre-filter (close > 3, mcap > $300M, avg30 > 100k) and simply hit zero
+of the ten screens. A momentum screen cannot rank a name whose move has not happened yet.
+
+**Today the numbers were:** 379 US stocks gapped **≥4%** pre-market; 600 gapped ≥3%. The Focus
+list's widest pre-market gap was **+3.8%** (WING). The Focus universe contained **0 of the 379**.
+
+**They split into two populations, and only three of the seven were what people think they were:**
+
+| Name | pm high | pm volume | day | what it actually was |
+|---|---:|---:|---:|---|
+| DUOL | +25.8% | 161,801 (15.5% of 30d) | +32.1% | **earnings** — Q4 beat + FY26 guidance raised, released 2026-11-03 **18:07 ET** |
+| HELE | +18.1% | 41,252 (7.8% of 30d) | +24.9% | **acquisition proposal**, pre-market 11-04 |
+| KD | +17.1% | 123,626 (2.9% of 30d) | +36.7% | **earnings** — Q2 FY27 at 07:00 ET (rev $3.65B beat, guidance reaffirmed) |
+| LMB | +16.3% | 9,120 (4.3% of 30d) | +13.3% | **earnings** — Q3 beat, released 2026-11-03 **16:30 ET** |
+| YOU | +7.6% | 68,370 (4.5% of 30d) | +33.4% | **earnings** — Q3 at 06:00 ET, rev +27.8%, EPS $0.53, FCF guidance raised |
+| AZO | +2.5% | 694 (0.3% of 30d) | +3.8% | **not a gapper** — no pre-market gap; drifted intraday on 0.26 relative volume |
+| MELI | +2.9% | 4,013 (0.7% of 30d) | +5.2% | **not a gapper** — same; no catalyst, 0.32 relative volume |
+
+**Every one of the five real gappers had a catalyst that landed after the 18:30 sweep ran** (two at
+16:30 and 18:07 on 11-03, two pre-market on 11-04) — or, for HELE, an M&A announcement that no
+price-based screen can see. AZO and MELI were **not pre-market gappers at all**: their pre-market
+ranges never cleared 4% and they rose during the regular session on light volume. No pre-market
+gapper would have found them; they belong to cron #07 (09:45 RVOL re-rank) or #17 (15:50 in-play).
+
+**Today's own rule would still have missed two of the five even with a market-wide universe.**
+`gap > 4% AND pm_volume > 50,000` rejects **LMB** (9,120 shares = 4.3% of its normal volume) and
+**HELE** (41,252 = 7.8%). The absolute 50,000-share floor is **scale-blind**: a $675M industrial
+with 4.3% of its normal volume traded is a real market, while a $53B retailer with 694 shares is
+not.
+
+## 2. What actually separates the interesting gappers — measured, not guessed
+
+Base rates from the full 2026-11-04 pre-market universe (459 names ≥4%). "med" = median day change,
+"up" = % closing green, "c-o" = median (close − open), i.e. did the gap hold through the session.
+
+| Rule (all knowable at 08:30) | n | med | up | c-o |
+|---|---:|---:|---:|---:|
+| all pre-market gainers ≥4% | 459 | +5.08% | 80.8% | +0.00% |
+| + pre-market vol ≥1% of the name's 30-day average | 264 | +5.93% | 84.1% | +0.00% |
+| + gap **sustained** (pre-market low above the prior close) | 191 | +6.14% | 90.1% | +0.25% |
+| + market cap ≥ $1B | 80 | +6.74% | 95.0% | +0.80% |
+| + prior **1-month** return >10% (continuation, measured to the 11-03 close) | 14 | **+22.02%** | 92.9% | **+6.99%** |
+| earnings released between the prior close and today's open | 60 | **+10.91%** | 93.3% | +2.45% |
+| earnings gap **and** pm volume >50k | 32 | +11.60% | 90.6% | +2.15% |
+| catalyst captured (cron #92 tape, high/medium confidence) | 5 | **+32.06%** | 100% | +3.66% |
+| …no catalyst captured | 454 | +4.92% | 80.6% | +0.00% |
+| **fade side** — pm low ≤ −4% and pm vol ≥1% of 30d avg | 170 | **−8.80%** | 14.1% | −3.51% |
+
+**The single most important line is the catalyst one**, and it needs the caveat that n = 5: when
+cron #92's tape actually identified the catalyst, those names closed +32% on average; when it did
+not, the universe still averaged +4.92%. And the tape's *coverage* is the real defect: only **5 of
+459** qualifying names had a usable catalyst, **353 of 459** appeared in the tape at all, and the
+106 names absent from the tape fell to a **+1.59%** median and 67% up.
+
+**Two populations, and the filters are complementary, not substitutes.** Measured to the 11-03
+close (no hindsight contamination):
+
+| Name | prior 1-month | prior 1-week | caught by a momentum filter? | caught by an event filter? |
+|---|---:|---:|---|---|
+| DUOL | **−13.6%** | −5.3% | **no** | yes |
+| LMB | −2.8% | −1.6% | **no** | yes |
+| KD | +12.7% | −8.2% | yes | yes |
+| YOU | +15.1% | +5.0% | yes | yes |
+| HELE | +16.7% | +0.8% | yes | no (M&A) |
+
+DUOL was a **3-week loser** into the print — the exact profile a momentum screen discards and the
+exact profile an event screen catches. That is the argument for running **both** books.
+
+## 3. Proposed rule set (replaces the current one)
+
+**Universe:** the whole US pre-market (TradingView scanner), *not* the Focus list. The Focus list
+stays what it is — a continuation watchlist — and today's outcome shows why it should not be mixed
+in: its 12 names closed with a **~0% median** (6 up, 6 down) and all twelve traded **below** their
+10-day average volume (0.19–0.71 relative volume).
+
+**Long book**
+1. `pm_high ≥ 4%` **and** `pm_volume ≥ 1% of the name's own 30-day average` **and** `pm_volume ≥ 20,000`
+   — replace the absolute 50,000 floor with a ratio plus a small absolute floor.
+2. **Overlay A (event):** a confirmed catalyst — earnings released between the prior close and
+   today's open, an overnight EDGAR 8-K/425, FDA approval, M&A. → the five names of 11-04.
+3. **Overlay B (continuation):** prior 1-month return >10% and prior 1-week return >3%
+   (measured to the prior close) → n=9, median +17.78% on 2026-11-04.
+4. **Quality overlay:** the pre-market **low** above the prior close (the gap never gave back) and
+   market cap ≥ $1B → 95% green on 11-04.
+
+**Fade book:** `pm_low ≤ −4%` and `pm_volume ≥ 1%` of 30-day average → median −8.80%, 85.9% red.
+
+**One-session caveat:** this is a single day in a strong tape (SPY +1.42%, RSP +1.38%, DIA +2.47%),
+so every base rate above is inflated. The rules are a hypothesis, not a verdict — which is why the
+archive recommendation below matters more than any threshold here.
+
+## 4. Sources worth adding
+
+1. **The earnings calendar is already in the scanner** — `earnings_release_date` decodes to the exact
+   release time (DUOL 11-03 18:07 ET, LMB 11-03 16:30 ET, KD 11-04 07:00 ET, YOU 11-04 06:00 ET).
+   Zero new infrastructure, and it is the highest-value filter available (n=60, +10.91% median).
+2. **cron #92's pre-open catalyst tape** — already built, already categorises (earnings /
+   acquisition / trial). It caught DUOL, LMB and HELE but **missed KD and YOU**, both of them
+   earnings, because Grok's 08:30 pass did not find a 07:00 ET press release. A deterministic
+   earnings-calendar join fixes that class of miss. **Timing:** #92's first checkpoint actually ran
+   at 08:35:10, so #08 at 08:30 cannot join it — move #92's first slot to ~08:10, or run #08 at 08:45.
+3. **SEC EDGAR overnight filings** — verified working from this sandbox: `efts.sec.gov` full-text
+   returns **430 8-K filings indexed for 2026-11-04** with issuer, CIK and accession. Deterministic
+   for M&A (HELE) and material events, and free.
+4. **Consensus and surprise magnitude** (MarketBeat / EarningsWhispers, per the earnings-calendar
+   topic): the gap *size* relative to the surprise is what separates a gap that holds from one that
+   fades — KD beat revenue but missed net income and still closed +36.7%.
+5. **Options-implied move** (CBOE delayed option chain): gap vs expected move, plus IV crush — the
+   classic edge and a natural severity gauge for position sizing.
+6. **Short interest / borrow** (shibui `ownership_stats.short_percent_float`): squeeze gappers.
+7. **FDA / clinical feeds** (openFDA): the CRIS-type names (+184% pre-market, trial catalyst).
+8. **Your own archive — the highest-value addition.** Persist the *whole* pre-market universe plus
+   the day's outcome every run (`premarket-archive/<date>.jsonl`). Today only one session could be
+   measured; with 20–60 sessions stored, thresholds stop being opinions. This is what converts the
+   rule set above from a hunch into a measured rule.
