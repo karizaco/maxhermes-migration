@@ -106,8 +106,6 @@ push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_eod_international_d
 errors: 0
 ```
 
-
-
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/eod-watchlist-snapshot/SKILL.md

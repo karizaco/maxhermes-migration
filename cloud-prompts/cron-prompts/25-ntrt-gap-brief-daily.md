@@ -105,7 +105,6 @@ errors: 0
 ```
 
 
-
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/ntrt-gap-brief/SKILL.md

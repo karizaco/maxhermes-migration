@@ -103,7 +103,6 @@ errors: 0
 ```
 
 
-
 ## SKILL SPEC (FETCH ONCE)
 
 The skill's procedure body lives here:

@@ -107,8 +107,6 @@ push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_unusual_options_flo
 errors: 0
 ```
 
-
-
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/unusual-options-flow-daily/SKILL.md

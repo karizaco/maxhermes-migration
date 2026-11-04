@@ -154,7 +154,20 @@ def extract_facts(text):
         "nn": nn.group(1),
         "artifact": art.group(1),
         "has_clock": "CLOCK ASSERTION" in sec,
+        "tail": trailing_newlines(sec),
     }
+
+
+def trailing_newlines(section):
+    """The blank-line run at the tail of the ORIGINAL section.
+
+    The original prompts are not uniform here: some end the section with one blank
+    line before the next heading, some with two. Replacing the section with a fixed
+    template would silently normalise that and change bytes OUTSIDE the section, so
+    the original count is preserved and re-emitted after the new block.
+    """
+    m = re.search(r"\n+\Z", section)
+    return m.group(0) if m else "\n"
 
 
 def render(facts, fname):
@@ -163,14 +176,14 @@ def render(facts, fname):
         # A clock assertion we did not model - refuse rather than silently drop it.
         raise SystemExit(f"adopt_window_check.py: {fname} has a clock assertion with no "
                          f"--market-hours entry in MARKET_HOURS; add one and re-run.")
-    return (BLOCK
+    return (BLOCK.rstrip("\n")
             .replace("{OUT}", facts["out"])
             .replace("{NAME}", facts["name"])
             .replace("{LABEL}", facts["label"])
             .replace("{NN}", facts["nn"])
             .replace("{MARKET_HOURS}", mh)
             .replace("{ARTIFACT}", facts["artifact"])
-            .replace("{DATE}", "$FIRE_DATE"))
+            .replace("{DATE}", "$FIRE_DATE") + facts["tail"])
 
 
 def main():
@@ -191,7 +204,7 @@ def main():
             print(f"  skip   {fname} (no inlined window check)")
             continue
         new_sec = render(facts, fname)
-        new_text, n = re.subn(r"## WINDOW CHECK.*?(?=\n## )", lambda _m: new_sec + "\n\n",
+        new_text, n = re.subn(r"## WINDOW CHECK.*?(?=\n## )", lambda _m: new_sec,
                               text, count=1, flags=re.S)
         if n != 1:
             skipped += 1

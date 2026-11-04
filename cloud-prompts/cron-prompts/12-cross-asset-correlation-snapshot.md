@@ -104,8 +104,6 @@ push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_cross_asset_correla
 errors: 0
 ```
 
-
-
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/SKILL.md

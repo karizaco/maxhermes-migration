@@ -104,8 +104,6 @@ push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_us_stocks_in_play.m
 errors: 0
 ```
 
-
-
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/us-stocks-in-play/SKILL.md

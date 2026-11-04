@@ -105,7 +105,6 @@ errors: 0
 ```
 
 
-
 ## STEP 2 — FETCH THE PIPELINE (the skill's MCP tools do not exist in Cloud)
 
 The skill spec at
