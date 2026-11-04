@@ -268,14 +268,20 @@ across 209 names, so RVol stays comparable with previously published digests.
 **The helper is a separate file and is NOT on disk in a fresh sandbox — fetch it first:**
 
 ```bash
-RF=/workspace/rvol_fetch.py
+D=/workspace/rvol_fetch.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/rvol_fetch.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/rvol_fetch.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/rvol_fetch.py" ; do
-  [ -s "$RF" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$RF" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
 done
-[ -s "$RF" ] || echo "rvol_fetch fetch FAILED - use the caller's own denominator source"
+[ -s "$D" ] || echo "rvol_fetch.py fetch FAILED - fall back to the caller's own denominator source"
 python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
 ```
 

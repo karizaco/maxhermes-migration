@@ -192,11 +192,20 @@ consumer can merge them oldest-first.
 Then push with the shared helper:
 
 ```bash
+D=/workspace/push_artifact.sh
 for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
 done
+[ -s "$D" ] || echo "push_artifact.sh fetch FAILED - the DELIVERY step cannot push its artifact"
 sh /workspace/push_artifact.sh --out preopen-feed --add preopen-feed/${DATE}-${CP}.jsonl \
    --branch main --msg "cron 92 preopen-catalyst-capture ${DATE}-${CP}" --nn 92
 ```

@@ -79,9 +79,15 @@ read by a human — do not "fix" them to the standard form:
 - `#92a` / `#92b` — under 6 lines each (checkpoint, records written, push, errors).
 
 This list is the single source of truth for the exceptions, and it is mirrored in
-`cloud-prompts/_shared/PROMPT-BLOCKS.md` — which every routine downloads at run time. If you add
+`cloud-prompts/_shared/PROMPT-BLOCKS.md` — which most routines download at run time. If you add
 an exception here, add it there too, or the routine that reads only the shared file will
 "normalise" itself back to the standard format.
+
+**Five routines do NOT download `PROMPT-BLOCKS.md`** — `#01`, `#26b`, `#90`, `#92a`, `#92b` —
+so for them the exception list above is the only place it is written, and they each carry their
+own reply format in their own prompt. Two of those five (`#26b`, `#90`) also fetch the shared
+helpers themselves rather than getting them from the shared block; see
+`docs/IMPROVEMENTS-2026-11-04-fetch-ladder-and-memory-routing.md`.
 
 ```
 2-4 sentence prose opener (headline finding + the caveat that changes how it should be read)

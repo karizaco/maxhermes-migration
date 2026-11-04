@@ -15,13 +15,49 @@ exception to the standard form — that is a regression, not a fix.
 USAGE — fetch it in the same first step as the skill spec:
 
     B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-    for U in "$B/PROMPT-BLOCKS.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md"; do
-      [ -s /workspace/PROMPT-BLOCKS.md ] || curl -sL -o /workspace/PROMPT-BLOCKS.md "$U" 2>/dev/null
+    D=/workspace/PROMPT-BLOCKS.md
+    for U in \
+      "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/PROMPT-BLOCKS.md?ref=main" \
+      "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/PROMPT-BLOCKS.md" \
+      "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md" ; do
+      curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+      if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"'; then
+        mv -f "$D.tmp" "$D"; break
+      fi
+      rm -f "$D.tmp"
     done
+    [ -s "$D" ] || echo "PROMPT-BLOCKS.md fetch FAILED - write a stub artifact with `_source=prompt_blocks_fetch_failed`"
 
 If the fetch fails, write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply with
 the failure. Do NOT improvise these rules from memory — the fallback chain, the source ladder and
 the response format are what keep a degraded run honest.
+
+---
+
+## WHERE A FINDING GOES (never agent memory)
+
+A routine's findings are **artifacts and repo documents**. Agent memory is the wrong home for
+them, and writing them there is the single biggest cause of the hot layer outgrowing its budget.
+
+| What you found | Where it goes |
+|---|---|
+| A data quirk, a trap, a corrected procedure | `docs/IMPROVEMENTS-cronNN-<routine>.md` in `karizaco/maxhermes-migration` (the convention is in `docs/README.md`) |
+| A change to how THIS routine works | its own skill spec `cloud-prompts/skills/<name>/SKILL.md` — the next fire fetches it, so **no `cron_update` and no byte-drift risk** |
+| A fleet-wide rule | this file, or `cloud-prompts/_shared/RUNTIME-CONTRACT.md` |
+| A defect in a prompt or a shared script | the repo file itself, plus a line in the matching `docs/IMPROVEMENTS-*.md` |
+
+**Do NOT write findings into agent memory.** The hot layer is a short list of rules that apply to
+*every* future session. A routine-scoped finding does not belong there: it buries the
+cross-session rules, and it goes stale the moment the routine changes.
+
+**Do NOT append a dated section.** Notes that arrive as `### Untitled (YYYY-MM-DD)` headings are
+the main reason the hot layer keeps growing — each one is a new heading that nothing ever merges
+or retires. If a rule genuinely is cross-session, fold it into the existing section it belongs to.
+
+**The repo is the durable record.** It is version-controlled, reviewable, and it is where the next
+session will look. Agent memory is not a backup for the repo — it is the short index of what the
+repo cannot tell you.
 
 ---
 
@@ -104,7 +140,20 @@ Full endpoint list + measured status:
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-[ -s /workspace/probe_mcp.py ] || curl -sL -o /workspace/probe_mcp.py "$B/probe_mcp.py"
+D=/workspace/probe_mcp.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/probe_mcp.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/probe_mcp.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/probe_mcp.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] || echo "probe_mcp.py fetch FAILED - record `probe_unavailable` in `## Source health` - it is NOT a finding"
 python3 /workspace/probe_mcp.py
 ```
 
@@ -122,14 +171,20 @@ over plain HTTPS JSON-RPC from the sandbox. A ready-made bridge is published wit
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py
 
 ```bash
-BR=/workspace/mcp_bridge.py
+D=/workspace/mcp_bridge.py
 for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" ; do
-  [ -s "$BR" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$BR" "$U" 2>/dev/null
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
 done
-[ -s "$BR" ] || echo "bridge fetch FAILED - fall back to web_search, then the curl ladder"
+[ -s "$D" ] || echo "mcp_bridge.py fetch FAILED - fall back to web_search, then the curl ladder"
 mkdir -p /workspace/_mcp && cd /workspace/_mcp
 printf '%s' '{"symbol":"SPY","period":"1m"}' > a.json
 python3 /workspace/mcp_bridge.py stocktwits chart_data a.json      # OHLCV, sentiment, trending
@@ -177,14 +232,20 @@ Two rules that follow from it:
   **Fetch the helper first** — it is a separate file and is NOT on disk in a fresh sandbox:
 
   ```bash
-  RF=/workspace/rvol_fetch.py
+  D=/workspace/rvol_fetch.py
   for U in \
     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/rvol_fetch.py?ref=main" \
     "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/rvol_fetch.py" \
     "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/rvol_fetch.py" ; do
-    [ -s "$RF" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$RF" "$U" 2>/dev/null
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+    if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+       && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+      mv -f "$D.tmp" "$D"; break
+    fi
+    rm -f "$D.tmp"
   done
-  [ -s "$RF" ] || echo "rvol_fetch fetch FAILED - fall back to the caller's own denominator source"
+  [ -s "$D" ] || echo "rvol_fetch.py fetch FAILED - fall back to the caller's own denominator source"
   python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
   ```
 
