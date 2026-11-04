@@ -14,9 +14,9 @@ to, so the conversation list stays scannable.
    first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
    Example: `[31-10] 12-cross-asset-correlation-snapshot`.
 3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
-   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
+   `{'session_id': 'me', 'title': '<the title>'}`. `me` means THIS conversation.
    If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
-   "session title update", then retry the same `mcp_invoke` call.
+   'session title update', then retry the same `mcp_invoke` call.
 4. If the title cannot be set for any reason, carry on with the routine. This step must never
    block, delay, or fail the artifact.
 
@@ -49,42 +49,42 @@ On a holiday the market is closed and there is nothing to report.
 # The marker lives in refs/skipped-markers/, outside every routine's output
 # directory, so it can never be mistaken for a delivered artifact.
 DATE=$(TZ=America/New_York date +%Y-%m-%d)
-case "$DATE" in
+case $DATE in
     2026-01-01|2026-01-19|2026-02-16|2026-04-03|2026-05-25|2026-06-19|2026-07-03|2026-09-07|2026-11-26|2026-12-25)
         S=/workspace/skip_marker.sh
         for U in \
-          "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh" \
-          "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh" ; do
-          curl -sL --max-time 30 -o "$S.tmp" "$U" 2>/dev/null
+          'https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh' \
+          'https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh' ; do
+          curl -sL --max-time 30 -o $S.tmp $U 2>/dev/null
           # A 404 page is a non-empty body that is NOT a script - never run one.
-          if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!'; then
-            mv -f "$S.tmp" "$S"; break
+          if head -1 $S.tmp 2>/dev/null | grep -q '^#!'; then
+            mv -f $S.tmp $S; break
           fi
-          rm -f "$S.tmp"
+          rm -f $S.tmp
         done
-        if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
-          sh "$S" --out daily-screens --name stock_screener_focus_rvol_09_45 \
-             --label "Cron #07 stock-screener-focus-rvol-09:45" \
-             --reason "US market holiday ($DATE)" \
-             --nn 07 --date "$DATE" || \
-             echo "skip-marker push: FAILED (the marker is still in the sandbox)"
+        if [ -s $S ] && head -1 $S 2>/dev/null | grep -q '^#!'; then
+          sh $S --out daily-screens --name stock_screener_focus_rvol_09_45 \
+             --label 'Cron #07 stock-screener-focus-rvol-09:45' \
+             --reason 'US market holiday'-$DATE \
+             --nn 07 --date $DATE || \
+             echo 'skip-marker push: FAILED (the marker is still in the sandbox)'
         else
-          echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
+          echo 'skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)'
         fi
-        echo "out-of-window: US market holiday ($DATE)"
-        echo "no artifact; no push"
+        echo 'out-of-window: US market holiday'-$DATE
+        echo 'no artifact; no push'
         exit 0
         ;;
 esac
-echo "window-check: OK ($DATE)"
+echo 'window-check: OK'-$DATE
 # CLOCK ASSERTION — this routine is worthless off-clock. Before the 2026-10-24 repair it
 # fired at 22:45 ET for 13 consecutive days (timezone Etc/GMT-7 = UTC+7), and the old
 # check silently wrote a SKIPPED file at 22:45 and called it a day. If the ET clock is
 # outside the live session, STOP and say so instead of publishing a closed-tape snapshot.
 HM=$(TZ=America/New_York date +%H%M)
-if [ "$HM" -lt 0930 ] || [ "$HM" -gt 1100 ]; then
-    echo "out-of-window: off-clock fire (ET $HM, expected 09:30-11:00)"
-    echo "no artifact; no push"
+if [ $HM -lt 0930 ] || [ $HM -gt 1100 ]; then
+    printf 'out-of-window: off-clock fire (ET %s, expected 09:30-11:00)\n' $HM
+    echo 'no artifact; no push'
     exit 0
 fi
 ```
@@ -103,7 +103,7 @@ errors: 0
 ## STEP 2 — SKILL SPEC (fetch once)
 curl -sS -w 'HTTP=%{http_code}\n' https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/SKILL.md -o /workspace/skill.md
 **Save it under /workspace, NOT /tmp.** The Cloud `read` tool cannot open /tmp — it returns
-"workspace path escapes Cloud Host root" — so a spec that lands in /tmp is unreadable and the run
+'workspace path escapes Cloud Host root' — so a spec that lands in /tmp is unreadable and the run
 stalls on a file it already has. `cat`/`sed`/`grep` on /workspace files work fine.
 If that fails, retry once with -k (the GitHub cert has expired intermittently). Read the file in full
 and follow the procedure with the Cloud adaptations below. If both attempts fail: write a stub
@@ -118,8 +118,8 @@ step as the skill spec below, then follow it in full:
 
 bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/PROMPT-BLOCKS.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md"; do
-  [ -s /workspace/PROMPT-BLOCKS.md ] || curl -sL -o /workspace/PROMPT-BLOCKS.md "$U" 2>/dev/null
+for U in $B/PROMPT-BLOCKS.md 'https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md'; do
+  [ -s /workspace/PROMPT-BLOCKS.md ] || curl -sL -o /workspace/PROMPT-BLOCKS.md $U 2>/dev/null
 done
 ```
 
@@ -128,7 +128,7 @@ It contains, and you must follow, all of these:
 - `## MCP TOOLS AVAILABLE` — what actually exists in this runtime (the `mcp__*` names do NOT).
 - `## RUNTIME DATA-SOURCE CONTRACT` — the source ladder (bridge `market-recap` → TradingView →
   Yahoo → Nasdaq/SEC/CoinGecko/Frankfurter/Treasury), the per-egress Yahoo caveat, and the
-  "a 429 is a rate limit, not an absence" rule.
+  'a 429 is a rate limit, not an absence' rule.
 - `### MCP AVAILABILITY PROBE` — the one-call catalog probe and its four possible states.
 - `### PRIMARY SOURCE` — the MCP-over-HTTP bridge: how to fetch it, how to call it, what
   `--list-packs` does and does not tell you.
@@ -223,9 +223,9 @@ Working path, in order:
    It is NOT intraday RVOL and the artifact must say so.
 
 **TWO RECIPES THAT ARE ALREADY SOLVED — do not rediscover them.**
-- TradingView scanner FILTER: a `{"left":"name","operation":"in","right":[...]}` filter returns
+- TradingView scanner FILTER: a filter with left=name, operation=in and right=[ticker,...] returns
   HTTP 400 on this endpoint (verified 2026-11-02). Pull the full universe instead — body
-  `{"columns":[...],"range":[0,20000]}`, ~19,900 rows — and filter locally for your tickers.
+  `columns` plus `range:[0,20000]`, ~19,900 rows — and filter locally for your tickers.
   One request, no filter.
 - Yahoo IN-PROGRESS BAR: the last bar of the day is stamped with the CURRENT wall-clock time and
   its volume is still 0. Keeping it UNDERSTATES session volume. Drop every bar whose timestamp is
@@ -241,7 +241,7 @@ no_intraday_bars - never silently substitute a daily value.
   lunch bell for any name.
 - `rvol_projected_eod` = `rvol_intraday_live` / (elapsed session minutes / 390). Pace-adjusted:
   if the name holds this pace it ends the session at that relative volume. THIS is the number the
-  bucket threshold applies to. Never publish it as a bare "RVOL".
+  bucket threshold applies to. Never publish it as a bare 'RVOL'.
 - NAME CLASH: cron #09's `focus.csv` already publishes `rvol_<date>` = the COMPLETED session's
   relative volume. That is a different quantity from either number above. Refer to it as
   `rvol_session_eod` when you compare them.
@@ -277,7 +277,7 @@ numbers, not strings. `upstream` is the focus.md path, or `missing` / `fallback_
 
 Then a table — symbol | close | rvol_intraday_live | rvol_projected_eod | bucket | data
 timestamp — sorted by `rvol_projected_eod` desc. Then a counts block (universe size, Required
-count, Liquid count, crossings). Then `## Alerts` (name the crossing tickers, or write "none" and
+count, Liquid count, crossings). Then `## Alerts` (name the crossing tickers, or write 'none' and
 say why). Then `## Universe change` (names that entered or left the focus list vs the previous
 sweep). Then the method actually used, then `## Source health`, then any degradation.
 The CSV carries the same columns as the table, one row per ticker, plus the upstream `stylists`
@@ -297,8 +297,8 @@ A replay is normal, not an error.
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
+for U in $B/push_artifact.sh 'https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh'; do
+  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh $U
 done
 sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/focus-rvol-snapshot.md --branch main
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/focus-rvol-snapshot.md --branch main
