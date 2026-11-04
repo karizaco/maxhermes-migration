@@ -178,6 +178,27 @@ consequences, both now written into the spec:
 
 ---
 
+## 12. Three defects the contract itself had, found by rendering it against real data — HIGH
+
+The v2 contract was written from the four prior briefs and the 2026-11-03 artifact. Rendering it
+against the **real 2026-11-03 dataset** and diffing the output against the screen found three
+defects in the contract that reading alone would not have caught:
+
+- **CSV prices carried 4 decimals while the markdown rounded to 2** (`9.8719` vs `9.87`) — the
+  same number in two files, so a reader could not match a row across them by eye. Fixed: prices
+  are 2 dp in **both** files; the CSV keeps 3 dp only on `pct_of_adv`, which is a computed ratio
+  rather than a quoted price.
+- **RZAI has no 30-day ADV history** — `average_volume_30d_calc` is null, so the ratio is
+  unmeasurable. The contract now says the value is **empty, never 0** (an unmeasurable
+  denominator is not a zero-volume name), and `noise` is `true` when `pct_of_adv` is empty **or**
+  below 1, so a name with no ADV history cannot slip through as "real" on an empty value.
+- **A mega-cap's cap read as `$4937.50B`** — unreadable, and a trillion-cap company is read in
+  trillions. The convention now scales to its own unit: `$M` under $1B, `$B` under $1T, `$T`
+  above (`$4.94T` for AAPL), trailing zeros stripped.
+
+This is the argument for rendering a contract against real data before shipping it: all three
+are invisible on a page of prose and obvious the moment 261 rows run through it.
+
 ## Verification performed
 
 - Front matter parses; `name` and `description` keys preserved.
@@ -190,6 +211,16 @@ consequences, both now written into the spec:
 - Trailing newline preserved (matches `origin/main` and two of three siblings).
 - The new layout was rendered against the real 2026-11-03 dataset: 45 names, **zero** in more
   than one table row, 110 lines versus 193.
+- **14/14 automated checks pass** on that render: CSV rows equal the screen; every gap and price
+  reconciles to the screener pull; the `noise` flag is consistent on every row (empty → true,
+  below 1 → true); each name appears in exactly one table row; no actionable row has an empty
+  `Why`; the markdown and CSV agree on every gap; no price carries more than 2 dp; the six
+  pinned sections are present and in order; the TL;DR has exactly 3 bullets; the mode banner sits
+  above the TL;DR.
+- All 25 actionable names carry a catalyst sourced from the issuer's release, its IR page, its
+  8-K, or a named wire. Two were resolved by identity rather than by price: **BNC** is BNB
+  Standard (a BNB digital-asset treasury company, not Banc of California), and **VITL** is Vital
+  Farms.
 
 ## Revert
 
