@@ -165,3 +165,70 @@ Two new files now ship with the international artifact:
   give up on one, which meant cron #05 had no fallback at all when the git path failed). The git
   path is unchanged and remains primary; the connector has no race-retry, so it is still the
   fallback of last resort.
+
+## 10. Two defects found and fixed in the 2026-11-04 fire (spec updated 2026-11-04)
+
+**Date:** 2026-11-04 · **Scope:** cron #05 `eod-international-daily`, 16:30 ET fire ·
+**Artifact:** `international-eod/2026-11-04/` — 4,440 rows, 16/16 regions traded.
+
+Both defects were caught by the **cross-session comparison against the previous day's archived
+files**, not by any internal check, and both produced a file that looked entirely plausible.
+The skill spec (`cloud-prompts/skills/eod-watchlist-snapshot/SKILL.md`) is updated in this same
+commit, so the next fire reads the corrected procedure.
+
+### 10.1 The FX conversion direction was applied backwards (caught, 3x error)
+
+The spec's formula is `usd_cap = market_cap_basic * FX[listing_currency]`, which is only correct
+when `FX` is **USD per unit of the listing currency**. The FX tables this fleet actually fetches —
+Frankfurter and open.er-api — publish **local units per 1 USD** (`JPY 158.25`, `TWD 32.77`,
+`EUR 0.8876`, `CAD 1.3935`). The first implementation of the 2026-11-04 run multiplied by that
+number.
+
+**Effect:** `usd_cap` came out ~158x too large for Japan, so the $300M floor bound on almost
+nothing. Japan wrote **3,756 rows instead of 1,380**, and every other region was 3–8x too fat.
+Nothing errored; the file was well-formed, correctly sorted and internally consistent.
+
+**How it was caught:** the per-region row counts were compared with the previous session's
+archived files. The correct run lands within ~1–3% of the prior day's counts per region (au 303 vs
+300, tw 891 vs 920, eu-de 126 vs 121, eu-fr 262 vs 261, eu-it 179 vs 181, eu-es 147 vs 146,
+eu-dk 76 vs 77, eu-gr 86 vs 86); the multiplied run was 3x over. **This cross-session row-count
+comparison is the only check that catches this class of error, and it should be run on every
+international fire.** The spec now states the direction explicitly, names the local-per-USD
+convention of both FX providers, and gives the share-count reconciliation
+(`market_cap_local / close` = the issuer's real share count) as the tie-breaker.
+
+### 10.2 The carry-over detector used a tolerance and produced phantom carry-overs
+
+Carry-over detection compares today's close with the prior session's file. The first implementation
+compared the two with an absolute tolerance of 0.005 price units to absorb float noise. On
+2026-11-04 that flagged **4 phantom carry-overs in Australia alone** — Bellevue Gold closed A$1.31
+against the prior session's A$1.315, which is a real 0.4% move that the tolerance swallowed, and the
+same pattern hit three other ASX names. The run reported 93 carry-over rows instead of the true 89.
+
+The correct rule is **exact equality on the stored representation** (the value as written to the
+CSV). The spec now states it, together with the two carry-over signatures (zero volume, or a
+non-zero `change_pct` beside an unchanged close — the scanner's stale-leftover change field) and the
+requirement that `last_trade_date` walks **back** through the prior files rather than stamping
+yesterday's date.
+
+**Neither defect was visible in the output.** Both produced clean files. The rule generalises:
+**for a derived archive, the cheapest integrity check is the previous session's file, and the
+second cheapest is the source's own arithmetic identity** (here `close − close/(1 + change/100) ==
+change_abs`, which passed over all 18,319 priced rows with a worst-case error of 6.8e-13 and proved
+the `change` column's percent unit at the same time).
+
+### 10.3 What else this fire added to the routine's evidence
+
+- **28 of 28 spot-checked closes matched Yahoo to the cent**, across all 16 regions — including the
+  five Asian names, which were verified on Yahoo's 5-minute bars because the *daily* bars for
+  Japan and Taiwan lag the session by up to two days (`7203.T` still served the 2 November row).
+- **All 16 regions traded** (16/16 `traded=yes` from `market_session_probe.py`), where the previous
+  fire had skipped Japan for Culture Day. The prior-session anchor for Japan is therefore the
+  **2 November** file, not the 3 November one — the same walk-back rule the carry-over detector
+  needs.
+- The ATHEX General Index has no Yahoo symbol; its close (2,662.45, +1.77%) was taken from
+  **Euronext Athens' own historical data** and cross-checked against Greek press, and the
+  constituent closes it implies (Alpha Bank €4.736 +5.01%, NBG €16.60 +4.50%, Eurobank €4.602
+  +1.50%, Optima €13.48 +3.06%) match the snapshot exactly.
+- **The DAX is quoted two ways.** The Xetra closing price is 26,437.67 (+2.22%); one outlet quotes
+  the later auction value 26,479.33 (+2.38%). The file uses Xetra and says so.

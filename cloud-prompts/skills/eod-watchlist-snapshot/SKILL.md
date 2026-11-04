@@ -90,6 +90,23 @@ in this archive, and a consumer cannot tell from the file which one it is holdin
 
   `screener_filters.usd_floor_for_region(region)` returns the `(floor_usd, min_volume)` pair.
   Treat `filters_for_region()` as a filter over the **local-currency** number, never as the USD floor.
+- **THE CONVERSION DIRECTION IS NOT OPTIONAL — read the unit of your FX table.** The formula above
+  multiplies by `FX[listing_currency]`, which is only correct when `FX` is **USD per one unit of the
+  listing currency**. Every FX table this fleet actually fetches is the OTHER kind — **local units
+  per 1 USD** (Frankfurter and open.er-api both publish `JPY 158.25`, `TWD 32.77`, `EUR 0.8876`,
+  `CAD 1.3935` per USD) — and with those tables the conversion is a **DIVISION**:
+
+      usd_cap = market_cap_basic / FX_per_USD[listing_currency]
+
+  **Multiplying by a local-per-USD rate is a silent 100–200x error that still produces a
+  plausible-looking file.** Measured 2026-11-04 (cron #05): multiplying by 158.4 instead of
+  dividing made Japan write **3,756 rows instead of 1,380** and left the $300M floor binding on
+  almost nothing, while every other region came out 3–8x too fat. The archive comparison against
+  the previous session's file is what caught it (the correct run lands within ~1–3% of the prior
+  day's per-region row counts; the multiplied run lands 3x over). **Settle the direction before you
+  write anything:** `market_cap_local / close` must return the issuer's real share count, and one
+  row must satisfy `usd_cap * FX_per_USD == market_cap_local`. If your FX table is labelled "per
+  1 USD", divide.
 - **The floors, in USD, applied AFTER conversion:**
 
   | region | floor (USD) | extra volume gate |
@@ -146,6 +163,27 @@ the instrument but false as a statement about the day. Keep the rows as the sour
 (the schema is fixed at 14 columns), list the affected tickers in `_carryover.json` with each
 instrument's last trade date, state the count in the report, and exclude them from every movers
 list.
+
+**How to DETECT a carry-over (2026-11-04, cron #05) — compare the close EXACTLY, never with a
+tolerance.** A row is a carry-over when its close equals the close in the **prior session's file**
+AND either the row's volume is zero (no print at all) or the row's `change_pct` is non-zero
+(the scanner's `change` field is a stale leftover from an earlier session). Resolve the prior
+session's file per region — for a market that was shut the day before, that is the last file it
+actually has, not yesterday's date.
+
+  - **Use exact string equality on the stored representation** (compare the value as it is written
+    to the CSV). An absolute tolerance is a false-positive generator: with a 0.005 tolerance,
+    Bellevue Gold's A$1.31 close was flagged "unchanged" against the prior session's A$1.315 —
+    which is a **0.4% real move**, and it is exactly the kind of half-cent print the tolerance was
+    supposed to catch. On 2026-11-04 that one rule produced **4 phantom carry-overs in Australia
+    alone**; with exact matching the count dropped to the true 89.
+  - **The prior session's close is the right anchor**, because a row that did not trade today
+    still carries the last session's close. The scanner's own `change_abs` is not a substitute: it
+    is relative to the instrument's own previous close, which for a stale row is an even earlier
+    session.
+  - **`last_trade_date` walks back**, not forward: keep walking the prior files until a row with
+    non-zero volume or a different close is found, and report that date. A Spanish name that has
+    not printed since 28 October must not be stamped with yesterday's date.
 
 The cron prompt is intentionally short (~1.5KB). All orchestration logic lives in `run_intl_cron.py` with two CLI subcommands:
 
