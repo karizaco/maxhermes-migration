@@ -211,6 +211,45 @@ Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus a `regime.json`:
 }
 ```
 
+#### ⚠ An end-of-day read must use the SETTLED CLOSE of the cron day, not shibui's newest session
+
+shibui is T+1, so at the 18:30 ET fire its newest settled session is **D-1**. The breadth
+SQL above therefore measures the PRIOR session's breadth — wrong by definition for an
+end-of-day artifact, which is supposed to describe the close the trader just saw.
+
+For the 18:30 ET sweep (cron #09):
+
+- Compute the breadth numbers for the **cron day's settled close** from TradingView's
+  scanner: the same universe filter the SQL uses (`exchange in_range [NYSE,NASDAQ,AMEX]`,
+  `type == stock`, `market_cap_basic > 10_000_000_000`), with columns
+  `close, SMA20, SMA50, SMA200, ATR`. `% above 20-DMA`, `% above 50-DMA`,
+  `% above 200-DMA`, advance/decline and the five index ETF rows (SPY/RSP/QQQ/QQQE/IWM)
+  all come from that ONE call.
+- Keep the shibui breadth SQL as the **T+1 cross-check**, not as the published number, and
+  publish both. The two are NOT two readings of one series: the populations differ
+  (1,001 TradingView names on 2026-11-04 vs 905 shibui names on 2026-11-03) because the
+  market-cap sources differ (`market_cap_basic` vs `valuation.market_cap`).
+- The VIX/VIX3M pair comes from the Cboe delayed-quote CDN and must be quoted as ONE pair
+  with its `last_trade_time`, used everywhere in the artifact. Never mix a mid-session
+  print with a settled close.
+- The output path is `daily-screens/<date>/breadth.md` (plus `_regime.json` in the same
+  dated directory). The path `daily-screens/breadth/<YYYY-MM-DD>.md` written above is
+  stale — cron #09 and cron #10 both write into `daily-screens/<date>/`, and they must
+  never share a filename.
+
+#### The Nasdaq `/info` `primaryData` is NOT the official close after 16:00 ET
+
+Verified 2026-11-04 on 15 Focus/Tier-A names: TradingView's `close` matched Nasdaq's
+official 4:00 PM close (`secondaryData`) on **15 of 15**. Nasdaq's `primaryData` on the
+same pulls was the **after-hours** print stamped 18:36 ET (MRNA `primaryData` 256.86 vs
+`secondaryData` 258.38; ECG 81.43 vs 79.71; KVYO 19.79 vs 21.36).
+
+- Use `secondaryData` for the official close — or TradingView's `close`, which equals it.
+- `primaryData` is the live/after-hours last trade: correct for the intraday routines,
+  wrong for an end-of-day artifact.
+- Any same-day-print column must record WHICH of the two it used, or the reader cannot
+  tell a settled close from an after-hours drift.
+
 ### 4. Tier and merge (in-memory, zero MCP)
 
 `scripts/screen.py tier --date <YYYY-MM-DD>` produces:
@@ -247,6 +286,21 @@ Stockbee 4% *and* Stockbee EP9M is one stylist with two hits.
 **Thresholds:** Focus ≥ 2 stylists (cap 12), Tier-A ≥ 3 stylists (cap 8). Tier-A is
 derived from Focus; when more than 8 names clear the bar the list is truncated and
 `_results.json` reports `tier_a_truncated: true` with the untruncated pool size.
+
+#### Two traps when the tiering is re-implemented inline (the Cloud runtime does not execute scripts/screen.py)
+
+- **The per-stylist FILE names are slugs; the stylist BUCKET names are not.** The files are
+  `stockbee.md`, `qullamaggie.md`, `jeff-sun.md`, `ariel-hernandez.md`, `peoplewish.md`, but
+  the buckets are `stockbee`, `qullamaggie`, `jeff_sun`, `hernandez`, `peoplewish`. Split the
+  candidates on the BUCKET and write them under the SLUG. Keying the split on the slug
+  silently writes an EMPTY `jeff-sun.md` and an EMPTY `ariel-hernandez.md` while every
+  downstream count still looks plausible. **Assert that every per-stylist file has ≥ 1 row**
+  before publishing — an empty per-stylist file is exactly the "silent zero that reads like a
+  quiet tape" failure class.
+- **The Kullamägi 5-session move is the SQL column `m1`.** It is what makes the parabolic
+  short/long lists mean anything. Export `m1` into the candidate CSV (and `m2`), or
+  `short-candidates.csv` / `long-reversal-candidates.csv` ship with their defining metric
+  missing.
 
 ### 5. 3:55 PM ET Reversal Bullish (Bonde)
 

@@ -226,3 +226,79 @@ git checkout 9db5860 -- cloud-prompts/skills/stock-screener-suite/   # previous 
 
 The change is one commit touching only `cloud-prompts/skills/stock-screener-suite/`, so
 reverting it cannot affect any other routine's prompt or artifact.
+
+
+---
+
+## 10. Run note — the 2026-11-04 18:30 ET fire: the Nasdaq `/info` after-hours flip, and what an end-of-day breadth read must measure
+
+**Date:** 2026-11-04 · **Fire:** cron #09, 18:30:54 ET · **Artifact:** `daily-screens/2026-11-04/daily-sweep.md`, `breadth.md`, `_regime.json`
+
+Two findings came out of the run, both about which number an end-of-day artifact is allowed
+to publish. The skill spec was amended in the same commit (additive, no behaviour removed),
+so the next fire picks them up with no `cron_update` and no prompt-drift risk.
+
+### 10.1 The Nasdaq `/info` `primaryData` is the after-hours print, not the official close
+
+`same_day_prints.py` (§2.5) fetches the official 4:00 PM print from Nasdaq's `/info`. The
+routine assumed `primaryData.lastSalePrice` is that print. Measured on 15 Focus/Tier-A
+names on 2026-11-04, after the close:
+
+| Name | Nasdaq `primaryData` | Nasdaq `secondaryData` | TradingView `close` | Official close is |
+|---|---|---|---|---|
+| MRNA | $256.86 | $258.38 | 258.38 | `secondaryData` |
+| ECG | $81.43 | $79.71 | 79.71 | `secondaryData` |
+| KVYO | $19.79 | $21.36 | 21.36 | `secondaryData` |
+| FTAI | $182.24 | $179.58 | 179.58 | `secondaryData` |
+| GKOS | $250.80 | $246.71 | 246.70 | `secondaryData` |
+
+`primaryData.lastTradeTimestamp` read **"Nov 4, 2026 6:36 PM ET"** on every pull — that is
+the after-hours tape, not the 16:00 close. `secondaryData` is the official close, and
+TradingView's `close` equals it on **15 of 15** names (the one-cent GKOS gap is rounding).
+
+So: for an end-of-day artifact, `primaryData` is the wrong field. Use `secondaryData`, or
+TradingView's `close`, which agrees with it and costs no per-name HTTP call — the bulk of
+the "today" columns can come from the single TradingView call and Nasdaq becomes the
+verification pass rather than the data pass. Any same-day-print column must state which
+field it used, or a reader cannot distinguish a settled close from after-hours drift.
+
+### 10.2 An 18:30 ET breadth read cannot be measured by shibui's breadth SQL
+
+The skill spec's §3 says breadth comes from the shibui SQL. At 18:30 ET that SQL resolves
+to the **prior** session (`SELECT MAX(date) ... WHERE date <= '<cron_date>'` →
+`2026-11-03` on the 2026-11-04 fire), because shibui is T+1. An end-of-day artifact is
+supposed to describe the close the trader just saw, so the published breadth has to come
+from the settled close of the cron day — which the TradingView scanner has, along with
+`SMA20 / SMA50 / SMA200 / ATR` for the same universe filter.
+
+The two feeds disagree in a way that is easy to misread as a contradiction:
+
+| | shibui 2026-11-03 | TradingView 2026-11-04 |
+|---|---|---|
+| Large-cap population | 905 | 1,001 |
+| % above 20-DMA | 63.98% | 71.00% |
+| Index ETFs above 20-DMA | 40% (2 of 5) | 40% (2 of 5) |
+
+They are two different series (different populations AND different sessions), not two
+readings of one series. The spec now requires the settled-close number to be the published
+one and the shibui number to be published as the T+1 cross-check.
+
+### 10.3 Two small defects caught in the run itself
+
+- The per-stylist writer keyed on the *slug* (`jeff-sun`, `ariel-hernandez`) while the
+  stylist buckets are `jeff_sun` and `hernandez`, so those two files were written EMPTY
+  while every count looked plausible. Silent zero rows are exactly the failure class §5 of
+  this audit warns about; the guard belongs with the writer, not with the eye.
+- The 5-day parabolic move (`m1`) was computed by the SQL but never exported into the
+  candidate CSV, so `short-candidates.csv` / `long-reversal-candidates.csv` shipped with
+  the move column missing.
+
+- A contradiction with an existing docstring: `premarket_pull.py` states that
+  "`secondaryData` holds the official close ONLY while the regular session is running; once
+  the market is Closed it comes back null". Measured on 2026-11-04 at 18:36 ET — AFTER the
+  close — `secondaryData` returned the official close on 15/15 names (MRNA 258.38, ECG 79.71,
+  KVYO 21.36, FTAI 179.58) while `primaryData` carried the after-hours print. The docstring
+  is wrong about the closed-market case. It is NOT patched here: `premarket_pull.py` belongs
+  to cron #08, which runs pre-market where the primaryData/secondaryData relationship is
+  different, and changing another routine's data path blind is exactly the move this audit
+  warns against. Flagged for cron #08's owner.
