@@ -115,6 +115,35 @@ The rule is now written where the routines will actually see it:
 | A fleet-wide rule | `cloud-prompts/_shared/PROMPT-BLOCKS.md` or `RUNTIME-CONTRACT.md` |
 | A defect in a prompt or shared script | the file itself, plus a line in the matching doc |
 
+## 3a. Two helpers were CALLED but never FETCHED
+
+While auditing the ladders, the fetch sites were counted per helper — and two came back with
+**zero**:
+
+| Helper | Called by | Fetched by |
+|---|---|---|
+| `verify_delivery.sh` | **22 prompts** (`sh /workspace/verify_delivery.sh --path … --nn NN`) | **nobody** |
+| `skip_marker.sh` | `window_check.sh` (which does fetch it) | `window_check.sh` |
+
+`verify_delivery.sh` is the **content** check — the one that compares the remote blob's SHA-256
+against the local file. In a fresh cron sandbox the path does not exist, so the DELIVERY step
+either finds no script or the agent improvises a fetch. The prompts also claim *"the push above
+already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`"* — **that is
+false**: `push_artifact.sh` does not call it. What `push_artifact.sh` prints is
+`DELIVERY: ok (origin/$BRANCH:$ADD present; …)` — an **existence** check, not a content check.
+The prompt prose and the code disagreed, and the code is what runs.
+
+**The fix does not need a prompt change.** A new **SHARED HELPER FETCHES** section at the top of
+`_shared/PROMPT-BLOCKS.md` installs `push_artifact.sh`, `verify_delivery.sh` and
+`skip_marker.sh` with the canonical ladder, in step 1, before the routine does anything else.
+Twenty of the routines download `PROMPT-BLOCKS.md` first, so for them the helpers are fresh on
+disk before their own GIT PUSH block runs — and their own copy of the dead idiom is then never
+reached. **No prompt redeploy, no byte-drift risk.**
+
+`window_check.sh`'s own `skip_marker.sh` ladder was already correct (fetch to a temp file, check
+the shebang, move it into place, break) — it was only missing the contents API as its first URL
+and the raw `Accept` header, so it was added.
+
 ## 4. Also in this change
 
 - **`skills/memory-cleanup/SKILL.md`** — the cleanup procedure itself, which until now existed
@@ -122,6 +151,8 @@ The rule is now written where the routines will actually see it:
   deletion trick, the byte-exact edit traps, the 10-topic and 30 KB caps, the concurrent-writer
   hazard, and the two-call summary write.
 - **`cron-prompts/README.md`** — the false "every routine downloads the shared block" claim.
+- **`_shared/PROMPT-BLOCKS.md`** — the new **SHARED HELPER FETCHES** section (step 1): the three
+  shared helpers, canonical ladder, contents API first.
 
 ## 5. Not done, and why
 

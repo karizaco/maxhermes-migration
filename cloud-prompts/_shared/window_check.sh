@@ -161,9 +161,11 @@ write_marker() {
   if [ -z "$_script" ]; then
     _script=/workspace/skip_marker.sh
     for _u in \
+      "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/skip_marker.sh?ref=main" \
       "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh" \
       "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh" ; do
-      curl -sL --max-time 30 -o "$_script.tmp" "$_u" 2>/dev/null
+      curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$_script.tmp" "$_u" 2>/dev/null
       # A 404 page is a non-empty body that is NOT a script - never run one.
       if head -1 "$_script.tmp" 2>/dev/null | grep -q '^#!'; then
         mv -f "$_script.tmp" "$_script"; break

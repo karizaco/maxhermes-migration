@@ -61,6 +61,42 @@ repo cannot tell you.
 
 ---
 
+## SHARED HELPER FETCHES (run these in step 1, with the skill spec)
+
+The shared helpers are downloaded from the repo at run time. **Fetch them with the ladder below** —
+the **contents API first**, because the CDNs cache `main` independently and one of them WILL be
+stale: measured 2026-11-04, `raw.githubusercontent.com` served a stale blob for >17 minutes after a
+push while the contents API was fresh.
+
+The old `[ -s file ] || curl` loop was **dead**: the first successful download satisfied the guard,
+so the fallback URL was never reached and a file already on disk was never refreshed.
+
+```bash
+for F in push_artifact.sh verify_delivery.sh skip_marker.sh; do
+  D=/workspace/$F
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+    if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+       && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+      mv -f "$D.tmp" "$D"; break
+    fi
+    rm -f "$D.tmp"
+  done
+  [ -s "$D" ] || echo "$F fetch FAILED - the DELIVERY step cannot verify its own push"
+done
+```
+
+**Do this in step 1.** A helper that is only *called* is not on disk: `verify_delivery.sh` and
+`skip_marker.sh` are invoked by the routines, and nothing else downloads them. If you skip this
+block, the DELIVERY step either finds no script or falls back to the prompt's own fetch, which
+takes the first URL only — the raw CDN, which may be stale.
+
+---
+
 ## CONVERSATION TITLE (do this FIRST, before anything else)
 
 Every scheduled run gets its own conversation — one conversation per fire, never appended to an
