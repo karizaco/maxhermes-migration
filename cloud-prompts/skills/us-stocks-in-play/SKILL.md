@@ -265,12 +265,29 @@ OHLCV for every US symbol for one date**, so ten calls give a trailing-10-sessio
 denominator for the whole market. It reproduces the `chart_data` denominator to **0.000075%**
 across 209 names, so RVol stays comparable with previously published digests.
 
+**The helper is a separate file and is NOT on disk in a fresh sandbox — fetch it first:**
+
 ```bash
-python3 /workspace/rvol_fetch.py --date <YYYY-MM-DD> --sessions 10 --out avg10.json
+RF=/workspace/rvol_fetch.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/rvol_fetch.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/rvol_fetch.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/rvol_fetch.py" ; do
+  [ -s "$RF" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$RF" "$U" 2>/dev/null
+done
+[ -s "$RF" ] || echo "rvol_fetch fetch FAILED - use the caller's own denominator source"
+python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
 ```
 
+It is serialized internally (~13 s between calls — Massive's shared key allows 5 req/min) and
+retries on HTTP 429, so a 10-session pull takes ~2.5 minutes.
+
 **The session-volume numerator must be SETTLED.** A volume read from the quote bridge at
-~16:01 ET is **not final** — the closing auction consolidates later. Measured 2026-11-02:
+~16:01 ET is **not final** — the closing auction consolidates later. **`grouped_daily` may not have
+published the bar for the session you are running** (measured 2026-11-03: six attempts over ~10
+minutes, upstream had not consolidated it) — the denominator is unaffected because it excludes
+today by construction, but the numerator needs a settled fallback (shibui, or Yahoo's daily bar
+with a `ts >= 20:00Z` settle test). Measured 2026-11-02:
 published volumes ran **0.7%–30.2% low** (median ~8%) versus the settled figure, and because
 RVol divides by a fixed denominator, **RVol is understated too** — 7 names crossed the Tier-A
 RVol ≥ 2.0 threshold once settled (EL 1.96→2.32, NXT 1.85→2.26, VG 1.73→2.16, CRH 1.47→2.11,

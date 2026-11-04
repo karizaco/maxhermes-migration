@@ -174,10 +174,27 @@ Two rules that follow from it:
 - **Never pull per-symbol history in a loop.** Use `_shared/rvol_fetch.py` (polygon-io
   `grouped_daily`): **one call returns OHLCV for every US symbol for one date**, so ten calls give
   a trailing-10-session volume denominator for the whole market instead of one call per ticker.
+  **Fetch the helper first** — it is a separate file and is NOT on disk in a fresh sandbox:
+
+  ```bash
+  RF=/workspace/rvol_fetch.py
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/rvol_fetch.py?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/rvol_fetch.py" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/rvol_fetch.py" ; do
+    [ -s "$RF" ] || curl -sL -H "Accept: application/vnd.github.raw" -o "$RF" "$U" 2>/dev/null
+  done
+  [ -s "$RF" ] || echo "rvol_fetch fetch FAILED - fall back to the caller's own denominator source"
+  python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
+  ```
+
 - **A volume read minutes after the bell is NOT final** — the closing auction consolidates
   later, and an understated numerator understates RVol and dollar volume (measured 0.7-30.2% low
   on 2026-11-02). Take the session-volume numerator from a settled source (`grouped_daily` or
-  shibui), or label it as a snapshot in the artifact.
+  shibui), or label it as a snapshot in the artifact. **The `grouped_daily` bar for the session
+  being published may not exist yet when you run** (measured 2026-11-03: the day's bar never
+  published upstream during the run, though the prior ten did) — the denominator is unaffected
+  because it excludes today by construction, but the numerator needs a settled fallback.
 
 Full detail, including the exact `X-RateLimit-*` headers to read on failure: RUNTIME-CONTRACT.md
 section 1e.
