@@ -1,5 +1,5 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
-<!-- PROCEDURE_VERSION: 2026-11-04.2 -->
+<!-- PROCEDURE_VERSION: 2026-11-04.3 -->
 
 Runs three times per session-day (08:30, 09:20, 09:50 ET). Writes an append-only **catalyst
 tape** that cron #17 (`us-stocks-in-play`, 15:50 ET) reads to explain *why* a stock moved and
@@ -55,9 +55,9 @@ export TS=$(TZ=America/New_York date +%Y-%m-%dT%H:%M:%S%:z)
 export XAI_BASE=https://api.x.ai/v1
 
 # 3a. RESOLVE THE MODEL ID FROM THE ACCOUNT'S OWN MODEL LIST — never hardcode a slug.
-# Measured 2026-11-04 with a real key: the account reaches 13 models and plain
-# `grok-4` is NOT among them (the retired slugs re-price on redirect). GET /v1/models
-# is a listing call, not an inference call, so it is not billed.
+# Measured 2026-11-04: this account reaches 13 models and plain `grok-4` is NOT among
+# them (the retired slugs redirect and re-price). GET /v1/models is a listing call, not
+# an inference call, so it is not billed.
 curl -s --max-time 25 "${XAI_BASE}/models" -H "Authorization: Bearer ${XAI_API_KEY}" -o /tmp/grok_models.json
 python3 - <<'PYMODEL'
 import json
@@ -71,12 +71,12 @@ MODEL=$(cat /tmp/grok_model.txt)
 echo "grok model: ${MODEL}"
 
 # 3b. THE LEGACY LIVE-SEARCH PATH IS DEAD. `search_parameters` on /v1/chat/completions
-# still appears in the REST reference, but the API REJECTS it:
+# still appears in the REST reference, but the API REJECTS it (measured 2026-11-04):
 #   {"error":"Live search is deprecated. Please switch to the Agent Tools API"}
-# so the call must use the Responses API with server-side tools.
-#   max_tool_calls  = the COST CEILING on the search fan-out (12 measured $0.05/checkpoint)
+# The working path is the Responses API with server-side tools:
+#   max_tool_calls    = the COST CEILING on the search fan-out (12 measured $0.05/checkpoint)
 #   max_output_tokens = bounds the reply
-#   reasoning_effort=low  = this is extraction, not deep reasoning
+#   reasoning_effort  = "low" — this is extraction, not deep reasoning
 cat > /tmp/grok_prompt.txt <<'EOF'
 You are a US equity market catalyst feed. RIGHT NOW, list US-listed stocks (NYSE/NASDAQ/AMEX, ticker under 6 chars) that are moving materially pre-market or at the open. For each, return JSON ONLY, one object per line, no prose: {"ticker":"","name":"","pct":0.0,"price":0.0,"cat":"acquisition|merger|earnings|guidance|fda|trial|offering|halt|downgrade|guidance-cut|spin|dividend|other","why":"one clause, <=140 chars, stating the specific catalyst","ref":"source URL","conf":"high|medium|low"}. Only include names with a move beyond roughly 3% pre-market or a genuinely material corporate catalyst. If there is no US pre-market session (weekend/holiday), return nothing. Do NOT include your own commentary.
 EOF
@@ -94,7 +94,7 @@ curl -s --max-time 120 "${XAI_BASE}/responses" \
   -H "Authorization: Bearer ${XAI_API_KEY}" -H "Content-Type: application/json" \
   --data @/tmp/grok_payload.json > /tmp/grok_out.json
 
-# 3c. FAIL CLOSED, and report the EXACT cost. The API returns it: 10,000,000,000 ticks = $1.
+# 3c. FAIL CLOSED, and report the EXACT cost — the API returns it.
 python3 - <<'PYUSE'
 import json,sys
 ok=False
@@ -126,19 +126,18 @@ answers `{"error":"Live search is deprecated. Please switch to the Agent Tools A
 Responses API with server-side tools (`web_search`, `x_search`) is the working path. **A doc page
 that still lists a parameter is not evidence the backend honours it — probe the endpoint.**
 
-**Why the two-source split.** Grok can hallucinate a ticker or a percentage. The scanner gives
+**The two-source split.** Grok can hallucinate a ticker or a percentage. The scanner gives
 ground truth on prices. Therefore: **prices are only ever taken from the scanner; Grok supplies
 the reason, never the number.** A Grok record whose `pct` disagrees with the scanner by more than
 2pp is written with `"conf":"unverified"` and the consumer prints it as unconfirmed.
 
-**What the search actually costs.** Measured 2026-11-04 on `grok-4.3`, two live calls:
-**$0.0514 and $0.0476 per checkpoint** (3 web searches each, ~25k input / ~2k output tokens,
-21-24 s) — about **$0.10/day at two checkpoints, ~$2.20/month** at 21 sessions, and materially
-more on a day when the model leans on X ($5/1k posts). The API returns the exact figure in
-`usage.cost_in_usd_ticks` (10,000,000,000 ticks = $1), so the per-fire cost is a MEASUREMENT, not
-an estimate — step 3c prints it. Published rates: web $5/1k calls, X $5/1k posts + $10/1k
-profiles, grok-4.3 $1.25/$2.50 per 1M tokens. `max_tool_calls` is the ceiling that keeps it
-bounded.
+**What the search actually costs.** Measured 2026-11-04 on `grok-4.3`: **$0.0476 and $0.0514
+per checkpoint** (3 web searches each, ~25k input / ~2k output tokens, 21-24 s) — about
+**$0.10/day at two checkpoints, ~$2.20/month** at 21 sessions, and materially more on a day
+when the model leans on X ($5/1k posts). The API returns the exact figure in
+`usage.cost_in_usd_ticks` (10,000,000,000 ticks = $1), so the per-fire cost is a MEASUREMENT,
+not an estimate. Published rates: web $5/1k calls, X $5/1k posts + $10/1k profiles, grok-4.3
+$1.25/$2.50 per 1M tokens. `max_tool_calls` is the ceiling that keeps it bounded.
 
 ### 4. TradingView scanner — the ground-truth half
 
