@@ -123,6 +123,7 @@ if [ -z "$NN" ]; then
     earnings/*-reminders.md)            NN=19; NM=earnings-reminder-daily ;;
     earnings/*-reactions.md)            NN=15; NM=earnings-reaction-scanner ;;
     daily-briefs/*-pre-market.md)       NN=26; NM=agentic-pre-market-brief ;;
+    daily-briefs/*-pre-market.csv)      NN=26; NM=agentic-pre-market-brief ;;
     daily-briefs/*-post-market.md)      NN=23; NM=agentic-post-market-brief ;;
     daily-screens/*/pre-market-gapper.md)   NN=08; NM=stock-screener-pre-market-gapper ;;
     daily-screens/*/focus-rvol-snapshot.md) NN=07; NM=stock-screener-focus-rvol-09:45 ;;
