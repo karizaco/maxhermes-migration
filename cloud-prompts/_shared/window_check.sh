@@ -76,6 +76,21 @@ HOLIDAYS_DEFAULT="2025-01-01 2025-01-20 2025-02-17 2025-05-26 2025-06-19 2025-07
 # cloud-prompts/_shared/nyse-holidays.txt; window_check_test.sh asserts the two prompt
 # lists agree, and tools/schedule-drift.py's lint asserts all three do.
 HOLIDAYS="${HOLIDAYS:-$HOLIDAYS_DEFAULT}"
+# The canonical calendar is cloud-prompts/_shared/nyse-holidays.txt: 2025-2028, Good Friday
+# excluded, half-days recorded separately as trading days. It is fetched here so EVERY routine
+# gets the full list without any prompt change - the inline default above is only the fallback
+# for an offline run, and it is deliberately kept identical to the auditor's copy so the parity
+# check in window_check_test.sh keeps holding.
+if [ -z "${HOLIDAYS:-}" ] && [ -z "${HOLIDAY_FILE:-}" ]; then
+  _cal=/workspace/nyse-holidays.txt
+  if [ ! -s "$_cal" ]; then
+    curl -sL --max-time 20 -o "$_cal" \
+      "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/nyse-holidays.txt" 2>/dev/null
+  fi
+  if [ -s "$_cal" ] && grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' "$_cal" 2>/dev/null; then
+    HOLIDAY_FILE="$_cal"
+  fi
+fi
 # --holidays-file reads the canonical calendar (cloud-prompts/_shared/nyse-holidays.txt): one
 # file to extend each year, instead of a date list hand-typed into several places. Comment
 # lines and blanks are ignored. An explicit --holidays still wins.
