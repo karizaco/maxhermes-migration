@@ -9,6 +9,70 @@ the same screen and reports what moved.
 
 ---
 
+## STEP 0 — THE WINDOW CHECK (run FIRST, before anything else)
+
+The scheduler owns the day-of-week and the hour, so this gate exists for ONE reason: a cron
+expression cannot express a **market holiday**, and the scheduler fires Mon-Fri *including*
+them. On a holiday the market is closed and there is nothing to report.
+
+**Resolve the fire's scheduled instant FIRST, then judge the gate against it — never against
+the wall clock.** The platform resumes a crashed cron conversation IN PLACE, hours or days
+later, so on a replay "now" names the resume day, not the fire day.
+
+Resolve it with ONE call, no cron_read needed:
+
+```
+mcp_invoke  tool_name=session_get  arguments={"session_id":"me"}
+```
+
+Take `session.created_at` (epoch milliseconds) — the instant the platform dispatched THIS
+fire — and pass it as `--scheduled-at-ms`. The script prints `fire-date:`; use THAT for the
+artifact path, so the gate and the artifact can never disagree about which day they are.
+
+```bash
+# --- fetch the ONE shared window check (run-time fetch: fixes land with no redeploy) ---
+# The CAPABILITY check below is mandatory, not decoration. An OLDER copy of this script is
+# still published, and it silently IGNORES unknown flags - so without the check you would
+# run a gate that never fires, and a holiday fire would publish a brief for a closed
+# market. The CDNs also cache independently, so one of them can serve stale bytes for
+# hours. The contents API is authoritative and is not CDN-cached, so it is tried FIRST.
+S=/workspace/window_check.sh
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/window_check.sh?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/window_check.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/window_check.sh" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  # A 404 page is a non-empty body that is NOT a script, and an older script silently
+  # ignores the flags below. Require BOTH: a real script AND the capability marker.
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'WINDOW_CHECK_V2' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'WINDOW_CHECK_V2' "$S" 2>/dev/null; then
+  echo "window-check: UNAVAILABLE (no version of the shared script with the replay-aware gate)"
+  echo "no artifact; no push"
+  exit 1
+fi
+
+# SCHEDULED_AT_MS = session.created_at from the session_get call above (epoch ms).
+sh "$S" --scheduled-at-ms "$SCHEDULED_AT_MS" \
+   --out daily-briefs --name agentic_pre_market_brief_refresh \
+   --label "Cron #26b agentic-pre-market-brief-refresh" \
+   --nn 26b
+
+If the script exits non-zero the fire is OUT OF WINDOW: write nothing, push nothing, and
+reply:
+
+```
+out-of-window: <reason printed by the script>
+file: no artifact (holiday skip — daily-briefs/$DATE-pre-market-refresh.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_agentic_pre_market_brief_refresh.md) | marker push FAILED | marker push skipped (push script unavailable)
+errors: 0
+```
+
+---
+
 ## What this produces
 
 `daily-briefs/{date}-pre-market-refresh.md` — a short addendum:
