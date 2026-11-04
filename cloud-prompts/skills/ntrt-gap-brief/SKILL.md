@@ -138,14 +138,19 @@ Pin these so two runs are comparable and so the markdown and the CSV agree:
 
 | field | convention | example |
 |---|---|---|
-| price | 2 decimal places | `9.87`, `131.82` |
-| gap % | 1 decimal place, signed | `+33.4`, `-15.6` |
+| price | 2 decimal places, both markdown and CSV | `9.87`, `131.82` |
+| gap % | 1 dp in markdown, 2 dp in CSV | `+33.4`, `-15.6` / `33.40`, `-15.62` |
 | % of 30d ADV | 1 dp in markdown, 3 dp in CSV | `18.9`, `32.4` / `18.913` |
-| volume | integer, thousands separators | `396.0K`, `1,133,057` |
-| market cap | `$M` below $1B, `$B` above | `$458M`, `$201B` |
+| volume | integer; thousands separators in markdown | `396.0K`, `1,133,057` |
+| market cap | `$M` under $1B, `$B` under $1T, `$T` above | `$458M`, `$200.97B`, `$4.94T` |
 
-Never publish 4-decimal prices (`9.8719`) or 3-decimal percentages in the markdown. Round to
-the convention above and let the CSV carry the precision.
+Never publish 4-decimal prices (`9.8719`) or 3-decimal percentages in the markdown. The CSV
+keeps extra decimals only on the one computed ratio (`pct_of_adv`); every quoted price is the
+same 2 dp in both files, so a reader can match a row across the markdown and the CSV by eye.
+
+**Scale the market cap to its own unit.** `$4937.50B` is unreadable, and a mega-cap's cap is
+read in trillions. Use `$M` under $1B, `$B` under $1T, `$T` above, with trailing zeros stripped
+(`$458M`, `$200.97B`, `$4.94T`).
 
 ### 4. The CSV companion (column contract)
 
@@ -157,12 +162,18 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
 ```
 
 - `pct_of_adv` — 3 decimals (`18.913`), computed as `premarket_volume / average_volume_30d_calc * 100`.
-- `noise` — `true` when `pct_of_adv < 1`, `false` otherwise. A downstream consumer must be able
-  to filter the quotes out without re-deriving the threshold.
+  When a name has **no 30-day ADV history** (`average_volume_30d_calc` is null or 0) the value is
+  **empty, never 0** — an unmeasurable denominator is not a zero-volume name.
+- `noise` — `true` when `pct_of_adv` is **empty or below 1**, `false` otherwise. A downstream
+  consumer must be able to filter the quotes out without re-deriving the threshold, and a name
+  with no ADV history must not slip through as "real" on an empty value.
 - `catalyst` — one line, quoted. Empty string when no catalyst could be confirmed. **A blank
   cell means "not found", not "there wasn't one"** — say so in the markdown's Flags section.
 - `prev_close` — the prior **regular** close, with its date in the column name avoided; the
   date is in the filename and in the markdown front matter.
+- **Prices in the CSV are carried to 2 decimals** (the traded cent), the same as the markdown.
+  Only `pct_of_adv` keeps 3 decimals, because it is a computed ratio rather than a quoted
+  price.
 - Write it in the same output directory as the markdown, `{date}.csv`.
 
 ### 5. Flags vs. caveats — two different jobs
