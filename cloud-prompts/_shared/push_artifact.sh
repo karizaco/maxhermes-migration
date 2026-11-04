@@ -83,7 +83,7 @@ if [ -z "${_PUSH_ARTIFACT_HEALED:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
       _PA_HEALED="$(dirname "$0" 2>/dev/null)/.push_artifact.healed.sh"
       cp "$_PA_TMP" "$_PA_HEALED" 2>/dev/null && {
         _PUSH_ARTIFACT_HEALED=1; export _PUSH_ARTIFACT_HEALED
-        echo "push_artifact: self-healed $ _PA_LOC_V -> $_PA_REM_V (from the contents API)"
+        echo "push_artifact: self-healed $_PA_LOC_V -> $_PA_REM_V (from the contents API)"
         exec sh "$_PA_HEALED" "$@"
       }
     fi
