@@ -36,57 +36,75 @@ The scheduler owns the day-of-week and the hour, so this block exists for ONE re
 expression cannot express a **market holiday**, and the scheduler fires Mon-Fri *including* them.
 On a holiday the market is closed and there is nothing to report.
 
-```bash
-# US MARKET HOLIDAYS — 2026 NYSE closures (non-weekend):
-#   2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03
-#   2026-09-07 2026-11-26 2026-12-25
-# Half-days (07:00 13:00 ET) are trading days and still report — do NOT skip them.
-#
-# The skip marker is written AND PUSHED by the shared script, so a deliberate
-# skip leaves a trace on the outputs repo instead of dying in the sandbox. A
-# marker that never leaves the sandbox is indistinguishable from a failed run.
-# The marker lives in refs/skipped-markers/, outside every routine's output
-# directory, so it can never be mistaken for a delivered artifact.
-DATE=$(TZ=America/New_York date +%Y-%m-%d)
-case "$DATE" in
-    2026-01-01|2026-01-19|2026-02-16|2026-04-03|2026-05-25|2026-06-19|2026-07-03|2026-09-07|2026-11-26|2026-12-25)
-        S=/workspace/skip_marker.sh
-        for U in \
-          "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/skip_marker.sh" \
-          "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/skip_marker.sh" ; do
-          curl -sL --max-time 30 -o "$S.tmp" "$U" 2>/dev/null
-          # A 404 page is a non-empty body that is NOT a script - never run one.
-          if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!'; then
-            mv -f "$S.tmp" "$S"; break
-          fi
-          rm -f "$S.tmp"
-        done
-        if [ -s "$S" ] && head -1 "$S" 2>/dev/null | grep -q '^#!'; then
-          sh "$S" --out weekly --name weekly_market_recap_preview \
-             --label "Cron #22 weekly-market-recap-preview" \
-             --reason "US market holiday ($DATE)" \
-             --nn 22 --date "$DATE" || \
-             echo "skip-marker push: FAILED (the marker is still in the sandbox)"
-        else
-          echo "skip-marker push: SKIPPED (skip_marker.sh unavailable - the marker could not be written)"
-        fi
-        echo "out-of-window: US market holiday ($DATE)"
-        echo "no artifact; no push"
-        exit 0
-        ;;
-esac
-echo "window-check: OK ($DATE)"
-```
-**Reply format for a holiday skip.** The `## DELIVERY` block expects a push line and an errors
-line; a skipped fire has neither an artifact nor an error. Reply with these lines and nothing
-else — do not narrate the tool calls and do not write an artifact:
+The gate below is the ONE shared implementation for the whole fleet - fetch it and run it.
+Do not inline a holiday list here: a hand-typed copy is how 21 prompts drifted into
+21 different versions of the same check.
+
+**Resolve the fire's scheduled instant FIRST, then judge the gate against it - never against
+the wall clock.** The platform resumes a crashed cron conversation IN PLACE, hours or days
+later, so on a replay "now" names the resume day, not the fire day. Judging by the wall clock
+both skips real briefs (a Friday fire replayed on a Saturday) and publishes briefs for a
+closed market (a holiday fire replayed on a trading day).
+
+Resolve it with ONE call, no cron_read needed:
 
 ```
-out-of-window: US market holiday ($DATE)
-file: no artifact (holiday skip — weekly/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_weekly_market_recap_preview.md) | marker push FAILED | marker push skipped (push script unavailable)
+mcp_invoke  tool_name=session_get  arguments={"session_id":"me"}
+```
+
+Take `session.created_at` (epoch milliseconds). That is the instant the platform dispatched
+THIS fire, and a later resume does not change it - so it identifies the original fire even
+when the work happens hours later. Pass it as `--scheduled-at-ms`. The script prints
+`fire-date:` - use THAT for the artifact path in `## OUTPUT`, so the gate and the artifact
+can never disagree about which day they belong to.
+
+```bash
+# --- fetch the ONE shared window check (run-time fetch: fixes land with no redeploy) ---
+# The CAPABILITY check below is mandatory, not decoration. An OLDER copy of this script is
+# still published, and it silently IGNORES unknown flags - so without the check you would
+# run a gate that never fires, and a holiday fire would publish a brief for a closed
+# market. The CDNs also cache independently, so one of them can serve stale bytes for
+# hours. The contents API is authoritative and is not CDN-cached, so it is tried FIRST.
+S=/workspace/window_check.sh
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/window_check.sh?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/window_check.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/window_check.sh" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  # A 404 page is a non-empty body that is NOT a script, and an older script silently
+  # ignores the flags below. Require BOTH: a real script AND the capability marker.
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'WINDOW_CHECK_V2' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'WINDOW_CHECK_V2' "$S" 2>/dev/null; then
+  echo "window-check: UNAVAILABLE (no version of the shared script with the replay-aware gate)"
+  echo "no artifact; no push"
+  exit 1
+fi
+
+# SCHEDULED_AT_MS = session.created_at from the session_get call above (epoch ms).
+sh "$S" --scheduled-at-ms "$SCHEDULED_AT_MS" \
+   --out weekly --name weekly_market_recap_preview \
+   --label "Cron #22 weekly-market-recap-preview" \
+   --nn 22
+```
+
+If the script exits non-zero, the fire is OUT OF WINDOW: do not fetch the skill, do not write
+an artifact, do not push. The skip marker it wrote IS the audit trail for this run.
+
+**Reply format for an out-of-window skip.** The `## DELIVERY` block expects a push line and
+an errors line; a skipped fire has neither an artifact nor an error. Reply with these lines
+and nothing else - do not narrate the tool calls and do not write an artifact:
+
+```
+out-of-window: <reason printed by the script>
+file: no artifact (window check declined this fire - weekly/$DATE.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_weekly_market_recap_preview.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
 errors: 0
 ```
+
 
 
 ## SKILL SPEC (FETCH ONCE)
