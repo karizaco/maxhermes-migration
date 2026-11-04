@@ -84,10 +84,59 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
 7. **Per name**: ticker, company, report time (BMO/AMC/unknown), consensus EPS, consensus revenue,
    market cap, and status (`pending` vs `already reported` — European and Indian names often print
    before the US open, and the reader needs to know which).
-8. **Write the markdown file** with a front-matter header (`date`, `cron`, `fire_time_et`,
+   **The ticker you print is the issuer's PRIMARY listing.** For an ADR or an OTC line the headline
+   ticker is the home-market line with its exchange suffix, and the US line goes in parentheses:
+   `8001.T (ITOCY)`, `8031.T (MITSY)`, `NOVO-B.CO (NVO)`. An OTC ticker is never the headline — the
+   reader cannot find the company by it, and it reads as a penny stock.
+   Resolve the primary listing per name (one or two cheap calls):
+   - **OTC line** → `https://stockanalysis.com/quote/otc/<TICKER>/` and read the **"Main Listing"**
+     link. Verified 2026-11-04: ITOCY → `/quote/tyo/8001/`, MITSY → `/quote/tyo/8031/`,
+     SMMNY → `/quote/etr/SHL/`.
+   - **US-listed ADR of a non-US issuer** → `https://stockanalysis.com/api/search?q=<company name>`
+     lists every line; the home-market line is the one on the issuer's domicile exchange
+     (cph/NOVO.B for Novo, etr/SHL for Siemens Healthineers, tsx/CVE for Cenovus).
+   - **Confirm the primary line with Yahoo**, which returns the venue and the LOCAL currency:
+     `https://query1.finance.yahoo.com/v7/finance/quote?symbols=8001.T,8031.T,NOVO-B.CO,SHL.DE`
+     → `exchange`/`fullExchangeName` (JPX/Tokyo, GER/XETRA, CPH/Copenhagen) + `currency`
+     (JPY, EUR, DKK) + `marketCap` in that currency.
+   - **If the US line IS the primary listing** (ARM on Nasdaq; CVE and MFC on NYSE, whose TSX lines
+     are the secondary), keep the US ticker and name the other line:
+     `ARM (Nasdaq, primary)`, `CVE (NYSE, primary; TSX: CVE.TO)`.
+   Exchange suffixes: Tokyo `.T` · XETRA `.DE` · Frankfurt `.F` · SIX `.SW` · LSE `.L` · Paris `.PA`
+   · Amsterdam `.AS` · Milan `.MI` · Madrid `.MC` · Lisbon `.LS` · Brussels `.BR` · Copenhagen `.CO`
+   · Stockholm `.ST` · Oslo `.OL` · Helsinki `.HE` · Toronto `.TO` · Vancouver `.V` · Sao Paulo `.SA`
+   · Mexico `.MX` · Hong Kong `.HK` · Taipei `.TW` · Seoul `.KS` · Singapore `.SI` · Bombay `.BO`
+   · Johannesburg `.JO`.
+8. **Non-US issuers — a different ladder, and the issuer's own IR calendar wins.**
+   US-centric calendars (Yahoo, Nasdaq, EarningsWhispers) are organised around the US session, so
+   for a European, Japanese or Canadian issuer they carry the WRONG release time and sometimes the
+   WRONG DATE. Measured 2026-11-04: EarningsWhispers filed Novo Nordisk as "BMO 12:35 PM ET" when
+   the 6-K was already out by 03:06 ET; it filed Mitsui under "after the close" when Mitsui's own
+   financial calendar says the announcement is **Nov 4, 12:00 JST** (= Nov 3, 22:00 ET — already
+   published before a 06:00 ET run); and both aggregators listed Siemens Healthineers for Nov 4
+   when the company says **Nov 5, 07:00 CET**. For these names use, in order:
+   1. **The issuer's IR financial calendar / results press release** — it gives the report DATE and
+      the local announcement TIME, plus the securities codes with their exchanges. That local time
+      is what decides `pending` vs `already reported`: convert it to ET with `zoneinfo` (never a
+      hardcoded offset — JST is UTC+9, CET/CEST UTC+1/+2) and compare it with the FIRE's scheduled
+      instant, not with the wall clock.
+   2. **The stockanalysis.com primary-listing page** — `https://stockanalysis.com/quote/<exch>/<sym>/`
+      carries `earningsDate` ("Nov 4, 2026"), `marketCap` in LOCAL currency, and a filings feed that
+      says whether the results are already out, with an EST timestamp.
+   3. **Yahoo quote for the PRIMARY listing** (step 7) for the venue, the local currency and the
+      local-currency market cap.
+   4. **Consensus**: EarningsWhispers' `Rev est` is already USD even for ADRs and is the cleanest
+      revenue number (NVO $11.39B, matching the Zacks consensus); the issuer's own pre-results
+      consensus PDF (Siemens Healthineers publishes one) or MarketScreener's calendar gives the
+      local-currency EPS and revenue. State the currency on every foreign number.
+   **Currency trap:** Yahoo's `earningsTrend` for an ADR comes back in the ISSUER's currency, not
+   USD — NVO revenue 73.40B is DKK (≈$11.0B), ITOCY/MITSY 4,013B is JPY. Convert with a NAMED rate
+   (Yahoo `DKK=X`, `JPY=X` close) and label the currency, or publish the local figure as-is. Never
+   publish a converted EPS next to a US ADR EPS estimate without saying which currency it is in.
+9. **Write the markdown file** with a front-matter header (`date`, `cron`, `fire_time_et`,
    `snapshot_et`, `source`, `primary_source`, `status`, `pending_count`, `already_reported_count`)
    so downstream consumers can parse it without guessing.
-9. **Append audit line** (local Mavis only — skip on Cloud):
+10. **Append audit line** (local Mavis only — skip on Cloud):
    `earnings_reminder target=earnings:{date} watchlist_hits={n} bigcap_hits={n}`
 
 ## Sample output
@@ -112,6 +161,7 @@ already_reported_count: 0
 |---|---|---|---|---|---|---|
 | MU | Micron | AMC | 1.24 | 9.10B | 186.2B | pending |
 | AZO | AutoZone | BMO | 34.12 | 18.90B | 65.4B | pending |
+| 8001.T (ITOCY) | ITOCHU Corporation | BMO (reported 01:00 ET) | 0.23 | 25.3B | 99.3B | reported |
 ```
 
 ## Hard rules
@@ -120,6 +170,39 @@ already_reported_count: 0
 - If data is sparse (Sunday/holiday), write a 1-line "no earnings today" file. Don't fabricate.
 - Consensus estimates from web search only — note source.
 - Don't pull analyst price targets (that's a different skill's job).
+- **Never print an OTC or ADR ticker as the headline ticker** — the primary listing goes first, the
+  US line in parentheses.
+- **For a non-US issuer the issuer's own IR calendar outranks every aggregator** — for the report
+  date AND the report time.
+- **A local-currency number without its currency label is a defect.** Local figures are fine when
+  labelled; a converted figure must name the rate it was converted at.
+
+## Source facts (measured 2026-11-04 — re-verify before relying on them)
+
+- **EarningsWhispers is the best single roster source and it is server-rendered**:
+  `https://www.earningswhispers.com/calendar/YYYYMMDD` returns the whole day in HTML
+  (`Reporting Before the Open` / `Reporting After the Close` sections).
+- **Its company pages need a JS cookie.** Without one you get a 2 KB "needs cookies" page instead of
+  the ~160 KB page. The wall sets `ewc=<reversed token>` in JS and the token sits inside the wall's
+  own HTML, so you can compute it and skip the browser:
+  `s="d6tQpU0uwhHW_cBwCjsT5Aey.EEA6F080F89DC140.9322836971"; c=s[::-1]` → send it as cookie `ewc`.
+  Check the page LENGTH, not the status code, and fetch company pages sequentially with ~0.3 s
+  spacing — 8 parallel threads trip the wall.
+- **Each company page carries**: the consensus EPS ("consensus earnings estimate is $X"), the
+  revenue estimate ("Rev est $14.74B", in USD even for ADRs) and the expected release time in ET.
+- **Yahoo's earnings-calendar JSON endpoint is retired**: `v1/finance/calendar/earnings` returns
+  **404**. Use `https://query1.finance.yahoo.com/v10/finance/quoteSummary/<TICKER>?modules=earningsTrend`
+  (period `0q` = the quarter being reported) for EPS + revenue, and
+  `https://query1.finance.yahoo.com/v7/finance/quote?symbols=...` (batch 50) for market cap. Both
+  need the cookie+crumb handshake.
+- **Nasdaq's calendar API** (`api.nasdaq.com/api/calendar/earnings?date=...`) gives EPS consensus,
+  BMO/AMC and the fiscal quarter, but **no revenue field**.
+- **EPS basis differs by source**: EarningsWhispers and Nasdaq/Zacks are mostly adjusted, Yahoo's
+  `earningsTrend` is often GAAP for the same name (DDOG 0.64 vs 0.18; QCOM 2.16 vs 1.46;
+  FICO 10.89 vs 9.20; ARM 0.48 vs 0.22; HST 0.38 FFO vs 0.09). Publish one and note the other.
+- **stockanalysis.com** (`/quote/<exch>/<sym>/`, `/api/search?q=`) is the best non-US source:
+  local listing, local-currency market cap, earnings date, "Main Listing" link for OTC lines, and
+  a filings feed that reports whether results are already published.
 
 ## Out of scope
 

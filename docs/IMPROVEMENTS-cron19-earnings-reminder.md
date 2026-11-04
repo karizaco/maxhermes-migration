@@ -206,3 +206,73 @@ Full evidence table, the two out-of-routine failures found (cron #12's 498-file 
 on 2026-10-26 with the old recipe, and cron #19 missed 10-27/10-28 entirely because its task was
 deleted and recreated), and the 10-27/10-28 backfill are documented in
 `cloud-prompts/../docs/CROSSCHECK-cron19-earnings-reminder.md` (this repo).
+
+---
+
+## 2026-11-04 fire — what the run proved, and three new rules
+
+The 2026-11-04 06:00 ET fire produced `earnings/2026-11-04-reminders.md` (51 names). It was the
+first run with the shared reply format as a STANDARD rather than an override, and the first to
+surface the ADR/OTC and non-US data gaps below.
+
+### 15. Print the PRIMARY listing, never the ADR or the OTC ticker (NEW)
+
+The artifact showed `ITOCY`, `MITSY` and `NVO` — none of which a reader can look up. The rule is
+now in the skill spec (step 7): the headline ticker is the issuer's home-market line with an
+exchange suffix, and the US line goes in parentheses.
+
+**The mapping is machine-extractable, and the cheap source is stockanalysis.com:**
+- `https://stockanalysis.com/quote/otc/<TICKER>/` carries a **"Main Listing"** link for every OTC
+  line. Verified 2026-11-04: ITOCY → `/quote/tyo/8001/`, MITSY → `/quote/tyo/8031/`,
+  SMMNY → `/quote/etr/SHL/`.
+- `https://stockanalysis.com/api/search?q=<company name>` lists EVERY line of a company, so a
+  non-OTC ADR resolves too (Novo → `cph/NOVO.B`; Cenovus → `tsx/CVE`).
+- `https://query1.finance.yahoo.com/v7/finance/quote?symbols=8001.T,8031.T,NOVO-B.CO,SHL.DE`
+  confirms the venue and the LOCAL currency (`JPX/Tokyo`+JPY, `GER/XETRA`+EUR, `CPH/Copenhagen`+DKK)
+  and gives the local-currency market cap.
+
+**A dual-listed US line stays as the headline when the US listing IS the primary one** — ARM on
+Nasdaq, CVE and MFC on NYSE (their TSX lines are the secondary). Do not "upgrade" those to the
+Canadian line.
+
+### 16. For a non-US issuer, the issuer's IR calendar outranks every aggregator (NEW)
+
+Three failures in one run, all invisible to a US-centric calendar:
+- **Novo Nordisk** — EarningsWhispers filed the release time as "12:35 PM ET" when the 6-K was
+  already public by **03:06 ET** (AP filed at 3:06 a.m. ET). Issuer IR: announcement 04 Nov,
+  call 13:00 CET / 07:00 ET.
+- **Mitsui** — EarningsWhispers filed it "after the close"; Mitsui's own financial calendar says
+  **Nov 4, 2026, 12:00 JST** = Nov 3 **22:00 ET** — published before the 06:00 ET fire. Treated as
+  `already reported`.
+- **Siemens Healthineers** — both aggregators said Nov 4; the company's IR says **Nov 5, 07:00 CET**.
+  **Excluded** as a date error.
+
+The rule: the local announcement time, converted to ET with `zoneinfo`, decides `pending` vs
+`already reported` — and it is compared against the FIRE's scheduled instant, never the wall clock.
+
+### 17. Source facts that cost the run time (NEW, in the skill spec)
+
+- **EarningsWhispers company pages need a JS cookie.** Without one you get a 2 KB "needs cookies"
+  page instead of the ~160 KB page. The wall sets `ewc=<reversed token>` and the token is inside
+  the wall's own HTML — compute it offline and skip the browser. Check page LENGTH, not status.
+- **Yahoo's earnings-calendar JSON endpoint is retired** (`v1/finance/calendar/earnings` → 404).
+  Working replacement: `v10/finance/quoteSummary/<TICKER>?modules=earningsTrend` (period `0q`).
+- **Nasdaq's calendar API has no revenue field** — EPS, BMO/AMC and fiscal quarter only.
+- **Yahoo's `earningsTrend` for an ADR is in the ISSUER's currency** (NVO 73.40B = DKK; ITOCY and
+  MITSY 4,013B = JPY), while EarningsWhispers' `Rev est` is USD even for ADRs. Prefer EW for
+  revenue; label every foreign number with its currency.
+- **stockanalysis.com** is the best non-US source overall: local listing, local-currency market cap,
+  `earningsDate`, "Main Listing" link, and a filings feed that says whether results are already out.
+
+### 18. Process rule — run the prompt's own fetch block verbatim
+
+This run fetched `PROMPT-BLOCKS.md` with a two-URL snippet copied out of the file it had just
+downloaded, instead of running the three-URL ladder the deployed prompt specifies. At 06:01 ET
+both paths returned the same bytes, so nothing was lost — but the moment the shared file changed
+(08:15 ET, when the dead `[ -s file ] || curl` loop was replaced) the copied snippet would have
+been the stale path. **Run the fetch block in the prompt, not a snippet of the fetched file.**
+
+### Artefact note
+
+`earnings/2026-11-04-reminders.md` was re-pushed the same day with the primary-listing ticker
+convention applied, so the published artifact matches the new rule.
