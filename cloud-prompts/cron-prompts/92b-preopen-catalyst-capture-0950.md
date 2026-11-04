@@ -9,23 +9,28 @@ The procedure lives in ONE shared file, not in every prompt. Fetch it in the sam
 the skill spec, then follow it in full:
 
 ```bash
-B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-J=https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen-capture.md
-# Fetch BOTH mirrors and take the one carrying the HIGHEST PROCEDURE_VERSION marker.
-# A CDN can serve a stale blob: measured 2026-11-04, raw.githubusercontent was >17 minutes
-# behind jsDelivr after a push, and the old single-pass loop could NEVER reach its fallback,
-# because the first successful download satisfied the file-exists guard. A version marker,
-# not an exit code, decides which copy is current.
-rm -f /tmp/pc_a.md /tmp/pc_b.md
-curl -sL --max-time 30 -o /tmp/pc_a.md "$B/preopen-capture.md" 2>/dev/null
-curl -sL --max-time 30 -o /tmp/pc_b.md "$J" 2>/dev/null
+# Fetch THREE mirrors and take the one carrying the HIGHEST PROCEDURE_VERSION marker.
+# The CONTENTS API is tried first: it is authoritative and is NOT CDN-cached. The two CDNs
+# cache `main` independently — measured 2026-11-04, raw.githubusercontent served a stale blob
+# for >17 minutes after a push while jsDelivr was fresh — and the old single-pass loop could
+# NEVER reach its fallback, because the first successful download satisfied the file-exists
+# guard. A version marker, not an exit code, decides which copy is current.
+rm -f /tmp/pc_a.md /tmp/pc_b.md /tmp/pc_c.md
+curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -o /tmp/pc_c.md \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen-capture.md?ref=main" 2>/dev/null
+curl -sL --max-time 30 -o /tmp/pc_a.md \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen-capture.md" 2>/dev/null
+curl -sL --max-time 30 -o /tmp/pc_b.md \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen-capture.md" 2>/dev/null
 python3 - <<'PYEOF'
 import re
 best=None;bv=None
-for f in ("/tmp/pc_a.md","/tmp/pc_b.md"):
+for f in ("/tmp/pc_c.md","/tmp/pc_a.md","/tmp/pc_b.md"):
     try: t=open(f,encoding="utf-8",errors="replace").read()
     except Exception: continue
-    if not t.strip(): continue
+    if not t.strip() or t.lstrip()[:200].find('"message"')>=0: continue
     m=re.search(r"PROCEDURE_VERSION:\s*(\d{4})-(\d{2})-(\d{2})\.(\d+)",t)
     v=(int(m.group(1)+m.group(2)+m.group(3)),int(m.group(4))) if m else (-1,-1)
     if bv is None or v>bv: bv=v;best=f
@@ -37,9 +42,9 @@ if best:
     print("procedure: version %s.%s from %s"%(bv[0],bv[1],best))
 else:
     open("/workspace/preopen-capture.md","w").write(
-        "PROCEDURE_FETCH_FAILED: no copy of preopen-capture.md could be fetched from "
-        "raw.githubusercontent or jsDelivr.\nStop here. Report `probe_failed:procedure_fetch` "
-        "and write NOTHING.\n")
+        "PROCEDURE_FETCH_FAILED: no copy of preopen-capture.md could be fetched from the "
+        "GitHub contents API, raw.githubusercontent or jsDelivr.\nStop here. Report "
+        "`probe_failed:procedure_fetch` and write NOTHING.\n")
     print("procedure: FETCH FAILED")
 PYEOF
 ```
