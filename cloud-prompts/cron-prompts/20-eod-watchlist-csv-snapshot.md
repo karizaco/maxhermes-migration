@@ -100,7 +100,7 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: <reason printed by the script>
 file: no artifact (window check declined this fire - us-eod/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_eod_watchlist_csv_snapshot.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_eod_watchlist_csv_snapshot.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 

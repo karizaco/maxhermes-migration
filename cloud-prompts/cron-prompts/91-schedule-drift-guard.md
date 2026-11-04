@@ -381,8 +381,8 @@ note: web-GUI saves corrupt the day-of-week field of weekday routines — change
 6. **Do not repair a routine whose ground-truth entry you cannot read.** If the ground-truth
    file is missing or a routine is UNKNOWN, report it and stop — do not guess a schedule.
 7. **If the detector itself cannot run** (fetch failed, parse error), fall back to comparing
-   each routine's live schedule against the ground-truth JSON by hand with python, and say in
-   the reply that you did it manually.
+   each routine's live schedule against the ground-truth JSON by hand with python, and say in the
+   reply that you did it manually.
 8. **This routine is read-only with respect to artifacts.** It writes nothing to the outputs
    repo and pushes nothing. It only reads the scheduler and writes the scheduler's own
    schedule field.

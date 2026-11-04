@@ -103,7 +103,7 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: <reason printed by the script>
 file: no artifact (window check declined this fire - options-flow/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_unusual_options_flow_daily.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_unusual_options_flow_daily.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 
@@ -169,7 +169,7 @@ Write the artifact to:
   `/workspace/options-flow/{date}.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.

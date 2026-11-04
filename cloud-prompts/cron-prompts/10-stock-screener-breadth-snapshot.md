@@ -100,7 +100,7 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: <reason printed by the script>
 file: no artifact (window check declined this fire - daily-screens/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_breadth_snapshot.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_breadth_snapshot.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 
@@ -122,7 +122,7 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 # --- fetch cloud-prompts/_shared/PROMPT-BLOCKS.md ---
 # The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
 # independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
-# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# minutes after a push while jsElivr was fresh. The OLD `[ -s file ] || curl` loop could
 # NEVER reach its fallback - the first successful download satisfied the guard, so the
 # second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
 # rejected on its BODY, not on its byte count.
@@ -166,7 +166,7 @@ Write the artifact to:
   `/workspace/daily-screens/{date}/breadth-snapshot.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.

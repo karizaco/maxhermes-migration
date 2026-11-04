@@ -103,7 +103,7 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: <reason printed by the script>
 file: no artifact (window check declined this fire - daily-screens/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_focus_rvol_09_45.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_focus_rvol_09_45.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 
@@ -335,7 +335,7 @@ degraded_universe_fallback, failed_no_upstream_focus_list, failed_no_data.
 
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.

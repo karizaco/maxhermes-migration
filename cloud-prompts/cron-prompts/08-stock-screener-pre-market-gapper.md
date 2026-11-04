@@ -100,7 +100,7 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 ```
 out-of-window: <reason printed by the script>
 file: no artifact (window check declined this fire - daily-screens/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_pre_market_gapper.md) | marker push FAILED | marker push skipped (skip_marker.sh unavailable)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_stock_screener_pre_market_gapper.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
 
@@ -108,8 +108,7 @@ errors: 0
 The skill's procedure body lives here:
   https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/SKILL.md?ref=main
 
-**FIRST tool call:** `curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/SKILL.md?ref=main"` (or `web_fetch` if available).
-Read the procedure in full. Do NOT skip this step.
+**FIRST tool call:** `curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/SKILL.md?ref=main"` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
 
 If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert and has
 expired mid-session before), fall back to `web_fetch` on the SAME url. If both fail: write a stub
@@ -170,7 +169,7 @@ Write the artifact to:
   `/workspace/daily-screens/{date}/pre-market-gapper.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
