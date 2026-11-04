@@ -487,6 +487,22 @@ Because a stale vintage can move an individual name's gap by ~2.4pp, publish the
 the trigger: if the widest gap on any source is well inside the 4% band, the flag decision is
 immune to the cache and should be stated as such.
 
+**A ready-made implementation ships with this skill:** `scripts/premarket_pull.py`. It performs
+the whole defence (N tape pulls, max-newest-timestamp selection, the live `/info` price, the
+complete-tape volume arbitration, the Cboe cross-check) and writes both a JSON and a markdown
+table with per-symbol provenance — including the tape vintages it actually saw, which is the
+evidence that the cache was beaten rather than assumed away.
+
+```
+python scripts/premarket_pull.py --from-csv daily-screens/<prior-date>/focus.csv \
+    --out-dir daily-screens/<date> --pulls 4 --gap-trigger 4
+```
+
+Read the helper, do not execute it blindly: per the shared `## HELPER SCRIPTS` rule, the Cloud
+runtime expects the agent to re-implement the helper's job with tool calls. It is the reference
+for exactly what the four rules mean, and the fastest correct route when the agent decides to
+implement them inline.
+
 ### 7. Live intraday RVOL re-rank (Sun)
 
 Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deployed cron
