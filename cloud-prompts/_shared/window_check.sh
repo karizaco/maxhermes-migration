@@ -31,7 +31,8 @@
 # USAGE
 #   sh window_check.sh --scheduled-at-ms <epoch_ms> \
 #       --out <output-dir> --name <marker-stem> --label "<human title>" --nn <NN> \
-#       [--market-hours HHMM-HHMM] [--holidays "YYYY-MM-DD ..."] [--now-at-ms <epoch_ms>]
+#       [--market-hours HHMM-HHMM] [--holidays "YYYY-MM-DD ..."] [--holidays-file <path>]
+#       [--now-at-ms <epoch_ms>]
 #
 #   --scheduled-at-ms  the fire's scheduled instant, epoch ms. This is the whole point
 #                      of the script: without it the gates fall back to the wall clock
@@ -44,6 +45,8 @@
 #   --market-hours     optional HHMM-HHMM window evaluated against the FIRE's ET clock
 #                      (e.g. 0930-1100). Omit for no hour gate.
 #   --holidays         optional override of the market-holiday list.
+#   --holidays-file    a file of closure dates, one per line (# comments ignored). The
+#                      canonical file is cloud-prompts/_shared/nyse-holidays.txt.
 #   --now-at-ms        testing only: pretend "now" is this epoch ms.
 #
 # EXIT CODES
@@ -56,13 +59,29 @@
 # instead of dying in the sandbox.
 set -u
 
-OUT=""; NAME=""; LABEL=""; NN=""; SCHED_MS=""; MKT_HRS=""; NOW_MS=""
-HOLIDAYS_DEFAULT="2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03 2026-09-07 2026-11-26 2026-12-25"
-# The 2026 NYSE closures. Half-days (07:00 / 13:00 ET) are TRADING days and must still
-# report - they are deliberately absent. EXTEND THIS LIST FOR 2027 and keep it in step with
-# the auditor's copy in cron-prompts/90-delivery-auditor.md; window_check_test.sh asserts
-# the two lists agree.
+OUT=""; NAME=""; LABEL=""; NN=""; SCHED_MS=""; MKT_HRS=""; NOW_MS=""; HOLIDAY_FILE=""
+HOLIDAYS_DEFAULT="2025-01-01 2025-01-20 2025-02-17 2025-05-26 2025-06-19 2025-07-04 2025-09-01 2025-11-27 2025-12-25 2026-01-01 2026-01-19 2026-02-16 2026-05-25 2026-06-19 2026-07-03 2026-09-07 2026-11-26 2026-12-25 2027-01-01 2027-01-18 2027-02-15 2027-05-31 2027-06-18 2027-07-05 2027-09-06 2027-11-25 2027-12-24 2028-01-17 2028-02-21 2028-05-29 2028-06-19 2028-07-04 2028-09-04 2028-11-23 2028-12-25"
+# The NYSE closures for 2025-2028 (2025 is historical; it is here so the three
+# copies of this list match exactly and the parity lint stays meaningful). Half-days (07:00 / 13:00 ET) are TRADING days and must
+# still report - they are deliberately absent.
+#
+# TWO DEFECTS THIS LIST USED TO CARRY, both fixed 2026-11-04:
+#   * GOOD FRIDAY (2026-04-03) was listed. The NYSE is OPEN on Good Friday - it closes
+#     most European and Asian exchanges, which is where the bad copy came from - so the
+#     fleet skipped a live session.
+#   * The list stopped at 2026, so on 2027-01-01 (a Friday) every weekday routine would
+#     have fired and published for a closed market.
+#
+# Keep this in step with the auditor's copy in cron-prompts/90-delivery-auditor.md and with
+# cloud-prompts/_shared/nyse-holidays.txt; window_check_test.sh asserts the two prompt
+# lists agree, and tools/schedule-drift.py's lint asserts all three do.
 HOLIDAYS="${HOLIDAYS:-$HOLIDAYS_DEFAULT}"
+# --holidays-file reads the canonical calendar (cloud-prompts/_shared/nyse-holidays.txt): one
+# file to extend each year, instead of a date list hand-typed into several places. Comment
+# lines and blanks are ignored. An explicit --holidays still wins.
+if [ -n "$HOLIDAY_FILE" ] && [ -f "$HOLIDAY_FILE" ]; then
+  HOLIDAYS=$(grep -vE '^[[:space:]]*(#|$)' "$HOLIDAY_FILE" | tr '\n' ' ')
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -73,6 +92,7 @@ while [ $# -gt 0 ]; do
     --scheduled-at-ms) SCHED_MS="${2:-}"; shift 2 ;;
     --market-hours)   MKT_HRS="${2:-}"; shift 2 ;;
     --holidays)       HOLIDAYS="${2:-}"; shift 2 ;;
+    --holidays-file)  HOLIDAY_FILE="${2:-}"; shift 2 ;;
     --now-at-ms)      NOW_MS="${2:-}"; shift 2 ;;
     --help|-h)        sed -n '2,60p' "$0"; exit 0 ;;
     *) echo "window_check.sh: unknown argument '$1'" >&2; exit 3 ;;

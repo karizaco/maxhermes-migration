@@ -1,0 +1,80 @@
+# nyse-holidays.txt — NYSE / Nasdaq full-closure calendar, 2025-2028.
+#
+# THE single source of truth for US market closures across the cron fleet.
+# One date per line; blank lines and lines starting with # are ignored.
+# A routine that must skip a closed market reads this file; it must NOT keep
+# its own copy of the list (21 prompts did, and every copy drifted).
+#
+# Why this file exists
+# --------------------
+#   * The per-prompt copies stopped at 2026, so on 2027-01-01 (a Friday) every
+#     weekday routine would have fired and written an artifact for a closed
+#     market.
+#   * Every copy contained 2026-04-03 — GOOD FRIDAY. The NYSE is OPEN on Good
+#     Friday, so that copy skipped a trading day.
+#
+# Rules used here (NYSE holiday calendar)
+# ---------------------------------------
+#   * Nine full closures a year: New Year's Day, MLK Day (3rd Mon Jan),
+#     Washington's Birthday (3rd Mon Feb), Memorial Day (last Mon May),
+#     Juneteenth (Jun 19), Independence Day (Jul 4), Labor Day (1st Mon Sep),
+#     Thanksgiving (4th Thu Nov), Christmas Day (Dec 25).
+#   * A holiday falling on a SUNDAY is observed the following MONDAY.
+#   * A holiday falling on a SATURDAY is NOT observed on the preceding Friday —
+#     the exchange trades a full session on that Friday.
+#   * GOOD FRIDAY IS A TRADING DAY. It is never a closure. (It closes most
+#     European and Asian exchanges, which is where the bad copies came from.)
+#   * HALF-DAYS (1:00 p.m. close) are TRADING DAYS — a routine still reports
+#     on them. They are listed at the bottom, commented out, for reference only.
+#
+# Extend this file when a year is added. Do NOT edit a routine's copy — there
+# is no copy any more.
+#
+# Half-days (1:00 p.m. close) — TRADING DAYS, do not skip:
+#   2025-07-03  2025-11-28  2025-12-24
+#   2026-11-27  2026-12-24
+#   2027-11-26  2027-12-24
+#   2028-11-24  2028-12-22
+
+# --- 2025 ---
+2025-01-01
+2025-01-20
+2025-02-17
+2025-05-26
+2025-06-19
+2025-07-04
+2025-09-01
+2025-11-27
+2025-12-25
+
+# --- 2026 ---
+2026-01-01
+2026-01-19
+2026-02-16
+2026-05-25
+2026-06-19
+2026-07-03
+2026-09-07
+2026-11-26
+2026-12-25
+
+# --- 2027 ---
+2027-01-01
+2027-01-18
+2027-02-15
+2027-05-31
+2027-06-18
+2027-07-05
+2027-09-06
+2027-11-25
+2027-12-24
+
+# --- 2028 ---
+2028-01-17
+2028-02-21
+2028-05-29
+2028-06-19
+2028-07-04
+2028-09-04
+2028-11-23
+2028-12-25

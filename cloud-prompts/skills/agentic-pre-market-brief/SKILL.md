@@ -10,14 +10,6 @@ description: >-
 
 # Agentic pre-market brief (market-wide, theme-clustered)
 
-> **Scope rule (load-bearing).** The pre-market brief watches the
-> *entire* US-listed public equity universe. The user-supplied watchlist
-> is a personal tracker and appears as a **section** of the brief, never
-> as the spine. StockTwits trending + a market-wide %change screen drive
-> what gets written; the watchlist is read *after* the clustering, in
-> parallel. Missing the day's actual tape (last revision: missed the
-> Greenland/rare-earth complex because we scoped to the watchlist) is a
-> hard failure mode — see "Failure modes" below.
 
 ## When
 
@@ -154,6 +146,31 @@ A second screen on `volume > 50_000_000` surfaces the day's genuine outsized act
 candidates, halted/resumed names, M&A spikes). Surface `halted` names explicitly — a name that
 prints no pre-market price because it is halted is a fact, not a gap.
 
+### Step 3b — Read the sibling artifacts before you pull your own
+
+Two other routines publish files on the outputs repo **before** this one fires, and this brief
+should not re-derive what they already computed:
+
+| File | Cron | Fires | What it gives you |
+|---|---|---|---|
+| `earnings/{date}-reminders.md` | #19 | 06:00 ET | the earnings roster, BMO/AMC split, per-name EPS/revenue estimates |
+| `earnings/{date}-reactions.md` | #15 | 08:00 ET | the pre-market gap table with a `last earnings` tag and `PRE_GAP`/`POST_GAP` flags, cross-checked against Yahoo |
+| `daily-screens/{date}/breadth-snapshot.md` | #10 | 09:45 ET* | session breadth over a 902-name $10B+ universe |
+
+```
+https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/earnings/{date}-reactions.md
+https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/daily-screens/{date}/breadth-snapshot.md
+```
+
+*#10 fires at 09:45 ET — after this routine — so its file is usually the PREVIOUS session's.
+Read it for the breadth context and say which session it describes.
+
+Use #15's file to **cross-check** your pre-market screen and to enrich your clusters (a name
+already flagged `PRE_GAP` is a gap that is happening, not one that is about to). Do NOT replace
+your own screen with it: #15 screens a top-200-mcap universe with a 10,000-volume floor, while
+this brief screens the whole market. If the two disagree on a name, say so and take the
+**broader** screen.
+
 ### Step 4 — Cluster by catalyst (the load-bearing step)
 
 Before writing any prose, **group every gap name from steps 1–3 by catalyst**. One pass. Examples of clusters:
@@ -235,6 +252,23 @@ a war headline is the macro of the day, and a brief that lists only FRED release
 
 ### Step 9 — Write the brief
 
+**Front matter first.** The artifact opens with a machine-readable block, so the auditor and any
+downstream routine can read it without parsing markdown (cron #19 and #15 already do this):
+
+```
+---
+date: <YYYY-MM-DD>
+cron: 26-agentic-pre-market-brief
+fire_time_et: <YYYY-MM-DD HH:MM>
+snapshot_et: <HH:MM>          # when the pre-market tape was pulled
+source: TradingView america scanner + MCP-bridge market-recap
+status: ok
+themes: <n>
+up_3pct: <n>
+down_3pct: <n>
+---
+```
+
 Order (load-bearing — do NOT re-order):
 
 1. **TL;DR** — clustered, theme-first. ≥ 4 named themes from Step 4 with their tickers and magnitudes in bullet form. Single-sentence "watchlist" line at the bottom that says which watchlist names happen to align with the day's themes.
@@ -251,11 +285,23 @@ Order (load-bearing — do NOT re-order):
 
 Cap top news to **10 items**, **all theme-anchored** (no per-ticker news for non-theme watchlist names).
 
-**Before rendering, prove the brief is internally consistent:** every percentage and price in the
-prose must equal the value in the table it came from, and every table row must equal the value you
-fetched. One pull of the tape feeds the whole brief — if two pulls disagree (the tape moves), the
-older pull wins for the tables and the prose must match it. A brief that contradicts itself is worse
-than a brief with less in it.
+**Before rendering, prove the brief is internally consistent.** One pull of the tape feeds the
+whole brief — if two pulls disagree (the tape moves), the older pull wins and the prose must match
+it — and **the CSV must be built from the very same merged table the markdown uses**, not from a
+second merge order. On 2026-11-03 the CSV took a later per-ticker fetch for some names while the
+markdown took the earlier bulk screen, so AEHR read +18.5% in a table and +18.8% in the CSV.
+
+There is a linter for this. Run it and fix what it reports:
+
+```bash
+python3 https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py \
+  --md /workspace/daily-briefs/{date}-pre-market.md \
+  --csv /workspace/daily-briefs/{date}-pre-market.csv
+```
+
+It exits non-zero when the prose, the tables and the CSV disagree, when a section is missing or out
+of order, or when an unfinished placeholder is left in the file. **A non-zero exit means the
+artifact is not ready to push.** (Fetch it to a file first; `python3 <url>` does not work.)
 
 ### Step 10 — Audit + chat summary
 

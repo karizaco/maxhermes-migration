@@ -76,7 +76,7 @@ EXIT CODES
      SESSION-MODE live session mode != ground truth -- REPORT, never auto-repair
      CONV-REUSE   two runs of one routine share a session_id -- REUSE CONFIRMED
 """
-import argparse, glob, json, os, re, sys, urllib.parse
+import argparse, glob, json, os, re, subprocess, sys, urllib.parse
 from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------------------
@@ -270,6 +270,76 @@ def check_conversation_reuse(tasks, runs_by_task):
     return findings, checked
 
 
+
+def lint_shared_scripts():
+    """Lint the shared scripts every routine fetches at run time.
+
+    WHY
+    ---
+    cloud-prompts/_shared/*.sh is executed by every routine in the fleet, on every fire. A
+    syntax error in one of them is not one routine's problem — it is all 27 of them, and it
+    lands the next time any of them fires. Nothing checked them.
+
+    This runs inside cron #91 (the schedule-drift guard), which fires at 04:05 ET daily —
+    before the weekday routines — and which already clones this repo, so the scripts are on
+    disk. Because #91 FETCHES this file at run time, adding the check needs no deployment:
+    the next 04:05 ET fire picks it up.
+
+    Returns a list of human-readable problems (empty = clean).
+    """
+    problems = []
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shared = os.path.join(repo, "cloud-prompts", "_shared")
+    tools_dir = os.path.join(repo, "tools")
+
+    scripts = []
+    if os.path.isdir(shared):
+        scripts += [os.path.join(shared, f) for f in sorted(os.listdir(shared)) if f.endswith(".sh")]
+    if os.path.isdir(tools_dir):
+        scripts += [os.path.join(tools_dir, f) for f in sorted(os.listdir(tools_dir)) if f.endswith(".sh")]
+    for sc in scripts:
+        try:
+            r = subprocess.run(["sh", "-n", sc], capture_output=True, text=True, timeout=30)
+        except Exception as exc:
+            problems.append(f"LINT {os.path.basename(sc)}: could not be checked ({exc})")
+            continue
+        if r.returncode != 0:
+            problems.append(f"LINT {os.path.basename(sc)}: sh -n failed: "
+                            f"{(r.stderr or '').strip().splitlines()[0] if (r.stderr or '').strip() else 'syntax error'}")
+
+    pys = []
+    for d in (shared, tools_dir):
+        if os.path.isdir(d):
+            pys += [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith(".py")]
+    for py in pys:
+        try:
+            r = subprocess.run([sys.executable, "-m", "py_compile", py],
+                               capture_output=True, text=True, timeout=60)
+        except Exception as exc:
+            problems.append(f"LINT {os.path.basename(py)}: could not be checked ({exc})")
+            continue
+        if r.returncode != 0:
+            problems.append(f"LINT {os.path.basename(py)}: does not compile: "
+                            f"{(r.stderr or '').strip().splitlines()[-1] if (r.stderr or '').strip() else 'syntax error'}")
+
+    # The two scripts every routine executes: they must also RUN, not just parse.
+    for name in ("verify_delivery.sh", "push_artifact.sh"):
+        sc = os.path.join(shared, name)
+        if not os.path.exists(sc):
+            problems.append(f"LINT {name}: MISSING from cloud-prompts/_shared/")
+            continue
+        try:
+            r = subprocess.run(["sh", sc, "--bogus-argument"], capture_output=True, text=True, timeout=30)
+        except Exception as exc:
+            problems.append(f"LINT {name}: does not execute ({exc})")
+            continue
+        if r.returncode == 0:
+            problems.append(f"LINT {name}: accepted a bogus argument (should refuse)")
+        if "unknown argument" not in (r.stderr or "").lower():
+            problems.append(f"LINT {name}: did not report the bad argument clearly")
+
+    return problems
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -371,12 +441,14 @@ def main():
     if args.repair and drift:
         report["repaired"] = repair(drift)
 
-    findings = bool(drift or unknown or missing or mode_findings or reuse_findings)
+    lint_problems = lint_shared_scripts()
+    findings = bool(drift or unknown or missing or mode_findings or reuse_findings or lint_problems)
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"checked {len(seen)} routines against the ground truth")
+        print(f"linted {len(lint_problems)} problem(s) in the shared scripts")
         if not findings:
             print("OK: no schedule drift")
         for d in drift:
@@ -392,6 +464,8 @@ def main():
             print(f"REPAIRED  {r['cron_name']} -> {r['schedule']} (verified)")
         for r in report.get("failed", []):
             print(f"REPAIR-FAILED  {r['cron_name']}: {r['error']}")
+        for lp in lint_problems:
+            print(f"LINT  {lp}")
         for m in mode_findings:
             print(f"SESSION-MODE  {m['cron_name']}: live mode='{m['live_session_mode']}' "
                   f"expected '{m['expected_session_mode']}' "
