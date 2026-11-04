@@ -106,9 +106,9 @@ errors: 0
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/us-stocks-in-play/SKILL.md
+  https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/us-stocks-in-play/SKILL.md?ref=main
 
-**FIRST tool call:** `curl -s https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/us-stocks-in-play/SKILL.md` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
+**FIRST tool call:** `curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/us-stocks-in-play/SKILL.md?ref=main"` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
 Then follow the procedure verbatim, with these Cloud adaptations below.
 
 
@@ -119,8 +119,24 @@ step as the skill spec below, then follow it in full:
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/PROMPT-BLOCKS.md" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md"; do
-  [ -s /workspace/PROMPT-BLOCKS.md ] || curl -sL -o /workspace/PROMPT-BLOCKS.md "$U" 2>/dev/null
+# --- fetch cloud-prompts/_shared/PROMPT-BLOCKS.md ---
+# The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
+# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback - the first successful download satisfied the guard, so the
+# second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
+# rejected on its BODY, not on its byte count.
+S=/workspace/PROMPT-BLOCKS.md
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/PROMPT-BLOCKS.md?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/PROMPT-BLOCKS.md" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
 ```
 
@@ -153,9 +169,25 @@ looks identical to one that never moved. The skill requires the gap annex to sep
 **held into the bell** from one that faded; this is how you compute it.
 
 ```bash
-P=/workspace/preopen_feed.py
-[ -s "$P" ] || curl -s -o "$P" \
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_feed.py
+# --- fetch cloud-prompts/_shared/preopen_feed.py ---
+# The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
+# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback - the first successful download satisfied the guard, so the
+# second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
+# rejected on its BODY, not on its byte count.
+S=/workspace/preopen_feed.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen_feed.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_feed.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_feed.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+doneP=/workspace/preopen_feed.py
 DATE=$(TZ=America/New_York date +%Y-%m-%d)
 python3 "$P" merge --date "$DATE" --symbols "<A,B,C — your candidate set>"
 ```

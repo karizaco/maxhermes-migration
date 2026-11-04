@@ -126,8 +126,24 @@ step as the skill spec below, then follow it in full:
 
 bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in $B/PROMPT-BLOCKS.md 'https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md'; do
-  [ -s /workspace/PROMPT-BLOCKS.md ] || curl -sL -o /workspace/PROMPT-BLOCKS.md $U 2>/dev/null
+# --- fetch cloud-prompts/_shared/PROMPT-BLOCKS.md ---
+# The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
+# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback - the first successful download satisfied the guard, so the
+# second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
+# rejected on its BODY, not on its byte count.
+S=/workspace/PROMPT-BLOCKS.md
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/PROMPT-BLOCKS.md?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/PROMPT-BLOCKS.md" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/PROMPT-BLOCKS.md" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
 ```
 

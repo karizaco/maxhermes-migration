@@ -64,10 +64,24 @@ for n in fin[:40]: print('   ',n)
 ## 2. Bridge-packs probe
 ```bash
 BR=/workspace/mcp_bridge.py
+# --- fetch cloud-prompts/_shared/mcp_bridge.py ---
+# The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
+# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback - the first successful download satisfied the guard, so the
+# second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
+# rejected on its BODY, not on its byte count.
+S=/workspace/mcp_bridge.py
 for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" ; do
-  [ -s "$BR" ] || curl -sL -o "$BR" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
 if [ -s "$BR" ]; then
   python3 "$BR" --list-packs 2>&1 | head -40
@@ -100,10 +114,24 @@ per server with its tool count:
 
 ```bash
 S=/workspace/stdio_mcp_probe.sh
+# --- fetch cloud-prompts/_shared/stdio_mcp_probe.sh ---
+# The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
+# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback - the first successful download satisfied the guard, so the
+# second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
+# rejected on its BODY, not on its byte count.
+S=/workspace/stdio_mcp_probe.sh
 for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/stdio_mcp_probe.sh?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/stdio_mcp_probe.sh" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/stdio_mcp_probe.sh" ; do
-  [ -s "$S" ] || curl -sL -o "$S" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
 sh "$S" 2>&1 | head -10
 ```
