@@ -161,3 +161,44 @@ and the raw `Accept` header, so it was added.
   `tools/adopt_fetch_ladder.py --targets all` will rewrite them — but that rewrite must be
   **deployed in the same session**, or cron #91 reports drift on 20 routines every day. It is a
   deliberate, separately deployable step, not an oversight.
+
+---
+
+## 6. What is actually deployed, and what is still to do (verified 2026-11-04)
+
+**The deploy of #90 is byte-verified.** The deployed prompt hashes
+`756086cd306167ad5335c10024b25ae3d9b67329e1b0daea3927611d1356b3a2` — identical to the repo blob
+(43,545 bytes). `schedule`, `timezone`, `enabled`, `session`, `model` and `project_id` were
+re-read after the write and are unchanged.
+
+**The verification itself is the evidence for the discipline.** Transcribing the read-back into a
+file for hashing introduced **three** defects that a length check and a line diff both missed: a
+dropped `#` on two comment lines and `$AUDAUDIT_DATE` for `$AUDIT_DATE` — the same byte count, the
+same visible text. SHA-256 caught all three at once. A hand-paste is not "probably fine".
+
+**The fleet state, checked against the live scheduler and the repo (not against a summary):**
+
+| Routine(s) | Their own GIT PUSH block | Runtime behaviour | Needs a deploy? |
+|---|---|---|---|
+| 20 routines that fetch `PROMPT-BLOCKS.md` | still the dead idiom | **protected** — the SHARED HELPER FETCHES section installs fresh helpers in step 1, and `push_artifact.sh` self-heals from the contents API | only to make the repo text match the intent |
+| `#90` (no `PROMPT-BLOCKS.md`) | **fixed** | fixed | **done** — deployed and byte-verified |
+| `#26b` (no `PROMPT-BLOCKS.md`, **not a live task**) | **fixed** in the repo | n/a | none |
+
+Verified directly: the **deployed #17 still carries the dead idiom** (`[ -s /workspace/push_artifact.sh ] || curl`)
+and the false claim that `push_artifact.sh` calls `verify_delivery.sh`. So the "all 26 prompts are on
+the canonical ladder" line in the previous summary was **not true of `main` or of the platform** — the
+protection is the shared block plus the self-heal, not the prompt text.
+
+**The remaining step, and why it is deliberately not done here:** `tools/adopt_fetch_ladder.py
+--targets all` rewrites the 20 prompts. That rewrite **must be deployed in the same session**, or
+cron #91 reports PROMPT-DRIFT on 20 routines every morning — a standing false positive. It is a
+mechanical batch (20 × emit → `cron_update` → SHA-256), not a design problem.
+
+## 7. The concurrent-writer race, twice
+
+Both pushes to `main` were **rejected non-fast-forward** — origin/main had moved (a concurrent
+session's `prompts(fleet): sync the repo to the deployed bytes`, and then `shared(#92): the Grok call
+moves to the Responses API`). The resolution each time: `git fetch origin main` → branch from the
+NEW `origin/main` → `git cherry-pick` the local commit → push. Both cherry-picks applied cleanly, and
+in both cases the other session's work survived — the fetch-and-cherry-pick sequence is what keeps
+two agents editing the same repo from clobbering each other.
