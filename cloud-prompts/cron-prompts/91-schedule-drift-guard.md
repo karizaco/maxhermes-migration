@@ -137,7 +137,8 @@ for U in \
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
-done# --- fetch tools/schedule-ground-truth.json ---
+done
+# --- fetch tools/schedule-ground-truth.json ---
 # The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
 # independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
 # minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
@@ -155,7 +156,8 @@ for U in \
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
-donels -l schedule-drift.py schedule-ground-truth.json
+done
+ls -l schedule-drift.py schedule-ground-truth.json
 ```
 
 Then run it against the saved `cron_read` output:
