@@ -498,6 +498,14 @@ python scripts/premarket_pull.py --from-csv daily-screens/<prior-date>/focus.csv
     --out-dir daily-screens/<date> --pulls 4 --gap-trigger 4
 ```
 
+Its URL, if you need to fetch it rather than rely on a local checkout (the shared
+`## HELPER SCRIPTS` block shows a template path with a different skill name in it, so use this
+one explicitly):
+
+```
+https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py
+```
+
 Read the helper, do not execute it blindly: per the shared `## HELPER SCRIPTS` rule, the Cloud
 runtime expects the agent to re-implement the helper's job with tool calls. It is the reference
 for exactly what the four rules mean, and the fastest correct route when the agent decides to
