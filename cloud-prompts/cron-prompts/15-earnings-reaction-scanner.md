@@ -118,18 +118,59 @@ return 0 hits from `tool_search`, and `mcode-tools connector tools` holds only m
 tools. Do NOT burn turns re-testing them. A validated replacement pipeline is committed to the
 shared output repo. Fetch and run it:
 
+**Fetch it from the AUTHORITATIVE channels first.** The CDNs cache independently and can serve
+STALE bytes for minutes to hours — measured 2026-11-04: `raw.githubusercontent.com` was **284s**
+behind on a same-path edit, and `cdn.jsdelivr.net` was still serving the pre-fix copy of a shared
+file **15 hours** after the fix was pushed. A stale pipeline silently runs the old code, so the
+ladder below is ordered by AUTHORITATIVENESS, not speed:
+
+1. the **GitHub connector** (`connector__github__get_file_contents`) — authenticated, reads through
+   the API, never CDN-cached; measured 1s behind;
+2. the **contents API with the sandbox token** — authoritative, and the token lifts the shared
+   60/hr unauthenticated limit (measured 403 on 8 of 20 unauthenticated calls from this egress IP);
+3. the **CDN copies** — last resort only.
+
+**Validate the BODY, never the status code.** A 403/404 body is NOT empty: the unauthenticated
+API returns `{"message":"API rate limit exceeded ...", ...}`, and saving that as the script breaks
+the run. The `valid()` check below requires a real script — the `SCRIPT_VERSION` marker AND a
+clean Python compile.
+
 ```bash
 cd /workspace
 mkdir -p scripts
-curl -sS -w 'HTTP=%{http_code}\n' --max-time 60 \
-  https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/scripts/earnings_reaction_scanner.py \
-  -o scripts/earnings_reaction_scanner.py
-head -5 scripts/earnings_reaction_scanner.py
+S=scripts/earnings_reaction_scanner.py
+valid() { [ -s "$1" ] && grep -q 'SCRIPT_VERSION' "$1" 2>/dev/null \
+          && python3 -c "import sys;compile(open(sys.argv[1]).read(),'x','exec')" "$1" 2>/dev/null; }
+
+# 1) GitHub connector - authoritative, not CDN-cached
+mcode-tools connector call connector__github__get_file_contents \
+  --args '{"owner":"karizaco","repo":"minimax-cloud-outputs","path":"scripts/earnings_reaction_scanner.py","ref":"refs/heads/main"}' 2>/dev/null \
+  | python3 -c "import sys,json;b=json.load(sys.stdin);sys.stdout.write(''.join((x.get('resource') or {}).get('text','') for x in b if isinstance(x,dict)))" > "$S.tmp" 2>/dev/null
+valid "$S.tmp" && mv -f "$S.tmp" "$S"
+
+# 2) contents API with the sandbox token
+[ -s "$S" ] || curl -sSL --max-time 30 -H "Accept: application/vnd.github.raw" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -o "$S.tmp" "https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/scripts/earnings_reaction_scanner.py?ref=main" 2>/dev/null
+valid "$S.tmp" && mv -f "$S.tmp" "$S"
+
+# 3) CDN copies - last resort, they can be stale
+[ -s "$S" ] || curl -sSL --max-time 30 -o "$S.tmp" \
+  "https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/scripts/earnings_reaction_scanner.py" 2>/dev/null
+valid "$S.tmp" && mv -f "$S.tmp" "$S"
+rm -f "$S.tmp"
+
+if [ -s "$S" ]; then grep -m1 'SCRIPT_VERSION' "$S"; else echo "pipeline fetch FAILED"; fi
 ```
 
-If that fetch fails, retry once with `-k` (the GitHub cert expires intermittently). If both
-attempts fail, write a stub artifact with `_source=skill_fetch_failed`, report `errors: 1`, stop.
-Never improvise the procedure from memory.
+If a `curl` step fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf
+cert), retry that same URL once with `-k`. If no channel yields a valid script, write a stub
+artifact with `_source=skill_fetch_failed`, report `errors: 1`, stop. Never improvise the
+procedure from memory.
+
+**The pipeline also re-checks the shared-repo copy at startup and replaces itself if the fetch
+was stale** (it compares byte-for-byte and re-execs on a newer copy). So even the CDN path in
+step 3 cannot leave you running old code for long.
 
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
 
