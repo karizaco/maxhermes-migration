@@ -170,6 +170,19 @@ Beyond the universal keywords ("earnings", "results", "beats", "misses", "report
 - **Hong Kong:** Less standardized; HKEX-listed companies report semi-annually for H1 (Aug) and full year (Mar). Some report quarterly.
 - **Korea:** Quarterly for KOSPI 200 + KOSDAQ 150; concentrated late Jan / late Apr / late Jul / late Oct.
 
+## Output ordering (group by country, then by move size)
+
+**Country order is fixed: Japan, Korea, Taiwan, Hong Kong.** The brief is grouped by country in
+that order — every Japan row together, then every Korea row, then Taiwan, then Hong Kong.
+
+**Inside each country, sort every row by `|change %|` descending** — the REACTION table first, then
+the NOTABLE one-liners, which together form one continuous descending stream (REACTION rows are
+all larger moves than NOTABLE rows, so the concatenation is already sorted).
+
+**Country blocks are contiguous.** Never interleave a name from another country into a block, and
+never split one country across two blocks. The chat reply follows the same country order as the
+artifact.
+
 ## Steps
 
 1. **Pull universes.** 8 parallel screener calls (4 markets × up/down).
@@ -179,15 +192,15 @@ Beyond the universal keywords ("earnings", "results", "beats", "misses", "report
    - Apply dedupe logic: regional primary beats US ADR; TPEX only if TWSE is missing.
    - Keep top 15 per market per direction (sort by `|change_percent|` desc) — caps each market at 30 rows.
 
-3. **Tag (per market):**
+3. **Tag (per market, in the output order Japan → Korea → Taiwan → Hong Kong):**
    - `JP_REACTION` = |intraday %| > 4% → headline (JP vol is moderate; 4% is a real move)
    - `JP_NOTABLE` = 2-4% → one-liner
+   - `KR_REACTION` = |intraday %| > 4% → headline (KRX has daily limit moves ~±15% which produce non-fundamental data; rely on combined_analysis to flag)
+   - `KR_NOTABLE` = 2-4% → one-liner
    - `TW_REACTION` = |intraday %| > 5% → headline (TW can be volatile on a single name)
    - `TW_NOTABLE` = 2-5% → one-liner
    - `HK_REACTION` = |intraday %| > 4% → headline
    - `HK_NOTABLE` = 2-4% → one-liner
-   - `KR_REACTION` = |intraday %| > 4% → headline (KRX has daily limit moves ~±15% which produce non-fundamental data; rely on combined_analysis to flag)
-   - `KR_NOTABLE` = 2-4% → one-liner
    - All markets: below 2% → not surfaced (closed session noise)
 
 4. **Per-ticker catalyst lookup (cap 4 calls total — top 1 REACTION per market).** For the top reaction per market (highest |change %|):
@@ -197,18 +210,22 @@ Beyond the universal keywords ("earnings", "results", "beats", "misses", "report
    - If both sources return nothing → write "no fresh catalyst found" (hard rule).
    - Source health: `asia_earnings_detection_method=yahoo_finance_primary_combined_fallback`.
 
-5. **Sort** by `|change_percent|` desc within each market section. Each geo sorted independently.
+5. **Sort** by `|change_percent|` desc within each market section. Each geo sorted independently,
+   and the market sections appear in the fixed country order Japan → Korea → Taiwan → Hong Kong
+   (see *Output ordering*).
 
 6. **Compose the markdown body** (in memory — do NOT yet write to disk). The body must contain, in order:
    1. **TL;DR** (≤3 lines): how many reactions per market, biggest mover overall, top geo by activity. Note Asian earnings-cycle context if relevant.
    2. **Japan headline table:** ticker, change %, market cap, earnings-driven (Y/N), catalyst.
    3. **Japan NOTABLE one-liners** (cap 8 lines).
-   4. **Taiwan headline table** (same columns).
-   5. **Taiwan NOTABLE** (cap 8 lines).
-   6. **Hong Kong headline table**.
-   7. **Hong Kong NOTABLE** (cap 8 lines).
-   8. **Korea headline table**.
-   9. **Korea NOTABLE** (cap 8 lines).
+   4. **Korea headline table** (same columns).
+   5. **Korea NOTABLE** (cap 8 lines).
+   6. **Taiwan headline table**.
+   7. **Taiwan NOTABLE** (cap 8 lines).
+   8. **Hong Kong headline table**.
+   9. **Hong Kong NOTABLE** (cap 8 lines).
+   Every market's rows are sorted by `|change %|` descending, and the four country blocks appear
+   in the order Japan → Korea → Taiwan → Hong Kong.
    10. **Source health:** screener / combined_analysis call counts (broken out per market), missing symbols, 429s, dedup stats, candidates-trimmed, earnings detection method per market, catalyst cap hit.
    11. **Audit footer line:** `asia-reaction target=asia-pre-market:<date> jp=<n> tw=<n> hk=<n> kr=<n> reactions=<n> catalyst_lookups=<n>` — included in the body for human readers.
 
@@ -262,5 +279,6 @@ The cron fires every weekday at 06:30 ET. Some days are holidays in one or more 
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.2 — 2026-11-04.** Output ordering made explicit: the brief is grouped **by country in the fixed order Japan → Korea → Taiwan → Hong Kong**, and inside each country every row (REACTION table + NOTABLE one-liners) is sorted by `|change %|` descending, with contiguous country blocks. The chat reply follows the same country order as the artifact.
 - **v1.1 — 2026-09-23.** Validation pass. Market codes confirmed: `japan`, `taiwan`, `hongkong`, `korea` (NOT `south_korea` — that returns 0). Added `NAG` (Nagoya) and `TPEX` (Taipei Exchange) to the secondary-venue dedupe logic — keep only when the primary venue (TSE/TWSE respectively) doesn't list the same ticker. Added HK dual-ticker dedupe (e.g., 89988 vs 9988 for Alibaba). JP results dominated by `TSE:` with ~5-10% NAG noise; TW results ~30% `TPEX:` (smaller companies not on TWSE); HK all `HKEX:` with ~5-10% dual-ticker duplicates; KR all `KRX:` clean.
 - **v1 — 2026-09-23.** Initial release. 4 Asian geos (JP/TW/HK/KR), single scan per geo with up + down direction. Lower threshold (2%) and tighter market cap floor ($2B) than EU/AU to reflect Asian market structure. Separate cron at 06:30 ET to land ahead of the main 08:00 ET brief.
