@@ -267,6 +267,19 @@ non-prompt field changed on any task.**
 > final state is **25/25 prompts byte-identical** to their repo blobs, all 25 on
 > `America/New_York`, all `enabled`, all `session.mode=new`.
 >
+> **Verified in production on 2026-11-03 (the first ET trading day on the new prompts):**
+> - **The commit storm is fixed.** `#09`'s 18:30 ET fire produced **3 commits carrying 37 files**
+>   (23:44–23:45 UTC), against **61 commits of one file each** on 2026-11-02. The whole output
+>   tree now lands in one commit.
+> - **The subject convention holds.** Every routine commit after 2026-11-03 16:36 UTC carries
+>   `cron <NN> <name> <date>` — **0 exceptions**. The 4 that did not (`cron ntrt`,
+>   `cron daily-briefs`, `cron daily-screens`) all landed between 02:43 and 16:35 UTC, i.e. inside
+>   the window before the multi-`--add` fix; they are history, not a live defect.
+> - **Every 2026-11-02 artifact is present** — including the two that had failed (`ntrt/2026-11-02.md`
+>   and `us-eod/2026-11-02.csv`), both rebuilt on 2026-11-03 and recorded by cron #90 as
+>   `reconstructed` rather than `MISSING`. The 2026-11-03 audit reads `due=16 delivered=16
+>   missing=0`, `audit_status: ok`.
+>
 > Two defects were found only by the first post-deploy fires, and both are now fixed:
 >
 > 1. **The shared push script staged only the single `--add` path.** That is correct for the 18
