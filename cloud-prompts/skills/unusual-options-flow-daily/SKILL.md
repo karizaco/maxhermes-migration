@@ -82,26 +82,7 @@ IWM, GLD, TLT, plus the top 5 S&P 500 names by market cap (AAPL, MSFT, NVDA, GOO
 3. **Call per underlying.** `mcp__tradingview-advanced__stock_options_unusual_activity(symbol, top_n=10, min_volume=100, expiries=4)` for each. Concurrency: serial, ~3 calls/sec.
    > **Cloud adaptation.** That MCP tool does **not** exist in the Cloud runtime — see
    > `## MCP TOOLS AVAILABLE` in the shared `PROMPT-BLOCKS.md`. In Cloud, take the chain from the
-   > sources named in `9. **The economic read is premium dollars, not contract counts.** A contract count weights every
-   contract equally, and on a busy session most of them are penny prints: on 2026-11-04, **57.1%** of
-   the kept set's volume sat in contracts with `theo` < $0.05. That set's headline put/call was
-   **0.74 (CALL)** while the same set weighted by `volume x theo` was **3.47 to puts**, and **82.3% of
-   all premium changed hands in ITM contracts**. Publish **both** numbers: the contract-count ratio is
-   the series' comparable figure, the premium-dollar ratio is the economically meaningful one. Never
-   publish the contract-count tag alone on a day when the two disagree - that is how the 2026-11-02
-   artifact shipped a tag that contradicted its own prose.
-   *(Established 2026-11-04.)*
-
-10. **IV is degenerate on a 0DTE row after the close.** A same-day option has essentially no time
-    value left once the cash session ends, so Cboe's IV on those rows is an artifact of the closing
-    print rather than a volatility estimate. Measured 2026-11-04: on the 12 economically real rows with
-    DTE > 0 the Cboe-vs-Yahoo IV gap is a median **4.2 vol points** (max 8.9), but on same-day rows it
-    reaches **206 vol points** (NVDA 210C: Cboe 243.6% vs Yahoo 37.5%, `theo` $0.0000, `delta` 0.0000,
-    last trade $0.01 after a -99.3% session). Flag every 0DTE row's IV as not interpretable rather than
-    quoting it bare, and quote Yahoo's IV where both exist and the contract still has time value.
-    *(Established 2026-11-04.)*
-
-## Method of record` below and reproduce the same semantics locally:
+   > sources named in `## Method of record` below and reproduce the same semantics locally:
    > `top_n=10` per underlying (ranked by **volume**), `min_volume=100`, 4 expiries per underlying.
 4. **Aggregate per-ticker** into rows:
    - ticker, underlying_price, side (call|put), strike, expiry, volume, open_interest, v_oi_ratio, last_price, iv, in_the_money, moneyness_pct, expires_in_days
@@ -218,6 +199,25 @@ answer if you ignore them.
    publish a V/OI figure for a date where none can be computed. The reference reconstructions
    are `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md`.
    *(Established 2026-11-03, rebuilding the two lost sessions.)*
+
+9. **The economic read is premium dollars, not contract counts.** A contract count weights every
+   contract equally, and on a busy session most of them are penny prints: on 2026-11-04, **57.1%** of
+   the kept set's volume sat in contracts with `theo` < $0.05. That set's headline put/call was
+   **0.74 (CALL)** while the same set weighted by `volume x theo` was **3.47 to puts**, and **82.3% of
+   all premium changed hands in ITM contracts**. Publish **both** numbers: the contract-count ratio is
+   the series' comparable figure, the premium-dollar ratio is the economically meaningful one. Never
+   publish the contract-count tag alone on a day when the two disagree - that is how the 2026-11-02
+   artifact shipped a tag that contradicted its own prose.
+   *(Established 2026-11-04.)*
+
+10. **IV is degenerate on a 0DTE row after the close.** A same-day option has essentially no time
+    value left once the cash session ends, so Cboe's IV on those rows is an artifact of the closing
+    print rather than a volatility estimate. Measured 2026-11-04: on the 12 economically real rows with
+    DTE > 0 the Cboe-vs-Yahoo IV gap is a median **4.2 vol points** (max 8.9), but on same-day rows it
+    reaches **206 vol points** (NVDA 210C: Cboe 243.6% vs Yahoo 37.5%, `theo` $0.0000, `delta` 0.0000,
+    last trade $0.01 after a -99.3% session). Flag every 0DTE row's IV as not interpretable rather than
+    quoting it bare, and quote Yahoo's IV where both exist and the contract still has time value.
+    *(Established 2026-11-04.)*
 
 ## Method of record
 
