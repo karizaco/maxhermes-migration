@@ -187,7 +187,8 @@ for U in \
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
-doneP=/workspace/preopen_feed.py
+done
+P=/workspace/preopen_feed.py
 DATE=$(TZ=America/New_York date +%Y-%m-%d)
 python3 "$P" merge --date "$DATE" --symbols "<A,B,C — your candidate set>"
 ```
