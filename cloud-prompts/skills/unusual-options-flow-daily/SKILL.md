@@ -1,10 +1,11 @@
 ---
 name: Unusual options flow daily
 description: >-
-  Daily scan of unusual options activity on watchlist + mega-cap tickers using
-  TradingView-advanced `stock_options_unusual_activity`. Surfaces strikes where
-  today's volume exceeds open interest (V/OI > 1) — classic institutional
-  positioning signal. Runs weekdays 16:35 ET, just after the close.
+  Daily scan of unusual options activity ranked by RELATIVE volume — how unusual each
+  contract is against its own chain, its own expiry, its own name's option-volume history
+  and the name's cash turnover — so a $1.8B name can outrank a $5.2T one. Uses the Cboe
+  delayed-quote option-chain CDN, the Cboe historical options-volume service and the
+  TradingView america scanner. Runs weekdays 16:35 ET, just after the close.
 ---
 
 ## Scheduled-run conversation title (FIRST ACTION)
@@ -26,13 +27,33 @@ run gets its own conversation; it is never appended to an earlier run's conversa
 
 If this session was NOT started by a scheduled cron run, ignore this section.
 
-# Unusual options flow — daily
+# Unusual options flow — daily, ranked by RELATIVE volume
 
-Lightweight daily scan: where is the smart money positioning today on options? Built on `mcp__tradingview-advanced__stock_options_unusual_activity`, no LLM cost.
+## What changed on 2026-11-05, and why
+
+**This routine now ranks by relative volume, not absolute volume.** The old headline ranked
+contracts by V/OI across a fixed 8-name mega-cap universe, so the top of the book was
+structurally the largest names — NVDA, TSLA, AAPL, AMZN, IWM — regardless of what was actually
+unusual. Measured on the 2026-11-04 session: the absolute top 10 and the relative top 10 shared
+**1 name of 10**, and the names that scream on absolute volume were *below their own baselines*
+(TSLA 0.44×, AMZN 0.52×, NVDA 0.75× of their own 10-session options-volume average) while the
+quiet-looking mid-caps were 2-8× their own history (ARRY 8.16×, FIS 7.38×, GRAB 3.79×, CLSK 2.62×).
+
+The **relative screen is now the headline**. The legacy absolute book is still computed and
+published, on the legacy universe and the legacy method, so the put/call series published since
+2026-10-16 stays comparable — but it is the secondary section.
+
+**The universe changed.** The 8-name Pass-B universe is all mega-caps, so a relative screen over
+it cannot surface a mid-cap: there are none in it. The relative screen runs over the **top ~60 US
+names by cash volume** from the TradingView america scanner, plus the routine's 8.
+
+**The published artifacts change shape.** Every artifact from 2026-11-05 onward leads with the
+relative screen and carries the legacy book as a secondary section. The put/call series numbers
+themselves are unchanged in method, so the series continues.
 
 ## When
 - Cron: `35 16 * * 1-5` America/New_York (weekdays, 16:35 ET — just after the cash close, so the day's volume is settled)
-- Manual: user asks "any unusual options activity today?" or "show me NVDA options flow"
+- Manual: user asks "any unusual options activity today?" or "show me unusual options flow"
 
 **Why post-close — do not "restore" the original hour.** The original local skill targeted
 `55 9 * * 1-5` (09:55 ET, ~25 min after the open). The deployed time is 16:35 ET and that is
@@ -42,70 +63,147 @@ whereas after the close the day's volume is settled and the ratio is reproducibl
 A migration that trusts the original 09:55 hour would break the comparison with the published
 series and re-introduce the pre-close instability. Keep 16:35 ET.
 
+**A relative screen is also the robust one on a partial day.** Peer ratios, expiry shares, chain
+shares and cash-turnover ratios are all computed *within one snapshot*, so a partial session
+scales every contract together; only V/OI is distorted (Cboe's open interest is the prior
+session's settled figure, so intraday V/OI is an upper bound). The routine still runs post-close.
+
 ## Output
 - `C:\Users\admin\.minimax\projects\coding-shared\research\options-flow\YYYY-MM-DD.md`
-  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
+  _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_
 - Chat reply: in Cloud the format is the `## DELIVERY` block in the shared `PROMPT-BLOCKS.md`
   (prose opener → `### Signal` → `### Method & caveats` → `### Files` → `### Push / errors`).
   There is **no line cap**; long-form detail belongs in the artifact file. The
   "compact summary, top 5 only" rule is the local Mavis host's chat format, not Cloud's.
 
+## THE ENGINE — fetch once, run it, do not re-implement it
+
+The relative screen needs ~60 chains and ~150k contracts. That is far past what can be parsed in
+context, so it is a **published script**, not a procedure:
+
+`cloud-prompts/_shared/relvol_screen.py` (marker `RELVOL_SCREEN_V1`)
+
+```bash
+S=/workspace/relvol_screen.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/relvol_screen.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/relvol_screen.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/relvol_screen.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  # a 404 body is non-empty JSON, and an OLD copy silently lacks the new sections
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+```
+
+**Run it with the FIRE's scheduled date**, not `date` at execution time:
+
+```bash
+python3 "$S" --date "$FIRE_DATE" --out /workspace/options-flow/$FIRE_DATE.md --universe 60 --jobs 8
+```
+
+`$FIRE_DATE` is the `fire-date:` printed by the shared window check (the prompt's `## WINDOW
+CHECK` block) — the same date the artifact path uses, so the gate and the artifact can never
+disagree. The script prints a JSON summary on stdout (counts, the top relative names, the
+series-book bias tag, the source errors) — **read that summary and quote its numbers in the chat
+reply rather than re-deriving them by hand.** The script exits non-zero only if it could not
+fetch a universe at all; per-name failures are recorded in the artifact's `## Source health` and
+in the JSON `errors` list.
+
+**If the engine cannot be fetched or fails to run:** fall back to the **legacy method** — the
+8-name Pass-B universe, per-underlying top-10 by volume, the legacy filters, the bias tag — and
+write the artifact with `method: legacy_fallback (relvol engine unavailable: <reason>)` in the
+header. Partial data beats no data: a delivered legacy artifact is far better than a failed run.
+
+**Runtime:** ~25 s for 60 names (chains are fetched 8-way in parallel; the own-history baseline
+is 2 monthly files). The legacy guidance of "< 90 s" applied to 8 names and no baseline fetch;
+the current figure is measured, not estimated.
+
 ## Universe
-Two passes:
 
-**Pass A — Watchlist core**
-Read the watchlist if it is present — see the Cloud adaptation note below for what to do when it is not. (top-level `tickers:` list). Call `stock_options_unusual_activity` per ticker (cap 30 — split if larger watchlist).
+**Relative screen (headline):** the **top 60 US names by cash volume** from the TradingView
+america scanner, filtered `type in (stock,dr)` + `exchange in_range [NASDAQ,NYSE,AMEX]` +
+`close > 1`, plus the routine's 8 Pass-B names. This is deliberately NOT a mega-cap list: the
+top-60-by-cash-volume list on a live session is roughly 80% mid/small-caps (crypto miners,
+AI-infra, power names), which is where relative anomalies live. Cap at 60.
 
-**Pass B — Mega-cap sweep (optional, weekdays only)**
-IWM, GLD, TLT, plus the top 5 S&P 500 names by market cap (AAPL, MSFT, NVDA, GOOGL, AMZN as of 2026 — refresh quarterly). Capped at 12 total to stay inside minute budget.
+The Pass-B ETFs (IWM, GLD, TLT) are funds and the stock scan misses them — ask for them by name
+in a second scan and take their cash volume from there. A name the Cboe chain refuses (HTTP 403,
+no listed options series) is **not a failure**: record it as `no listed options series` and carry
+on. Measured 2026-11-04: CHSN, CRIS, DKI, OMH.
+
+**Series book (secondary):** the 8 Pass-B names, unchanged — IWM, GLD, TLT, AAPL, MSFT, NVDA,
+GOOGL, AMZN.
 
 **Exclusion list (do NOT scan — see Hard rules)**
 - Broad-index mega-cap ETFs: SPY, QQQ (their chains are dominated by dealer-gamma and 0DTE market-maker hedging; V/OI gets inflated and the daily put/call bias tag becomes "PUT" on every red day for structural reasons, not positioning).
 - Levered / thematic ETFs: SOXL, SOXS, SMH, TQQQ, SQQQ, UVXY, VXX. Same structural-noise problem, plus single-stock levered ETFs already violate the existing "no naked single-stock levered ETFs" rule.
-- If a manual run wants to include any of these anyway, pass `--include-noisy-etfs` flag and tag every row `_source=noisy_etf_override` so the bias calculation can optionally exclude them after the fact.
 
-## Call budget (soft targets)
-- ≤ 42 underlying calls per run (30 watchlist + 12 mega-cap).
-- Each call returns up to 10 strikes → ≤ 420 rows in raw output. Down-rank in `Steps 3`.
-- If `tradingview-advanced` returns HTTP 429: log under Source health, skip the rest, write the partial file.
+## The five relative measures
 
-## Steps
+Each measure normalises against a different size bias. The composite needs all five.
 
-1. **Read watchlist.** Parse `research/watchlist.yaml` → `tickers: [...]`. Cap at 30.
+| Measure | Normalised against | What it catches |
+|---|---|---|
+| **Peer ratio** | the median volume of the other *meaningfully-traded* strikes (volume ≥ 50) in the same underlier + expiry + side | a strike trading 30-100× its own chain's typical strike |
+| **Share of expiry** | that expiry+side's total volume in the chain | one strike taking 60-90% of its own expiry's flow — a concentrated bet |
+| **Share of chain** | the underlier's whole options tape | how much of the name's flow sits on one strike |
+| **Opt % of cash vol** | the underlier's share volume | cross-name normaliser: options contracts vs the shares that actually traded |
+| **Own-history** | the name's own 10-session average options volume | the only measure independent of the contract's chain size — is today's options activity unusual *for this name*? |
 
-> **Cloud adaptation.** `research/watchlist.yaml` does **not** exist in the Cloud runtime — it
-> lives only on the local Mavis host. If the file cannot be read, say so ONCE in the notes and
-> **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
-> routine's deployed universe (per its `## OUTPUT` path) and label it as the universe, not as
-> the watchlist.
-2. **Build mega-cap list.** Hardcoded 11 names (above). Pulled from `mcp__financekit__stock_quote` for mcap validation if available; otherwise trust the hardcode.
-3. **Call per underlying.** `mcp__tradingview-advanced__stock_options_unusual_activity(symbol, top_n=10, min_volume=100, expiries=4)` for each. Concurrency: serial, ~3 calls/sec.
-   > **Cloud adaptation.** That MCP tool does **not** exist in the Cloud runtime — see
-   > `## MCP TOOLS AVAILABLE` in the shared `PROMPT-BLOCKS.md`. In Cloud, take the chain from the
-   > sources named in `## Method of record` below and reproduce the same semantics locally:
-   > `top_n=10` per underlying (ranked by **volume**), `min_volume=100`, 4 expiries per underlying.
-4. **Aggregate per-ticker** into rows:
-   - ticker, underlying_price, side (call|put), strike, expiry, volume, open_interest, v_oi_ratio, last_price, iv, in_the_money, moneyness_pct, expires_in_days
-5. **Rank** by V/OI descending across all underlyings. Keep top 25.
-6. **Filter:**
-   - drop `v_oi_ratio < 1.0`
-   - drop `volume < 200`
-   - keep `expiries_within_days <= 60` (short-dated institutional bias)
-7. **Bias call:** sum call_volume vs put_volume across the kept set. Compute put/call volume ratio. Tag overall bias.
-8. **Write markdown** with sections:
-   1. Top 10 strikes table (ticker, side, strike, expiry, vol, OI, V/OI, IV, moneyness)
-   2. Per-ticker notable (top 2 per ticker)
-   3. Bias summary (calls vs puts, put/call ratio, theme if obvious)
-   4. Source health (call counts, 429s)
-9. **Append audit line:** `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed>`.
+**The peer median must be over strikes with volume ≥ 50.** Over *all* active strikes the median
+collapses into the near-dead tail and the ratio inflates 5-15× (measured 2026-11-04: RIOT 24C
+read 13.1× on the volume≥50 median vs 207× on the all-active one). Publish the group median and
+the group size on every row so the ratio is auditable.
+
+**The own-history baseline is the single most important column.** A ratio on a trivial number is
+still a trivial number — publish the ratio *and* the volume beside it, always.
+
+**The composite score:**
+
+```
+z(peer_ratio) + z(expiry_share) + z(opt_pct_cash) + z(V/OI) + 1.5 * z(own_history)
+```
+
+z-scores are computed across all eligible contracts. The own-history term carries the highest
+weight because it is the only component independent of the contract's own chain size. **Publish
+every component on every row** so the ranking can be re-derived or re-weighted; a single-metric
+view is a sort away.
+
+## Filters (relative screen)
+
+- volume ≥ 1,000 contracts
+- theoretical value (theo) ≥ $0.05 — real contracts, real premium dollars
+- V/OI ≥ 1.0
+- DTE ≤ 60
+- window: the **4 earliest LISTED expiries** per name, parsed from the OCC contract symbol
+
+**No absolute pre-cut.** The relative screen scores every contract in the window. The legacy
+top-10-by-volume pre-cut is a *series* rule and stays in the series book only — it is what makes
+the published series comparable, and it must not leak into the relative screen.
+
+## Artifact sections (in this order)
+
+1. Header block: date, method, engine version, universe, counts, filters, composite formula, the three sources, the baseline session, the series-book bias tag, status.
+2. **Relative-volume leaders — multi-day book (DTE ≥ 1)** — the headline.
+3. Relative-volume leaders — all expiries (0DTE included), with the 0DTE IV caveat.
+4. **Name level — options activity vs the name's own 10-session baseline**, plus the *quiet* names (the ones that look loud on absolute volume but are below their own history).
+5. Name level — options contracts vs cash shares traded.
+6. Contrast — the absolute screen's top 10 next to the relative screen's top 10, and the overlap count.
+7. **Series book (legacy absolute method)** — bias tag, the three slices, the premium-dollar read, the top 10 strikes by V/OI.
+8. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named.
+9. `## Caveats`.
+10. Audit line: `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed> method=relative`.
 
 ## Hard rules
 - Read-only. Never suggest a trade or sizing.
-- If watchlist.yaml is missing, fall back to Pass B only.
-- Cap mega-cap list at 12 names to keep cron runtime < 90s.
+- **Never include mega-cap index ETFs or high-volume levered ETFs** (SPY, QQQ, SOXL, SOXS, SMH, TQQQ, SQQQ, UVXY, VXX). Their option chains are dominated by dealer-gamma and 0DTE market-maker hedging, which inflates V/OI ratios artificially and biases the daily put/call tag toward "PUT" on every red day for structural reasons. Surface single-name positioning instead. IWM/GLD/TLT are kept — their directional signal is more interpretable.
 - Never include naked single-stock levered ETFs (same as `us-stocks-in-play` exclusion).
-- **Never include mega-cap index ETFs or high-volume levered ETFs in Pass B** (SPY, QQQ, SOXL, SOXS, SMH, TQQQ, SQQQ, UVXY, VXX). Their option chains are dominated by dealer-gamma and 0DTE market-maker hedging, which inflates V/OI ratios artificially and biases the daily put/call tag toward "PUT" on every red day for structural reasons. Surface single-name positioning instead. IWM/GLD/TLT are kept — their directional signal is more interpretable.
-- V/OI > 1 is the headline metric; everything else is context.
+- **A relative screen over a fixed universe can only find anomalies inside that universe.** Say how many names were screened and how many had no listed options series.
+- The headline of this routine is the **relative** screen. The legacy book is continuity, not the headline — never lead the chat reply with the legacy bias tag.
+- No trade, no sizing, no direction on any name.
 
 ## Cloud data conventions
 
@@ -118,23 +216,22 @@ answer if you ignore them.
    `expirationDate` epoch is 00:00 **UTC** of the expiry day, so rendering it in US/Eastern
    returns the *previous* calendar day. The contract symbol encodes the date unambiguously
    (`AAPL261028C00345000` → expiry 2026-10-28). Key every expiry, DTE and cross-source join on
-   the symbol. *(Established 2026-10-27: a first pass rendered the epoch in ET and shifted every
-   expiry in the file back by one day.)*
+   the symbol. The chain carries **no expiry field at all** — parse it:
+   `strike = int(s[-8:]) / 1000`, `side = s[-9]`, `date = s[-15:-9]`, and **cast all three date
+   parts to int** or the exception is swallowed and the run reports "0 contracts" with no error.
+   Root regex is `[A-Z]{1,6}` (class B/C/D/F/I roots exist). *(Established 2026-10-27.)*
 
 2. **ITM/OTM is side-aware.** A call is ITM when `strike < spot`; a put is ITM when
    `strike > spot`. Labelling from the sign of `(strike − spot)` alone inverts **every** call row
    — a GOOGL 400 call with spot at 320.21 is 25% *out* of the money, not in. Validate against
    Yahoo's own `inTheMoney` field (1,037/1,037 rows agreed once the rule was side-aware).
-   *(Established 2026-10-27: the earlier files in this series had the labels inverted on all
-   579 call rows. Their volume, V/OI and bias figures were unaffected.)*
+   *(Established 2026-10-27; re-validated 2026-11-04, 73/73.)*
 
 3. **Yahoo drops the session-date 0DTE after the close.** Hours after the 16:00 ET close the
    just-expired session expiry is gone from Yahoo's `expirationDates`, yet those contracts traded
    heavily (IWM 0DTE alone was 778,086 contracts on 2026-10-27). Use Cboe to fill the session-date
    expiry, and reconstruct the expiry window as the **4 earliest expiries** across
-   {Yahoo's list} ∪ {the session date}. *(Established 2026-10-27; re-verified 2026-10-28, where
-   Yahoo happened to keep it for 6 of 8 underlyings while MSFT and GOOGL genuinely had no
-   session-date expiry on either tape.)*
+   {Yahoo's list} ∪ {the session date}. *(Established 2026-10-27.)*
 
 4. **Cboe's `iv` is a decimal fraction, not a percentage.** `iv: 0.3` means 30%, not 0.3%.
    Read literally, the IV column is out by 100×. Confirm the unit by inverting Black-Scholes
@@ -143,8 +240,7 @@ answer if you ignore them.
 5. **Cboe reports open interest of exactly zero on some contracts**, because they are series
    opened during the current session. V/OI is then *undefined*, not huge — a zero denominator
    puts those rows at the top of a naive ranking with no meaning attached. Report them as `n/a`
-   and exclude them from the V/OI ranking. *(Established 2026-10-30: three contracts traded 84,629
-   contracts against OI 0.)*
+   and exclude them from the V/OI ranking. *(Established 2026-10-30.)*
 
 6. **Cboe's IV is unreliable on deep-ITM, near-worthless contracts.** On the same contract
    (AAPL 350 call, last $0.01) Cboe reported IV 94.9% against Yahoo's 14.8% — an artifact of
@@ -163,7 +259,7 @@ answer if you ignore them.
    Cboe's delayed-quote service serves only the live session. Per-strike volume, open interest,
    IV and moneyness cannot be recovered for a past date by any reachable source.
 
-   The **aggregate** layer *can* be recovered, and it is exact. Cboe's historical options-data
+   The **aggregate** layer *can* be recovered, and it is exact — Cboe's historical options-data
    service returns per-underlying daily volume for any past date, split by venue:
 
    ```
@@ -176,17 +272,31 @@ answer if you ignore them.
 
    It returns CSV: `Trade Date, Underlying, Product Type, Exchange, Volume`. Send
    `Referer: https://www.cboe.com/us/options/market_statistics/historical_data/` and a browser
-   `User-Agent`, or the request is refused. The `all_symbols` variant of the same endpoint
-   (`.../download/all_symbols/?reportType=volume&month=<M>&year=<Y>&volumeType=sum&volumeAggType=daily&exchanges=...`)
-   returns every underlying for a month at once and is the faster way to confirm a total.
+   `User-Agent`, or the request is refused.
+
+   **The `all_symbols` variant is the one to use for the own-history baseline** — it returns
+   every underlying for a whole month in ONE call (6.5 MB for October 2026, 219,701 rows,
+   3,815 symbols on a typical day), which replaces 60 per-symbol calls with 2 (previous month +
+   current month, so the 10-session average can span the month boundary):
+
+   ```
+   https://www.cboe.com/us/options/market_statistics/historical_data/download/all_symbols/
+     ?reportType=volume&month=<M>&year=<Y>&volumeType=sum&volumeAggType=daily
+     &exchanges=CBOE&exchanges=BATS&exchanges=C2&exchanges=EDGX
+   ```
+
+   Its CSV is `Trade Date, Options Class, Underlying, Product Type, Exchange, Volume` — group by
+   **(date, underlying)** and sum across classes and venues; the corporate-action-adjusted series
+   live in the *Options Class* column (`2AAL`), not in the underlying name. Verified 2026-11-04:
+   the merged monthly file reproduces the per-symbol endpoint **exactly** on base volume, 10-session
+   average and ratio for 7/7 names checked.
 
    Two caveats on that number. It is **unfiltered** — every strike and every expiry, not the
-   V/OI survivors — and it covers **only the four Cboe-operated venues**, whereas this series
-   reads Yahoo's chain, which spans every US venue. The ratio between the archival total and
-   the published artifacts' kept-contract count therefore mixes a venue scope with a filter and
-   ranges 0.38–1.50 across the dates where both exist. It is a sanity range, not a conversion
-   factor. The total also includes corporate-action-adjusted series (Cboe class names prefixed
-   with a digit, e.g. `2IWM`); disclose the adjusted share rather than silently folding it in.
+   V/OI survivors — and it covers **only the four Cboe-operated venues**, whereas the chain spans
+   every US venue. The *ratio* is internally consistent (4-venue vs 4-venue), but the absolute
+   volumes are a different universe from the chain column beside them. It also **lags the live
+   session by about a day**, so the own-history baseline is measured on the last session the
+   service has published, one behind the contract screen — label that date on every row.
 
    Market-wide call/put volume and open interest for a past date come from Cboe's daily market
    statistics, `https://www.cboe.com/us/options/market_statistics/daily/?mkt=cone&dt=<DATE>`.
@@ -219,44 +329,50 @@ answer if you ignore them.
     quoting it bare, and quote Yahoo's IV where both exist and the contract still has time value.
     *(Established 2026-11-04.)*
 
+11. **Yahoo's `impliedVolatility` is a decimal fraction too** (raw `0.2618` = 26.18%), and reading it
+    as an already-scaled percentage is a **100× error**. Verified by inverting Black-Scholes against
+    the contract's own mid-quote (r ≈ 3.85%, q = 0.5%, side-aware branch, no-arbitrage clamp): Yahoo × 100
+    correlates **0.988** with the inverted vol, while the Cboe column correlates 0.072 on the same rows.
+    *(Established 2026-11-04.)*
+
+12. **Cboe's IV column is an artifact on 0DTE ETF contracts priced at a penny.** Measured 2026-11-04
+    across 70 invertible kept rows: the median gap to the inverted vol is 0.8 vol points, but **15 rows
+    diverge by more than 10 vol points and every one is a 0DTE IWM/GLD contract with a wide bid-ask**
+    (worst: IWM 284C, Cboe 123.6% vs inverted 13.0%, on a $0.005 theoretical value). On liquid
+    single-name rows Cboe is fine (AAPL 332.5C: 37.1% vs 36.8%). Quote the inverted vol on the 0DTE ETF
+    rows. *(Established 2026-11-04.)*
+
+13. **Yahoo's `chartPreviousClose` on a multi-day daily chart is the close before the RANGE, not
+    yesterday's.** Using it to verify a "day move" gives a wrong number with no error. Take the last
+    two daily bars from `timestamp`/`close` instead — then it matched Cboe's `prev_day_close` exactly on
+    6/6 names. *(Established 2026-11-04.)*
+
+14. **A name with no listed options series is not a source failure.** The Cboe chain CDN answers
+    HTTP 403 with an XML `AccessDenied` body for symbols it does not cover (CHSN, CRIS, DKI, OMH on
+    2026-11-04). Record it as `no listed options series`, keep it out of the error count, and say how
+    many names were affected. Only a real failure (timeout, malformed body, 5xx) counts as an error.
+    *(Established 2026-11-04.)*
+
 ## Method of record
 
-The headline metric is a put/call volume ratio. That number is only comparable across days if
-the method is identical, and three things changed underneath this series between 2026-10-16 and
-2026-10-30 — the chain source, the pre-cut rule and the expiry window. Each is now fixed.
+### The relative screen (headline)
 
-**Chain source — Cboe primary, Yahoo options cross-check.** Use the Cboe delayed-quote CDN chain as
-the primary tape and **Yahoo's options v7 endpoint** as the independent second tape:
-`query1.finance.yahoo.com/v7/finance/options/{SYM}?date={epoch}`, one call per expiry in the window
-(crumb handshake; auth via a **cookie jar** passed with `curl -b`, not a `Cookie:` header).
-**Nasdaq's public option-chain endpoint is dead** — HTTP 404 with an empty body on every attempt
-since 2026-11-02 (re-confirmed 2026-11-04, 3/3 attempts), so do not name it as the cross-check and do
-not report option volume/OI as uncorroborated: the Yahoo tape carries it. Yahoo's own `openInterest`
-agreed with Cboe's on **80/80** contracts on 2026-11-04, and its `inTheMoney` confirmed the side-aware
-ITM rule on **80/80**. Yahoo's JSON endpoints return HTTP 429 from *some* egresses (measured
-2026-10-28) but served options and chart data normally on 2026-11-04 — **probe every run** and fall
-through only on a real failure. Yahoo remains useful for underlying prices and for the IV in
-conventions 6 and 10. **If the primary source changes, that is a methodology change and must be logged
-in the artifact** — a different tape carries a different open-interest denominator, so the ratio is not
-comparable across it.
+| Element | Rule |
+|---|---|
+| Chain source | Cboe delayed-quote option-chain CDN, one JSON per underlying (~1-3 MB each), fetched 8-way in parallel |
+| Universe | TradingView america scanner, top 60 US names by cash volume (`type in (stock,dr)`, `exchange in_range [NASDAQ,NYSE,AMEX]`, `close > 1`) + the routine's 8 |
+| Cash volume | TradingView scanner `volume` column (post-close this is the settled session volume) |
+| Own-history baseline | Cboe historical options volume, `all_symbols` monthly files (previous + current month), baseline session = the last session the service has published |
+| Window | 4 earliest **listed** expiries per name, keyed on the OCC symbol |
+| Filters | volume ≥ 1,000, theo ≥ $0.05, V/OI ≥ 1.0, DTE ≤ 60; **no absolute pre-cut** |
+| Peer group | same underlier + expiry + side, strikes with volume ≥ 50; the group's median volume is published on every row |
+| Composite | z(peer ratio) + z(expiry share) + z(opt % of cash vol) + z(V/OI) + 1.5 × z(own-history) |
 
-**Pre-cut rule — volume, not V/OI.** The skill calls each underlying with `top_n=10` but does not
-state what the ten are ranked by, and the choice changes the answer: the V/OI cut is
-self-referential (it keeps the rows with the smallest open interest, which is what inflates V/OI)
-and it discards the largest lines — it dropped 62.5% of kept volume on 2026-10-30. **Rank the
-per-underlying ten by volume**, and publish the V/OI-cut numbers alongside so the difference is
-visible rather than buried. The 2026-10-16, 2026-10-20 and 2026-10-21 artifacts were built on
-the V/OI cut and are therefore **not** comparable with the rest of the series; their tags are
-provisional and cannot be recomputed, because raw chains are not retained between runs.
+### The series book (secondary, continuity)
 
-**Expiry window — 4 earliest expiries.** See convention 3. The window's calendar dates differ per
-underlying and per run; reconstruct it from the contract symbols rather than from a listed date.
-
-**A reconstruction is not a run.** A rebuilt day carries the aggregate volume layer and the
-market-wide call/put picture, and it says plainly that it is a reconstruction. It must never
-carry a V/OI figure, and it must never be counted as an original run when comparing series. The
-two reference cases are `options-flow/2026-10-19.md` (run failed at the platform level) and
-`options-flow/2026-10-26.md` (ran and self-skipped outside its own market-hours gate).
+Unchanged from the published series: the 8 Pass-B names, per-underlying **top-10 by volume**
+(`min_volume=100`), 4 earliest listed expiries, V/OI ≥ 1.0, volume ≥ 200, DTE ≤ 60; ranked by
+V/OI, top 25 published, top 10 headlined; bias tag from the put/call volume ratio.
 
 **Bias tag thresholds (fixed — re-derive from the 10-28/29/30 files, never from the previous
 artifact).** Put/call volume ratio **< 0.85 -> CALL**, **> 1.20 -> PUT**, otherwise **MIXED**. The tag
@@ -269,9 +385,16 @@ inside every artifact so the tag is auditable without the history.
 source, the cross-check source, the pre-cut rule, the expiry-window rule, and a
 methodology-change log naming anything that differs from the previous run. A reader must be able
 to tell a genuine change in flow from a change in method, and the two are easy to confuse: the
-2026-10-29 → 2026-10-30 tag change (CALL 0.75 → MIXED 1.05) came alongside a source change.
+2026-11-29 → 2026-11-30 tag change (CALL 0.75 → MIXED 1.05) came alongside a source change.
+
+**A reconstruction is not a run.** A rebuilt day carries the aggregate volume layer and the
+market-wide call/put picture, and it says plainly that it is a reconstruction. It must never
+carry a V/OI figure, and it must never be counted as an original run when comparing series. The
+two reference cases are `options-flow/2026-10-19.md` (run failed at the platform level) and
+`options-flow/2026-10-26.md` (ran and self-skipped outside its own market-hours gate).
 
 ## Out of scope
 - Backtesting options strategies.
 - Greeks (delta/gamma) — not exposed by the TradingView-advanced MCP today.
 - Earnings-specific plays — that's `earnings-reaction-scanner`.
+- Any trade, direction or sizing suggestion.

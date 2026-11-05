@@ -95,6 +95,12 @@ done
 block, the DELIVERY step either finds no script or falls back to the prompt's own fetch, which
 takes the first URL only — the raw CDN, which may be stale.
 
+**A routine-specific engine is NOT in that list.** Cron #16 runs `_shared/relvol_screen.py`, which
+is fetched by that routine's own prompt and skill spec with a capability-marker check
+(`RELVOL_SCREEN_V1`) — because fetching it fleet-wide would download a file most routines never
+call. The rule is the same, though: **a helper that is only *called* is not on disk**, so fetch
+it or the run silently degrades.
+
 ---
 
 ## CONVERSATION TITLE (do this FIRST, before anything else)
@@ -343,6 +349,14 @@ Local Mavis called Python helpers like `python screen.py emit-sql ...` to do fil
 If the skill spec references a helper under `scripts/`, fetch the helper's URL too:
   https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/asia-pre-market-reactions/scripts/<name>.py
 Read it for reference, but do NOT execute it. Re-implement its logic.
+
+**That reference-only rule is about a skill's own `scripts/` directory (the local Windows helpers),
+not about `_shared/`.** The `_shared/` helpers ARE published to be executed by the routine that
+needs them: `push_artifact.sh`, `window_check.sh`, `skip_marker.sh`, `mcp_bridge.py`,
+`probe_mcp.py`, `rvol_fetch.py`, `barchart_fetch.py` and `relvol_screen.py` (cron #16's
+relative-volume engine). A routine that runs one fetches it in its OWN prompt or skill block with
+a capability-marker check, because most routines do not need it and the fleet-wide list above
+would fetch files nobody calls.
 
 ## AUDIT LOG
 Local Mavis wrote an audit line to a Windows audit file after every run.

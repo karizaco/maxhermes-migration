@@ -378,6 +378,18 @@ analyst-ratings tab.** If that is worth having, the boring route is Finviz's **o
 browser is available to any routine that wants one. It does not help with Finviz.
 
 
+### 2f. Cboe endpoints — the options tape (measured 2026-11-04)
+
+Cboe was missing from this contract entirely while already being the primary tape for cron #16.
+Three endpoints, all measured on 2026-11-04 from the Cloud sandbox:
+
+| Endpoint | Status | Notes |
+|---|---|---|
+| `https://cdn.cboe.com/api/global/delayed_quotes/options/{SYM}.json` | **200 OK** — 1.1–3.2 MB per symbol | The option-chain tape. `volume`, `open_interest`, `iv` (**a decimal fraction** — 0.3715 = 37.15%), `bid`/`ask`, `theo`, `delta`, `last_trade_time`; the underlying block carries `close`, `prev_day_close`, `price_change_percent`, `volume`. **No expiry field** — parse the OCC symbol `{ROOT}{YYMMDD}{C|P}{strike×1000}`. The top-level `timestamp` is **UTC**, the per-contract `last_trade_time` is **ET**. A symbol with no listed options series answers **HTTP 403 with an XML `AccessDenied` body** — that is NOT a source failure, record it and move on (CHSN, CRIS, DKI, OMH on 2026-11-04). |
+| `https://www.cboe.com/us/options/market_statistics/historical_data/download/all_symbols/?reportType=volume&month=<M>&year=<Y>&volumeType=sum&volumeAggType=daily&exchanges=CBOE&exchanges=BATS&exchanges=C2&exchanges=EDGX` | **200 OK** — 6.5 MB for October 2026, 219,701 rows, ~3,815 symbols/day | **Every underlying's daily options volume for a whole month in ONE call.** CSV `Trade Date, Options Class, Underlying, Product Type, Exchange, Volume` — group by **(date, underlying)** and sum across classes and venues; the corporate-action-adjusted series live in the *Options Class* column (`2AAL`), not in the underlying name. Two monthly files (previous + current) cover a 10-session average. **Lags the live session by about a day**, and covers **only the four Cboe-operated venues** — so the ratio is internally consistent but the absolute volumes are a different universe from the chain. |
+| `https://www.cboe.com/us/options/market_statistics/historical_data/download/class/?reportType=volume&volumeType=sum&volumeAggType=daily&symbolType=underlying&symbol=<SYM>&startDate=..&endDate=..&exchanges=...` | **200 OK** | The same data for ONE symbol over a date range. Needs a browser `User-Agent` **and** `Referer: https://www.cboe.com/us/options/market_statistics/historical_data/`, or the request is refused. The `all_symbols` variant reproduces it exactly (verified 7/7 on 2026-11-04) — prefer `all_symbols` for a multi-name baseline. |
+| `https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json` (and `_SPX`, `_NDX`, `_RUT`, `_DJX`, `_VIX3M`) | **200 OK** | Index quotes from the same CDN. **Needs `-L`.** `_DJX` is the Dow ÷ 100. |
+
 ## 3. The rules
 
 1. **Try `web_search` FIRST for any single-symbol quote.** It is the most reliable path in this

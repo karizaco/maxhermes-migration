@@ -114,6 +114,48 @@ The skill's procedure body lives here:
 **FIRST tool call:** `curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/unusual-options-flow-daily/SKILL.md?ref=main"` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
 Then follow the procedure verbatim, with these Cloud adaptations below.
 
+## RELATIVE-VOLUME ENGINE (FETCH ONCE, RUN BEFORE WRITING THE ARTIFACT)
+
+This routine ranks by RELATIVE volume (see the skill spec). That needs ~60 option chains and
+~150k contracts, which is far past what can be parsed in context, so the screen is a published
+script. Fetch it here, then run it with the FIRE's scheduled date.
+
+The CAPABILITY check is mandatory: an older copy of the script silently lacks the relative
+screen, and a 404 body is non-empty JSON. The contents API is authoritative and is not
+CDN-cached, so it is tried FIRST.
+
+```bash
+S=/workspace/relvol_screen.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/relvol_screen.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/relvol_screen.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/relvol_screen.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+
+if [ -s "$S" ] && grep -q 'RELVOL_SCREEN_V1' "$S"; then
+  # FIRE_DATE = the fire-date: printed by the window check above
+  python3 "$S" --date "$FIRE_DATE" --out /workspace/options-flow/$FIRE_DATE.md --universe 60 --jobs 8
+  echo "relvol-engine: exit $?"
+else
+  echo "relvol-engine: UNAVAILABLE - fall back to the legacy 8-name absolute method and label the artifact"
+fi
+```
+
+The script prints a JSON summary on stdout: counts, the top relative names, the series-book bias
+tag and the source errors. **Quote ITS numbers in the chat reply** - do not re-derive them by
+hand, and do not report a number the script did not print.
+
+**If the engine is unavailable or fails**, fall back to the legacy method described in the skill
+spec (the 8 routine names, per-underlying top-10 by volume, the legacy filters, the bias tag)
+and write the artifact with `method: legacy_fallback (relvol engine unavailable: <reason>)` in
+the header. A degraded legacy artifact beats a failed run.
+
 
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
 
@@ -180,9 +222,23 @@ If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), w
 ## GIT PUSH (OPTIONAL)
 
 ```bash
-B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
+# Fetch BOTH helpers. The old `[ -s file ] || curl` ladder could never reach its fallback
+# (the first successful download satisfied the guard) and fetched only push_artifact.sh -
+# verify_delivery.sh is a SEPARATE helper that push_artifact.sh does NOT ship, so a prompt
+# that fetches one leaves the mandatory verification a silent no-op.
+for F in push_artifact.sh verify_delivery.sh; do
+  S=/workspace/$F
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+    if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!'; then
+      mv -f "$S.tmp" "$S"; break
+    fi
+    rm -f "$S.tmp"
+  done
 done
 sh /workspace/push_artifact.sh --out options-flow --add options-flow/{date}.md --branch main
 sh /workspace/verify_delivery.sh --path options-flow/{date}.md --branch main
@@ -212,6 +268,8 @@ exists, and why the push script must never be run with `git push … | head -3`.
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+5. This routine ranks by RELATIVE volume. The headline of the artifact AND of the chat reply is the relative screen (the multi-day relative leaders, the name-level own-history table); the legacy absolute book is a secondary continuity section. Never lead the reply with the legacy put/call tag.
+6. The engine's JSON summary is the source of the numbers you quote. If it did not print a figure, that figure is not in the artifact.
 
 ================================================================
 END OF CRON PROMPT
