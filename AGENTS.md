@@ -99,6 +99,7 @@ fetch block that puts it on disk is part of the change.
 | `tools/rewrite_prompts.py`, `tools/apply_skip_marker.py` | other deterministic fleet-wide rewrites |
 | `tools/gen_roster.py`, `tools/gen_index.py`, `tools/gen_docs_index.py` | regenerate the roster, the README index and the docs index |
 | `tools/schedule-drift.py` | compares every live schedule against `tools/schedule-ground-truth.json` (the ground truth is rebuilt from `migration-state.json`, never from the live scheduler) |
+| `tools/check_bonde_artifact.py`, `tools/check_premarket_artifact.py`, `tools/check_breadth_artifact.py` | assert the artifact CONTRACT of cron #04 / #08 / #10 — the section skeleton, the required fields, the published verdict vocabulary and the CSV's agreement with the markdown. Each has a regression test next to it (`tools/test_premarket_contract.py`, `tools/test_breadth_contract.py`) that proves the contract is satisfiable AND that every breach is caught |
 
 Run the generators after you change what they generate, and **never hand-edit their output**.
 
