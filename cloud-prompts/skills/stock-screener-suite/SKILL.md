@@ -696,79 +696,359 @@ routine-specific rules on top of it:
 
 ### 6. Pre-market Gapper (Sun + Bonde)
 
-Run at 08:30 ET weekdays only (the deployed `#08-pre-market-gapper` cron slot). For each ticker
-in `focus.md`:
+Run at 08:30 ET weekdays only (the deployed `#08-pre-market-gapper` cron slot). The universe is
+the **Focus list** of the most recent completed 18:30 ET sweep (cron #09) — at 08:30 ET today's
+sweep has not run yet, so you read the PRIOR session's `focus.md` / `focus.csv`.
 
-- One `mcp__tradingview-advanced__stock_extended_hours(ticker)` call **per ticker**
-  — cap at the 12 names in the Focus list, so this is ≤ 12 calls
-- Flag names with `gap_pct > 4` AND `pre_market_volume > 50_000`
-- One chat line per flagged name
+This section is the routine's **ARTIFACT FORMAT CONTRACT v4**. It is fetched at RUN time, so an
+edit here lands on the next fire with no prompt edit and no byte-drift risk. The checker
+(`tools/check_premarket_artifact.py`) asserts everything below; a run that breaks the contract
+FAILS instead of shipping.
 
-#### The Nasdaq pre-market tape is served from a stale HTTP cache - read it defensively
+#### 6.1 THE CONSTANTS — publish these, never change them silently
 
-Verified by experiment 2026-11-03 (regular session, 10:09-10:32 ET). `api.nasdaq.com`'s
-`/extended-trading` endpoint sits behind a **shared HTTP cache** that can return a snapshot
-captured much earlier. Measured: the **same URL** returned a 4.5-hour-old vintage
-(AAPL pre-market 05:33:19) alongside a current one (09:30:01) in the same second, and MSFT /
-GOOGL alternated between 05:31-05:33 and 09:30:01 vintages across rapid pulls. Responses carry
-a `cache-hit` header. **A unique query string does NOT reliably bypass it** - 8 pulls with 8
-distinct URLs still alternated between vintages.
+```
+GAP_TRIGGER_PCT      = 4.0      # the gap bar        (unchanged since the routine was written)
+MIN_PM_VOLUME_SHARES = 50_000   # the liquidity bar  (unchanged)
+MIN_EXECUTED_SHARES  = 25       # the SIZE bar — the print that carries the gap must have
+                                # size behind it. A 1-share print is a rounding artifact.
+```
 
-**`/info` is the LIVE source, not the stale one.** `primaryData.lastTradeTimestamp` tracks wall
-clock to the minute and its price changes on every pull. Do not discard `/info` on the theory
-that it "flips": a pre-market `$28.00` reading on GEN (2026-11-02) sat *below* the tape's real
-low of $28.13, so it was never an executed trade, not a field flipping.
+**A name is `FLAGGED` only when all three hold:**
+
+```
+|gap| >= GAP_TRIGGER_PCT   AND   pm_volume >= MIN_PM_VOLUME_SHARES   AND   exec_shares >= MIN_EXECUTED_SHARES
+```
+
+The 4% / 50,000 gate is NOT to be changed — on 2026-11-03 the same rule fired on three phantom
+gappers (CAI +5.53% on 10 shares, CVI −6.99% on 1 share, MTZ +3.93% on a series of 1-share
+prints). That is the rule working. `MIN_EXECUTED_SHARES` is an ADDITIONAL gate, not a
+replacement: the gap must be confirmed by an executed print with size behind it.
+
+#### 6.2 THE VERDICT — a fixed vocabulary, published as a field
+
+A reader must not have to infer the verdict from two numbers and a caveat. Every row carries a
+`verdict` from this closed set, and the markdown table carries it as a column.
+
+| verdict | meaning |
+|---|---|
+| `FLAGGED` | clears the gate on the tape AND size — see 6.1 |
+| `BORDERLINE_THIN` | the bar was printed, but the market behind it is too thin to act on (`exec_shares` below `MIN_EXECUTED_SHARES`, or `pm_volume` below `MIN_PM_VOLUME_SHARES`) |
+| `BORDERLINE_TAPE_ONLY` | the live quote clears the bar but the executed tape does not — *above the bar on a quote, below it on the market* |
+| `BORDERLINE_INTRADAY` | it crossed the bar during the pre-market session and is not there at the snapshot |
+| `NO_PRINT` | no executed print at all — the quote is not a market |
+| `BELOW` | printed, and below the bar on every reading |
+
+**Precedence (the order IS the meaning):**
+
+```
+NO_PRINT  >  FLAGGED  >  BORDERLINE_THIN  >  BORDERLINE_TAPE_ONLY  >  BORDERLINE_INTRADAY  >  BELOW
+```
+
+- `NO_PRINT` comes first: a name that printed nothing cannot be a borderline anything.
+- `BORDERLINE_THIN` before `BORDERLINE_TAPE_ONLY`: when the tape itself printed across the bar
+  (even on a rounding artifact), that is the more concrete fact.
+- `BORDERLINE_TAPE_ONLY` is the PURR case (2026-11-03) and it is the reason the vocabulary
+  exists. Publish **both numbers** with it, never one:
+
+  > on the consolidated tape (+3.07%) → below the gate · on the live quote (+4.43%) → above the
+  > gate · pre-market high (+5.87% at 09:02 ET) → it DID cross intraday
+
+  The third leg lives in `pm_high_gap_pct` / `pm_low_gap_pct`, so a `BORDERLINE_TAPE_ONLY` name
+  still carries the intraday fact.
+
+#### 6.3 THE DENOMINATOR RULE — and the `ref_close_source` column
+
+**The gap denominator is the SETTLED prior regular-session close.** Take it from the prior
+sweep's own `focus.csv` — the **latest dated `close_<YYYY-MM-DD>` column** (that is the sweep's
+session close) — and cross-check it against **two other independent sources**. Two agreeing
+sources beat one drifting one.
+
+| source | role |
+|---|---|
+| the prior sweep's own `focus.csv` (`close_<date>` column) | **primary** — it is the same denominator the screen used |
+| TradingView america scanner `close` | cross-check 1 |
+| Cboe delayed-quote CDN `close` | cross-check 2 |
+| the bridge `market-recap` `price` | cross-check 3 (excellent for this, useless for a pre-market print) |
+| Nasdaq `/info` `secondaryData` | **LAST RESORT ONLY** — it drifts and flips (see 6.4) |
+
+**Publish which sources agreed in `ref_close_source`**, e.g. `focus.csv+tradingview+cboe`. If a
+source disagrees, say so in the same cell (`focus.csv+tradingview (CONFLICT: nasdaq-secondaryData
+206.0000 vs 207.6000)`) and in `## Flags`. Never publish a gap computed against a price that was
+not an executed print.
+
+#### 6.4 KNOWN NASDAQ FIELD DEFECTS — CHECK THESE FIRST (found 2026-11-03)
+
+Do not rediscover these. Check each one first on every fire.
+
+1. **`/info` `secondaryData.lastSalePrice` is not always the settled close.** For **QLYS** it
+   read **$206.00** while the settled close was **$207.60** — Nasdaq's own `/historical`, the
+   TradingView scanner, the bridge and the sweep's own `focus.csv` all agreed on 207.60. Using
+   206.00 would have moved QLYS's gap from +0.53% to −0.01%.
+2. **The same field flips mid-session.** For **KOD** it read $97.625 at 08:34 and $98.5764 at
+   09:07 — the latter is a stale *pre-market* print, not a close.
+3. **`/info` `primaryData.lastSalePrice` can be a trivial-size print.** **CAI** read $33.8747
+   (+5.53%) on a **10-share** print while the consolidated tape was $32.50 (+1.25%); **CVI**
+   printed −6.99% on **1 share**; **MTZ** printed +3.93% on a series of **1-share** prints. The
+   rule that catches all three: *a gap is only real if a print with size behind it crossed it.*
+4. **`/info` `primaryData.lastSalePrice` can be the ASK, not a trade.** **PURR** read $10.14 with
+   a $10.04 × $10.14 band while the tape's last executed print was $10.0083. When
+   `last == ask`, the reading is a quote.
+5. **The bridge's `market_state: "pre"` serves the PRIOR REGULAR CLOSE**, not a pre-market print
+   (`as_of` = the 16:00 ET close). Use it to CONFIRM reference closes; never as a print source.
+6. **The TradingView scanner's `premarket_volume` undercounts** (PURR 320,722 vs Nasdaq 595,761;
+   NOW 253,343 vs 1,107,335) and `premarket_price` is null for every US name. Use
+   `premarket_change` + `premarket_high` / `premarket_low`; never run the 50,000-share test on
+   TV volume alone.
+
+#### 6.5 THE STALE-CACHE DEFENCE — unchanged, and still required
+
+`api.nasdaq.com`'s `/extended-trading` endpoint sits behind a **shared HTTP cache** that can
+return a snapshot captured much earlier. Measured 2026-11-03: the **same URL** returned a
+4.5-hour-old vintage (AAPL pre-market 05:33:19) alongside a current one (09:30:01) in the same
+second, and MSFT / GOOGL alternated between 05:31-05:33 and 09:30:01 across rapid pulls.
+Responses carry a `cache-hit` header, and a unique query string does **not** reliably bypass it.
 
 Rules for this scan:
 
 1. **Never trust a single tape pull.** Pull the endpoint N times (N >= 4) and keep the payload
    with the **newest internal timestamp** (the latest `tradeDetailTable` clock time, after
-   sorting - the table is served newest-first). A stale vintage can never win a max-timestamp
+   sorting — the table is served newest-first). A stale vintage can never win a max-timestamp
    comparison.
-2. **Take the price from `/info` `primaryData` (live)**; use the tape for *which prints actually
-   traded*, the pre-market high/low, and the cumulative volume.
+2. **The published gap comes from the tape's last EXECUTED print**, never from the live quote.
+   The live quote is published as a separate column (`quote_price`, `quote_gap_pct`) and it is
+   what makes `BORDERLINE_TAPE_ONLY` visible.
 3. **Prefer the Cboe delayed-quote CDN** as the independent price cross-check:
    `https://cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json` returns an explicit
    `last_trade_time` and `timestamp`, so its freshness is verifiable from the payload rather
    than inferred. It is not subject to the Nasdaq cache.
-4. **Denominator:** use the prior sweep's own `focus.csv` close, cross-checked against
-   TradingView's `close`. Nasdaq's `/info` `secondaryData` drifts intraday (PRCH read 20.68
-   against a true 20.56).
-5. **Volume:** the `infoTable` cumulative counter can itself be faulty (ADT jumped 6,500 ->
+4. **Volume:** the `infoTable` cumulative counter can itself be faulty (ADT jumped 6,500 ->
    606,500 mid-session while its complete 71-row tape stayed at 6,726). The trade-detail table
    is capped at 100 rows, so **when `tape_n < 100` the tape is complete** and can arbitrate a
-   contradictory counter. Prefer the tape sum and record the rejection.
-6. **Take multiple snapshots across the run** (e.g. 08:46 / 08:52 / 08:57 / a paired 09:00
-   pull). They serve as the liveness proof, the max-timestamp source, and the divergence
-   record.
+   contradictory counter. Prefer the tape sum and record the rejection in `pm_volume_source`.
+5. **Take multiple snapshots across the run** (e.g. 08:46 / 08:52 / 08:57 / a paired 09:00
+   pull). They serve as the liveness proof, the max-timestamp source, and the divergence record.
 
 Because a stale vintage can move an individual name's gap by ~2.4pp, publish the margin against
 the trigger: if the widest gap on any source is well inside the 4% band, the flag decision is
 immune to the cache and should be stated as such.
 
-**A ready-made implementation ships with this skill:** `scripts/premarket_pull.py`. It performs
-the whole defence (N tape pulls, max-newest-timestamp selection, the live `/info` price, the
-complete-tape volume arbitration, the Cboe cross-check) and writes both a JSON and a markdown
-table with per-symbol provenance — including the tape vintages it actually saw, which is the
-evidence that the cache was beaten rather than assumed away.
+#### 6.6 THE HELPER — run it, it is the reference implementation
+
+`scripts/premarket_pull.py` implements the whole defence (N tape pulls + max-newest-timestamp,
+the live `/info` price, the complete-tape volume arbitration, the Cboe and TradingView
+cross-checks, the focus.csv join, the verdict and the contract CSV). Fetch it at RUN time and
+require the capability marker — an OLD copy would write the OLD artifact shape:
+
+```bash
+mkdir -p /workspace/tools
+S=/workspace/tools/premarket_pull.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && grep -q 'premarket-artifact-v4' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'premarket-artifact-v4' "$S"; then
+  echo "premarket_pull.py: UNAVAILABLE (no copy carrying the current contract)"
+  echo "no artifact; no push"
+  exit 1
+fi
+
+python3 "$S" --from-csv /workspace/<prior-sweep>/focus.csv \
+    --out-dir /workspace/daily-screens/{date} --pulls 4 \
+    --gap-trigger 4 --volume-floor 50000 --min-exec 25
+```
+
+It writes `_premarket-pull.json` (full per-symbol provenance), `premarket-pull.md` (a helper
+table) and **`pre-market-gapper.csv` — the contract CSV, one row per Focus name**. It also
+prints the **marker line** the artifact must carry (§6.7).
+
+The prior sweep's `focus.csv` is the input that carries three things at once: the tickers, the
+**reference close** (the latest dated `close_<date>` column) and the **screen provenance**
+(`stylists`, `origins`) — the last one is what lets you say "CDNA, five origins and three
+stylists" instead of dropping a high-quality setup that went nowhere. Fetch it from
+`karizaco/minimax-cloud-outputs` `main`, `daily-screens/<prior-date>/focus.csv`.
+
+If you re-implement the logic inline instead of running the helper, the artifact must carry
+exactly the same fields — the checker verifies the artifact, not the route you took.
+
+#### 6.7 ARTIFACT FORMAT CONTRACT v4
+
+Two files, same directory: `daily-screens/<date>/pre-market-gapper.md` and
+`daily-screens/<date>/pre-market-gapper.csv`. Never let a row exist in one and not the other.
+
+**The marker line** — the first line of the markdown, or within the first 10:
 
 ```
-python scripts/premarket_pull.py --from-csv daily-screens/<prior-date>/focus.csv \
-    --out-dir daily-screens/<date> --pulls 4 --gap-trigger 4
+_contract: premarket-artifact-v4 · flagged: N · scanned: M · gate: |gap|>=4.0% and pm_volume>=50,000 and exec_shares>=25 · reference close: <source>_
 ```
 
-Its URL, if you need to fetch it rather than rely on a local checkout (the shared
-`## HELPER SCRIPTS` block shows a template path with a different skill name in it, so use this
-one explicitly):
+`flagged` and `scanned` MUST match the CSV. The checker asserts both.
+
+**The markdown skeleton — these sections, in this order:**
 
 ```
-https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py
+# Pre-Market Gapper — <Weekday, DD Month YYYY>
+<banner: 2 lines — the session, the snapshot time(s), the source of record>
+## TL;DR
+## Focus scan — all names
+## Focus names that did not qualify
+## Flags
+## Method, source health & caveats
 ```
 
-Read the helper, do not execute it blindly: per the shared `## HELPER SCRIPTS` rule, the Cloud
-runtime expects the agent to re-implement the helper's job with tool calls. It is the reference
-for exactly what the four rules mean, and the fastest correct route when the agent decides to
-implement them inline.
+- **`<banner>`** — two lines, before anything else: the session and the snapshot clock times
+  (ET) and the source of record. The tape moves; the reader needs to know how live it is.
+- **`## TL;DR`** — 3 bullets: the headline count, the most consequential name, and the caveat
+  that most changes how the run should be read.
+- **`## Focus scan — all names`** — one table, one row per Focus name, **sorted by absolute
+  gap, largest first**. Columns: `Ticker | Ref close | PM price (last executed print) | Gap % |
+  PM volume | Exec shares | Exec notional | PM high | PM low | Quote % | Verdict`. The
+  `Verdict` column is mandatory. `Exec shares` and `Exec notional` are mandatory — the reader
+  must see *why* a name did not qualify, numerically.
+- **`## Focus names that did not qualify`** — see 6.8.
+- **`## Flags`** — see 6.9.
+- **`## Method, source health & caveats`** — about the RUN, not about names: every source
+  tried and its status, the denominator and which sources agreed on it, the margin against the
+  trigger, the Nasdaq defects you checked, the snapshot timestamps, the provenance. **Data
+  caveats live here** — never in `## Flags`.
+
+**The CSV columns** (the contract set — keep these names):
+
+```
+ticker, ref_close, ref_close_source, pm_price, pm_gap_pct, exec_shares, exec_notional,
+pm_volume, pm_volume_source, quote_price, quote_gap_pct, bid, ask, pm_high, pm_low,
+pm_high_gap_pct, pm_low_gap_pct, tv_pm_pct, tv_pm_volume, stylists, origins, verdict, flag_reason
+```
+
+Every row carries a **non-empty** `verdict`, `exec_shares` and `ref_close_source`. `verdict` is
+one of the six values in 6.2. `exec_shares` is the size of the print that carried the published
+gap; `exec_notional` is `exec_shares × pm_price`. `flag_reason` is one plain sentence saying
+why the row got that verdict.
+
+#### 6.8 `## Focus names that did not qualify` — what was in the scan but did not make the list
+
+**The rule:** every scanned name whose verdict is not `FLAGGED` appears in this section, with
+its **gap**, its **PM volume**, its **PM range**, its **screen provenance**, and **one line
+saying whether it was a good setup that went nowhere or a bad setup**.
+
+This is the feedback that makes the screen learnable. On 2026-11-03 the scan's best setup did
+nothing — **CDNA** (Stockbee 4% breakout + Qullamägi RS + EP + 5-day gainers + peoplewish —
+five origins, three stylists) moved +0.90% pre-market, and HTFL / KOD / QLYS / MRNA / LQDA all
+sat under ±1%. Five of those six appeared nowhere in the chat reply.
+
+One line per name, in this shape:
+
+```
+- **CDNA** — +0.90% · 3,350 shares · $85.75–$86.41 · 3 stylists, 5 origins
+  (A_stockbee_4pct, C_qullamaggie_rs, D_qullamaggie_ep, E_qullamaggie_5d_gainers, G_peoplewish)
+  · setup: good setup that went nowhere — five origins and three stylists, and it never moved.
+```
+
+- **The provenance comes from the prior sweep's `focus.csv`** — `stylists` and `origins`. Do not
+  invent it, and do not omit it: a name without provenance is a name without a story.
+- **The setup verdict is mandatory.** A name without "was this a good setup that did not move,
+  or a bad setup?" is not in this section, it is just a row in a table.
+- The names in this section are ordered by **setup quality, then by size of the miss**:
+  `stylists` desc, then `origins` count desc, then `|gap|` desc.
+
+#### 6.9 `## Flags` vs `Method & caveats` — two different jobs
+
+Do not merge them. A caveat is about **the data**; a flag is about **a number a reader should
+distrust**.
+
+- **`## Flags`** — per-name, and only per-name:
+  - a gap printed on trivial size (**CAI +5.53% on 10 shares = a quote, not a market**) — every
+    name whose `exec_shares` is below `MIN_EXECUTED_SHARES` and whose gap touched the bar MUST
+    be named here;
+  - a live quote above the bar while the tape is below it (the `BORDERLINE_TAPE_ONLY` case) —
+    name the tape gap, the quote gap and the bid/ask band;
+  - a name that crossed the bar intraday and faded — say the gap it faded from and to;
+  - a reference close the sources did **not** agree on;
+  - a percentage that is arithmetically distorted (a big gap on a tiny absolute volume).
+- **`## Method, source health & caveats`** — about the run, not about names.
+
+Every flag names a ticker and states the number that makes it suspect. "Some names may be thin"
+is not a flag; "CAI +5.53% on 10 shares = a quote, not a market" is.
+
+#### 6.10 REPLY DISCIPLINE for cron #08
+
+The shared reply format from `_shared/PROMPT-BLOCKS.md` (`## DELIVERY`) applies — prose
+opener, `### Signal`, `### Method & caveats`, `### Files`, `### Push / errors`. Three
+routine-specific rules on top of it:
+
+- **`### Signal` names the top 2 non-qualifying names** — the best setups that did not qualify,
+  ordered as in 6.8. **This applies even when zero names flag.** The old rule ("emit no chat
+  lines when 0 names flag") is superseded: a trader who tracks this list needs to know CDNA was
+  a high-quality setup that went nowhere, and that is the feedback that makes the screen
+  learnable. One line each, with the gap, the size and the setup verdict.
+- **Every `FLAGGED` name gets its own line** in `### Signal`, with the catalyst or the setup —
+  and never with a catalyst you did not source.
+- **The verdict carries the line, not a paragraph.** `PURR +3.07% tape / +4.43% quote —
+  BORDERLINE_TAPE_ONLY` is the shape. The tables live in the file; the chat carries the verdict,
+  the risk and the counts.
+
+#### 6.11 VERIFY THE ARTIFACT BEFORE YOU REPORT IT
+
+```bash
+C=/workspace/tools/check_premarket_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_premarket_artifact.py'; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+python3 "$C" \
+  --md  /workspace/daily-screens/{date}/pre-market-gapper.md \
+  --csv /workspace/daily-screens/{date}/pre-market-gapper.csv \
+  --reply /workspace/reply.txt
+```
+
+Save the final chat reply to `/workspace/reply.txt` before running the checker — the
+`--reply` check asserts that the reply's `### Signal` section names the top 2 non-qualifying
+names and every `FLAGGED` name.
+
+**Both files ship.** `push_artifact.sh --out daily-screens` stages the whole output tree, so the
+CSV is pushed with the markdown — but verify BOTH paths, because a companion CSV that never
+lands starves the next fire's baseline:
+
+```bash
+sh /workspace/verify_delivery.sh --path daily-screens/{date}/pre-market-gapper.md  --branch main
+sh /workspace/verify_delivery.sh --path daily-screens/{date}/pre-market-gapper.csv --branch main
+```
+
+It asserts the section skeleton and its order, the contract marker, the `flagged`/`scanned`
+counts against the CSV, the required columns on every row, the verdict vocabulary, that
+`count(FLAGGED)` equals the number of rows meeting the gate, that **no row below
+`MIN_EXECUTED_SHARES` is counted as a flag**, that every non-qualifying name appears in
+`## Focus names that did not qualify` with its provenance and a setup verdict, that every thin
+print is named in `## Flags`, and the reply contract. It exits 1 and prints each failure. **If
+it fails, fix the artifact and run it again — do not report a clean run over a failing check.**
+Do not eyeball these things; the 2026-11-03 artifact looked fine and failed them.
+
+#### 6.12 DO NOT
+
+- **Do not change the 4% gap / 50,000-share gate.** On 2026-11-03 the same rule fired on three
+  phantom gappers — that is the rule working.
+- **Do not publish a gap computed against a price that was not an executed print.** The
+  published gap comes from the tape's last executed print; the live quote is a separate column.
+- **Do not wait on `preopen-feed/`** — it did not exist by 09:15 ET on 2026-11-03 and catalysts
+  had to come from the wire. Check the directory, fall back to `web_search`, and **report the
+  substitution** in `## Method, source health & caveats`.
+- **Do not re-filter the universe to "common stock only" and do not filter on domicile.** A
+  shibui seed using `country_iso='US' AND type='Common Stock'` dropped 178 names on 2026-10-30,
+  including ARI (−63.9%), the largest mover of that day.
+- **Do not drop a name because it did not qualify.** The names that did not move are the
+  feedback; they go in `## Focus names that did not qualify` and two of them go in the reply.
 
 ### 7. Live intraday RVOL re-rank (Sun)
 
