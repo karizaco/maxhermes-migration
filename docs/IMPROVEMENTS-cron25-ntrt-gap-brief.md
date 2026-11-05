@@ -1,6 +1,7 @@
 # Improvements — cron #25 ntrt-gap-brief-daily
 
-Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03 (deployed cron task
+Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03; section 13 added
+2026-11-05, after the 05 Nov fire (session `460121796727067`). (deployed cron task
 `457578106761360`, run `459413987131500`, session `459413685592170`). Evidence base: the four
 most recent briefs on the outputs repo (`ntrt/2026-10-29.md`, `ntrt/2026-10-30.md`,
 `ntrt/2026-11-02.md`, `ntrt/2026-11-03.md`), the deployed prompt (byte-identical to
@@ -198,6 +199,52 @@ defects in the contract that reading alone would not have caught:
 
 This is the argument for rendering a contract against real data before shipping it: all three
 are invisible on a page of prose and obvious the moment 261 rows run through it.
+
+## 13. The screener's `close` column is the LIVE price, not the prior close — HIGH
+
+Found on the 2026-11-05 fire (09:00 ET, session `460121796727067`). The v2 contract asks the CSV
+to carry `prev_close`, and the screener request asks for a `close` column — but nothing said the
+two are different things, and they are:
+
+| name | screener `close` | prior regular close (independent quote source) |
+|---|---|---|
+| SPY | 754.64 | **766.81** (04 Nov) |
+| QQQ | 667.905 | **691.95** (04 Nov) |
+| APP | 271.75 | **271.75** (04 Nov close, matched by price after the move) |
+
+Once the regular session is open, TradingView's `close` column carries the **live intraday
+price**. A run that pulls the screen after the open and publishes `close` as `prev_close`
+therefore publishes a wrong prior close for every name — a gap that is silently wrong by
+exactly the day's move, i.e. it would have printed MNTN's "prior close" as today's intraday
+level and made a −50.8% gap read as a fraction of a percent.
+
+**Fix (in `SKILL.md` only — the deployed prompt is untouched).**
+
+- The column table now has a `close` row that says, in one line, that it is NOT the prior close,
+  with the SPY/QQQ numbers as the evidence.
+- The §4 `prev_close` entry now says **derive it, never take it from `close`**, and gives the
+  derivation: `premarket_close / (1 + premarket_change / 100)`.
+
+**Verification.** The derivation was checked against an independent quote source on three names
+and matched **exactly**: SPY 766.81, QQQ 691.95, APP 271.75. The 2026-11-05 artifact
+(`ntrt/2026-11-05.md` and `ntrt/2026-11-05.csv`) publishes the derived prior close, and its
+`## Method, source health & caveats` section states the rule and the check.
+
+**Why this one matters more than its size.** The other eleven findings changed how a brief is
+*laid out*. This one changes a *number*. A wrong `prev_close` does not look wrong: it is a
+plausible price with two decimals in the right column, and the gap percentage in the next
+column would still look right because `premarket_change` is computed by TradingView against the
+true prior close. The artifact would have been internally consistent and wrong.
+
+**Secondary finding — the pre-market tape and the live session must not be mixed.** The same run
+published the pre-open screen at 10:12 ET, 72 minutes after the open, and the regular session
+was already moving (QQQ −4.1%). The contract's one-pull rule (§7) covers two pulls of the
+same screen; it did not cover "publish a pre-open screen while the regular session runs". The
+2026-11-05 artifact handles it by labelling the mode banner with the snapshot time and by
+flagging in `## Flags` that the gaps are pre-open prints and that several have been retraced in
+the live session. The spec now carries the same instruction in the Mode B column block.
+
+---
 
 ## Verification performed
 

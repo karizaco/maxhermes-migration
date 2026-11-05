@@ -170,7 +170,12 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
 - `catalyst` — one line, quoted. Empty string when no catalyst could be confirmed. **A blank
   cell means "not found", not "there wasn't one"** — say so in the markdown's Flags section.
 - `prev_close` — the prior **regular** close, with its date in the column name avoided; the
-  date is in the filename and in the markdown front matter.
+  date is in the filename and in the markdown front matter. **Derive it, never take it from the
+  screener's `close` column**: once the session is open that column is the live intraday price,
+  not the prior close. Use `premarket_close / (1 + premarket_change / 100)` (verified on
+  2026-11-05 against an independent quote source: SPY 766.81, QQQ 691.95, APP 271.75 — all three
+  exact), or read the prior close from a quote source and derive `premarket_change` from it
+  instead. One number per field, one source per field.
 - **Prices in the CSV are carried to 2 decimals** (the traded cent), the same as the markdown.
   Only `pct_of_adv` keeps 3 decimals, because it is a computed ratio rather than a quoted
   price.
@@ -270,6 +275,7 @@ Columns and what they are worth:
 | `premarket_volume` | **pre-market shares — the importance measure.** Divide by `average_volume_30d_calc` for % of ADV. A ±20% gap on 100 shares is a quote, not a market. |
 | `average_volume_30d_calc` | 30-session average daily volume (a daily proxy, not intraday) |
 | `relative_volume_10d_calc` | TradingView's 10-day relative volume — also a daily proxy |
+| `close` | **NOT the prior close.** Once the regular session is open this column carries the LIVE intraday price (verified 2026-11-05: SPY `close` 754.64 against the 04 Nov close of 766.81; QQQ `close` 667.905 against 691.95). See the derivation rule below. |
 
 1. Screen with the filters above, then carry **both** sides. Rank by absolute `premarket_change`;
    a descending-only sort would hide the day's largest decliners.

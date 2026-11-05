@@ -20,7 +20,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-cron16-unusual-options-flow.md`](IMPROVEMENTS-cron16-unusual-options-flow.md) | Cron #16 `unusual-options-flow-daily` — General Improvement Audit — **Audited:** 2026-10-31 (Sat). Scope: the routine as a *system* — cron instructions, skill spec, |
 | [`IMPROVEMENTS-cron17-us-stocks-in-play.md`](IMPROVEMENTS-cron17-us-stocks-in-play.md) | IMPROVEMENTS — cron #17 `us-stocks-in-play` — Findings from the 2026-11-04 pre-close fire (settled session, 15:50 ET). |
 | [`IMPROVEMENTS-cron19-earnings-reminder.md`](IMPROVEMENTS-cron19-earnings-reminder.md) | Improvements — cron #19 earnings-reminder-daily — Reviewed 2026-10-25. Evidence base: 16 recorded runs (2026-10-10 → 2026-10-25), the deployed |
-| [`IMPROVEMENTS-cron25-ntrt-gap-brief.md`](IMPROVEMENTS-cron25-ntrt-gap-brief.md) | Improvements — cron #25 ntrt-gap-brief-daily — Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03 (deployed cron task |
+| [`IMPROVEMENTS-cron25-ntrt-gap-brief.md`](IMPROVEMENTS-cron25-ntrt-gap-brief.md) | Improvements — cron #25 ntrt-gap-brief-daily — Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03; section 13 added |
 | [`IMPROVEMENTS-cron26-agentic-pre-market-brief.md`](IMPROVEMENTS-cron26-agentic-pre-market-brief.md) | Improvements — cron #26 agentic-pre-market-brief — Reviewed 2026-11-03, after the routine's own 08:30 ET fire on 2026-11-03. Evidence base: the |
 
 ## Convention
