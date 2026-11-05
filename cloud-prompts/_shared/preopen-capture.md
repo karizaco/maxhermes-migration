@@ -1,5 +1,5 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
-<!-- PROCEDURE_VERSION: 2026-11-04.3 -->
+<!-- PROCEDURE_VERSION: 2026-11-05.1 -->
 
 Runs three times per session-day (08:30, 09:20, 09:50 ET). Writes an append-only **catalyst
 tape** that cron #17 (`us-stocks-in-play`, 15:50 ET) reads to explain *why* a stock moved and
@@ -16,8 +16,8 @@ This routine records the tape while it is still happening.
 
 ## OUTPUT
 
-Append-only JSONL at `preopen-feed/{date}.jsonl` in `karizaco/minimax-cloud-outputs`, branch
-`main`. One JSON object per line:
+Append-only JSONL at `preopen-feed/{date}-{HHMM}.jsonl` in `karizaco/minimax-cloud-outputs`, branch
+`main`, where `{HHMM}` is the FIRE's scheduled ET slot. One JSON object per line:
 
 ```json
 {"ts":"2026-11-03T09:15:23-04:00","src":"grok","ticker":"BRZE","name":"Braze",
@@ -42,12 +42,29 @@ fi
 **If the key is unset, write nothing and exit.** A tape with no catalyst in it is worse than no
 tape, because the consumer would report "no catalyst" for a name that had one.
 
-### 2. Resolve the date and checkpoint
+### 2. Resolve the FIRE's instant, then the date
+
+**Resolve the fire's scheduled instant FIRST, then derive the date and the checkpoint slot from
+it — never from the wall clock.** The platform resumes a crashed cron conversation IN PLACE, so
+"now" can be hours or days after the fire; and a fire that runs late must still be named for the
+slot it was dispatched for.
+
+```
+mcp_invoke  tool_name=session_get  arguments={"session_id":"me"}
+```
+
+Take `session.created_at` (epoch milliseconds) — that is the instant the platform dispatched THIS
+fire. Then:
 
 ```bash
-export DATE=$(TZ=America/New_York date +%Y-%m-%d)
-export TS=$(TZ=America/New_York date +%Y-%m-%dT%H:%M:%S%:z)
+export FIRE_MS=<session.created_at from the call above>
+export DATE=$(TZ=America/New_York date -d "@$((FIRE_MS/1000))" +%Y-%m-%d)   # the FIRE's date
+export TS=$(TZ=America/New_York date +%Y-%m-%dT%H:%M:%S%:z)                 # the CAPTURE time
 ```
+
+`DATE` is the fire's date; `TS` is the real capture time, because the `ts` field says when the
+tape was actually taken. If `session_get` cannot be reached, STOP and report
+`probe_failed:fire_instant` — do not fall back to the wall clock.
 
 ### 3. Grok — the narrative half
 
@@ -165,6 +182,29 @@ print a count that looks like a measurement.
 - Parse Grok's reply into records; drop any line without a ticker.
 - Join to the scanner by ticker. If a Grok `pct` disagrees with the scanner's `premarket_change`
   by more than 2 percentage points, set `"conf":"unverified"` and keep it (the consumer flags it).
+- **A Grok name that the step-4 scan does not contain still needs ground truth.** The step-4 scan
+  is the top 120 by pre-market VOLUME, so a thin pre-market name can be absent from it while still
+  being a real catalyst (measured 2026-11-05: SEZL, 44k pre-market shares, +26.3%). Query the
+  scanner again for exactly the Grok tickers the main scan missed:
+
+  ```bash
+  curl -s --max-time 30 -X POST https://scanner.tradingview.com/america/scan \
+    -H "Content-Type: application/json" \
+    -d '{"filter":[{"left":"type","operation":"equal","right":"stock"},{"left":"name","operation":"in_range","right":["AAA","BBB"]}],
+         "columns":["name","description","close","change","volume","relative_volume_10d_calc","market_cap_basic","premarket_change","premarket_volume","premarket_close","halted","exchange"],
+         "sort":{"sortBy":"premarket_volume","sortOrder":"desc"},"range":[0,50]}' > /tmp/tv_grok.json
+  ```
+
+  **Use the SAME column list as the step-4 query, in the same order.** A shorter list silently
+  mis-zips: the 10-column variant on 2026-11-05 read `premarket_close` (a PRICE, 172.66) into
+  `premarket_change` (a PERCENT) and `exchange` into `premarket_close`, which put two names at the
+  top of the tape with `px=NASDAQ`. Zip the columns by name, never by position.
+  Use that row's `premarket_change` as `pct` and its `premarket_close` as `price`. A Grok name the
+  scanner cannot find at all keeps Grok's numbers but is written `"conf":"unverified"` — it has no
+  ground truth, so it is never a verified fact.
+- **One row per ticker.** A ticker that Grok named gets ONE record, `src:"grok"`, carrying the
+  scanner's `pct`/`price`; it does NOT also get a `src:"scanner"` row. The scanner's row is for
+  the names Grok did not mention.
 - Keep the scanner rows for names Grok did not mention — a big premarket move with no reason yet
   is itself information, and the next checkpoint may explain it.
 - Emit one JSON object per line. **Append only.** Never rewrite an earlier checkpoint's rows.
@@ -180,7 +220,12 @@ key check aborts rather than writing an empty file.
 
 ```bash
 mkdir -p /workspace/preopen-feed
-export CP=$(TZ=America/New_York date +%H%M)     # 0830 | 0920 | 0950 ...
+# CP is the FIRE's scheduled ET SLOT, not the wall clock at write time. Measured 2026-11-05: a
+# late fire (the 09:50 slot, work done at 10:14 ET) named its file `1014` — a phantom slot that
+# sorts AFTER the 0950 checkpoint, so a consumer merging the checkpoints oldest-first replays
+# the 08:30 tape LAST. The two 2026-11-04 checkpoints on disk are named by SLOT (0830, 0950)
+# with `ts` = capture time. Derive CP from the FIRE_MS resolved in step 2.
+export CP=$(TZ=America/New_York date -d "@$((FIRE_MS/1000))" +%H%M)     # 0830 | 0950
 # ... emit the merged JSONL ...
 # -> /workspace/preopen-feed/${DATE}-${CP}.jsonl
 ```
