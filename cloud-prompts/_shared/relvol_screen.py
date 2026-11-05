@@ -250,10 +250,14 @@ def sfmt(v):
 
 
 def mfmt(v):
-    """market cap for an optional value (None -> ETF)"""
+    """market cap for an optional value (None -> ETF), in RAW DOLLARS.
+
+    FIX 2026-11-05: thousands separator added. A $5.0T cap printed as "$5001.5B",
+    which reads like a typo. The value was right; the format was not.
+    """
     if not v:
         return "ETF"
-    return "$" + format(v / 1e9, ".1f") + "B"
+    return "$" + format(v / 1e9, ",.1f") + "B"
 
 
 def money(strike, side, spot):
@@ -406,7 +410,7 @@ def main():
         nr.append(dict(ratio=h["ratio"], sym=s, name=n["name"], base=h["base"],
                        base_val=h["base_val"], avg=h["avg10"], chain=n["chain_vol"],
                        share=n.get("share_vol"), optint=n.get("name_opt_intensity"),
-                       mcap=(n.get("mcap") or 0) / 1e9, pct=n.get("pct")))
+                       mcap=n.get("mcap"), pct=n.get("pct")))
     nr.sort(key=lambda x: -x["ratio"])
     ni = sorted([x for x in nr if x["optint"]], key=lambda x: -x["optint"])
 

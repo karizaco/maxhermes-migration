@@ -413,3 +413,75 @@ curl -sL -H "Accept: application/vnd.github.raw" \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/relvol_screen.py?ref=main" \
   -o /tmp/rv.py && grep -c RELVOL_SCREEN_V1 /tmp/rv.py && python3 /tmp/rv.py --date <D> --out /tmp/o.md --universe 60 --jobs 8
 ```
+
+---
+
+## Fix (2026-11-05 fire) — the name-level market-cap column was double-divided
+
+**Found during the 2026-11-05 run, before the artifact was pushed.** The relative screen's
+**contract-level** tables carry a correct market cap; the three **name-level** tables carried
+`$0.0B` on every row.
+
+### The defect
+
+`mfmt()` converts a RAW-DOLLAR market cap into billions:
+
+```python
+return "$" + format(v / 1e9, ".1f") + "B"
+```
+
+Two callers fed it, but only one of them passed raw dollars:
+
+| Caller | Value passed | Result |
+|---|---|---|
+| contract rows (line ~345) | `n.get("mcap")` — raw dollars | correct (`$21.5B`) |
+| name-level rows (line ~409) | `(n.get("mcap") or 0) / 1e9` — **already in billions** | `$0.0B` on every row |
+
+The name-level rows pre-divided by 1e9 and `mfmt()` divided a second time, so every value
+collapsed to ~1e-9 and printed as `$0.0B`. A name with **no** cap in the scanner payload printed
+`ETF` instead, because `0` is falsy in `mfmt()`'s `if not v` guard — so the defect also silently
+relabelled capless names as ETFs.
+
+### Evidence (2026-11-05)
+
+- Before the fix: **43 of 43** name-level rows ended in `$0.0B` (`grep -c '\$0\.0B'` → 43).
+- After the fix: **0** occurrences.
+- The fix is **display-only**: the engine's JSON summary was **identical** across the two runs
+  (26,192 contracts in window, 1,725 eligible, 1,702 multi-day, baseline session 2026/11/04,
+  series bias PUT 1.33, 74 series rows, ITM premium share 0.6086, `errors: []`). The re-run was
+  used to regenerate the artifact rather than hand-editing it, so the published numbers came
+  straight from the engine.
+
+### Second, smaller fix in the same file
+
+`mfmt()` printed a $5.0T cap as **`$5001.5B`** — the value was right, the format read like a typo.
+It now uses a thousands separator: **`$5,001.5B`**. No number changed.
+
+### The lesson
+
+A formatting helper that applies a scale factor must have **exactly one** scale-converting caller.
+Here two callers shared the helper and one of them had already done the conversion — the classic
+shape of a bug that no unit test on the formatter can catch, because the formatter is correct and
+its contract ("input is raw dollars") was simply documented nowhere.
+
+Two habits that would have caught it earlier:
+
+1. **Grep the artifact for implausible values before pushing.** `$0.0B` on a $500B name is not a
+   subtle defect — it is visible in one `grep`. A whole column of identical zeros is a shape, not
+   a number, and a shape is a signal.
+2. **When two call sites share a helper, assert the UNIT at each call site** — or better, take the
+   already-formatted string from one place rather than re-deriving it.
+
+### How to verify
+
+```bash
+curl -sL -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/relvol_screen.py?ref=main" \
+  -o /tmp/rv.py
+grep -n "mcap=n.get" /tmp/rv.py          # the name-level caller must NOT pre-divide
+grep -n 'format(v / 1e9, ",.1f")' /tmp/rv.py   # thousands separator present
+python3 /tmp/rv.py --date <D> --out /tmp/o.md --universe 60 --jobs 8 && grep -c '\$0\.0B' /tmp/o.md   # -> 0
+```
+
+The engine is fetched at run time with a capability-marker check, so this fix reaches the next
+fire **with no `cron_update` and no prompt drift**.
