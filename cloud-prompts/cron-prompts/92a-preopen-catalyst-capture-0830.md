@@ -9,13 +9,31 @@ The procedure lives in ONE shared file, not in every prompt. Fetch it in the sam
 the skill spec, then follow it in full:
 
 ```bash
-# Fetch THREE mirrors and take the one carrying the HIGHEST PROCEDURE_VERSION marker.
+# Fetch FOUR sources and take the one carrying the HIGHEST PROCEDURE_VERSION marker.
 # The CONTENTS API is tried first: it is authoritative and is NOT CDN-cached. The two CDNs
 # cache `main` independently — measured 2026-11-04, raw.githubusercontent served a stale blob
 # for >17 minutes after a push while jsDelivr was fresh — and the old single-pass loop could
 # NEVER reach its fallback, because the first successful download satisfied the file-exists
 # guard. A version marker, not an exit code, decides which copy is current.
-rm -f /tmp/pc_a.md /tmp/pc_b.md /tmp/pc_c.md
+#
+# A version marker alone is NOT enough. Measured 2026-11-05: ALL THREE mirrors served the
+# SAME stale blob (v2026-11-04.3, 13,271 B) while the repo's current blob was v2026-11-05.1
+# (16,452 B) — "highest version wins" picked a stale file precisely because EVERY copy was
+# stale. So add a FOURTH source: the git blob API for the sha the contents API's METADATA
+# names. That blob IS the tip of `main`, so its version is never lower than any mirror's and
+# the existing "highest version wins" rule then selects it automatically.
+rm -f /tmp/pc_a.md /tmp/pc_b.md /tmp/pc_c.md /tmp/pc_d.md
+PC_SHA=$(curl -sL --max-time 30 -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen-capture.md?ref=main" 2>/dev/null \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('sha',''))" 2>/dev/null)
+if [ -n "$PC_SHA" ]; then
+  curl -sL --max-time 30 -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/git/blobs/$PC_SHA" 2>/dev/null \
+    | python3 -c "import json,sys,base64; sys.stdout.write(base64.b64decode(json.load(sys.stdin)['content']).decode('utf-8','replace'))" \
+    > /tmp/pc_d.md 2>/dev/null
+fi
 curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -o /tmp/pc_c.md \
@@ -27,7 +45,7 @@ curl -sL --max-time 30 -o /tmp/pc_b.md \
 python3 - <<'PYEOF'
 import re
 best=None;bv=None
-for f in ("/tmp/pc_c.md","/tmp/pc_a.md","/tmp/pc_b.md"):
+for f in ("/tmp/pc_d.md","/tmp/pc_c.md","/tmp/pc_a.md","/tmp/pc_b.md"):
     try: t=open(f,encoding="utf-8",errors="replace").read()
     except Exception: continue
     if not t.strip() or t.lstrip()[:200].find('"message"')>=0: continue
@@ -73,8 +91,14 @@ to, so the conversation list stays scannable.
 
 ## THIS FIRE
 
-- **Checkpoint:** the capture writes `preopen-feed/{date}-{HHMM}.jsonl`, where `HHMM` is the ET
-  fire time — so each checkpoint has its own file and no two crons can clobber each other.
+- **Checkpoint:** the capture writes `preopen-feed/{date}-{HHMM}.jsonl`, where `{HHMM}` is the
+  fire's **scheduled ET SLOT** and `{date}` is the fire's date — NEVER the wall clock at write
+  time. Derive both from `session.created_at` (the procedure's step 2 calls it `FIRE_MS`): the
+  platform can stall a fire by hours, so a late run must still be named for the slot it was
+  dispatched for. Measured 2026-11-05: the 08:30 slot first executed at 10:09 ET and named its
+  file `1010` — a phantom slot that sorts AFTER the 0950 checkpoint, so a consumer merging the
+  checkpoints oldest-first replays the 08:30 tape LAST. Each checkpoint still writes its own
+  file, so two captures can never clobber each other.
 - **The key check comes first.** If `${XAI_API_KEY}` is unset, write nothing and reply
   `preopen capture: XAI_API_KEY unset — nothing written`. Never fabricate a tape.
 - **Order of attack:** Grok (narrative) → TradingView scanner (ground-truth prices) → merge →
