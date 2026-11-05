@@ -296,14 +296,14 @@ exists, and why the push script must never be run with `git push … | head -3`.
    `preopen_feed.py` helper). Do NOT call the
    `mcp__*` tools — they are not registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
-5. **The fuel-log line carries the slot.** Append one line to `us-stocks-in-play/logs.jsonl` per
+4. **The fuel-log line carries the slot.** Append one line to `us-stocks-in-play/logs.jsonl` per
    fire (fetch the existing file first, then append — never overwrite). Its `slot` field is `open`
    or `preclose`, its `artifact` field is the slot-qualified path, and its `name` stays
    `us stocks in play preclose`/`open` so the series stays queryable. Two fires a day means TWO
    lines a day — one per slot — and they must not be confused with each other.
-6. **Never write the open board to `{date}.md`, and never write the preclose board to
+5. **Never write the open board to `{date}.md`, and never write the preclose board to
    `{date}-open.md`.** The two slots share one task and one output directory.
-4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+6. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
 ================================================================
 END OF CRON PROMPT
