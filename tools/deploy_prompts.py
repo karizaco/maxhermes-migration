@@ -56,6 +56,11 @@ TASKS = {
     "26-agentic-pre-market-brief.md":           ("457175063601252", "30 8 * * 1-5"),
     "90-delivery-auditor.md":                   ("457957802930526", "0 7 * * *"),
     "91-schedule-drift-guard.md":               ("458356248809843", "5 4 * * *"),
+    # Added 2026-11-05: the #92 catalyst-tape slots were MISSING from this map, so --emit
+    # could not reach them and the harness could not deploy or verify them. A routine with
+    # no row here is a routine the deploy harness cannot fix or prove.
+    "92a-preopen-catalyst-capture-0830.md":    ("459079693529459", "30 8 * * 1-5"),
+    "92b-preopen-catalyst-capture-0950.md":    ("459079693529460", "50 9 * * 1-5"),
 }
 
 
