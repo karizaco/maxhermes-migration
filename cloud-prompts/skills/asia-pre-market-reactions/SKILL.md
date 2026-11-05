@@ -231,6 +231,22 @@ artifact.
    **local currency** — convert the $2bn floor with FX before filtering. The `range` must cover the
    market's row count or the tail is silently cut.
 
+   Merge the two directions into the per-country file that Test B reads:
+
+   ```bash
+   for M in japan taiwan hongkong korea; do
+     python3 - "$M" <<'PY'
+   import json, sys
+   M = sys.argv[1]; data = []; total = 0
+   for d in ("desc", "asc"):
+       j = json.load(open(f"/workspace/_asia_{M}_{d}.json"))
+       total = max(total, j.get("totalCount", 0)); data += j.get("data", [])
+   json.dump({"totalCount": total, "data": data}, open(f"/workspace/_asia_{M}.json", "w"))
+   print(M, "merged rows:", len(data), "totalCount:", total)
+   PY
+   done
+   ```
+
 3. **Market-status detection (Tests A / B / C) — BEFORE composing anything.** See
    *Market-status detection — DATE PROVENANCE*. A market that comes back closed gets **no
    table**, so do not spend the effort polishing its rows. Run this before step 4 so the closed
