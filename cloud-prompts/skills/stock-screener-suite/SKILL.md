@@ -428,8 +428,28 @@ The screen is implemented as `tools/reversal_bullish.py` in `karizaco/maxhermes-
 same pattern cron #91 uses with `tools/schedule-drift.py`:
 
 ```bash
-curl -sL -o /workspace/tools/reversal_bullish.py \
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py
+# --- fetch the screen (run-time fetch: fixes land with no redeploy) ---
+# The CONTENTS API is authoritative and is NOT CDN-cached; raw.githubusercontent has been
+# measured serving a STALE blob for >17 minutes after a push. The marker is mandatory: an
+# OLD copy of this script would write the OLD artifact shape, and the checker below would
+# then fail the run for no visible reason.
+mkdir -p /workspace/tools
+S=/workspace/tools/reversal_bullish.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/reversal_bullish.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/reversal_bullish.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && grep -q 'bonde-artifact-v3' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'bonde-artifact-v3' "$S"; then
+  echo "reversal_bullish.py: UNAVAILABLE (no copy of the script carrying the current artifact contract)"
+  echo "no artifact; no push"
+  exit 1
+fi
 python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date +%F)"
 ```
 
@@ -439,6 +459,12 @@ report**: `mode` is `LIVE`, `NO_SESSION`, `DEGRADED` or `SETTLED_REPLAY`; `passi
 candidate count; `history_source` says whether history came from shibui or the Nasdaq fallback.
 Exit code 3 means "no US session today" — a clean outcome, not a failure. Passing a date other
 than today rebuilds that past session from settled bars and flags it as a reconstruction.
+
+**The markdown the script writes is the ARTIFACT FORMAT CONTRACT's skeleton, with the
+mechanical parts already filled in and three markers for your discretionary review** — see
+the contract below. The sequence is: run the script → fill `## Promoted ideas` and
+`## Not promoted` and set the TL;DR's promoted count → run `tools/check_bonde_artifact.py`
+→ push. Do not restructure the file by hand; fill the slots the script left.
 
 **The Finviz fallback cannot serve this scan.** `finviz_reversal_bullish` encodes "today down +
 above SMA50 + liquid + large-cap" and none of Bonde's candle gates; it also returns no candle
@@ -488,6 +514,185 @@ reference when the scan produces fewer than 5 names:
 **Finviz fallback** — when shibui fails or times out:
 - `screen.py finviz-url reversal_bullish` returns a URL with `ta_change_d, ta_sma50_pa, sh_avgvol_o1000k, cap_largeover` (today down + above SMA50 + liquid + large-cap). It does NOT encode Bonde's 5-day-low / tail-body / DCR filters.
 - Accept rows as-is with `_source=finviz_fallback`, write the artifact, and **skip chat alerts** (per the cron prompt's "no chat on Finviz fallback" rule). The user reviews the markdown manually.
+
+#### ARTIFACT FORMAT CONTRACT (v3 — load-bearing for cron #04)
+
+The 2026-11-03 screen was mechanically **correct** and the document was **wrong**: the
+stop-vs-bar-low conflict appeared only as a sentence under `Method & caveats`, the volume
+conviction was a clause inside the review, no idea carried an invalidation test, and the
+promoted/not-promoted verdict sat 100 lines down. A trader reading the Candidates table
+could not tell that the published stop sat **inside the signal bar's own range** — the
+difference between "a 2.5% risk trade" and "this stop is inside the noise band", which
+changes the position size. The structure below is fixed. Do not add, drop or reorder
+sections.
+
+**The script writes the skeleton; you fill three slots.** `tools/reversal_bullish.py`
+writes the markdown with every mechanical part already in place and three markers:
+
+| marker | what you replace it with |
+|---|---|
+| `<!-- REVIEW:PROMOTED_COUNT -->` | the number of ✅ IDEA blocks, in the TL;DR's second bullet |
+| `<!-- REVIEW:PROMOTED -->` | one `### ✅ IDEA n — TICKER …` block per promoted name |
+| `<!-- REVIEW:NOT_PROMOTED -->` | one line per non-promoted candidate |
+
+A marker left in the artifact **fails the run's verification** (see §7 below). The script
+also writes the TL;DR's third bullet — the caveat that changes how the candidates must be
+read — computed from the data, so you do not rewrite it.
+
+##### 1. Section skeleton (fixed order)
+
+```
+# Bonde Reversal Bullish — <Weekday, DD Month YYYY>
+## TL;DR             exactly 3 bullets
+## Candidates        one table, one row per name, all gate + metric + stop columns
+## Promoted ideas    full reasoning per promoted name
+## Not promoted      one line each: the gate it passed, why it was not promoted, its invalidation test
+## Bonde gate matrix
+## Filter funnel
+## Method, source health & caveats
+```
+
+If a section has nothing in it, say so in one line — do not delete the heading.
+
+##### 2. The TL;DR — exactly 3 bullets
+
+1. **How many mechanical passers** — of how many names scanned, the mode, the signal session
+   and the entry window.
+2. **How many were promoted, and which.** This is the verdict. It must be reachable in the
+   **first 15 lines** — never at the bottom of the review.
+3. **The caveat that changes how they must be read.** The script computes it (a stop conflict
+   beats a capped stop beats missing capitulation beats the plain timing caveat). Do not bury
+   it, do not soften it, and do not move it into `Method & caveats`.
+
+##### 3. Stop geometry is a FIELD, not a caveat
+
+Every candidate row — in the markdown table **and** in the CSV — carries:
+
+| column | meaning |
+|---|---|
+| `bar_low` / `bar_high` | the signal bar's actual range |
+| `stop_vs_bar_low_pct` | **signed**: negative = the stop is BELOW the bar low (survives the bar's noise); positive = the stop is ABOVE the bar low, i.e. inside the bar's range |
+| `stop_class` | `STRUCTURAL` / `NOISE_BREACH` / `CAPPED` (see below) |
+| `stop_capped` | `yes`/`no` — did the 2.5% max-loss cap bind the stop |
+| `bar_low_vs_entry_pct` | the structural distance to the bar low — the real risk, uncapped |
+
+The three classes, exactly one per candidate:
+
+- **`STRUCTURAL`** — the published stop is the structural level itself (the bar's low on a
+  near-doji body). A print through it is a genuine structural failure.
+- **`NOISE_BREACH`** — the published stop sits **above** the signal bar's low, so the bar
+  itself already traded through it. A print through the stop is **noise**, not a failure.
+  The structural failure level is the bar low.
+- **`CAPPED`** — the 2.5% cap bound the stop while the published stop is still at or below
+  the bar low, so it survives the noise but is tighter than the structural level.
+
+`stop_capped` and `stop_basis` carry the cap fact in every case, so no information is lost
+when the class is not `CAPPED`.
+
+> **Two notes on the classes, so nobody reads more into them than is there.**
+> (1) A **body-low** stop on a non-doji bar is *also* `NOISE_BREACH`: the signal bar's washout
+> low traded below it, so the structural failure level is the **bar low**, not the body low.
+> That is the fact the row publishes, and it is why `bar_low` and `bar_low_vs_entry_pct`
+> travel with every candidate.
+> (2) `CAPPED` does **not** occur with today's stop rule: the 2.5% cap can only pull a stop
+> *up* into the bar's range, which makes it a `NOISE_BREACH`. The class is computed, not
+> hardcoded, and `stop_capped` / `stop_basis` say plainly when the cap bound the stop.
+
+> **The rule that came out of the 2026-11-03 run:** when a promoted idea's
+> `stop_class == NOISE_BREACH`, its risk line goes to the **TOP of the reply** — inside the
+> `### Signal` line for that name — not into `### Method & caveats`. Say what the stop is
+> and what it means: *"stop 216.55 is inside the signal bar's range (low 214.67) — a print
+> through it is a noise breach, not a structural failure"*. A trader must be able to choose
+> which risk they are taking before they size the position, not after reading a footnote.
+
+##### 4. Volume conviction is a NUMBER, not a sentence
+
+Every candidate row carries `vol_vs_30d_avg_pct` (the session's volume as a percentage of the
+30-session mean) and `capitulation` (`CAPITULATION` at ≥ 150% of that mean, `LOW_VOLUME`
+below it). Quote **the script's number** — do not recompute it from another source, and do
+not repeat "there was no capitulation behind it" as a prose clause. A trader wants to know
+the setup lacked conviction **before** sizing it. Caveat to state once in the method
+section: the volume is a partial day at ~15:55 ET, so the ratio reads slightly low.
+
+##### 5. Every idea carries an invalidation test
+
+Each **promoted** idea ends with one line:
+
+```
+**Invalidated if** <price> closes below <level> / <named event> does not happen by <date>.
+```
+
+The price leg is usually the signal bar's low (published as `invalidation_level` on the row)
+— that is the level at which the thesis is structurally dead. The event leg is the thing
+that must actually happen (the catalyst, the re-underwriting date, the overhang that has to
+be revisited). The 2026-11-03 promoted idea (CRM) gave entry, stop, catalyst and the candle
+metrics and said nothing about what would make it wrong.
+
+The **same field goes on every non-promoted candidate** in `## Not promoted`, so the
+watchlist is actionable later: PATH's invalidation test is its structural overhang (DA
+Davidson Underperform, $10 target, ~25% short float, ~$43.6M/90d insider selling), plus the
+bar low. One line per candidate: the mechanical gate it passed, the reason it was not
+promoted, and its invalidation test.
+
+##### 6. The CSV column contract
+
+The CSV is the machine-readable twin and must never contradict the markdown. Required
+columns beyond the existing ones:
+
+```
+bar_low, bar_high, stop_vs_bar_low_pct, bar_low_vs_entry_pct, stop_class, stop_capped,
+vol_vs_30d_avg_pct, capitulation, invalidation_level
+```
+
+`bar_low`/`bar_high` are the signal bar's range (the same numbers as `low`/`high`, named
+explicitly so no consumer has to guess which low is meant). `capitulation` is
+`CAPITULATION` / `LOW_VOLUME` / `UNKNOWN`; `stop_class` is `STRUCTURAL` / `NOISE_BREACH` /
+`CAPPED`. Write both files in the same dated directory, and never let a row exist in one
+and not the other.
+
+##### 7. Verify the artifact before you report it
+
+```bash
+C=/workspace/tools/check_bonde_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_bonde_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_bonde_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_bonde_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_bonde_artifact.py'; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+python3 "$C" \
+  --md /workspace/daily-screens/{date}/reversal-bullish-3:55.md \
+  --csv /workspace/daily-screens/{date}/reversal-bullish-3:55.csv
+```
+
+It asserts the skeleton, the 3-bullet TL;DR, the verdict in the first 15 lines, the
+`Ideas promoted` count against the number of ✅ IDEA blocks, the required columns on every
+row of both files, that every promoted idea states its stop class and its invalidation
+test, that every non-promoted candidate is accounted for, that no marker survived, and that
+the artifact carries the current contract marker (`bonde-artifact-v3` — a missing marker
+means a stale copy of the script produced it; re-fetch and re-run). It exits 1 and prints
+each failure. **If it fails, fix the artifact and run it again — do not report a clean run
+over a failing check.** Do not eyeball these things; the 2026-11-03 artifact looked fine
+and failed four of them.
+
+#### REPLY DISCIPLINE for cron #04
+
+The shared reply format from `_shared/PROMPT-BLOCKS.md` (`## DELIVERY`) applies — prose
+opener, `### Signal`, `### Method & caveats`, `### Files`, `### Push / errors`. Three
+routine-specific rules on top of it:
+
+- **The prose opener names the risk.** Its second sentence is the caveat that most changes
+  how the run should be read. When a promoted idea is `NOISE_BREACH`, that is the caveat:
+  the published stop is inside the signal bar's range.
+- **The `### Signal` line for a NOISE_BREACH name says so in the line itself.** One
+  ticker per line, with the catalyst AND the stop's meaning. Do not move it into
+  `### Method & caveats`.
+- **Do not re-publish the artifact's tables in the chat.** The table, the gate matrix and
+  the funnel live in the file; the chat carries the verdict, the risk and the counts.
 
 ### 6. Pre-market Gapper (Sun + Bonde)
 

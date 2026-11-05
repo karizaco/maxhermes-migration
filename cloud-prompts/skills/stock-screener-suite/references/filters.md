@@ -452,6 +452,14 @@ session's close. Report the two failure modes separately there: a close a few ce
 body stop is a *noise breach*, and a close that *undercut the signal bar's low* is a *structural
 failure*. Report both.
 
+**The artifact's shape and columns are fixed — read `../SKILL.md` §5 "ARTIFACT FORMAT
+CONTRACT (v3)".** The stop-vs-bar-low conflict (`bar_low`, `bar_high`,
+`stop_vs_bar_low_pct`, `stop_class` = `STRUCTURAL` / `NOISE_BREACH` / `CAPPED`) and the volume
+conviction (`vol_vs_30d_avg_pct`, `capitulation`) are **published fields on every candidate
+row**, in the markdown table and in the CSV — not prose in a caveat section. Every promoted
+idea and every non-promoted candidate carries an invalidation test, and the artifact is
+verified by `tools/check_bonde_artifact.py` before the run reports success.
+
 ## M. Bonde — NTRT / EP continuation (overnight news)
 
 Use `mcp__tradingview-advanced__stock_extended_hours` for each Focus ticker. Flag if

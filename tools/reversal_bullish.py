@@ -37,6 +37,29 @@ USAGE
     python3 reversal_bullish.py --out-dir /workspace/daily-screens/<date>
 
 Exit codes: 0 = artifact written; 1 = error; 3 = no US session today (not an error).
+
+THE ARTIFACT CONTRACT (2026-11-05)
+-----------------------------------
+The markdown this script writes has a FIXED skeleton — TL;DR, Candidates, Promoted ideas,
+Not promoted, Bonde gate matrix, Filter funnel, Method/source health/caveats — and two
+slots the agent fills afterwards:
+
+    <!-- REVIEW:PROMOTED -->      -> one '### ✅ IDEA n - TICKER ...' block per promoted name
+    <!-- REVIEW:NOT_PROMOTED -->   -> one line per non-promoted candidate
+    <!-- REVIEW:PROMOTED_COUNT --> -> set the TL;DR count to the number of ✅ IDEA blocks
+
+The script publishes, on EVERY candidate row (markdown table AND CSV), the numbers that
+were previously buried in prose:
+
+    bar_low / bar_high            the signal bar's own range
+    stop_vs_bar_low_pct           signed distance from the published stop to the bar low
+    stop_class                    STRUCTURAL | NOISE_BREACH | CAPPED
+    stop_capped                   yes/no - did the 2.5% cap bind the stop
+    vol_vs_30d_avg_pct            the session's volume vs the 30-session mean
+    capitulation                  CAPITULATION | LOW_VOLUME | UNKNOWN
+    invalidation_level            a close below this level kills the setup
+
+`tools/check_bonde_artifact.py` asserts all of it. Run it after the review is written.
 """
 
 import argparse
@@ -51,6 +74,12 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 TV_ENDPOINT = "https://scanner.tradingview.com/america/scan"
+
+# Bump this whenever the artifact contract changes. The run-time fetch in the skill spec
+# requires this marker, so a CDN-cached copy of an OLD script cannot produce an artifact in
+# the old shape (raw.githubusercontent has been measured serving a stale blob for >17
+# minutes after a push). The checker asserts the same string in the artifact footer.
+CONTRACT_VERSION = "bonde-artifact-v3"
 
 TV_COLS = ["name", "description", "close", "open", "high", "low", "change", "change_abs",
            "volume", "average_volume_10d_calc", "market_cap_basic", "exchange", "type", "sector"]
@@ -75,9 +104,14 @@ G = dict(
     avg_vol_30d_min=1_000_000,
     stop_max_pct=2.5,        # published: stop must not exceed 2.5% loss
     body_ratio_stop_switch=0.15,   # if body_ratio < 0.15 use the bar's LOW, not the body low
+    capitulation_mult=1.5,   # flush volume >= 1.5x the 30-session mean = capitulation
     hist_sessions=30,        # settled sessions pulled per symbol
     universe_band=(5e9, 1.5e12),
 )
+
+# stop_class vocabulary (published on every candidate row, in the markdown AND the CSV)
+STOP_CLASSES = ("STRUCTURAL", "NOISE_BREACH", "CAPPED")
+CAPITULATION_CLASSES = ("CAPITULATION", "LOW_VOLUME", "UNKNOWN")
 
 
 # ---------------------------------------------------------------- helpers
@@ -384,20 +418,96 @@ def evaluate(row, hist):
     return passes, c, m, h
 
 
-def stop_for(m, entry):
-    """Bonde's stop: body low, but the bar's LOW when the body is tiny, and never
-    more than 2.5% of loss from the entry."""
+def stop_profile(m, entry):
+    """Bonde's stop PLUS the geometry a reader needs before sizing the trade.
+
+    The stop itself is unchanged from Bonde's published rule: the body low, except on a
+    near-doji body (under 15% of the range) where the signal bar's LOW is used, and never
+    more than 2.5% of loss from the entry.
+
+    What this adds is the CONFLICT that the 2026-11-03 artifact disclosed only in prose:
+    a stop tightened to the 2.5% cap can land INSIDE the signal bar's own range, so a
+    print through it is a *noise breach*, not a structural failure. That fact is published
+    as a field, never as a caveat sentence.
+
+    Returns a dict:
+      stop                 published stop level (2.5% cap applied)
+      stop_basis           human-readable stop basis
+      structural           the structural stop level (body low, or the bar's low on a doji body)
+      stop_capped         True when the 2.5% max-loss cap tightened the stop
+      stop_class           STRUCTURAL | NOISE_BREACH | CAPPED  (see below)
+      stop_vs_bar_low_pct  signed: how far the published stop sits from the bar low
+                           (negative = the stop is BELOW the bar low -> survives noise;
+                            positive = the stop is ABOVE the bar low -> inside the bar's range)
+      bar_low_vs_entry_pct the structural distance to the bar low (the real risk, uncapped)
+      invalidation_level   a close below this level kills the setup
+
+    stop_class precedence (exactly one value per candidate):
+      NOISE_BREACH  the published stop is ABOVE the signal bar's low, so the bar itself
+                    already traded through it. A print through the stop is noise.
+      CAPPED        the 2.5% cap bound the stop AND the published stop is still at or below
+                    the bar low, so it survives the bar's noise but is tighter than the
+                    structural level.
+      STRUCTURAL    the published stop is the structural level itself.
+
+    Note: with today's stop rule the cap can only pull a stop UP into the bar's range (the
+    bar low is always at least as far from the entry as the structural stop), so a capped
+    stop is ALWAYS classified NOISE_BREACH and CAPPED does not occur. `stop_capped` and
+    `stop_basis` carry the cap fact in every case, so no information is lost.
+    """
     body_low = min(m["open"], m["close"])
     if m["body_ratio"] < G["body_ratio_stop_switch"]:
-        level = m["low"]
+        structural = m["low"]
         basis = "bar low (body < 15% of range)"
     else:
-        level = body_low
+        structural = body_low
         basis = "body low"
-    if entry and (entry - level) / entry * 100.0 > G["stop_max_pct"]:
-        level = entry * (1 - G["stop_max_pct"] / 100.0)
+    cap_applied = bool(entry) and (entry - structural) / entry * 100.0 > G["stop_max_pct"]
+    if cap_applied:
+        stop = entry * (1 - G["stop_max_pct"] / 100.0)
         basis += " (tightened to the 2.5% cap)"
-    return round(level, 2), basis
+    else:
+        stop = structural
+    stop = round(stop, 2)
+    bar_low = m["low"]
+    tol = max(0.005, bar_low * 0.0005)          # a cent of rounding must not create a class
+    if stop > bar_low + tol:
+        stop_class = "NOISE_BREACH"
+    elif cap_applied:
+        stop_class = "CAPPED"
+    else:
+        stop_class = "STRUCTURAL"
+    return dict(
+        stop=stop,
+        stop_basis=basis,
+        structural=round(structural, 2),
+        stop_capped=cap_applied,
+        stop_class=stop_class,
+        stop_vs_bar_low_pct=round((stop - bar_low) / bar_low * 100.0, 3) if bar_low else None,
+        bar_low_vs_entry_pct=round((bar_low - entry) / entry * 100.0, 3) if entry else None,
+        invalidation_level=round(bar_low, 2),
+    )
+
+
+def volume_conviction(m, h):
+    """Trade quality: was there capitulation behind the flush?
+
+    `vol_vs_30d_avg_pct` = the session's volume as a percentage of the 30-session mean
+    (the mean of the last 30 SETTLED sessions' volume). CAPITULATION at >= 1.5x.
+    Published as a number on every candidate row — a trader must know the setup lacked
+    capitulation BEFORE sizing it, not in a footnote.
+    """
+    avg = float(h.get("avg_vol_30d") or 0)
+    vol = float(m.get("volume") or 0)
+    if avg <= 0:
+        return dict(vol_vs_30d_avg_pct=None, capitulation="UNKNOWN", avg_vol_30d=0.0)
+    pct = vol / avg * 100.0
+    return dict(
+        vol_vs_30d_avg_pct=round(pct, 1),
+        capitulation="CAPITULATION" if pct >= G["capitulation_mult"] * 100 else "LOW_VOLUME",
+        avg_vol_30d=avg,
+    )
+
 
 
 # ---------------------------------------------------------------- main
@@ -449,8 +559,6 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
         if not ok:
             continue
         mm["checks"] = checks
-        entry = m["close"]
-        lvl, basis = stop_for(m, entry)
         results.append(dict(ticker=r["name"], desc=r.get("description") or r["name"],
                             exchange=r.get("exchange"), sector=r.get("sector"),
                             mcap=float(r.get("market_cap_basic") or 0),
@@ -460,11 +568,12 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
     report["passing"] = len(results)
     for x in results:
         entry = x["m"]["close"]
-        lvl, basis = stop_for(x["m"], entry)
+        prof = stop_profile(x["m"], entry)
+        vol = volume_conviction(x["m"], x["h"])
         x["entry"] = round(entry, 2)
-        x["stop"] = lvl
-        x["stop_basis"] = basis
-        x["stop_pct"] = round((entry - lvl) / entry * 100.0, 2)
+        x.update(prof)
+        x.update(vol)
+        x["stop_pct"] = round((entry - prof["stop"]) / entry * 100.0, 2)
         x["tail_band"] = (3.0 <= x["m"]["tail_ratio"] <= 5.0)
     results.sort(key=lambda x: (-x["m"]["dcr"], -x["h"]["adr"]))
     if not dry_run:
@@ -537,11 +646,57 @@ def run(date_str, bridge, out_dir, dry_run=False):
               f"shibui already has ({report['shibui_latest_sessions'][:1]}). Nothing to scan.")
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "reversal-bullish-3:55.md"), "w") as fh:
-            fh.write(f"# Bonde Reversal Bullish — 3:55 PM ET scan\n\n"
-                     f"- **Date (ET)**: {date_str}\n"
-                     f"- **Result**: NO US SESSION on this date (market holiday or weekend). "
-                     f"The scanner was still describing the prior session.\n"
-                     f"- **No candidates, no entry window, no alert.**\n")
+            fh.write("\n".join([
+                f"# Bonde Reversal Bullish — {title_date(date_str)}",
+                "",
+                "## TL;DR",
+                "",
+                f"- **Mechanical passers: 0** — no US session on {date_str} (market holiday or "
+                f"weekend); the scanner was still describing the prior session "
+                f"({report['shibui_latest_sessions'][:1]}).",
+                "- **Ideas promoted: 0** — there is no session, so there is no signal.",
+                "- **No candidates, no entry window, no alert.** The previous session's scan is "
+                "NOT substituted for this one.",
+                "",
+                "## Candidates",
+                "",
+                "_No US session — no candidates._",
+                "",
+                "## Promoted ideas",
+                "",
+                "_No US session — no idea promoted._",
+                "",
+                "## Not promoted",
+                "",
+                "_No US session — nothing to review._",
+                "",
+                "## Bonde gate matrix",
+                "",
+                "_No US session — no gate matrix._",
+                "",
+                "## Filter funnel",
+                "",
+                "_No US session._",
+                "",
+                "## Method, source health & caveats",
+                "",
+                f"- **Mode: NO_SESSION.** The day-alignment assertion found the scanner "
+                f"describing the session shibui already holds "
+                f"({report['shibui_latest_sessions'][:1]}), so there was no live session to scan "
+                f"on {date_str}.",
+                "- **The previous session's scan was NOT substituted.** That is the one-session "
+                "lag this routine exists to avoid.",
+                "",
+                "| Source | Used for | Status |",
+                "|---|---|---|",
+                f"| TradingView public scanner | live session OHLC | ok "
+                f"({report.get('universe_rows', 0)} names) |",
+                f"| shibui-finance (bridge) | latest settled close | ok "
+                f"(latest session {report.get('shibui_latest_sessions', ['n/a'])[:1]}) |",
+                "",
+                f"_Generated by cron #4 `reversal-bullish-3:55` · tool `tools/reversal_bullish.py` "
+                f"· session {date_str} · contract `{CONTRACT_VERSION}` · `_source=mcp`_",
+            ]) + "\n")
         return 3, report
 
     if mode == "DEGRADED":
@@ -591,11 +746,12 @@ def run(date_str, bridge, out_dir, dry_run=False):
     # ---- 6. tiering + stops ---------------------------------------------------
     for x in results:
         entry = x["m"]["close"]
-        lvl, basis = stop_for(x["m"], entry)
+        prof = stop_profile(x["m"], entry)
+        vol = volume_conviction(x["m"], x["h"])
         x["entry"] = round(entry, 2)
-        x["stop"] = lvl
-        x["stop_basis"] = basis
-        x["stop_pct"] = round((entry - lvl) / entry * 100.0, 2)
+        x.update(prof)
+        x.update(vol)
+        x["stop_pct"] = round((entry - prof["stop"]) / entry * 100.0, 2)
         x["tail_band"] = (3.0 <= x["m"]["tail_ratio"] <= 5.0)
     report["passing"] = len(results)
 
@@ -614,10 +770,14 @@ def run(date_str, bridge, out_dir, dry_run=False):
 
 
 CSV_COLS = ["ticker", "company", "exchange", "sector", "signal_session", "entry_price",
-            "stop", "stop_basis", "stop_pct", "open", "high", "low", "close", "volume",
+            "stop", "stop_basis", "stop_pct", "stop_class", "stop_capped",
+            "bar_low", "bar_high", "stop_vs_bar_low_pct", "bar_low_vs_entry_pct",
+            "invalidation_level",
+            "open", "high", "low", "close", "volume",
             "dcr", "body_ratio", "lower_shadow", "upper_shadow", "tail_ratio", "tail_in_3to5",
             "adr_pct", "drop_days", "chg_1d_pct", "chg_3d_pct", "chg_20d_pct", "low_5_prev",
-            "market_cap", "avg_vol_30d", "day_tag", "gate_f1_5day_low", "gate_f2_dcr",
+            "market_cap", "avg_vol_30d", "vol_vs_30d_avg_pct", "capitulation", "day_tag",
+            "gate_f1_5day_low", "gate_f2_dcr",
             "gate_f3_shadow_gt_body", "gate_f3b_hammer", "gate_f3c_small_body",
             "gate_f5_decline_washout", "gate_f6_adr", "gate_f7_price", "gate_f8_trend",
             "gate_volume", "gate_minv3", "gate_avgvol30", "_source"]
@@ -629,8 +789,17 @@ def write_csv(path, results, report):
         w.writerow(CSV_COLS)
         for x in results:
             m, h, c = x["m"], x["h"], x["m"]["checks"]
+            if x["stop_class"] not in STOP_CLASSES:
+                raise ValueError(f"{x['ticker']}: unknown stop_class {x['stop_class']!r}")
+            if x["capitulation"] not in CAPITULATION_CLASSES:
+                raise ValueError(f"{x['ticker']}: unknown capitulation {x['capitulation']!r}")
             w.writerow([x["ticker"], x["desc"], x["exchange"], x["sector"], report["date"],
                         x["entry"], x["stop"], x["stop_basis"], x["stop_pct"],
+                        x["stop_class"], "yes" if x["stop_capped"] else "no",
+                        x["invalidation_level"], m["high"],
+                        ("" if x["stop_vs_bar_low_pct"] is None else x["stop_vs_bar_low_pct"]),
+                        ("" if x["bar_low_vs_entry_pct"] is None else x["bar_low_vs_entry_pct"]),
+                        x["invalidation_level"],
                         m["open"], m["high"], m["low"], m["close"], int(m["volume"]),
                         round(m["dcr"], 4), round(m["body_ratio"], 4),
                         round(m["lower_shadow"], 4), round(m["upper_shadow"], 4),
@@ -641,87 +810,157 @@ def write_csv(path, results, report):
                         round((m["close"] / h["close_3d_ago"] - 1) * 100, 2),
                         round((m["close"] / h["close_20d_ago"] - 1) * 100, 2),
                         round(h["low_5_prev"], 4), int(x["mcap"]), int(h["avg_vol_30d"]),
+                        ("" if x["vol_vs_30d_avg_pct"] is None else x["vol_vs_30d_avg_pct"]),
+                        x["capitulation"],
                         "Day 1 (signal is the current session)", c["f1_5day_low"], c["f2_dcr"],
                         c["f3_shadow_gt_body"], c["f3b_hammer"], c["f3c_small_body"],
                         c["f5_decline_washout"], c["f6_adr"], c["f7_price"], c["f8_trend"],
                         c["f_volume"], c["f_minv3"], c["f_avgvol30"], "mcp"])
 
 
+# ---------------------------------------------------------------- artifact contract
+# The agent fills the two review slots below and sets the promoted count. The checker
+# (tools/check_bonde_artifact.py) fails the run if a marker is left behind or if the
+# count and the number of ✅ IDEA blocks disagree.
+PROMOTED_MARK = "<!-- REVIEW:PROMOTED -->"
+NOT_PROMOTED_MARK = "<!-- REVIEW:NOT_PROMOTED -->"
+PROMOTED_COUNT_MARK = "<!-- REVIEW:PROMOTED_COUNT -->"
+
+SKELETON = ["TL;DR", "Candidates", "Promoted ideas", "Not promoted",
+            "Bonde gate matrix", "Filter funnel", "Method, source health & caveats"]
+
+_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December"]
+
+
+def title_date(date_str):
+    """'Tuesday, 03 November 2026' — the title form the artifact contract fixes."""
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return f"{_DAYS[d.weekday()]}, {d.day:02d} {_MONTHS[d.month - 1]} {d.year}"
+
+
+def tldr_caveat(results):
+    """The ONE caveat that changes how the candidates must be read.
+
+    Priority: a stop conflict (NOISE_BREACH) beats a capped stop beats missing
+    capitulation beats the plain timing caveat. It is computed from the data, never
+    left to prose. One line, the way the fleet's reply format wants it.
+    """
+    noise = [x for x in results if x["stop_class"] == "NOISE_BREACH"]
+    if noise:
+        # worst conflict first: the stop furthest above the bar low is the one that
+        # most changes how the trade must be sized
+        noise.sort(key=lambda x: -abs(x["stop_vs_bar_low_pct"] or 0.0))
+        bits = ", ".join(f"{x['ticker']} (stop {x['stop']:.2f} vs bar low {x['m']['low']:.2f})"
+                         for x in noise[:3])
+        more = f" +{len(noise) - 3} more" if len(noise) > 3 else ""
+        return ("⚠ **Stop conflict:** the published stop sits INSIDE the signal bar's own range "
+                f"for {bits}{more} — a print through it is a NOISE_BREACH, not a structural "
+                "failure; the structural level is the bar low.")
+    capped = [x for x in results if x.get("stop_capped")]
+    if capped:
+        x = capped[0]
+        return (f"**Capped stop:** {x['ticker']}'s stop was tightened to Bonde's 2.5% max-loss cap "
+                f"({x['stop']:.2f}); the structural level is {x['m']['low']:.2f} "
+                f"({x['bar_low_vs_entry_pct']:.2f}% from entry).")
+    lowv = [x for x in results if x.get("capitulation") == "LOW_VOLUME"]
+    if lowv:
+        x = lowv[0]
+        return (f"**No capitulation:** {x['ticker']} traded {x['vol_vs_30d_avg_pct']:.0f}% of its "
+                f"30-session average volume — the flush lacked conviction; size the position for "
+                f"that, not for a capitulation flush.")
+    return ("**The candle is read at ~15:55 ET** — the 16:00 print can still move the close, the "
+            "DCR and the stop.")
+
+
+def _md_candidates_table(results):
+    """One table, one row per name — every gate/metric/stop column the contract requires."""
+    out = []
+    A = out.append
+    A("| Ticker | Company | Entry | Stop | Stop % | Stop class | Bar low | Bar high | "
+      "Stop vs bar low | DCR | Body | Lower shdw | Tail | ADR | Drop days | 1-day chg | "
+      "Vol vs 30d avg | Capitulation | Mkt cap |")
+    A("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for x in results:
+        m, h = x["m"], x["h"]
+        tail = "inf" if m["tail_ratio"] == float("inf") else f"{m['tail_ratio']:.2f}x"
+        svbl = ("n/a" if x["stop_vs_bar_low_pct"] is None
+                else f"{x['stop_vs_bar_low_pct']:+.2f}%")
+        vol = ("n/a" if x.get("vol_vs_30d_avg_pct") is None
+               else f"{x['vol_vs_30d_avg_pct']:.0f}%")
+        A(f"| **{x['ticker']}** | {x['desc']} | **{x['entry']:.2f}** | {x['stop']:.2f} | "
+          f"{x['stop_pct']:.2f}% | `{x['stop_class']}` | {m['low']:.2f} | {m['high']:.2f} | "
+          f"{svbl} | {m['dcr']:.3f} | {m['body_ratio']:.3f} | "
+          f"{m['lower_shadow']:.2f} | {tail}{' ✓' if x['tail_band'] else ''} | "
+          f"{h['adr']*100:.2f}% | {h['drop_days']} | "
+          f"{(m['close']/h['close_1d_ago']-1)*100:+.2f}% | {vol} | "
+          f"{x['capitulation']} | ${x['mcap']/1e9:.2f}B |")
+    return out
+
+
 def write_md(path, results, report, bridge):
     a = report["date"]
     L = []
     A = L.append
-    A(f"# Bonde Reversal Bullish — 3:55 PM ET scan ({a})")
+    A(f"# Bonde Reversal Bullish — {title_date(a)}")
     A("")
-    A(f"- **Signal session**: **{a}** — the LIVE US session, read at ~15:55 ET "
-      f"(the candle is ~99% complete; the 16:00 print can still move it).")
-    A(f"- **Entry window**: {a} 3:58–4:00 PM ET (Bonde: \"enter between 3.58 to 4PM, or MOC\").")
-    A(f"- **Universe**: NYSE / NASDAQ / AMEX, type=stock, market cap > $5B, "
-      f"avg volume (10d) > 1M → **{report['universe_rows']} names** scanned.")
-    A(f"- **Passing every Bonde gate**: **{report['passing']}** "
-      f"(candle gates left {report['candle_gate_survivors']}).")
-    A(f"- **Source**: `_source=mcp` — TradingView public scanner (live session OHLC) + "
-      f"shibui (settled history) over the MCP-over-HTTP bridge.")
-    A("")
-    A("## Session alignment — proof this scan is for today")
-    A("")
-    A(f"Before computing anything the routine proves which session the scanner is describing:")
-    A("")
-    if report.get("mode") == "SETTLED_REPLAY":
-        A(f"**This is a RECONSTRUCTION, not a live scan.** It was rebuilt at "
-          f"{report.get('started_et','')} from the settled bars for {a}, because the live "
-          f"scanner can only describe the CURRENT session. The entry it describes was that "
-          f"session's close - it is a planning artifact for {a}, not a signal for today.")
+    if report.get("mode") == "DEGRADED":
+        A("> **DEGRADED RUN — do not trade this.** The session could not be pinned down; the "
+          "candle may not be today's.")
         A("")
-        A(f"- Universe: {report.get('universe_rows')} names from today's scanner "
-          f"(market cap / exchange / type are close enough for a recent date).")
-        A(f"- Bars: Nasdaq settled history for {a} (`_source=nasdaq_settled`).")
-    else:
-        al = report.get("alignment", {})
-        A(f"- TV implied previous close vs shibui's latest settled close: "
-          f"**{al.get('live_hits',0)}/{al.get('reference_names',0)} agree** "
-          f"({al.get('live_ratio',0):.1%}) → the scanner is on today's live session.")
-        A(f"- Verdict: **{report.get('mode')}**.")
+    A("## TL;DR")
     A("")
-    if report.get("mode", "UNKNOWN") == "DEGRADED":
-        A("> **DEGRADED RUN — do not trade this.** The session could not be pinned down.")
-        A("")
+    A(f"- **Mechanical passers: {report.get('passing', 0)}** of "
+      f"{report.get('universe_rows', 0)} names scanned · mode **{report.get('mode')}** · "
+      f"signal session **{a}** · entry 15:58–16:00 ET.")
+    A(f"- **Ideas promoted: 0** {PROMOTED_COUNT_MARK} — _pending the discretionary review; set "
+      f"this count to the number of ✅ IDEA blocks below._")
+    A(f"- {tldr_caveat(results)}")
+    A("")
     A("## Candidates")
     A("")
     if not results:
         A("_No name passed every gate today._")
     else:
-        A("| Ticker | Company | Entry (live) | Stop | Stop % | DCR | Body | Lower shdw | "
-          "Tail | ADR | Drop days | 1-day chg | Mkt cap |")
-        A("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-        for x in results:
-            m, h = x["m"], x["h"]
-            tail = "inf" if m["tail_ratio"] == float("inf") else f"{m['tail_ratio']:.2f}x"
-            A(f"| **{x['ticker']}** | {x['desc']} | **{x['entry']:.2f}** | {x['stop']:.2f} | "
-              f"{x['stop_pct']:.2f}% | {m['dcr']:.3f} | {m['body_ratio']:.3f} | "
-              f"{m['lower_shadow']:.2f} | {tail}{' ✓' if x['tail_band'] else ''} | "
-              f"{h['adr']*100:.2f}% | {h['drop_days']} | "
-              f"{(m['close']/h['close_1d_ago']-1)*100:+.2f}% | ${x['mcap']/1e9:.2f}B |")
+        for line in _md_candidates_table(results):
+            A(line)
     A("")
-    A("### Stops")
+    A("## Promoted ideas")
     A("")
-    for x in results:
-        A(f"- **{x['ticker']}** — stop **{x['stop']:.2f}** ({x['stop_pct']:.2f}% from entry), "
-          f"basis: {x['stop_basis']}. Signal bar O {x['m']['open']:.2f} H {x['m']['high']:.2f} "
-          f"L {x['m']['low']:.2f} C {x['m']['close']:.2f}.")
+    A(PROMOTED_MARK)
+    A("_No idea promoted yet — the discretionary review has not been written. Replace the marker "
+      "above with one block per promoted name:_")
+    A("")
+    A("```")
+    A("### ✅ IDEA 1 — TICKER (Company) · entry X.XX · stop Y.YY (-2.50%) · stop_class "
+      "NOISE_BREACH · vol 63% of 30d avg (LOW_VOLUME) · Day 1")
+    A("**Catalyst:** <named, dated>")
+    A("**Invalidated if** <price> closes below <level> / <named event> does not happen by <date>.")
+    A("```")
+    A("")
+    A("## Not promoted")
+    A("")
+    A(NOT_PROMOTED_MARK)
+    A("_No candidate reviewed yet. One line per non-promoted candidate: the mechanical gate it "
+      "passed, the reason it was not promoted, and its invalidation test._")
     A("")
     A("## Bonde gate matrix")
     A("")
-    A("| Ticker | 1. 5-day low | 2. DCR ≥ .60 | 3. shadow > body | 3b. hammer | 3c. body ≤ .30 | "
-      "5. decline + washout | 6. ADR ≥ 3% | 7. price ≥ $5 | 8. trend | vol | minv3 | avolv30 |")
-    A("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-    for x in results:
-        c = x["m"]["checks"]
-        A(f"| {x['ticker']} | " + " | ".join(
-            ("✓" if c[k] else "✗") for k in
-            ("f1_5day_low", "f2_dcr", "f3_shadow_gt_body", "f3b_hammer", "f3c_small_body",
-             "f5_decline_washout", "f6_adr", "f7_price", "f8_trend", "f_volume",
-             "f_minv3", "f_avgvol30")) + " |")
+    if not results:
+        A("_No candidates._")
+    else:
+        A("| Ticker | 1. 5-day low | 2. DCR ≥ .60 | 3. shadow > body | 3b. hammer | "
+          "3c. body ≤ .30 | 5. decline + washout | 6. ADR ≥ 3% | 7. price ≥ $5 | 8. trend | "
+          "vol | minv3 | avolv30 |")
+        A("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for x in results:
+            c = x["m"]["checks"]
+            A(f"| {x['ticker']} | " + " | ".join(
+                ("✓" if c[k] else "✗") for k in
+                ("f1_5day_low", "f2_dcr", "f3_shadow_gt_body", "f3b_hammer", "f3c_small_body",
+                 "f5_decline_washout", "f6_adr", "f7_price", "f8_trend", "f_volume",
+                 "f_minv3", "f_avgvol30")) + " |")
     A("")
     A("## Filter funnel")
     A("")
@@ -739,38 +978,56 @@ def write_md(path, results, report, bridge):
     ]:
         A(f"| {s} | {f} | {n} |")
     A("")
-    A("## Source health")
+    A("## Method, source health & caveats")
+    A("")
+    al = report.get("alignment", {})
+    if report.get("mode") == "SETTLED_REPLAY":
+        A(f"- **This is a RECONSTRUCTION, not a live scan.** It was rebuilt at "
+          f"{report.get('started_et','')} from the settled bars for {a}, because the live scanner "
+          f"can only describe the CURRENT session. The entry it describes was that session's "
+          f"close — it is a planning artifact for {a}, not a signal for today.")
+    else:
+        A(f"- **Session alignment — proof this scan is for today:** TV implied previous close vs "
+          f"shibui's latest settled close: **{al.get('live_hits', 0)}/"
+          f"{al.get('reference_names', 0)} agree** ({al.get('live_ratio', 0):.1%}) → mode "
+          f"**{report.get('mode')}**. The scanner's session is pinned before any gate is applied.")
+    A(f"- **The signal is TODAY's live candle, not yesterday's.** The routine proves this at "
+      f"runtime (alignment above); it no longer resolves the screen date as \"shibui's latest "
+      f"settled date\", which was a one-session lag.")
+    A("- **The candle is read at ~15:55 ET, five minutes before the close.** The 16:00 print can "
+      "change the close, the DCR and the stop. Treat the entry as the 16:00 close.")
+    A("- **`v ≥ 290,000` uses a partial day's volume** (as of ~15:55 ET). A name that clears 290k "
+      "only after the close was wrongly excluded.")
+    A("- **ADR(20) is computed over the 20 SETTLED sessions before today**, not over a window that "
+      "includes the incomplete live bar.")
+    A("- **`vol_vs_30d_avg_pct` compares a partial day's volume with a full-day 30-session mean**, "
+      "so it reads slightly low at 15:55 ET. `capitulation = CAPITULATION` at ≥ 150% of that "
+      "mean, `LOW_VOLUME` below it.")
+    A("- **The market-cap gate uses TradingView's live `market_cap_basic`**, not shibui's "
+      "`valuation` table, which stores stale rows per symbol and can admit a phantom name if the "
+      "cap filter is applied before the latest-row pick.")
+    A("- **\"Prefer higher priced stocks\" is a ranking preference, not a filter** — the published "
+      "gate is `c >= 5`; names are ordered by DCR then ADR.")
+    A("- **`stop_class` is published on every row, not buried in prose.** `NOISE_BREACH` = the "
+      "published stop sits inside the signal bar's own range, so the bar already traded through "
+      "it; `CAPPED` = the 2.5% cap bound the stop while it still sits at/below the bar low; "
+      "`STRUCTURAL` = the published stop is the structural level. `stop_vs_bar_low_pct` is signed: "
+      "negative = the stop is below the bar low.")
+    A("- **Bonde's discretionary step is mandatory**: the mechanical screen returns candidates, "
+      "then the review reduces them to **1–3 ideas** (\"no catalyst, no trade\", \"the reversal bar "
+      "has to jump off the chart\"). Every promoted idea carries a named catalyst and an "
+      "invalidation test.")
     A("")
     A("| Source | Used for | Status |")
     A("|---|---|---|")
     A(f"| TradingView public scanner | live session OHLC for the universe | ok "
-      f"({report['universe_rows']} names) |")
+      f"({report.get('universe_rows', 0)} names) |")
     A(f"| shibui-finance (bridge) | settled history, latest close | ok "
-      f"(latest session {report['shibui_latest_sessions'][:1]}) |")
+      f"(latest session {report.get('shibui_latest_sessions', ['n/a'])[:1]}) |")
     A("| market-recap (bridge) | market state / index backdrop | see caveats |")
     A("")
-    A("## Method & caveats")
-    A("")
-    A(f"- **The signal is TODAY's live candle, not yesterday's.** The routine proves this at "
-      f"runtime (see the alignment section); it no longer resolves the screen date as "
-      f"\"shibui's latest settled date\", which was a one-session lag.")
-    A("- **The candle is read at ~15:55 ET, five minutes before the close.** The 16:00 print "
-      "can change the close, the DCR and the stop. Treat the entry as the 16:00 close.")
-    A("- **`v ≥ 290,000` uses a partial day's volume** (as of ~15:55 ET). A name that clears "
-      "290k only after the close was wrongly excluded.")
-    A("- **ADR(20) is computed over the 20 SETTLED sessions before today**, not over a window "
-      "that includes the incomplete live bar.")
-    A("- **The market-cap gate uses TradingView's live `market_cap_basic`**, not shibui's "
-      "`valuation` table, which stores stale rows per symbol and can admit a phantom name if "
-      "the cap filter is applied before the latest-row pick.")
-    A("- **\"Prefer higher priced stocks\" is a ranking preference, not a filter** — the "
-      "published gate is `c >= 5`; names are ordered by DCR then ADR.")
-    A("- **Bonde's discretionary step is mandatory**: the mechanical screen returns candidates, "
-      "then the review reduces them to **1–3 ideas** (\"no catalyst, no trade\", \"the reversal "
-      "bar has to jump off the chart\").")
-    A("")
     A(f"_Generated by cron #4 `reversal-bullish-3:55` · tool `tools/reversal_bullish.py` · "
-      f"session {a} · `_source=mcp`_")
+      f"session {a} · contract `{CONTRACT_VERSION}` · `_source=mcp`_")
     with open(path, "w") as fh:
         fh.write("\n".join(L) + "\n")
 
