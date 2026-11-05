@@ -308,6 +308,52 @@ in `price_conflict`.
 `price_conflict`** — an unverified conflict is not a conflict. Say which one it was in
 `## Source health`.
 
+## The close of record — a SETTLEMENT STAMP is not a PRICE (2026-11-05)
+
+**Never publish a close that has not been checked against an independent reading.** A vendor's
+close field can carry the stamp *"Closed at <date> 4:00 PM ET"* and still hold a **pre-auction
+print** — on 2026-11-05 the exchange's `/info` `secondaryData.lastSalePrice` read AAPL
+345.1551 / MSFT 537.705 / NVDA 182.29 against true closes of **344.17 / 535.93 / 181.60**
+(+0.29% / +0.33% / +0.38%), for every name checked, while still stamping the cell as the
+close. The 2026-11-04 file had taken the same field and been right — so the field is not
+trustworthy *in general*, only on the sessions where it is checked.
+
+**The close of record is the consolidated 16:00 ET auction print.** Two cheap checks:
+
+1. **The Yahoo regular-session final bar** — `chart/{SYM}?interval=1m&range=1d` (NO
+   `includePrePost`) ends with a synthetic bar whose `O=H=L=C` and volume is 0; that single
+   price IS the official close. The daily bar's close agrees with it.
+2. **An independent quote service** — CNBC/CTA (`quote.cnbc.com/quote-html-webservice/…`)
+   stamps `last_time` at exactly `16:00:00-05:00` and matched 36/41 sampled closes exactly on
+   2026-11-05 (the misses: 4 penny names under 0.1%, and one preferred where CNBC resolved the
+   COMMON line because of its own symbol form).
+
+**The tell:** if the vendor's close is ABOVE the last minute's traded price by more than a tick
+on a session that fell into the close, the vendor is serving a pre-auction snapshot. Report the
+disagreement count; publish one number.
+
+**Also settle the session with a bar-timestamp test, never a hardcoded offset:** the daily bar
+is settled when its timestamp is at or after the 16:00 ET close **for that date's UTC offset**
+(`ts >= 21:00Z` on an EST date, `>= 20:00Z` on an EDT date). On 2026-11-05, 993 of 4,896
+symbols were still serving the PRIOR session's bar at 17:00 ET and 288 more settled on a later
+pass — **re-sweep the unsettled rows** rather than publishing the prior session.
+
+**Class-share symbol maps are per vendor, and a plain-base fallback publishes another
+security's price.** `ABR-P-D` → Yahoo `ABR-PD`, Nasdaq `ABR^D`; `USB-P-H` → Nasdaq `USB^H`.
+Never fall back to the plain base (`LEN-B` → `LEN` is the Class A COMMON line).
+
+**shibui's `LIMIT/OFFSET` pagination needs a unique `ORDER BY`** (`ORDER BY symbol`), or pages
+overlap and rows go missing; **keyset pagination** (`WHERE symbol > :last ORDER BY symbol LIMIT
+200`, sequential) is the safe form — concurrency makes shibui throttle.
+
+**The numeric formatter must be regression-tested every run:** re-format every numeric string
+of the PREVIOUS published file and compare byte-for-byte (35,802/35,802 exact on 2026-11-05).
+US rule: 4 significant figures with trailing zeros stripped, **except values >= 100000, which
+keep full precision**; `volume` and `market_cap` integers; `change_pct` / `pe_ratio` 4 sig figs.
+A plain `%.4g` renders 830500 as `8.305e+05`.
+
+The full run log for 2026-11-05 is in `docs/IMPROVEMENTS-cron20-eod-watchlist.md`.
+
 ## Steps — US universe (cron `0a87adbe…`)
 
 1. Paginate `mcp__shibui-finance__stock_data_query` 25 times: `LIMIT 200 OFFSET 0, 200, …, 4800`, filter `country_iso='US'`, join `stock_quotes` for OHLCV on the target date, join `valuation` (market_cap) and `fundamentals_derived_daily` (trailing_pe).
