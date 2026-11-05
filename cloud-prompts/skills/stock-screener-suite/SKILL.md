@@ -775,12 +775,30 @@ implement them inline.
 Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deployed cron
 (`#07-focus-rvol-09:45`); the other slots are manual runs. For each Focus ticker:
 
-- One `mcp__tradingview-advanced__coin_analysis(symbol, exchange=NASDAQ, timeframe=15)`
-  call. Returns RVOL + indicators.
-- Sort Focus list by intraday RVOL desc.
-- Output `focus-rvol-snapshot.md` and split into **RVOL Required** vs **Liquid** buckets
-  (Sun's published tier split).
-- If any ticker's RVOL crosses from < 1 to > 3, emit one chat alert.
+- The data path, the metric and the artifact contract live in cron #07's own prompt
+  (`cloud-prompts/cron-prompts/07-stock-screener-focus-rvol-09:45.md`, STEP 5-7). Follow it;
+  do not re-implement the screen here. Note the MCP tool `mcp__tradingview-advanced__*` is NOT
+  registered in the Cloud runtime - the live path is the TradingView public scanner plus the
+  bridge, as the prompt specifies.
+- Sort Focus list by the metric desc.
+- Output `focus-rvol-snapshot.md` **and** `focus-rvol-snapshot.csv` (one row per ticker) and
+  split into **RVOL Required** vs **Liquid** buckets (Sun's published tier split). The CSV is
+  the NEXT fire's crossing baseline - a run that ships only the `.md` starves it. That is
+  exactly what happened on 2026-11-03.
+- **The thresholds are named constants, defined once in cron #07's prompt (STEP 6) and
+  reproduced here - keep the two in sync:** `RVOL_REQUIRED_BUCKET = 1.5`,
+  `RVOL_ALERT_THRESHOLD = 1.5`, `NEAR_MISS_FLOOR = 1.275`.
+- **The alert rule, in one sentence:** an alert fires for a name whose `rvol_now` is at or above
+  `RVOL_ALERT_THRESHOLD` AND whose `prev_session_rvol` is below `RVOL_ALERT_THRESHOLD` - the
+  name crossed UP through the alert bar since the previous session's published reading. A level
+  with no prior reading below the bar is NOT a crossing.
+- **Publish the NEAR MISSES too:** a name is a near miss when `rvol_now >= NEAR_MISS_FLOOR` and
+  `rvol_now < RVOL_ALERT_THRESHOLD`, with both its current and its prior value.
+- **Publish the TREND, not just the level:** every name carries `rvol_now`, `rvol_prev`,
+  `rvol_at_09_38` and `rvol_trend` (ACCELERATING / STABLE / DECELERATING).
+- **Do NOT write "crosses from < 1 to > 3".** That was the old time-scaled projection metric
+  (`rvol_projected_eod`), retired on 2026-11-04 in favour of the time-of-day-normalised
+  `rvol_tod_normalised`; the numbers are not comparable and the 3x bar no longer exists.
 
 ### 8. Hook into existing briefs
 

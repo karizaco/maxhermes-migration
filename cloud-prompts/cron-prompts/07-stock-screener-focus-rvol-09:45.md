@@ -290,48 +290,187 @@ no_intraday_bars - never silently substitute a daily value.
   relative volume. That is a different quantity from either number above. Refer to it as
   `rvol_session_eod` when you compare them.
 
-## STEP 6 — BUCKETS AND ALERT
-Sort focus tickers by `rvol_tod_normalised` desc.
-- RVOL Required: `rvol_tod_normalised` >= 1.5
-- Liquid: everything else
-`rvol_tod_normalised` = 1.0 is that name's own normal morning, so 1.5 means 50% hotter than its
-own 10-session norm at the same hour. Publish `rvol_intraday_live` beside it in the same table
-so the reader sees both numbers.
+**THE EARLIER CROSS-CHECK SNAPSHOT — you need a SECOND reading of the same window.**
+One snapshot cannot show a trend, and a trend is the signal: a name whose pace is FALLING is a
+different trade from one whose pace is RISING. So take TWO readings of the same metric per
+ticker:
+1. the FIRE'S SNAPSHOT — the last COMPLETED bar at the fire time, and
+2. an EARLIER CROSS-CHECK SNAPSHOT — an independent reading at least 5 minutes before it.
 
-**A CROSSING NEEDS A PRIOR READING — read the previous session's artifact.**
-`daily-screens/<previous session>/focus-rvol-snapshot.csv` (written by this routine, and by the
-2026-10-28 run) carries the previous session's per-ticker metric. If it exists, compare per
-ticker: a ticker CROSSED when its previous value was < 1.5 and today's `rvol_tod_normalised` is
->= 1.5.
-Name every crossing ticker in the chat — that is the one alert this routine owes.
-If no previous artifact exists there is no baseline: say so, publish no crossing alert, and write
-`alerts: none (no prior reading available)` in the artifact. A crossing claimed without a prior
-reading is a fabrication, not a signal.
+Preferred source for the earlier reading: the CBOE delayed-quote CDN
+(`cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json`), whose `volume` is regular-session
+only and whose snapshot trails the live tape by ~15 minutes (at a 09:45 fire it reads ~09:38).
+Use CBOE's OWN timestamp to define the earlier window — do not assume 09:38.
+Fallback when CBOE is unreachable, or its snapshot is not earlier than the fire's: truncate the
+SAME 5-minute bar series at the bar stamped 5 or more minutes before the fire's bar, and record
+`cross_check_source: same_series_truncated` in the method.
+
+Compute `rvol_prev` with the SAME formula as `rvol_now`, over the EARLIER window — the prior-10
+mean for THAT window, not today's window. Compute `rvol_at_09_38` as the RAW cumulative ratio at
+the earlier snapshot: (cumulative session volume at that snapshot) / (TV average_volume_10d_calc).
+Publish it so the reader can CHECK the normalisation instead of trusting it.
+
+**PRE-MARKET VOLUME — the subtraction must be auditable, and it depends on cron #08.**
+Session volume MUST exclude pre-market prints. There are two ways to get that, and the artifact
+must say which one was used:
+- **The source excludes pre-market by construction** — Yahoo bars with `includePrePost=false`
+  (regular session only). Then `pm_vol_source: not_subtracted` and `pm_vol: 0`. This is the
+  PREFERRED route: it needs no cross-routine dependency at all.
+- **The source includes pre-market** — a cumulative quote-volume feed (the bridge
+  `market-recap get_quotes`). Then READ cron #08's published
+  `daily-screens/<date>/pre-market-gapper.csv` and SUBTRACT its `pm_volume` per ticker.
+  `pm_vol_source: subtracted_from_08`, and publish the subtracted volume per row so the
+  arithmetic is checkable.
+
+**When cron #08's file is missing, the subtraction silently does NOT happen — so say so.**
+If the session-volume source includes pre-market AND #08's file is absent:
+- set `pm_vol_source: no_08_file` on every affected row,
+- mark those rows' `tier` `UNADJUSTED` — do NOT publish a number that looks adjusted,
+- say it in the artifact (front matter `pm_source_status`, plus a line under Degradation) AND in
+  the reply's `pm:` token.
+`not_subtracted` is only honest when the source excludes pre-market by construction; state which
+in the method. A row whose RVOL is UNADJUSTED is not a Required name and not an alert — it is an
+unknown.
+
+## STEP 6 — CONSTANTS, TREND, NEAR MISS AND ALERT
+
+**THE CONSTANTS — define them ONCE, here, and use these values everywhere.** Every threshold
+below is a NAMED CONSTANT. Publish both thresholds in the artifact's front matter, use the same
+values in the reply, and never mix one for the other.
+
+| constant | value | meaning |
+|---|---:|---|
+| `RVOL_REQUIRED_BUCKET` | **1.5** | the threshold that qualifies a name for the RVOL Required bucket |
+| `RVOL_ALERT_THRESHOLD` | **1.5** | the threshold that triggers an alert line |
+| `NEAR_MISS_FLOOR` | **1.275** | `RVOL_ALERT_THRESHOLD x 0.85` — the floor of the near-miss band |
+
+`RVOL_REQUIRED_BUCKET` and `RVOL_ALERT_THRESHOLD` are currently EQUAL on purpose: the alert is
+a name CROSSING UP through the bucket bar, not a name sitting above a second, higher bar. They
+stay two constants so that a future "alert only above 2.0" change is ONE edit in THIS block
+instead of a hunt through the artifact template, the reply format and the skill spec.
+`rvol_tod_normalised` = 1.0 is that name's own normal morning, so 1.5 means 50% hotter than its
+own 10-session norm at the same hour.
+
+**THE ALERT RULE, in one sentence — state it this way in the artifact:**
+> An alert fires for a name whose `rvol_now` is at or above `RVOL_ALERT_THRESHOLD` (1.5) AND
+> whose `prev_session_rvol` is below `RVOL_ALERT_THRESHOLD` (1.5) — that is, the name crossed
+> UP through the alert bar since the previous session's published reading.
+
+`rvol_now >= RVOL_ALERT_THRESHOLD` on its own is a LEVEL, not an alert. A level with no prior
+reading below the bar is not a crossing, and a crossing claimed without a prior reading is a
+fabrication, not a signal. Name every crossing ticker in the chat — that is the one alert this
+routine owes.
+
+**THE NEAR-MISS TIER — the tradable edge.**
+A name is a **NEAR MISS** when `rvol_now >= NEAR_MISS_FLOOR` (1.275) and `rvol_now <
+RVOL_ALERT_THRESHOLD` (1.5). Publish every near miss with BOTH its current value and its prior
+value, and say what would turn it into an alert: `rvol_now` reaching 1.5 while `prev_session_rvol`
+stays below 1.5. A near miss is the difference between a routine that reports what happened and
+one that tells you what to watch.
+
+**THE TREND — publish it, do not bury it in prose.**
+For every name publish FOUR numbers, not one:
+- `rvol_now` — the metric at the fire's snapshot.
+- `rvol_prev` — the SAME metric at the EARLIER CROSS-CHECK SNAPSHOT (see STEP 5).
+- `rvol_at_09_38` — the RAW (un-adjusted) cumulative ratio at that earlier snapshot, so the
+  reader can verify the trend instead of trusting it.
+- `rvol_trend` — `ACCELERATING` / `STABLE` / `DECELERATING`, plus the numeric delta
+  (`rvol_now` - `rvol_prev`).
+
+`rvol_trend` is a SORT KEY and a VISIBLE COLUMN, not a footnote. A name whose RVOL decays from
+14.4x to 6.9x is a distribution, not an accumulation, and the reader must see that in the table
+rather than read it out of a paragraph.
+**SORT ORDER:** primary `rvol_now` desc; secondary `rvol_trend` (ACCELERATING first, then
+STABLE, then DECELERATING) so that when two names print the same `rvol_now` the one that is
+climbing leads. The `## Alerts` list is ordered by trend delta desc — among flagged names the
+TREND is what decides the trade.
+
+**A CROSSING NEEDS A PRIOR READING — the baseline is the previous SESSION's published value.**
+`daily-screens/<previous session>/focus-rvol-snapshot.csv` — written by this routine — carries the
+previous session's per-ticker `rvol_now`. Read `prev_session_rvol` from it, per ticker.
+A ticker CROSSED when `prev_session_rvol < RVOL_ALERT_THRESHOLD` and `rvol_now >=
+RVOL_ALERT_THRESHOLD`.
+If that CSV does not exist there is no baseline: say so, publish `prev_session_rvol: n/a` for
+every row, emit NO alert, and write `alerts: none (no prior reading available)` in the artifact.
+**THE CSV IS NOT OPTIONAL.** A run that publishes only the `.md` breaks the NEXT fire's baseline:
+that is exactly what happened on 2026-11-03 (the `.md` shipped, the `.csv` did not, and the
+2026-11-04 run had to recompute every prior reading from scratch). Write BOTH files every time,
+and confirm the CSV exists before you push.
 
 An empty bucket is a real result. Report it as an empty bucket with counts, not as a failure.
 
 ## STEP 7 — WRITE THE ARTIFACT
 Write TWO files in /workspace/daily-screens/DATE/ (create the dir; DATE = today ET):
   focus-rvol-snapshot.md
-  focus-rvol-snapshot.csv      <- one row per ticker, machine-readable
+  focus-rvol-snapshot.csv      <- one row per ticker, machine-readable. REQUIRED, not optional.
+
+**THE SKELETON — follow this order exactly. A fixed skeleton is what makes two artifacts
+comparable.**
+1. Front matter (exact keys, in this order).
+2. Title.
+3. `## TL;DR` — 3-6 lines: how many names cleared, how many are near misses, the alert names,
+   and THE CAVEAT THAT CHANGES HOW THEY SHOULD BE READ. The TL;DR is what a human actually
+   reads; a caveat that only exists down in Degradation does not exist.
+4. `## Universe` — where the focus list came from, the three dates, the lag.
+5. `## Table` — THE ONE TABLE (below).
+6. `### Counts`.
+7. `## Alerts` — the crossing names, each with a one-line `read`.
+8. `## Near misses` — the watch list, with current and prior values.
+9. `## Universe change` — names that entered or left the focus list vs the previous sweep.
+10. `## Method` — the method actually used.
+11. `## Source health`.
+12. `## Degradation / caveats`.
+
+**THE ONE TABLE — each name appears ONCE, with ALL of its numbers in that row.**
+One row per ticker. No second table for volume, no third table for the cross-check: the
+cross-check values ARE columns (`rvol_prev`, `rvol_at_09_38`) and the volume detail IS columns.
+A reader must never have to join two tables to learn one name's story.
+
+Columns, in this order:
+`symbol | close | rvol_intraday_live | rvol_now | rvol_prev | rvol_at_09_38 | rvol_trend |
+prev_session_rvol | bucket | tier | pm_vol | pm_vol_source | data timestamp`
+
+- `rvol_intraday_live` — the RAW ratio (cumulative session volume / TV average_volume_10d_calc).
+  It is mechanically tiny at 09:45 and is published for reference; NEVER bucket on it.
+- `rvol_now` — the metric at the fire's snapshot.
+- `rvol_prev` — the metric at the earlier cross-check snapshot.
+- `rvol_at_09_38` — the RAW cumulative ratio at that earlier snapshot, so the trend is checkable.
+- `rvol_trend` — `ACCELERATING` / `STABLE` / `DECELERATING` with the numeric delta.
+- `prev_session_rvol` — the previous session's published `rvol_now`, or `n/a`.
+- `bucket` — `RVOL Required` / `Liquid`, by `RVOL_REQUIRED_BUCKET`.
+- `tier` — `ALERT` / `NEAR MISS` / `WATCH` / `UNADJUSTED` / `-`.
+- `pm_vol` — the pre-market volume subtracted (0 when none was subtracted).
+- `pm_vol_source` — `subtracted_from_08` / `no_08_file` / `not_subtracted`.
+- `data timestamp` — when the volume/close reading was taken.
+
+The CSV carries the SAME columns as the table, one row per ticker, plus the upstream `stylists`
+and `flags` columns when the focus list provided them. Write the CSV even when the table is
+empty or degraded — a missing CSV is what starves the next fire's baseline.
 
 Front-matter, exact keys in this order:
   date, cron, fire_time_et, fire_date, focus_dir_date, screen_data_date, lag_sessions,
   universe_source, universe_size, elapsed_minutes, session_fraction, source, method,
-  metric_def, bucket_rule, status, upstream, names_unpriced
-`lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size` and `names_unpriced` are
-numbers, not strings. `upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
+  metric_def, bucket_rule, rvol_required_bucket, rvol_alert_threshold, near_miss_floor,
+  alert_rule, pm_source_status, cross_check_source, status, upstream, names_unpriced
+`lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size`, `names_unpriced`,
+`rvol_required_bucket`, `rvol_alert_threshold` and `near_miss_floor` are NUMBERS, not strings.
+`upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
+`alert_rule` is the one-sentence rule from STEP 6, with the same numbers.
+`pm_source_status` is `subtracted_from_08` / `no_08_file` / `not_subtracted` / `partial`.
+`cross_check_source` is `cboe_delayed` / `same_series_truncated` / `none`.
 
-Then a table — symbol | close | rvol_intraday_live | rvol_tod_normalised | bucket | data
-timestamp — sorted by `rvol_tod_normalised` desc. Then a counts block (universe size, Required
-count, Liquid count, crossings). Then `## Alerts` (name the crossing tickers, or write 'none' and
-say why). Then `## Universe change` (names that entered or left the focus list vs the previous
-sweep). Then the method actually used, then `## Source health`, then any degradation.
-The CSV carries the same columns as the table, one row per ticker, plus the upstream `stylists`
-and `flags` columns when the focus list provided them.
+`### Counts` must state: universe size, Required count, Liquid count, NEAR MISS count, alert
+count, crossings, and the number of UNADJUSTED rows.
+`## Alerts` names the crossing tickers (or writes 'none' and says why), and gives each flagged
+name a ONE-LINE `read` that says what the number means — for example
+`RVOL fading 14.4x -> 6.9x — distribution, not accumulation`. A name whose RVOL is decaying is
+a different trade from one whose RVOL is climbing, and today only prose says so.
+`## Near misses` names every near miss with its current and prior values and what would trigger
+it.
 
 status must be exactly one of: ok, degraded_stale_focus_list, degraded_daily_rvol_proxy,
-degraded_universe_fallback, failed_no_upstream_focus_list, failed_no_data.
+degraded_universe_fallback, degraded_pm_unadjusted, failed_no_upstream_focus_list,
+failed_no_data.
 
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
@@ -347,8 +486,11 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in $B/push_artifact.sh 'https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh'; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh $U
 done
-sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/focus-rvol-snapshot.md --branch main
+sh /workspace/push_artifact.sh --out daily-screens \
+  --add daily-screens/{date}/focus-rvol-snapshot.md \
+  --add daily-screens/{date}/focus-rvol-snapshot.csv --branch main
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/focus-rvol-snapshot.md --branch main
+sh /workspace/verify_delivery.sh --path daily-screens/{date}/focus-rvol-snapshot.csv --branch main
 ```
 
 **If the push script cannot be fetched**, use the inline fallback in
@@ -370,12 +512,15 @@ exit status (always 0) and reports a rejected push as a success. That is why the
 exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY (the only thing delivered to the chat)
-Seven lines, no preamble:
+Seven lines, no preamble. **This format is a DOCUMENTED EXCEPTION** (see
+`cron-prompts/README.md`): a fixed status line, machine-read rather than read by a human. Do NOT
+convert it to the standard prose / `### Signal` format.
+
 focus-rvol-09:45 (cron #07) - DATE TIME_ET
 window: passed | skipped (reason)
 upstream: FOCUS_MD_PATH (lag N session(s)) | missing | fallback_tv_screener
-tickers: N | RVOL Required: N | Liquid: N | method: METHOD
-alerts: NAME, NAME | none (no prior reading)
+tickers: N | RVOL Required: N (>= 1.5x) | Liquid: N | NEAR MISS: N (>= 1.275x) | method: METHOD | pm: PM_SOURCE
+alerts: NAME (TREND), NAME (TREND) | none (no prior reading)
 file: PATH (BYTES B, written) | no artifact
 push: ok | skipped (token unset) | failed (reason)
 errors: N
