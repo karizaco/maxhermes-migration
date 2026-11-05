@@ -9,10 +9,11 @@ Every scheduled run gets its own conversation — one conversation per fire, nev
 earlier run's conversation. Give this conversation a title that says which day this run belongs
 to, so the conversation list stays scannable.
 
-1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
-2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
-   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
-   Example: `[31-10] 12-cross-asset-correlation-snapshot`.
+1. Resolve the FIRE INSTANT first — it gives both the date and the slot (see `## SLOT`).
+   `session_get` → `session.created_at` (epoch ms) → convert to US/Eastern.
+2. Build the title: `[<DD-MM>] 17-us-stocks-in-play-<slot>`. The **slot is part of the title** —
+   this task fires twice a day, and two conversations with the same title are indistinguishable.
+   Example: `[31-10] 17-us-stocks-in-play-preclose`, `[31-10] 17-us-stocks-in-play-open`.
 3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
    `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
    If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
@@ -22,12 +23,35 @@ to, so the conversation list stays scannable.
 
 ## SCHEDULE
 - Original local schedule: intraday
-- Deployed schedule: `50 15 * * 1-5` America/New_York — 15:50 ET, Mon-Fri only.
+- Deployed schedule: `50 9,15 * * 1-5` America/New_York — **09:50 ET and 15:50 ET**, Mon-Fri only.
+  **This is ONE task with TWO fires a day.** The fire instant tells you which slot you are.
 - The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
   weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
   file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
   express — the market-holiday list.
 
+## SLOT (resolve this BEFORE anything else — the slot decides the floors, the path and the label)
+
+Resolve the fire instant with ONE call, no cron_read needed:
+
+```
+mcp_invoke  tool_name=session_get  arguments={"session_id":"me"}
+```
+
+Take `session.created_at` (epoch milliseconds) and convert it to US/Eastern. **Never use the wall
+clock** — the platform resumes a crashed cron conversation IN PLACE, hours or days later, so on a
+replay "now" names the resume day, not the fire day.
+
+| Fire instant, US/Eastern | Slot | Artifact path in `us-stocks-in-play/` |
+|---|---|---|
+| **09:50 ET** | `open` | `<date>-open.md` |
+| **15:50 ET** | `preclose` | `<date>.md` |
+
+Set `SLOT` to `open` or `preclose` and use it everywhere below: the artifact path, the push
+`--add`, the skip-marker name, the fuel-log `slot` field, the conversation title and the audit
+line. **The two slots are different screens** — the `open` slot uses the ~$0.5–1m session-$volume
+floor and the `pace` measure instead of `RVol`; the skill spec's "The `open` slot (09:50 ET)"
+section has both, with the measured constants.
 
 ## WINDOW CHECK (RUN FIRST, BEFORE FETCHING THE SKILL)
 
@@ -84,9 +108,11 @@ if [ ! -s "$S" ] || ! grep -q 'WINDOW_CHECK_V2' "$S" 2>/dev/null; then
 fi
 
 # SCHEDULED_AT_MS = session.created_at from the session_get call above (epoch ms).
+# $SLOT is open or preclose (see `## SLOT`). The skip marker is slot-qualified: a holiday
+# fire writes ONE marker for the slot that fired, and the two slots must not collide.
 sh "$S" --scheduled-at-ms "$SCHEDULED_AT_MS" \
-   --out us-stocks-in-play --name us_stocks_in_play \
-   --label "Cron #17 us-stocks-in-play" \
+   --out us-stocks-in-play --name "us_stocks_in_play_$SLOT" \
+   --label "Cron #17 us-stocks-in-play ($SLOT)" \
    --nn 17
 ```
 
@@ -99,10 +125,12 @@ and nothing else - do not narrate the tool calls and do not write an artifact:
 
 ```
 out-of-window: <reason printed by the script>
-file: no artifact (window check declined this fire - us-stocks-in-play/$DATE.md is intentionally absent)
-push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_us_stocks_in_play.md) | marker push FAILED | marker push skipped (push script unavailable)
+file: no artifact (window check declined this fire - us-stocks-in-play/$DATE${SLOT_SUFFIX}.md is intentionally absent)
+push: marker pushed (refs/skipped-markers/$FIRE_DATE_SKIPPED_us_stocks_in_play_$SLOT.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
+
+where `$SLOT_SUFFIX` is `-open` for the open slot and empty for the preclose slot.
 
 ## SKILL SPEC (FETCH ONCE)
 The skill's procedure body lives here:
@@ -163,10 +191,12 @@ memory — those are what keep a degraded run honest.
 
 ## PRE-OPEN FEED AND GAP PROVENANCE (run before tiering)
 
-This routine fires ~15:50 ET, so by default it sees only where a stock **IS**. "In play" is a
+This routine fires twice a day, so by default it sees only where a stock **IS**. "In play" is a
 claim about the **journey** — a name that gapped +12% on an FDA nod at 09:12 and now trades +2%
 looks identical to one that never moved. The skill requires the gap annex to separate a gap that
-**held into the bell** from one that faded; this is how you compute it.
+**held** from one that faded; this is how you compute it. **The window depends on the slot**: at
+the `preclose` slot it is the full session (held into the bell vs faded); at the `open` slot it
+is only the first ~20 minutes (held so far vs faded), and the artifact must say which.
 
 ```bash
 # --- fetch cloud-prompts/_shared/preopen_feed.py ---
@@ -203,13 +233,21 @@ and the **timestamp** it broke.
 - If the tool cannot run, record `gap provenance unavailable` in Source health and continue.
 
 ## OUTPUT
-Write the artifact to:
-  `/workspace/us-stocks-in-play/{date}.md`
+Write the artifact to the **slot-qualified** path:
+
+| Slot | Path |
+|---|---|
+| `preclose` | `/workspace/us-stocks-in-play/{date}.md` |
+| `open` | `/workspace/us-stocks-in-play/{date}-open.md` |
+
+**The `open` slot MUST write `{date}-open.md` and MUST NOT write `{date}.md`** — that is the
+preclose board's path, and writing there destroys the previous day's preclose chain and collides
+with the other fire.
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
-at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
-do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
+from the FIRE INSTANT (`session.created_at`, see `## SLOT`), not from `date` at execution time. If
+they differ, this is a **delayed replay**: rebuild for the scheduled date, do NOT write a SKIPPED
+marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
@@ -222,9 +260,16 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out us-stocks-in-play --add us-stocks-in-play/{date}.md --branch main
-sh /workspace/verify_delivery.sh --path us-stocks-in-play/{date}.md --branch main
+sh /workspace/push_artifact.sh --out us-stocks-in-play --add us-stocks-in-play/$ARTIFACT_NAME --branch main
+sh /workspace/verify_delivery.sh --path us-stocks-in-play/$ARTIFACT_NAME --branch main
 ```
+
+where `$ARTIFACT_NAME` is `<date>-open.md` for the open slot and `<date>.md` for the preclose slot.
+
+**Do NOT pass `--msg`.** The default commit subject is derived from the artifact path and is
+`cron 17 us-stocks-in-play <date>` for BOTH slots, which is what cron #90's near-miss triage
+greps for (`grep -E "^[0-9a-f]+ cron (#)?17 "`). A custom subject would break the triage that
+distinguishes "the routine ran and wrote a different path" from "the routine never ran".
 
 **If the push script cannot be fetched**, use the inline fallback in
 `cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
@@ -237,7 +282,7 @@ and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
-sh /workspace/verify_delivery.sh --path us-stocks-in-play/{date}.md --branch main
+sh /workspace/verify_delivery.sh --path us-stocks-in-play/$ARTIFACT_NAME --branch main
 ```
 
 A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's
@@ -251,6 +296,13 @@ exists, and why the push script must never be run with `git push … | head -3`.
    `preopen_feed.py` helper). Do NOT call the
    `mcp__*` tools — they are not registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
+5. **The fuel-log line carries the slot.** Append one line to `us-stocks-in-play/logs.jsonl` per
+   fire (fetch the existing file first, then append — never overwrite). Its `slot` field is `open`
+   or `preclose`, its `artifact` field is the slot-qualified path, and its `name` stays
+   `us stocks in play preclose`/`open` so the series stays queryable. Two fires a day means TWO
+   lines a day — one per slot — and they must not be confused with each other.
+6. **Never write the open board to `{date}.md`, and never write the preclose board to
+   `{date}-open.md`.** The two slots share one task and one output directory.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 
 ================================================================

@@ -79,7 +79,7 @@
       "session_mode": "new"
     },
     "17-us-stocks-in-play.md": {
-      "schedule": "50 15 * * 1-5",
+      "schedule": "50 9,15 * * 1-5",
       "timezone": "America/New_York",
       "session_mode": "new"
     },

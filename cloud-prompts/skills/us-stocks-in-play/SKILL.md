@@ -2,15 +2,16 @@
 name: US stocks in play
 description: >-
   Weekday US (NYSE/NASDAQ/AMEX + liquid OTC + major ETFs) in-play scanner:
-  pre-close (~15:50 ET) and midday (~12:30 ET) digests. Uses
-  TradingView-advanced + Yahoo Finance MCPs, falls back to Finviz/Barchart
-  browser only on block. Tier A → Soft-A → TECH_WATCH → B → C, USD session
-  $ volume sort. Quiet chat unless actionable. Cron weekdays 15:50 ET.
+  open (~09:50 ET) and pre-close (~15:50 ET) digests, plus a midday (~12:30)
+  slot. Uses TradingView-advanced + Yahoo Finance MCPs, falls back to
+  Finviz/Barchart browser only on block. Tier A → Soft-A → TECH_WATCH → B → C,
+  USD session $ volume sort. Quiet chat unless actionable. Cron weekdays
+  09:50 and 15:50 ET.
 ---
 
 # US stocks in play
 
-Scan US equities that are actionable right now (gaps, unusual volume, breakouts, material news, halts) — weekday pre-close (~15:50, the deployed slot) and midday (~12:30) America/New_York digests. Uses the shared `stocks-in-play-pipeline` skill for normalize→merge, Soft-A, TECH_WATCH, holiday skip, source-health table, and chat rules.
+Scan US equities that are actionable right now (gaps, unusual volume, breakouts, material news, halts) — weekday **open (~09:50)** and **pre-close (~15:50)** America/New_York digests, with a midday (~12:30) slot defined but not deployed. Uses the shared `stocks-in-play-pipeline` skill for normalize→merge, Soft-A, TECH_WATCH, holiday skip, source-health table, and chat rules.
 
 **Finviz Elite is optional.** Free Finviz (~1 minute delayed) is enough for digests. Barchart is never required paid.
 
@@ -20,12 +21,24 @@ Always run `stocks-in-play-pipeline` **after** gathering sources and **before** 
 
 ## Prior-digest continuity and research scoping (required)
 
-This routine fires into a repo that already holds the previous slot's digest. **Read it before
-researching anything.**
+This routine fires twice a day into a repo that already holds the previous digest. **Read it
+before researching anything.**
 
-1. **Read the most recent prior digest** in `us-stocks-in-play/` from the output repo, plus the
-   prior slot's screen CSV if present. From a shallow clone,
-   `git show origin/main:us-stocks-in-play/<file>` is enough; the slot is named in the title.
+1. **Read the prior digest for YOUR OWN SLOT**, not merely the newest file in the directory. The
+   two slots have different floors and different session fractions, so a pre-close board and an
+   open board are **not comparable**:
+
+| Slot | Prior digest to read | Path |
+|---|---|---|
+| `preclose` (15:50) | the previous day's `preclose` board | `us-stocks-in-play/<date>.md` |
+| `open` (09:50) | the previous day's `open` board | `us-stocks-in-play/<date>-open.md` |
+
+   From a shallow clone, `git show origin/main:us-stocks-in-play/<file>` is enough.
+
+   **The `open` slot reads two files**: its own prior board for the delta (point 2), AND the
+   previous day's `preclose` board for the **Overnight → open** annex (below). Reading the
+   preclose board for the *delta* would compare a 20-minute-in screen against a full-session
+   screen and the turnover delta would be pure noise.
 2. **Build a `changed_since` list**: names new to the screen, plus names whose move changed by
    ≥ 3pp since the prior pull, plus any name whose tier moved.
 3. **Scope catalyst research to that list.** Do **not** re-verify a catalyst the prior digest
@@ -35,6 +48,13 @@ researching anything.**
 4. **Publish the delta.** The digest must carry a "what changed since the <prior slot> digest"
    section: the `changed_since` list with the move at each pull, and the names that were new.
    This section is usually more useful to a reader than the full board.
+
+5. **The `open` slot also carries an Overnight → open annex.** Load the previous day's
+   `preclose` board's `overnight_carry` — the watch list it named *before* that evening's prints
+   — and report which of those names are in play **this morning**, with this morning's own tape
+   and verdict. **Do not re-tell last night's earnings reactions**: the fleet's post-market brief
+   (#23, 22:30 ET) owns those. The open board's job is to hand the watch list forward into the
+   live tape, not to duplicate the brief.
 
 ## TradingView-advanced MCP rate-limit
 
@@ -80,35 +100,101 @@ A name is **in play** when there is a fresh, tradeable reason to look **now**: p
 
 ### Liquidity floor (required)
 
-| Filter | Pre-close ~15:50 ET (deployed) | Midday ~12:30 ET |
-|---|---|---|
-| Price | ≥ $1 | ≥ $1 |
-| Market cap | ≥ $50m soft | same |
-| Session $ volume | ≥ ~$2–5m | ≥ ~$2–5m |
-| OTC / pink | Session $ vol ≥ ~$1–2m | same spirit |
-| RVol | Soft preference ≥ ~1.5–2× if available | same |
+| Filter | Open ~09:50 ET (deployed) | Pre-close ~15:50 ET (deployed) | Midday ~12:30 ET |
+|---|---|---|---|
+| Price | ≥ $1 | ≥ $1 | ≥ $1 |
+| Market cap | ≥ $50m soft | ≥ $50m soft | same |
+| Session $ volume | **≥ ~$0.5–1m (to 09:50)** | ≥ ~$2–5m (full session) | ≥ ~$2–5m (full session) |
+| OTC / pink | Session $ vol ≥ ~$0.5–1m | ≥ ~$1–2m | same spirit |
+| RVol / pace | **pace ≥ ~1.5×** (see below) | Soft preference ≥ ~1.5–2× if available | same |
 
 `preclose` and `midday` share the same dollar-volume bar because both read a **full session's**
-turnover. The `open` slot was lower (~$0.5–1m) only because it ran 20 minutes into the session;
-that number must not be applied at pre-close, where it admits every micro-float that printed a
-few million dollars on a quiet tape.
+turnover. The `open` slot bar is lower (~$0.5–1m) because it runs only 20 minutes into the
+session, so a full-session turnover floor would empty the board. **That number must never be
+applied at pre-close**, where it admits every micro-float that printed a few million dollars on
+a quiet tape.
 
 ### Slot resolution (required)
 
-The **deployed schedule determines the slot** — not the slot a previous run used. Map the fire
-time to the nearest defined slot and apply that slot's floors and triggers.
+The **fire time determines the slot** — not the slot a previous run used, and not the slot the
+last fire used. Map the fire time to the nearest defined slot and apply that slot's floors and
+triggers.
 
 | Fire time (ET) | Slot | Session $ volume floor |
 |---|---|---|
+| ~09:50 (deployed) | `open` | ≥ ~$0.5–1m (partial session) |
+| ~12:30 | `midday` (not deployed) | ≥ ~$2–5m (full session) |
 | ~15:50 (deployed) | `preclose` | ≥ ~$2–5m (full session) |
-| ~12:30 | `midday` | ≥ ~$2–5m (full session) |
-| ~09:50 | `open` (not deployed) | ≥ ~$0.5–1m (partial session) |
+
+This routine fires **twice a day from one task** (`50 9,15 * * 1-5` America/New_York). **Resolve
+the slot from the FIRE INSTANT, never from the wall clock** — the platform resumes a crashed
+conversation in place, hours or days later, so on a replay "now" names the resume day, not the
+fire day. Take the fire instant from `session_get` → `session.created_at` (epoch ms), convert it
+to US/Eastern, and read the slot off the hour: **09 → `open`, 15 → `preclose`**.
 
 **Pre-close timing caveat:** the `preclose` slot fires ~10 minutes **before** the 16:00 ET bell,
 so the regular-session close is **not final at fire time**. Take the settled close from the
 post-bell print — the cloud RUNTIME-CONTRACT documents the source whose `primaryData` field flips
 to the after-hours print at 16:00 — and state in the artifact whether the numbers are live
 intraday or settled.
+
+### The `open` slot (09:50 ET) — pace instead of RVol (required)
+
+**The preclose slot's RVol cannot be used at 09:50.** Session volume at 09:50 is a fraction of a
+full session, so dividing it by the trailing-10 *full-session* average gives every name ~0.1x, and
+a Tier-A gate of "RVol ≥ 2.0" could never be met — the open board would be structurally empty.
+
+The fix is to normalise by the **elapsed-session share**: the share of a normal session's volume
+that has printed by 09:50.
+
+**MEASURED (2026-11-05, Yahoo 5-minute bars, 49 symbols × the last 10 completed sessions,
+480 symbol-sessions; the 5-minute series was reconciled against the daily bar for every
+symbol-session):**
+
+| Measure | Value |
+|---|---|
+| Opening share — **median** | **12.56%** |
+| Opening share — mean | 12.97% |
+| Opening share — p10 / p90 | 4.93% / 21.60% |
+| Opening share — **median of the 10 daily medians** | 11.91% |
+| Spread of the 10 daily medians | **10.77% – 16.49%** |
+| 5-min series total ÷ daily-bar volume | 0.856 |
+
+**The published constant is `0.125` (12.5%).** Compute the open slot's pace measure as:
+
+```
+pace = (session volume to 09:50 ÷ trailing-10 FULL-session average volume) ÷ 0.125
+```
+
+- pace **1.0** = this name has done exactly a normal pace of its volume by 09:50.
+- pace **2.0** = twice the normal pace — 25% of a normal day in the first 20 minutes.
+- **Tier A (open slot) = pace ≥ 1.5**; **Soft-A = pace < 1.5**. The bar is **1.5×, not 2.0×**,
+  because the measure carries regime noise (below) that the full-session RVol does not.
+
+**Use the scanner's running session volume as the numerator.** It reconciles with the Yahoo DAILY
+bar (the same basis as the trailing-10 denominator), so no correction is needed. The 0.856
+5-minute-series ratio above is a property of Yahoo's *intraday* series only — it does **not**
+apply to the scanner's volume and must not be applied to it.
+
+**Publish these caveats with the pace numbers, every time:**
+- The opening share is **not stable** — its daily median moved between **10.77% and 16.49%** over
+  the ten measured sessions. A pace reading of 2.0 is therefore roughly 1.8–2.3 on a different
+  session's regime. **The pace is a screening measure, not a measurement.**
+- **`pace` and the preclose slot's `RVol` are different quantities on different denominators.
+  They are NOT comparable, and a pace number must never be compared against an RVol number.**
+  Label the open-slot column `pace` (never `RVol`) in the artifact and in the CSV.
+- The 10.77%–16.49% spread is the tolerance band. A pace between 1.5 and 2.0 on a high-share
+  session is a name whose pace is really ~1.2; treat it as Soft-A, not Tier A.
+
+**Everything else about the open slot is the same procedure** — the same trigger screen, the same
+tiers, the same gap annex, the same catalyst rules, the same buyout rule. Only the floors and the
+volume measure change.
+
+**The gap verdict at 09:50 covers only the first ~20 minutes.** The shared helper rebuilds the
+path from 5-minute bars, so at 09:50 the later path points (10:00, 12:00, 15:50) are simply not
+there yet and the verdict is computed over a 20-minute window. `held` at the open slot means
+**"the gap held for 20 minutes"**, NOT "held into the bell" — say so in the artifact, and never
+reuse the preclose phrasing ("held into the bell") in an open-slot artifact.
 
 ### Pre-close two-phase procedure (required)
 
@@ -204,7 +290,7 @@ Between Soft-A and B. For liquid technical setups that fail a hard pure-technica
 
 **Sort:** after Soft-A, before B, by session turnover descending.
 
-**Chat:** include material TECH_WATCH on midday / manual when turnover clearly clears the midday-scale floor; at the deployed pre-close slot, only if turnover already clears the midday-scale floor (~$2–5m).
+**Chat:** include material TECH_WATCH on midday / manual when turnover clearly clears the midday-scale floor; at the deployed pre-close slot, only if turnover already clears the midday-scale floor (~$2–5m); **at the deployed `open` slot, only if turnover already clears the open-scale floor (~$0.5–1m)** — a name that has printed $1m in 20 minutes is a real signal, one that has printed $200k is not.
 
 ## Persistence
 
@@ -212,7 +298,19 @@ Save every run to:
 
 `C:\Users\admin\.minimax\projects\coding-shared\research\us-in-play\YYYY-MM-DD-<slot>.md`
 
-- `<slot>` = `preclose` (~15:50, the deployed slot), `midday` (~12:30), or `manual`
+- `<slot>` = `open` (~09:50, deployed), `preclose` (~15:50, deployed), `midday` (~12:30, not
+  deployed), or `manual`
+- **The on-disk path is slot-qualified for `open` only**, and the `preclose` path is unchanged so
+  the historical chain and the auditor's existing roster row keep working:
+
+| Slot | Path in `us-stocks-in-play/` |
+|---|---|
+| `preclose` | `<date>.md` — **canonical, unchanged** |
+| `open` | `<date>-open.md` |
+
+  The two can never collide: the `open` fire writes `-open.md`, the `preclose` fire writes the
+  bare path. **Never publish the `open` board to `<date>.md`** — that is the preclose board's
+  path, and writing there destroys the previous day's preclose chain.
 - Include: run time ET, session state, sort note, tier tables, PM gap annex, halt watch, source health table, sources
 - When after-close / AH 8-K / PR material catalysts exist, require an `overnight_carry` section
 - **The `preclose` carry is written before tonight's prints.** Name the watch list — the scheduled
@@ -222,6 +320,9 @@ Save every run to:
   not to duplicate.
 - Include the fuel-log line in `us-stocks-in-play/logs.jsonl` in the digest's file list
 - On the pre-close slot: load prior digest's `overnight_carry` into the Overnight → pre-close annex
+- **On the open slot: load the PREVIOUS DAY's `preclose` board's `overnight_carry` into the
+  Overnight → open annex**, and report which of those names are in play this morning. Do not
+  re-tell last night's reactions — the post-market brief owns those.
 - **Chat only if** any Tier A or Soft-A, material TECH_WATCH, or material Tier C
 
 ## Source stack
@@ -334,14 +435,17 @@ Perplexity Finance or major wires for large-cap colour only.
 
 ## Timing emphasis
 
+- **~09:50 ET (`open`, the deployed slot):** the first read on the day's tape — the gap, the
+  catalyst that caused it, and the names already running ahead of pace. Pace measure, ~$0.5–1m
+  floor, 20-minute gap window, Overnight → open annex from the prior day's preclose carry.
 - **~15:50 ET (`preclose`, the deployed slot):** gaps that held into the close, late tape, halt resumes; PM gap annex; pull prior `overnight_carry`.
-- **~12:30 ET (`midday`):** continuation vs fade; raise $ volume bar; RVol soft preference; write `overnight_carry` for AH-relevant names.
+- **~12:30 ET (`midday`, not deployed):** continuation vs fade; raise $ volume bar; RVol soft preference; write `overnight_carry` for AH-relevant names.
 
 RTH: 09:30–16:00 ET.
 
 ## When
 
-- Cron: `50 15 * * 1-5` America/New_York (weekdays, 15:50 ET — pre-close slot, 10 min before the cash close)
+- Cron: `50 9,15 * * 1-5` America/New_York (weekdays, **09:50 ET `open` slot** and **15:50 ET `preclose` slot**, 10 min before the cash close) — one task, two fires a day
 - Manual: user asks "what's in play today" or "run US stocks in play"
 - For midday digest, run manually or as a separate cron (not added by default).
 

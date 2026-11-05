@@ -59,7 +59,27 @@ TOLERANCE = {"01-weekly-mcp-health-check":7, "13-macro-calendar-midweek":7,
 # absent — it has never had a scheduled chance to run. Reporting it as stale is a false
 # positive. Keep this in sync with the NOT_YET_FIRED list in cron #90's prompt.
 NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01",
-                 "14-macro-calendar-week-ahead": "2026-11-01"}
+                 "14-macro-calendar-week-ahead": "2026-11-01",
+                 "17-us-stocks-in-play-open": "2026-11-05"}
+
+# A routine whose schedule fires MORE THAN ONCE A DAY publishes more than one artifact.
+# #17 (us-stocks-in-play) fires at 09:50 ET (the `open` slot) and 15:50 ET (the `preclose`
+# slot) and writes a DIFFERENT file for each. Each slot is checked SEPARATELY: if the open
+# slot silently stopped while the preclose kept working, the routine must still read as
+# stale — one "Last delivered" for the pair would hide exactly that failure.
+# Keyed by routine -> {hour-of-day -> (row label, artifact path, FILENAME REGEX)}.
+# The matcher is a regex, not a suffix, and it MUST be anchored: `us-stocks-in-play/` also
+# holds `2026-10-29-pre-open.md` (a pre-open digest restored from repo history) and
+# `2026-10-13-open.md` (a genuine earlier open-slot board). A suffix filter of "-open.md"
+# matches BOTH, so it reports the pre-open file as the open slot's last delivery.
+SLOTS = {
+ "17-us-stocks-in-play": {
+   "9":  ("17-us-stocks-in-play-open", "us-stocks-in-play/{date}-open.md",
+          r"^\d{4}-\d{2}-\d{2}-open\.md$"),
+   "15": ("17-us-stocks-in-play",      "us-stocks-in-play/{date}.md",
+          r"^\d{4}-\d{2}-\d{2}\.md$"),
+ },
+}
 DATE_RE = re.compile(r"(20\d\d-\d\d-\d\d)")
 # A WEEK-based filename (mcp-health/2026-W44.md) carries no YYYY-MM-DD. Its ISO week ENDS on
 # the Sunday the routine ran: Jan 4 of a year always falls in ISO week 1, so the Sunday of
@@ -78,19 +98,25 @@ def git_files(repo):
         return []
     return out.stdout.split("\n")
 
-def last_delivered(files, routine):
+def last_delivered(files, routine, name_re=None):
     """Newest date among the files that belong to THIS routine.
 
     Filters on directory AND filename suffix, because several routines share a
     directory (earnings/, macro-calendar/, daily-screens/). Without the suffix
-    filter, #19 reports #15's newest date and every sibling looks fresh."""
+    filter, #19 reports #15's newest date and every sibling looks fresh.
+
+    `name_re` narrows the match to ONE slot of a multi-fire routine — see SLOTS. It is
+    matched against the BASENAME, so it must be anchored itself."""
     spec = ARTIFACTS.get(routine)
     if not spec: return None
     dirname, suffix = spec[1], spec[2]
     best = None
     for f in files:
         if not f.startswith(dirname + "/"): continue
-        if not f.endswith(suffix): continue
+        base = f.rsplit("/", 1)[-1]
+        if name_re:
+            if not re.match(name_re, base): continue
+        elif not base.endswith(suffix): continue
         for d in DATE_RE.findall(f):
             if best is None or d > best: best = d
         m = WEEK_RE.search(f)
@@ -130,6 +156,40 @@ def main():
         # A routine with no artifact dir on origin/main (e.g. the auditor, which
         # pushes to the audit/status branch) cannot be stale-tested against main.
         exempt = spec is None or not spec[1]
+        slots = SLOTS.get(routine)
+        hours = [h for h in (hh.split(",") if hh != "?" else []) if h]
+        if slots and len(hours) > 1:
+            # MULTI-FIRE ROUTINE: one roster row per fire, each with its own artifact.
+            for h in hours:
+                if h not in slots:
+                    continue
+                label, apath, asuffix = slots[h]
+                sub_sch = f"{parts[0]} {h} * * {dow}" if len(parts) == 5 else sch
+                sub_fires = {"*": "every day", "1-5": "Mon-Fri", "0": "Sun",
+                             "1": "Mon", "3": "Wed", "6": "Sat"}.get(dow, dow)
+                last = last_delivered(files, routine, asuffix) if files else None
+                age = None
+                if last:
+                    age = (datetime.date.fromisoformat(as_of)
+                           - datetime.date.fromisoformat(last)).days
+                tol = TOLERANCE.get(label, TOLERANCE.get(routine, 5))
+                first_fire = NOT_YET_FIRED.get(label)
+                not_yet_fired = bool(first_fire) and as_of < first_fire
+                if exempt or not_yet_fired:
+                    stale = None
+                else:
+                    stale = (age is None) or (age > tol) if files else None
+                rows.append({
+                    "task_id": t.get("task_id"), "routine": label, "schedule": sub_sch,
+                    "fire_et": f"{int(h):02d}:{parts[0].zfill(2)}",
+                    "fires": sub_fires, "tz": t.get("timezone"), "project": t.get("project_id"),
+                    "enabled": t.get("enabled"),
+                    "session_mode": (t.get("session") or {}).get("mode"),
+                    "artifact": apath,
+                    "last_delivered": last, "age_days": age, "tolerance_days": tol,
+                    "stale": stale, "not_yet_fired": not_yet_fired, "first_fire": first_fire,
+                })
+            continue
         last = last_delivered(files, routine) if files else None
         age = None
         if last:
@@ -143,11 +203,11 @@ def main():
             stale = (age is None) or (age > tol) if files else None
         rows.append({
             "task_id": t.get("task_id"), "routine": routine, "schedule": sch,
-            "fire_et": f"{int(hh):02d}:{parts[0].zfill(2)}" if hh!="?" else "?",
+            "fire_et": f"{int(hh):02d}:{parts[0].zfill(2)}" if hh != "?" else "?",
             "fires": fires, "tz": t.get("timezone"), "project": t.get("project_id"),
             "enabled": t.get("enabled"),
             "session_mode": (t.get("session") or {}).get("mode"),
-            "artifact": ARTIFACTS.get(routine,("",""))[0],
+            "artifact": ARTIFACTS.get(routine, ("", ""))[0],
             "last_delivered": last, "age_days": age, "tolerance_days": tol,
             "stale": stale, "not_yet_fired": not_yet_fired, "first_fire": first_fire,
         })

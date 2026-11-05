@@ -197,6 +197,26 @@ a skip.
   All three have **first fire 2026-11-03**. For `$AUDIT_DATE` before 2026-11-03 they are
   `not_yet_fired`, NOT `MISSING`.
 
+- **2026-11-05** — **#17 (us-stocks-in-play) moved from ONE fire a day to TWO**: its schedule
+  changed from `50 15 * * 1-5` to `50 9,15 * * 1-5` America/New_York, so the same task now fires
+  at **09:50 ET** (the `open` slot) and **15:50 ET** (the `preclose` slot). **The two slots write
+  DIFFERENT files** and both rows are in the roster table below:
+  - `us-stocks-in-play/{date}-open.md` — the `open` slot (09:50 ET)
+  - `us-stocks-in-play/{date}.md` — the `preclose` slot (15:50 ET), **unchanged**
+
+  **The `open` slot's FIRST FIRE is 2026-11-05.** For `$AUDIT_DATE` **before 2026-11-05** the
+  open artifact is `not_yet_fired`, NOT `MISSING` — nothing was ever supposed to write it.
+  From 2026-11-05 onward a missing `us-stocks-in-play/<date>-open.md` IS `MISSING`.
+
+  **Both slots push with the SAME commit subject**, `cron 17 us-stocks-in-play <date>` (it is
+  derived from the artifact path, and the path prefix is the same for both). That is deliberate:
+  the near-miss triage greps `grep -E "^[0-9a-f]+ cron (#)?17 "`, so a MISSING open artifact is
+  triaged as "routine ran, wrote `<other path>` instead" rather than "routine never ran" — which
+  is the correct reading. **Do not "fix" this by giving the open slot a custom `--msg`.**
+
+  The two path patterns are DISJOINT: the preclose regex requires the date to be followed
+  immediately by `.md`, so `<date>-open.md` does not satisfy it, and vice versa.
+
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
 artifact on a holiday is `possible_holiday`, not a failure. The 2026 NYSE closures are in the
@@ -235,6 +255,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
 | 07-focus-rvol-09:45 | `45 9 * * 1-5` | `daily-screens/{date}/focus-rvol-snapshot.md` | Mon-Fri |
 | 92b-preopen-catalyst-capture | `50 9 * * 1-5` | `preopen-feed/{date}-0950.jsonl` | Mon-Fri |
+| 17-us-stocks-in-play-open | `50 9 * * 1-5` | `us-stocks-in-play/{date}-open.md` | Mon-Fri |
 | 12-cross-asset-correlation | `0 10 * * 1-5` | `cross-asset/{date}.md` | Mon-Fri |
 | 10-breadth-snapshot | `0 14 * * 1-5` | `daily-screens/{date}/breadth-snapshot.md` | Mon-Fri |
 | 13-macro-calendar-midweek | `0 14 * * 3` | `macro-calendar/{date}-midweek.md` | Wed |
@@ -248,6 +269,12 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 22-weekly-market-recap-preview | `47 17 * * 0` | `weekly/{date}-preview.md` | Sun |
 | 09-daily-sweep-18:30 | `30 18 * * 1-5` | `daily-screens/{date}/daily-sweep.md` | Mon-Fri |
 | 23-agentic-post-market-brief | `30 22 * * 1-5` | `daily-briefs/{date}-post-market.md` | Mon-Fri |
+
+**#17 has TWO rows** because it fires twice a day from one task: the `open` row (09:50 ET,
+`us-stocks-in-play/{date}-open.md`) and the `preclose` row (15:50 ET, `us-stocks-in-play/{date}.md`).
+Check **both** paths on a Mon-Fri audit date from 2026-11-05 onward, and judge each on its own
+schedule. A routine with two rows is still ONE routine for near-miss triage: both slots push with
+the subject `cron 17 us-stocks-in-play <date>`.
 
 **Two rows have no path and must never be checked for one:** `90-delivery-auditor` and
 `91-schedule-drift-guard` are self-checks — they report in the chat and push nothing to the
@@ -372,7 +399,7 @@ cd /workspace/.audit
 # instance is a SEPARATE historical gap (a lost push race) and is not a stale finding.
 # VERIFICATION DEADLINE: if macro-calendar/2026-11-01-week-ahead.md is absent after
 # 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
-NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01 91-schedule-drift-guard:2026-11-03 92a-preopen-catalyst-capture:2026-11-03 92b-preopen-catalyst-capture:2026-11-03"
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01 91-schedule-drift-guard:2026-11-03 92a-preopen-catalyst-capture:2026-11-03 92b-preopen-catalyst-capture:2026-11-03 17-us-stocks-in-play-open:2026-11-05"
 for entry in \
   "01-weekly-mcp-health-check|^mcp-health/[0-9]{4}-W[0-9]{2}\.md$|7" \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
@@ -390,6 +417,7 @@ for entry in \
   "14-macro-calendar-week-ahead|^macro-calendar/[0-9]{4}-[0-9]{2}-[0-9]{2}-week-ahead\.md$|7" \
   "06-pattern-study-backlog|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/weekly-ipo\.md$|7" \
   "17-us-stocks-in-play|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "17-us-stocks-in-play-open|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}-open\.md$|5" \
   "04-reversal-bullish-3:55|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/reversal-bullish-3:55\.md$|5" \
   "20-eod-watchlist-csv|^us-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv$|5" \
   "05-eod-international-daily|^international-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}/[a-z]{2}(-[a-z]{2})?\.csv$|5" \
