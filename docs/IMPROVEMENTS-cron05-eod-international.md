@@ -232,3 +232,135 @@ the `change` column's percent unit at the same time).
   +1.50%, Optima €13.48 +3.06%) match the snapshot exactly.
 - **The DAX is quoted two ways.** The Xetra closing price is 26,437.67 (+2.22%); one outlet quotes
   the later auction value 26,479.33 (+2.38%). The file uses Xetra and says so.
+
+---
+
+## 11. The cap carrier rule, the report skeleton, and the venue-official price rule
+
+Date: 2026-11-05. Scope: cron #05's prompt (`05-eod-international-daily.md`), the
+`eod-watchlist-snapshot` skill spec, a new build-time assertion helper, and this file. The
+FX direction and the exact carry-over comparison were fixed on 2026-11-04 (sections 10.1 and
+10.2); this round takes the three defects that survived that fire.
+
+### 11.1 The market-cap carrier rule was wrong, and it is measurable in the archive
+
+The 2026-11-03 run reported that "share-class market caps are company-level" and that a
+preferred line can top its region's mover list. The rule that was supposed to prevent it did
+not exist, and the underlying defect is sharper than the note says.
+
+**TradingView's cap is company-level AND denominated in the currency of the LINE that carries
+it.** One issuer, three lines, measured against the scanner on 2026-11-04:
+
+| line | class | `market_cap_basic` | `currency` | published `market_cap` (USD) |
+|---|---|---|---|---|
+| `TSX:ENB` | common | 155,521,863,830 | CAD | $111.1bn |
+| `TSX:ENB.PR.B` | preferred | 155,521,863,830 | CAD | $111.1bn |
+| `TSX:ENB.PF.V` | preferred, **quoted in USD** | 155,521,884,141 | **USD** | **$155.5bn** |
+
+The third line trades in USD, so converting it with its own currency leaves the raw number
+alone — and the same issuer ends up with two "USD" caps that differ by **1.4x**, both written
+as USD into the same CSV. Seventeen Enbridge preferred lines are affected in the 2026-11-04
+Canada file. A consumer cannot tell from the file that the two disagree.
+
+The fix resolves the cap to the issuer's **primary listing line** and converts it **once**, with
+the primary's currency. Every row publishes `cap_source_symbol` (the line the cap came from),
+`share_class` (`common`/`preferred`/`unit`/`other`), and a build-time assertion requires that a
+carried cap lands on a `common` line of the **same ticker root**. The group resolution happens
+**before** the floor is applied, so a group either survives the floor entirely or is excluded
+entirely — a published preferred never points at a cap source that is not in the file.
+
+Two traps are recorded in the spec because both fail silently:
+
+- **`share_class` cannot come from the scanner's `type` column.** `TSX:ENB` and `TSX:ENB.PR.B`
+  both return `type=stock`; only the US scanner's `dr` distinguishes a depositary receipt. The
+  class comes from the ticker suffix and the description.
+- **A preferred line must never outrank a common line on a company-level cap.** The preferred
+  carries the issuer's cap, so the common line sorts above it in every cap-ranked table.
+
+### 11.2 The BHP claim from 2026-11-03 does not survive a check — and the check is now built
+
+The 2026-11-03 note said `ASX:BHP` "implies 5.11bn shares against a real count near 2.13bn, so
+BHP's market cap reads ~$202bn instead of ~$86bn", and called it a repeat of the 2 November
+anomaly. **Nothing in the archive supports $86bn.** The implied count is ≈5.16bn on every one
+of the eight archived sessions, and BHP Group Ltd's ordinary share count is ≈5.16bn.
+
+The new cross-venue check settles it with two independent readings of the same company-level
+cap: `ASX:BHP` published $199,978,375,677 (A$286.81bn ÷ 1.434205) and the ADR line `NYSE:BHP`
+reads $199,731,606,351 — **agreement within 0.12%**. The cap is right; the note was wrong.
+
+The lesson is the reason the check is in the spec rather than a one-off: **a cap claim with no
+second reading behind it is not publishable.** The America scanner
+(`symbols.query.types = ["stock","dr"]`) returns 13,376 rows in three calls — 737 of them `dr`
+— and the OTC lines come back with them, so the second reading is cheap. The same pull is the
+source for `us_listing`, which is why the three fixes interlock.
+
+### 11.3 `us_listing` — and the file that looks like the source but is not
+
+`us_listing` (`NYSE` / `NASDAQ` / `ADR` / `OTC` / `none`) makes the foreign tape reachable for a
+US trader, and the TL;DR names the moves that have a US-listed line.
+
+**The source is the America scanner, not `us-eod/{date}.csv`.** That file is shibui's
+`country_iso='US'` universe: on 2026-11-04 `BHP`, `RIO`, `SAP` and `TSM` are all absent from
+it, because shibui's US universe carries 10 ADR lines out of ~5,000 rows. Matching is on the
+issuer, not the ticker — the America scanner describes the US line as "BHP Group Ltd Sponsored
+American Depositary Receipt Repr 2 Shs" against the AU line's "BHP Group Ltd".
+
+### 11.4 The report skeleton, and what was actually wrong with it
+
+`summary.md` now has a fixed skeleton: `## TL;DR` (exactly 3 bullets), `## Market context`
+(coverage table, then index levels, then regional breadth), `## Top movers` (**one table per
+region**), `## Below the gate`, `## No catalyst`, `## Method, source health & caveats`.
+
+**The old section list was not the problem.** It had been stable since 2026-10-30. The defect
+was what the movers table *contained*: one flat list that mixed regions, mixed in below-the-cap
+names, and mixed in names with no catalyst, under a report with no TL;DR. `## Below the gate`
+publishes the names that moved and would have been published but for the cap floor (a −24.72%
+move is not noise); `## No catalyst` holds the names that moved with no sourced driver, so they
+cannot dilute the mover table. The coverage table now counts exclusions **per reason**, from a
+closed set: `no_market_cap`, `below_cap_floor`, `below_volume`, `issuer_unresolved`,
+`cap_issuer_mismatch`, `stale_venue_print`.
+
+One correction to the old prompt: it said cron #90's auditor and the downstream briefs key on
+the section names. **They do not** — #90 keys on the artifact *path*
+(`international-eod/{date}/<region>.csv`), which is unchanged, and nothing in the fleet reads
+`summary.md`'s headings. The names are now pinned because the *reader* keys on them.
+
+### 11.5 The venue-official price rule
+
+Both open price discrepancies were prose notes in the 2026-11-03 report: Vienna's official
+auction put AT&S at €139.60 (+6.89%) against the scanner's €138.00 (+5.67%), and the ATHEX
+official close (2,616.12, euro2day) sat 1.4 points away from TradingEconomics' CFD (2,617.5).
+
+The rule is now explicit: **the venue's own auction/close wins**, the row carries both values
+and the delta in a `price_conflict` column (`official=… source=… third_party=… delta=…`), and
+the index table publishes the same way. A CFD is never venue-official — it trades continuously
+and prints a different level at the same instant. Where no official price can be obtained the
+third-party close stands and the row carries no `price_conflict`: an unverified conflict is not
+a conflict.
+
+### 11.6 The assertions are code now
+
+`scripts/intl_assert.py` performs the four assertions against a built directory — no
+unaccounted cap, a reason on every excluded row plus the manifest's per-reason counts and the
+`unique_instruments == written + sum(excluded)` identity, the summary's tables reconciled
+against the CSVs and the manifest, and `us_listing` plus a parsable `price_conflict` on every
+published row. 23 unit tests (`tests/test_intl_assert.py`), and the whole skill suite is 165
+tests green.
+
+Run against the 2026-11-04 artifact it reports **4,472 failures** — one per published row
+missing the four provenance columns — with the message *"the artifact predates the 18-column
+schema and must be rebuilt, not patched"*. That is the intended result: the old files are not
+repairable by hand, and the next fire has to build them the new way.
+
+The 14 → 18 column change is a schema change for the archive's consumers, so `## Method` must
+state the column count whenever it differs from the previous session — the same way a unit
+change is stated. A mixed archive is expected and is the reason `csv_columns` is now in
+`_manifest.json`.
+
+### 11.7 A dangling reference, found on the way
+
+The prompt pointed at "the skill's *The machine-readable companions* section" for the contract
+of `_manifest.json`, `_excluded.json` and `_carryover.json`. **That section did not exist.**
+It now does, and it specifies the manifest's per-region `excluded` map (a nested map, because a
+closed reason set cannot grow a sixth reason without another flat key), the published table
+counts (`mover_rows`, `below_gate_rows`, `no_catalyst_rows`), and the `csv_columns` field.

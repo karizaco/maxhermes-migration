@@ -62,12 +62,27 @@ Manual trigger: user asks "snapshot today" or "save today's EOD" — invoke the 
 ## Schema (CSV header)
 
 ```
-date,ticker,name,open,high,low,close,volume,change_pct,market_cap,pe_ratio,sector,currency,exchange
+date,ticker,name,open,high,low,close,volume,change_pct,market_cap,pe_ratio,sector,currency,exchange,cap_source_symbol,share_class,us_listing,price_conflict
 ```
 
 Numeric columns formatted to 4 sig figs; empty cell if data missing (don't write `"N/A"`).
 
 For non-top-N tickers, `volume` / `pe_ratio` / `sector` may be blank (TradingView screener strips them). The enrichment cache fills them in for the top-N per region (default 500).
+
+The last four columns are the **provenance columns**, and they are what make a cap, a listing and
+a price auditable after the fact. Every row carries all four; an empty cell means "no conflict"
+or "no US listing", never "unknown":
+
+| column | value | meaning |
+|---|---|---|
+| `cap_source_symbol` | the ticker of the line the cap was taken from | the issuer's **primary** line — see the market-cap carrier contract below. Equals the row's own `ticker` when the row IS the primary line. |
+| `share_class` | `common` / `preferred` / `unit` / `other` | the line's class. `common` is the issuer's primary line. |
+| `us_listing` | `NYSE` / `NASDAQ` / `ADR` / `OTC` / `none` | whether a US trader can reach this issuer, and how. |
+| `price_conflict` | `official=… source=… third_party=… delta=…` | non-empty ONLY when the venue's official print differed from the third-party quote and the official price was published. |
+
+**The header grew from 14 columns to 18 in this revision, and a consumer that reads by position
+breaks.** State the column count in `## Method` whenever it differs from the previous session,
+the same way the units contract requires for a unit change.
 
 ## Units, floors and the market-cap contract (READ BEFORE WRITING ANY CSV)
 
@@ -124,11 +139,174 @@ in this archive, and a consumer cannot tell from the file which one it is holdin
 - **A row whose market cap the source does not report is EXCLUDED, not written blank.** A row with
   no cap cannot be tested against a floor, so writing it puts an unscreenable row in a screened
   file. Publish the excluded count per region in the Coverage table.
+- **Every excluded row carries a `reason` from this closed set, and the Coverage table counts
+  them per reason.** A reader must be able to tell "no market cap at all" from "below the
+  floor" from "a carry-over" from "a stale venue print" — the 2026-11-03 run excluded 243
+  no-cap rows into `_excluded.json` and, without a reason column, none of that was legible.
+
+  | reason | meaning |
+  |---|---|
+  | `no_market_cap` | the source reports no market cap for the row |
+  | `below_cap_floor` | the row has a cap, but below the region's USD floor — these are the names published under `## Below the gate` |
+  | `below_volume` | the row has a cap but fails the region's volume gate |
+  | `issuer_unresolved` | the row's cap could not be resolved to a primary listing line |
+  | `cap_issuer_mismatch` | a carried cap failed the same-issuer assertion — the group was dropped |
+  | `stale_venue_print` | the row's print is not this session's (off-official venue row) |
+
+  The Coverage table publishes the per-reason counts for every region, and `_excluded.json`
+  carries the same reasons on every row. A row with an empty or unknown reason is a defect in
+  the build, not a row to publish.
 - **Never change the unit of this column silently.** If a run writes it differently from the
   previous session, say so in the artifact and in `## Source health`, and restate the earlier
   session. A series that switches unit mid-stream reads as a market event that never happened.
 - **Check any change to this contract with a share-count reconciliation**, not with a length or a
   spot check: `market_cap_basic / close` must land on the issuer's real share count.
+
+## The market-cap carrier contract (READ BEFORE WRITING ANY CSV)
+
+**The cap belongs to the ISSUER, and the source's cap is denominated in the currency of the
+LINE that carries it — not in one currency for the whole issuer.** That single fact is the
+carrier defect, and it is live in the archive.
+
+Measured 2026-11-04 against the TradingView per-country scanner — one issuer, three lines:
+
+| line | class | `market_cap_basic` | `currency` | published `market_cap` (USD) |
+|---|---|---|---|---|
+| `TSX:ENB` | common | 155,521,863,830 | CAD | $111.1bn |
+| `TSX:ENB.PR.B` | preferred | 155,521,863,830 | CAD | $111.1bn |
+| `TSX:ENB.PF.V` | preferred, **quoted in USD** | 155,521,884,141 | **USD** | **$155.5bn** |
+
+One issuer, one company-level cap, the same integer — but because the third line trades in USD,
+converting it with its OWN currency leaves it at $155.5bn while the common line converts to
+$111.1bn. **The same issuer then carries two "USD" caps that differ by 1.4x**, the preferred
+line clears the cap floor because of it, and a preferred outranks the common line on a
+company-level cap. Seventeen Enbridge preferred lines are affected in the 2026-11-04 Canada file
+alone, and the two numbers are both "USD" in the CSV, so a consumer cannot tell they disagree.
+
+**So the cap is resolved to the issuer's PRIMARY line, converted ONCE, and every line of that
+issuer carries that one USD figure.** The rule, in four parts:
+
+1. **Resolve the primary line.** Group the region's rows into issuers with the company key the
+   venue-collapse rule already uses (`(description, ticker root)`; German rows dedupe by company
+   description). The primary line is the group's `common` line — the one whose ticker carries no
+   share-class suffix and whose description carries no preferred/unit marker. **A group with no
+   `common` line has no primary**: its cap cannot be resolved to a primary listing, so its names
+   are DROPPED from the cap-filtered table and recorded in `_excluded.json` with reason
+   `issuer_unresolved`. They are never published with a borrowed cap.
+2. **Carry the cap, and record the carry.** Every row publishes `cap_source_symbol`: the ticker
+   of the line whose `market_cap_basic` the published USD cap was taken from. For the primary
+   line it is the row's own ticker; for every other line of the issuer it is the primary's
+   ticker. **The conversion is applied ONCE, to the primary's `market_cap_basic`, using the
+   PRIMARY's currency** — never to each line's own number.
+   **Order matters: resolve the issuer groups and assign the primary's cap BEFORE the floor is
+   applied.** A group then either survives the floor entirely or is excluded entirely, so a
+   published row never points at a `cap_source_symbol` that is not in the file — and a preferred
+   line of a below-floor issuer is below the floor too, instead of inheriting a cap its own
+   issuer never earned.
+3. **Assert the carry is issuer-preserving.** For every row whose `cap_source_symbol` differs
+   from its own ticker, the two symbols MUST resolve to the same issuer group. This is a
+   build-time assertion, not a note: a mismatch means a cap was carried across issuers, so the
+   group is dropped and recorded with reason `cap_issuer_mismatch`. A carried cap whose issuer
+   cannot be resolved is never published.
+4. **Flag the non-common lines, and never let one outrank the common line.** `share_class` is
+   `common` / `preferred` / `unit` / `other`, derived from the ticker suffix and the description
+   — **NOT from the scanner's `type` column, which reads `stock` for common AND preferred lines
+   alike** (verified 2026-11-05: `TSX:ENB` and `TSX:ENB.PR.B` both return `type=stock`; only
+   the US scanner's `dr` distinguishes a depositary receipt). A preferred line carries the
+   issuer's company-level cap, so **in any cap-ranked table the issuer's `common` line sorts
+   ABOVE it, always** — a preferred never wins on a borrowed cap. Where a cap-ranked table would
+   otherwise be led by a non-common line, publish the common line instead and list the
+   preferred lines beneath it, flagged.
+
+### The cross-venue cap check — the ADR line is a second opinion on a cap
+
+The issuer's US line is an independent reading of the same company-level cap, and it is cheap:
+`POST https://scanner.tradingview.com/america/scan` with `symbols.query.types = ["stock","dr"]`
+returns **13,376** rows in three calls (`range` caps at 6,000 per call), of which **737** are
+`type=dr` depositary receipts, and the OTC lines (`OTC:BCMXY`, `OTC:MURGY`, …) come back with
+them.
+
+**Where an issuer has a US ADR line, compare the two caps after conversion. They must agree
+within 10%.** A disagreement is a cap finding: publish the primary line's cap, record the
+delta, and flag the row.
+
+This check is what settles the BHP question, and it is why the check exists. On 2026-11-04
+`ASX:BHP` published $199,978,375,677 (A$286.81bn ÷ 1.434205) and the ADR line `NYSE:BHP` reads
+$199,731,606,351 — **agreement within 0.12%** — and `market_cap_basic / close` returns ≈5.16bn
+shares on both, which is BHP Group Ltd's ordinary share count. The implied count is also stable
+across all eight archived sessions (5.08–5.16bn). **The 2026-11-03 run's note that "BHP's cap
+still reads ~$202bn vs a real ~$86bn" is a bad lookup in that run's notes, not a defect in the
+data** — nothing in the archive supports $86bn, and two independent venues agree the cap is
+~$200bn.
+
+Publish that finding the way the check publishes anything else: as a number with a source and a
+delta. A run asserting a cap is 2.3x wrong with no second source behind it is how a wrong
+number survives for eight sessions, so **a cap claim without a cross-venue or share-count
+second reading is not publishable.**
+
+The ADR line is ALSO the source for `us_listing` (below) — it is a per-issuer second reading of
+the cap and a per-issuer US listing, in one pull.
+
+### `us_listing` — which of these a US trader can actually reach
+
+Every published row carries `us_listing`: `NYSE` | `NASDAQ` | `ADR` | `OTC` | `none`.
+
+- `ADR` — the issuer has a US line that is a depositary receipt (the America scanner's `type` is
+  `dr`). This is the normal case for a foreign issuer.
+- `NYSE` / `NASDAQ` — the issuer has its own US listing on that exchange, not a depositary
+  receipt.
+- `OTC` — the US line is an OTC quotation (`OTC:` prefixed).
+- `none` — no US listing.
+
+**Do not source this from `us-eod/{date}.csv`.** That file is shibui's `country_iso='US'`
+universe and it does NOT contain the ADRs: on 2026-11-04 `BHP`, `RIO`, `SAP` and `TSM` are all
+absent from it, because shibui's US universe carries only 10 ADR lines out of ~5,000 rows. The
+America scanner is the source — one pull, three calls, and it returns the OTC lines too.
+
+**Match on the issuer, not on the ticker.** The America scanner describes the US line as "BHP
+Group Ltd Sponsored American Depositary Receipt Repr 2 Shs" against the AU line's "BHP Group
+Ltd", so strip the depositary/class suffix and compare the issuer name. A name that matches no
+US line is `none`.
+
+## The venue-official price rule — the exchange's own print wins
+
+**Where an exchange's own official auction/close price is available and differs from the
+third-party quote, the official price IS the price.** The third-party number is not averaged,
+not hedged, and not left as a prose note in `## Caveats` — it is published beside the official
+one, in the row, with the delta.
+
+Measured 2026-11-03, Vienna: AT&S (`VIE:ATS`) closed €138.00 (+5.67%) on the scanner while the
+Vienna official auction printed €139.60 (+6.89%) — and every other checked close on that session
+matched its official price to the cent. Measured 2026-11-03, Athens: the ATHEX official close was
+2,616.12 (euro2day, 17:25) while TradingEconomics' CFD read 2,617.5 — a 1.4-point difference.
+Both sat in the 11-03 report as prose notes, which is exactly how a price conflict survives into
+the archive as an unflagged row.
+
+**The rule, in three parts:**
+
+1. **Prefer the venue's own auction/close.** The official close is the number the market settled
+   on; a CFD, a broker quote or a scanner's last trade is a derivative of it. Publish the
+   official close in `close` and `change_pct`, and derive `change_pct` from the official close
+   against the same session's prior close.
+2. **Publish the conflict, in the row.** A row whose close was resolved to an official price
+   carries `price_conflict`: `official=<price> source=<where> third_party=<price>
+   delta=<abs> (<pct>)`. A row with no conflict carries an EMPTY `price_conflict` cell — never
+   `"N/A"`.
+3. **The same rule applies to the index row.** The `## Market context` index table publishes the
+   official index close with its SESSION DATE and source; where a CFD differs, the delta is
+   published there too, not only in the caveats.
+
+**What counts as venue-official:** the exchange's own end-of-day auction print (the exchange's
+site or its licensed data feed), the local press wire that reports the official close, and the
+index provider's own closing level. **A CFD is NOT venue-official** — it is a third-party quote
+of an index, it trades continuously, and it can and does print a different level at the same
+instant. Where the only available quote for an index is a CFD (there is no Yahoo index symbol for
+the ATHEX), the official close comes from the press and the CFD is the third-party value recorded
+in `price_conflict`.
+
+**Where no official price can be obtained, the third-party close stands and the row carries no
+`price_conflict`** — an unverified conflict is not a conflict. Say which one it was in
+`## Source health`.
 
 ## Steps — US universe (cron `0a87adbe…`)
 
@@ -140,27 +318,160 @@ in this archive, and a consumer cannot tell from the file which one it is holdin
 
 ## Steps — International (cron `5edfb4aa…`) — v2 + compute-opt flow
 
-### The tables an international artifact must carry
+### The summary.md skeleton (fixed order — load-bearing)
 
-Beyond the CSVs, the international artifact ships a `summary.md` whose structure is specified in
-the cron prompt. Three of its tables are computed from the written rows and are the ones that
-make the file readable:
+The summary's structure is **fixed**. The section list has been stable since 2026-10-30, so the
+defect was never the section list — it was what the movers table **contained**: one flat list
+that mixed regions, mixed in below-the-cap names, and mixed in names with no catalyst, under a
+report with no TL;DR. Follow the order below exactly. Do not add, drop or reorder sections. If a
+section has nothing in it, say so in one line — do not delete the heading.
 
-- **Coverage** — `Region | Venues | Universe | Unique instruments | Written | Floor (USD) |
-  No cap | Off-official rows`. `Universe` is everything the source returns for that country;
-  `Unique instruments` collapses multi-venue listings of one instrument to a single row;
-  `Written` is what survives the floor. Totals row included.
-- **Regional breadth** — `Region | Rows | Median | Up / down / flat | Min | Max`, computed from
-  the written rows. An index move and the typical name regularly disagree; publish both.
-- **Sector rotation** — mean and median `change_pct` per sector over the liquid subset. It
-  explains the tape better than any index level, and it is cheap because it uses the same rows.
-- **Top movers** — largest absolute moves among liquid names, with a `Catalyst` cell that says
-  what was actually sourced, or "no company-specific release found". Never an unattributed guess.
+```
+# Cron #05 eod-international-daily — <Weekday, DD Month YYYY>
+## TL;DR
+## Market context
+## Top movers
+## Below the gate
+## No catalyst
+## Method, source health & caveats
+```
+
+- **Title** — `# Cron #05 eod-international-daily — Wednesday, 04 November 2026`. Weekday spelled
+  out; it tells the reader which session this is without a lookup.
+- **`## TL;DR`** — **exactly 3 bullets**, each one line:
+  1. What global markets did (the shape), with the name count.
+  2. **The one most consequential move** — the single name or sector that changed the tape.
+  3. **The caveat that changes how to read it** — the one thing that makes the numbers mean
+     something other than what they look like.
+
+  A fourth bullet is a defect. **One of the three names the foreign moves that have a US-listed
+  line** — a US trader needs to know which of these are reachable.
+- **`## Market context`** — three tables, in this order:
+  1. **Coverage** — `Region | Venues | Universe | Unique instruments | Written | Floor (USD) |
+     Excluded: no cap | Excluded: below floor | Excluded: below volume | Excluded: issuer
+     unresolved | Excluded: cap mismatch | Carry-over rows | Off-official rows`, with a totals
+     row. The per-reason counts come straight from `_excluded.json`; they are not estimates.
+  2. **Index levels** — `Region | Index | Close | Change | Session date | Source`, one row per
+     region. The session date is the trading day the close belongs to, not the run's date. Where
+     an official close and a third-party quote disagree, the official close is published and the
+     delta appears in the cell (venue-official price rule).
+  3. **Regional breadth** — `Region | Rows | Median | Up / down / flat | Min | Max`, computed
+     from the written rows. An index move and the typical name regularly disagree; publish both.
+- **`## Top movers`** — **one table per region**, one row per name, largest absolute move first
+  within the region. Every row carries `us_listing`, the cap, and the **catalyst in the row**:
+  what was actually sourced, with its source and its date. A name with **no sourced driver** does
+  not appear here — it goes to `## No catalyst`. A mover table with a no-catalyst row in it is
+  diluting the actionable half of the file.
+- **`## Below the gate`** — the names that moved and would have been published **but for the cap
+  floor alone**: they clear the volume gate and the move threshold, and their cap is below the
+  movers table's floor. Published, because a −24.72% move is not noise. One row per name, with
+  its move and its cap, and the reason it is here stated.
+- **`## No catalyst`** — the names that moved with **no sourced driver**: no company release, no
+  filing, no analyst action, and no sourced sector or macro move behind them. Separate, so they
+  do not dilute the mover table. One row per name, with its move and its cap.
+- **`## Method, source health & caveats`** — three subsections, in this order:
+  1. **Method** — the universe rules, the per-region floors, the FX table with its source and
+     its date, the venue-collapse rule, the **cap carrier rule** (primary line,
+     `cap_source_symbol`, the cross-venue check) and the **venue-official price rule**. State the
+     CSV column count when it differs from the previous session, and list the files written.
+  2. **Source health** — one table: `Source | Query / URL | Status | Result`. Mandatory, even
+     when every source was healthy.
+  3. **Caveats** — every structural caveat that changes how the numbers read, including rows
+     whose close is a carry-over from an earlier session.
+
+**Sector rotation** (mean and median `change_pct` per sector over the liquid subset) is not a
+section of its own — it goes under `## Method, source health & caveats` as a short paragraph. It
+explains the tape better than any index level and it costs nothing, because it uses the same
+rows.
+
+### The assertions — run them, do not eyeball them
+
+Four checks, and the artifact is not finished until they pass:
+
+1. **No unaccounted cap.** Every row's `market_cap` either comes from its own line or from a
+   `cap_source_symbol` that resolves to the same issuer. Assert it row by row — a carried cap
+   with an unresolved issuer is a defect, not a row to publish.
+2. **Every excluded row has a reason**, and the Coverage table's per-reason counts equal the
+   counts in `_excluded.json`.
+3. **The summary's tables and the CSVs agree.** The number of names published in each region's
+   mover table, `## Below the gate` and `## No catalyst` tables equals the number the builder
+   marked for publication, and every ticker in those tables exists in that region's CSV. Assert
+   it — a summary row for a ticker the CSV does not contain is a fabricated row.
+4. **Every mover row carries `us_listing`**, and every non-empty `price_conflict` cell parses as
+   `official=… source=… third_party=… delta=…`.
+
+`scripts/intl_assert.py` performs all four against a built directory. Run it before the push.
+
+### The machine-readable companions
+
+Three machine-readable files ship beside the CSVs. The cron prompt points at this section for
+their contract, so **this section is the source of truth** for them.
+
+**`_manifest.json`** — the per-day facts a consumer reconciles against:
+
+```json
+{
+  "date": "YYYY-MM-DD",
+  "generated_at": "<iso8601 UTC>",
+  "provenance": "<one sentence: source, region count, FX provider and rate date>",
+  "market_cap_unit": "USD",
+  "price_currency": "listing (the `currency` column)",
+  "change_pct_unit": "percent",
+  "csv_columns": 18,
+  "fx_source": { "provider": "<provider>", "updated_utc": "<ts>", "per_usd": { "EUR": 0.0 } },
+  "floors_usd": { "<region>": { "floor_usd": 0, "min_volume": null } },
+  "regions": {
+    "<region>": {
+      "universe_rows": 0,
+      "unique_instruments": 0,
+      "written": 0,
+      "excluded": {
+        "no_market_cap": 0,
+        "below_cap_floor": 0,
+        "below_volume": 0,
+        "issuer_unresolved": 0,
+        "cap_issuer_mismatch": 0,
+        "stale_venue_print": 0
+      },
+      "carryover_rows": 0,
+      "off_official_rows": 0,
+      "mover_rows": 0,
+      "below_gate_rows": 0,
+      "no_catalyst_rows": 0,
+      "floor_usd": 0,
+      "min_volume": null,
+      "file": "<region>.csv",
+      "venues": ["<exchange>"]
+    }
+  },
+  "totals": { "written": 0, "excluded": 0 }
+}
+```
+
+- **`excluded` is the PER-REASON count**, and it is the source of the Coverage table's exclusion
+  columns — the two must be equal, and `scripts/intl_assert.py` asserts it. The flat
+  `excluded_no_market_cap` / `excluded_below_floor` keys are gone: a closed reason set with a
+  fixed home per reason cannot grow a sixth reason without another flat key.
+- **`mover_rows`, `below_gate_rows` and `no_catalyst_rows`** are the counts the summary
+  publishes. The summary's tables must match them exactly, per region.
+- **`csv_columns`** states the schema width, so a consumer reading a mixed archive can tell
+  which days are 14-column and which are 18-column without guessing from the header.
+- **The reconciliation identity holds per region:**
+  `unique_instruments == written + sum(excluded.values())`. A region that fails it has lost or
+  double-counted rows.
+
+**`_excluded.json`** — one key per region, each a list of the rows that did not make the CSV.
+**Every row carries a non-empty `reason` from the closed set above**, plus `ticker`, `name`,
+`exchange`, `close` and `volume`. A row with an empty reason is a build defect, not a row to
+publish.
+
+**`_carryover.json`** — the instruments that did not trade, with each one's `last_trade_date`.
+`last_trade_date` walks BACK through the prior files, never forward.
 
 **Carry-over rows (instruments that did not trade) are disclosed, not hidden.** The screener
 returns the last session's close and change for a row that did not trade today, which is true of
 the instrument but false as a statement about the day. Keep the rows as the source returned them
-(the schema is fixed at 14 columns), list the affected tickers in `_carryover.json` with each
+(the schema is fixed at 18 columns), list the affected tickers in `_carryover.json` with each
 instrument's last trade date, state the count in the report, and exclude them from every movers
 list.
 

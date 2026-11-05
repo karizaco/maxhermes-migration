@@ -183,41 +183,97 @@ This routine's deliverable is a **directory**, not a single file:
     /workspace/international-eod/{date}/<region>.csv    one per region, 16 in all
     /workspace/international-eod/{date}/summary.md        the report
     /workspace/international-eod/{date}/_manifest.json    machine-readable per-day facts
-    /workspace/international-eod/{date}/_excluded.json    rows excluded for a missing cap
+    /workspace/international-eod/{date}/_excluded.json    rows excluded, one reason per row
     /workspace/international-eod/{date}/_carryover.json   rows that did not trade, machine-readable
 
-`_manifest.json` and `_excluded.json` are specified in the skill's "The machine-readable
-companions" section: the manifest carries the universe size, the floor, the `market_cap`
-unit and the counts that let a consumer reconcile the session, and `_excluded.json` lists
-the rows the source reports no market cap for so their exclusion stays recoverable.
+`_manifest.json`, `_excluded.json` and `_carryover.json` are specified in the skill's "The
+machine-readable companions" section. Read that section with the skill spec: the manifest
+carries the universe size, the floor, the `market_cap` unit, the **per-reason exclusion
+counts** and the published table counts, and `_excluded.json` lists every row that did not make
+the CSV **with a non-empty `reason`**.
 
-`summary.md` carries these sections in this order. Do not rename them — cron #90's auditor and
-the downstream briefs key on them.
+### The CSV schema — 18 columns
 
-1. **Title, then a "Read this first" blockquote.** Give the row count, the regions covered, and
-   the two facts that change how the file reads: `market_cap` is written in **USD** while
-   `open`/`high`/`low`/`close` stay in the **listing currency** (`currency` says which), and rows
-   the source reports no market cap for are **excluded rather than written blank**.
-2. **`## Coverage`** — one table: `Region | Venues | Universe | Unique instruments | Written |
-   Floor (USD) | No cap | Off-official rows`, with a totals row. `Universe` is everything the
-   source returns for that country; `Unique instruments` collapses multi-venue listings of the
-   same instrument to one row; `Written` is what survives the floor.
-3. **`## Market context`** — one table of index levels (`Index | Close | Change | Day | Source`),
-   then one table of regional breadth computed from the snapshot itself
+    date,ticker,name,open,high,low,close,volume,change_pct,market_cap,pe_ratio,sector,currency,exchange,cap_source_symbol,share_class,us_listing,price_conflict
+
+The last four columns are the provenance columns, and **every row carries all four**:
+
+- `cap_source_symbol` — the ticker of the line the cap was taken from, which is the issuer's
+  **primary** listing line. It equals the row's own ticker when the row IS the primary line. A
+  cap carried from another line is published only when the two symbols resolve to the **same
+  issuer**; otherwise the name is dropped from the cap-filtered table and recorded in
+  `_excluded.json` with reason `issuer_unresolved` or `cap_issuer_mismatch`.
+- `share_class` — `common` / `preferred` / `unit` / `other`. A preferred line carries the
+  issuer's company-level cap, and **a preferred line must never outrank a common line on that
+  company-level cap**.
+- `us_listing` — `NYSE` / `NASDAQ` / `ADR` / `OTC` / `none`.
+- `price_conflict` — `official=… source=… third_party=… delta=…`, and EMPTY when there is no
+  conflict.
+
+The header grew from 14 columns to 18. State the column count in `## Method` whenever it
+differs from the previous session, the way a unit change is stated.
+
+### summary.md — the fixed skeleton
+
+`summary.md` carries these sections in this order. Do not add, drop, reorder or rename them.
+(cron #90's auditor keys on the artifact **path**, not on these names — but the reader keys on
+them, and a report that re-orders itself every morning is unreadable.)
+
+```
+# Cron #05 eod-international-daily — <Weekday, DD Month YYYY>
+## TL;DR
+## Market context
+## Top movers
+## Below the gate
+## No catalyst
+## Method, source health & caveats
+```
+
+1. **`## TL;DR`** — exactly **3 bullets**: what global markets did; the one most consequential
+   move; the caveat that changes how to read it. One of the three names the foreign moves that
+   have a US-listed line — a US trader needs to know which of these are reachable. The standing
+   caveat here is the unit convention (`market_cap` is USD, the prices are in the listing
+   currency), and it belongs in the third bullet.
+2. **`## Market context`** — three tables, in this order. The **coverage** table
+   (`Region | Venues | Universe | Unique instruments | Written | Floor (USD) | Excluded: no cap |
+   Excluded: below floor | Excluded: below volume | Excluded: issuer unresolved | Excluded: cap
+   mismatch | Carry-over rows | Off-official rows`, with a totals row; the per-reason counts come
+   from `_excluded.json`, they are not estimates); the **index levels** table
+   (`Region | Index | Close | Change | Session date | Source`); and the **regional breadth** table
    (`Region | Rows | Median | Up / down / flat | Min | Max`). The breadth table is what shows that
    an index move and the typical name disagree — report both, never the index alone.
-4. **`## Top movers`** — one consolidated table of the largest absolute moves among liquid names
-   (`Region | Ticker | Name | Change | Close | Volume | Mkt cap (USD) | Catalyst`), then a second
-   table with one row per region for the largest mover in that region. The `Catalyst` cell says
-   what you actually sourced, or "no company-specific release found" — never an unattributed
-   guess.
-5. **`## Method`** — the universe rules, the per-region floors, the FX table with its source and
-   its date, and the venue-collapse rule.
-6. **`## Caveats`** — every structural caveat that changes how the numbers read, including rows
-   whose close is a carry-over from an earlier session.
-7. **`## Source health`** — one table: `Source | Query / URL | Status | Result`. Mandatory, even
-   when every source was healthy.
-8. **`## Files`** — the file list and the schema.
+3. **`## Top movers`** — **one table per region**, one row per name, largest absolute move first
+   within the region. Every row carries `us_listing`, the cap, and the **catalyst in the row**:
+   what was actually sourced, with its source and its date. A name with **no sourced driver** does
+   not go here — it goes to `## No catalyst`.
+4. **`## Below the gate`** — the names that moved and would have been published but for the cap
+   floor alone. Published, because a −24.72% move is not noise.
+5. **`## No catalyst`** — the names that moved with no sourced driver, kept separate so they do
+   not dilute the mover table.
+6. **`## Method, source health & caveats`** — **Method** (the universe rules, the per-region
+   floors, the FX table with its source and its date, the venue-collapse rule, the cap carrier
+   rule, the venue-official price rule, the CSV column count, and the files written), then
+   **Source health** (`Source | Query / URL | Status | Result`, mandatory even when every source
+   was healthy), then **Caveats** (every structural caveat that changes how the numbers read,
+   including rows whose close is a carry-over from an earlier session).
+
+The skill's "The summary.md skeleton" section carries the full contract for each of these — read
+it with the skill spec and follow it.
+
+### The assertions — run them before the push
+
+The skill's `scripts/intl_assert.py` checks a built directory: no unaccounted cap, a reason on
+every excluded row, the summary's tables reconciled against the CSVs, and `us_listing` on every
+mover row. Fetch it, run it, and push only if it passes:
+
+```bash
+curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -o /workspace/intl_assert.py \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/eod-watchlist-snapshot/scripts/intl_assert.py?ref=main"
+python3 /workspace/intl_assert.py --dir /workspace/international-eod/{date} ; echo "exit=$?"
+```
+
+A non-zero exit means the artifact is not publishable. Fix the build; do not push.
 
 **The chat reply leads with a markdown table of all 16 region index levels**
 (`region | index | close | change`) — sixteen comparable numeric rows is exactly the case a
