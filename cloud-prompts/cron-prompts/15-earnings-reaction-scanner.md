@@ -256,10 +256,20 @@ What the pipeline does, and why (read this before changing any of it):
   **Caveat: this field does NOT capture preliminary, guidance or restructuring releases.** On
   2026-10-23 LKQ fell 22.47% on a preliminary Q3 miss while the field still read 2026-07-30.
   The field is a screen, never a verdict — confirm against the headline.
-* **Yahoo cross-check.** Yahoo's ASX feed appends a trailing live-stamp bar at a different
-  time-of-day than the completed daily bars; naive last-two-bar math makes every ASX move read
-  0.00%. The pipeline keeps only bars stamped at the modal time-of-day before differencing.
-  Verified 2026-10-24: **27 cross-checks agreed, 0 mismatched.**
+* **Yahoo cross-check.** The pipeline selects the session bars by DATE and ORDER, never by a
+  modal time-of-day. Yahoo stamps a daily bar at the session open in the venue's local time, so
+  the Eastern stamp of the SAME session moves by an hour across a DST boundary (a US bar:
+  09:30 ET in summer, 10:30 ET in winter; an ASX bar: 19:00 ET before the change, 18:00 after).
+  A modal filter therefore kept the OLDER bars and discarded the NEWEST ones, which rolled the
+  reference close back to the prior-prior session: 66 US + 21 ASX rows were dropped as
+  "stale reference" on 2026-11-03, and 24 of 25 ASX rows on 2026-11-04.
+* **The pre-market window is 04:00-09:30 ET**, resolved with `zoneinfo` — 09:00-14:30 UTC in
+  winter (EST) and 08:00-13:30 UTC in summer (EDT). An hour-based test silently drops the last
+  30 minutes of the pre-market. The base for a pre-market percentage is the IMMEDIATELY prior
+  session's close, never the prior-prior one.
+* **The reference close is a hard gate, resolved before the tables are built.** A row whose
+  screener-implied reference close disagrees with Yahoo's by more than 0.5%, or whose base is
+  older than the previous session, is dropped and counted in `rows_dropped_stale_ref`.
 * BOD rows (no extended-hours data) go to source health only, not the headline table, per the
   skill. US preferred shares (slash tickers like JPM/PC) are excluded.
 
