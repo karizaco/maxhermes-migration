@@ -313,3 +313,103 @@ exists. The series is now 12 consecutive sessions.
 Convention 8 in the skill spec and the `reconstructed` label in cron #90's prompt were added so
 this is repeatable: a future run that loses a session knows which archival source to reach for,
 and the auditor knows not to report a rebuilt file as a clean delivery.
+
+
+---
+
+## 9. 2026-11-05 — the method change: rank by RELATIVE volume
+
+**Migration commit:** `1ecfd94` (`feat(cron16): rank the options book by RELATIVE volume`).
+Deployed prompt SHA-256 **`d6435ae7f6294b4d2067e03ff9bd8f197081d9028b44f50c04a38ce500f29601`**
+— byte-identical to `cloud-prompts/cron-prompts/16-unusual-options-flow-daily.md` (16,021 bytes,
+**no trailing newline**).
+
+### Why
+
+The routine ranked by absolute contract volume / V/OI across a fixed **8-name mega-cap universe**,
+so the top of the book was structurally the largest names no matter what was actually unusual.
+Measured on the 2026-11-04 session: the absolute top 10 and the relative top 10 shared **1 name
+of 10**, and the loudest names were **below their own 10-session options-volume baseline**
+(TSLA 0.44×, AMZN 0.52×, NVDA 0.75×) while quiet mid-caps were **2-8× theirs**
+(ARRY 8.16×, FIS 7.38×, GRAB 3.79×, CLSK 2.62×). An absolute-volume screen cannot surface a
+mid-cap when the universe contains none.
+
+### What changed
+
+| | Before | After |
+|---|---|---|
+| Headline | V/OI rank, absolute | **relative-volume composite** |
+| Universe | 8 mega-caps | **top 60 US names by cash volume** (TV scanner) + the routine's 8 |
+| Scoring | per-underlying top-10 by volume, then V/OI | **the whole 4-expiry window**, no absolute pre-cut |
+| Measures | one (V/OI) | **five**: peer ratio, share of expiry, share of chain, options contracts ÷ cash shares, own-history |
+| Engine | the model parsed 8 chains by hand | **`_shared/relvol_screen.py`** (`RELVOL_SCREEN_V1`) — ~60 chains 8-way parallel + 2 monthly baseline files, **~25 s** |
+| Runtime | ~90 s | ~25 s measured (the universe got 8× bigger and it got faster) |
+
+**The five measures**, each normalising a different size bias:
+
+1. **Peer ratio** — contract volume ÷ the median volume of the other *meaningfully-traded* strikes
+   (vol ≥ 50) in the same underlier + expiry + side. The vol≥50 floor matters: over all active
+   strikes the median collapses into the near-dead tail and the ratio inflates 5-15× (RIOT 24C
+   read 13.1× vs 207×).
+2. **Share of expiry** — the contract's share of its expiry+side's volume in the chain.
+3. **Share of chain** — its share of the underlier's whole options tape.
+4. **Opt % of cash vol** — options contracts ÷ the underlier's share volume (cross-name).
+5. **Own-history** — the name's own 10-session average options volume. **The only measure
+   independent of the contract's chain size, and the most important column.**
+
+Composite: `z(peer) + z(expiry_share) + z(opt%cash) + z(V/OI) + 1.5 × z(own_history)` — every
+component published per row so the ranking can be re-weighted.
+
+### The own-history baseline — the cheap way
+
+Cboe's historical options-volume service, `all_symbols` monthly variant, returns **every
+underlying's daily volume for a whole month in ONE call** (6.5 MB for Oct 2026, 219,701 rows,
+~3,815 symbols/day). Two calls (previous + current month) cover a 10-session average that spans
+the month boundary — it replaces 60 per-symbol calls and **reproduces the per-symbol endpoint
+exactly** (verified 7/7 names on base volume, average and ratio). Needs a browser UA **and** the
+`Referer: .../historical_data/` header. Caveats: **4 venues only** (CBOE, BATS, C2, EDGX — the
+chain spans every US venue, so the ratio is internally consistent but the absolute volumes are a
+different universe) and it **lags the live session by ~a day**, so the baseline is measured on the
+last session the service has published and that date is labelled on every row.
+
+### The series book is preserved
+
+The legacy absolute method (the 8 routine names, per-underlying top-10 by volume, the legacy
+filters, the bias tag) is still computed and published as a **secondary** section, so the put/call
+series published since 2026-10-16 stays comparable. The engine reproduces the published 2026-11-04
+figures **exactly**: put/call **0.74 (CALL)**, 57.1% of kept volume in sub-$0.05 contracts,
+3.47 premium ratio, 82.2% of premium in ITM contracts. **The artifact's headline and the chat
+reply's headline are now the relative screen** — the legacy tag is never the lead.
+
+### Degradation
+
+If the engine cannot be fetched or fails, the routine falls back to the **legacy method** and
+labels the artifact `method: legacy_fallback (relvol engine unavailable: <reason>)` — a degraded
+legacy artifact beats a failed run. The prompt fetches the engine with a **capability-marker**
+check (`RELVOL_SCREEN_V1`); the skill spec carries the same ladder.
+
+### Also fixed in the same pass
+
+- The prompt's GIT PUSH block still carried the **dead `[ -s file ] || curl` ladder** (the first
+  successful download satisfied the guard, so the fallback URL was never reachable) and fetched
+  **only** `push_artifact.sh` — `verify_delivery.sh` is a separate helper the push script does not
+  ship, so the mandatory verification was a silent no-op. Both helpers are now fetched with the
+  contents-API ladder.
+- `_shared/PROMPT-BLOCKS.md` now states that **`_shared/` helpers are executable** while a skill's
+  own `scripts/` helpers are reference-only — the ambiguity that could have made an agent skip
+  the engine.
+- `_shared/RUNTIME-CONTRACT.md` §2f: the **Cboe endpoints were undocumented** (options-chain CDN,
+  `all_symbols`, `class`, quote CDN) even though the CDN is this routine's primary tape. Added
+  with the measured **HTTP 403 + XML `AccessDenied`** behaviour for a symbol with no listed
+  options series — which is **not** a source failure (CHSN, CRIS, DKI, OMH on 2026-11-04).
+
+### How to verify the deployment
+
+```bash
+# the deployed prompt == the repo blob, byte for byte
+sha256sum cloud-prompts/cron-prompts/16-unusual-options-flow-daily.md   # d6435ae7f6294b4d…
+# the engine is live on the contents API and runs clean
+curl -sL -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/relvol_screen.py?ref=main" \
+  -o /tmp/rv.py && grep -c RELVOL_SCREEN_V1 /tmp/rv.py && python3 /tmp/rv.py --date <D> --out /tmp/o.md --universe 60 --jobs 8
+```
