@@ -380,7 +380,8 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 - Always show both pre- and post-market % for US when both present.
 - EU threshold (2.5%) > US pre-market threshold (2%) — live session is noisier than extended hours.
 - **Always apply the primary-listing exchange whitelist before downstream calls.** Without it, the brief is dominated by retail mirrors and OTC duplicates.
-- **US candidates cap: 60** (Pass A + Pass B union). **EU candidates cap: 30** (Pass C union). **AU candidates cap: 25** (Pass D union). Total ~115.
+- **Published-row caps: EU 30, AU 25.** The US tables are NOT capped at 60: the reference-close cross-check is cheap (one Yahoo daily-chart call per row) and it must cover **every** row that reaches a table — a stale-reference row can hide anywhere, so a top-N subset would leave unvalidated rows published. The US ceiling is therefore the screener passes themselves (Pass A top-250 by market cap, Pass B top-200 each way). **The cap that matters is the CATALYST budget: 10 lookups (5 US + 3 EU + 2 AU).**
+- **Every published row is validated**, including the US QUIET one-liners — that is why they carry the reference-close columns too.
 - Catalyst calls: **5 US + 3 EU + 2 AU = 10/run**.
 - **Coverage gap detector** — for each screener call, if `total_count < 5` AND the market should be open (per the holiday table below), log `_warn=empty_screener_<market>` to source health. This catches the `south_korea` → 0 bug class without changing the screener params. Same logic also serves as the holiday detector — closed markets return 0 or near-0 rows.
 - Do NOT scan all 500 S&P 500 names — top-200 is the upper bound.
