@@ -847,7 +847,8 @@ for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
   if [ -s "$S.tmp" ] && grep -q 'premarket-artifact-v4' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
@@ -1001,7 +1002,8 @@ for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_artifact.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_artifact.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
   if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_premarket_artifact.py'; then
     mv -f "$C.tmp" "$C"; break
   fi
