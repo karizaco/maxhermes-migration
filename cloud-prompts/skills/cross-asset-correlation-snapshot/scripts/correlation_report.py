@@ -37,14 +37,27 @@ USAGE
         --date 2026-11-02 --iso-week 2026-W45 --fire-et 10:05 \
         --out /workspace/cross-asset/2026-11-02.md
 
-Missing --prior / --partial / --series are tolerated: the corresponding sections
-are dropped and the report says so, rather than fabricating numbers.
+--partial and --series are REQUIRED and the renderer FAILS (non-zero exit) when either
+file is absent. They were optional until 2026-11-05, and that silence was a defect class
+of its own: `correlation_matrix.py` did not write them, so a missing file silently DROPPED
+the Performance table, the price-level appendix and the excluded-partial-session proof,
+and the run still reported "complete". A renderer that withholds evidence and says
+nothing is the same class of bug as publishing a stale window.
+
+--prior is still optional: the prior-week matrix normally travels INSIDE the current
+mats.json (correlation_matrix.py --prior-window embeds it as `matrix_returns_prior`).
+When neither is available the artifact says `regime_shift: unknown` — never a silent
+"no", which would read as a clean bill of health for a comparison that never ran.
+
+EXIT CODES: 0 = artifact written; 2 = bad arguments; 3 = a required input file is
+missing or malformed; 4 = the artifact could not be written.
 """
 import argparse
 import json
 import math
 import os
 import statistics
+import sys
 from datetime import date, datetime, timedelta
 
 SYMS = ["SPY", "QQQ", "IWM", "TLT", "GLD", "UUP", "EEM", "^VIX"]
@@ -53,6 +66,17 @@ NAMES = {
     "TLT": "20+ Yr Treasury", "GLD": "Gold", "UUP": "US Dollar",
     "EEM": "Emerging Mkts", "^VIX": "VIX",
 }
+
+# The routine's definition — do not change it here and there.
+SHIFT_THRESHOLD = 0.20
+# A missing marker means a STALE renderer produced the artifact: the checker asserts it.
+CONTRACT_VERSION = "cross-asset-v4"
+
+
+def fail(msg, code=3):
+    """Abort loudly. Never degrade a missing input into a quietly shorter artifact."""
+    print(f"correlation_report: FAIL: {msg}", file=sys.stderr)
+    sys.exit(code)
 
 # ---- color helpers ---------------------------------------------------------
 
@@ -106,6 +130,87 @@ def pair_list(mat, syms=None):
 
 def r2(x):
     return round(x, 2)
+
+
+# ---- the signal line --------------------------------------------------------
+# The 2026-11-04 artifact's TL;DR already carried the sentence a trader acts on
+# ("SPY-TLT +0.30, so TLT is a weak diversifier rather than a hedge"), but the CHAT
+# REPLY led with something else. The reply is what gets read, so the implication has
+# to be computable and copyable — not re-derived from a table by eye every fire.
+#
+# Three facts, in this order:
+#   1. the HEDGE IMPLICATION — which instrument actually offsets which risk
+#   2. the BEST DIVERSIFIER in the universe (the lowest |corr| pair)
+#   3. the DISTANCE TO THE SHIFT THRESHOLD — max_pair_move vs the 0.20 threshold
+
+def best_diversifier(cur, syms):
+    """The lowest |corr| pair in the universe — the best diversification candidate."""
+    pl = pair_list(cur, syms)
+    if not pl:
+        return None
+    x, y, r = min(pl, key=lambda t: abs(t[2]))
+    return {"pair": f"{x}–{y}", "corr": r}
+
+
+def best_equity_hedge(cur, syms):
+    """The proxy that offsets equity risk most — the lowest corr against SPY.
+
+    ^VIX is excluded on purpose: volatility is the risk MEASURE, not a hedge against it.
+    """
+    if "SPY" not in syms:
+        return None
+    cands = []
+    for y in syms:
+        if y in ("SPY", "^VIX"):
+            continue
+        v = cur["SPY"].get(y)
+        if v is not None:
+            cands.append((v, y))
+    if not cands:
+        return None
+    v, y = min(cands)
+    return {"pair": f"{y}–SPY", "corr": v}
+
+
+def hedge_implication(cur, syms):
+    """One clause: what actually offsets what. Anchored on SPY-TLT, the routine's
+    canonical equity/bond read, and corrected by the best equity offset in the
+    universe when a different proxy does the job better."""
+    out = ""
+    if "SPY" in syms and "TLT" in syms:
+        c = cur["SPY"]["TLT"]
+        if c > 0.20:
+            clause = ("bonds move WITH equities, so TLT is a weak diversifier, not a hedge "
+                      "against a growth selloff")
+        elif c < -0.20:
+            clause = "bonds offset equity risk, so TLT still hedges a growth selloff"
+        else:
+            clause = ("bonds are effectively uncorrelated with equities, so TLT neither hedges "
+                      "nor amplifies a growth selloff")
+        out = f"SPY–TLT {c:+.2f} → {clause}"
+    bh = best_equity_hedge(cur, syms)
+    if bh and not out.startswith(bh["pair"]):
+        out += f"; best equity offset in the universe is {bh['pair']} {bh['corr']:+.2f}"
+    if not out:
+        out = "no equity/bond pair in this universe to read a hedge implication from"
+    return out
+
+
+def build_signal_line(cur, prior, syms, maxd, prior_present):
+    """The one line the chat reply leads with."""
+    div = best_diversifier(cur, syms)
+    parts = [hedge_implication(cur, syms)]
+    if div:
+        parts.append(f"best diversifier {div['pair']} {div['corr']:+.2f}")
+    if prior_present:
+        dist = SHIFT_THRESHOLD - maxd
+        parts.append(f"largest pair move {maxd:.4f} vs the {SHIFT_THRESHOLD:.2f} "
+                     f"regime-shift threshold ({dist:.4f} to go)")
+    else:
+        parts.append(f"largest pair move UNKNOWN — no prior-week window, so the "
+                     f"distance to the {SHIFT_THRESHOLD:.2f} regime-shift threshold "
+                     f"cannot be computed")
+    return " · ".join(parts)
 
 
 # ---- sections ---------------------------------------------------------------
@@ -163,10 +268,11 @@ def render_delta(cur, prior, syms, partial=None):
         d.append((abs(r - p), x, y, r, p))
     d.sort(reverse=True)
     maxd = d[0][0]
-    shift = "🔴 REGIME_SHIFT" if maxd > 0.20 else ("⚠️ borderline" if maxd > 0.15 else "✅ no shift")
+    shift = ("🔴 REGIME_SHIFT" if maxd > SHIFT_THRESHOLD
+             else ("⚠️ borderline" if maxd > 0.15 else "✅ no shift"))
     lines = [
         f"**Flag:** {shift} — largest absolute move **{maxd:.4f}** ({d[0][1]}–{d[0][2]}), "
-        f"threshold 0.20",
+        f"threshold {SHIFT_THRESHOLD:.2f}",
         "",
         "| Move | Pair | Prior | This week | Δ | Corr ↑/↓ |",
         "|---|---|---|---|---|---|",
@@ -260,8 +366,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--current", required=True)
     ap.add_argument("--prior")
-    ap.add_argument("--partial")
-    ap.add_argument("--series")
+    ap.add_argument("--partial", required=True,
+                    help="the matrix INCLUDING the in-progress session — REQUIRED: the "
+                         "renderer fails rather than dropping the section that proves "
+                         "excluding the partial bar changed no conclusion")
+    ap.add_argument("--series", required=True,
+                    help="the price series — REQUIRED: the Performance table and the "
+                         "price-level appendix are read from it")
     ap.add_argument("--quotes")
     ap.add_argument("--date", required=True)
     ap.add_argument("--iso-week", required=True)
@@ -276,7 +387,15 @@ def main():
                     help="path to a text file with the deviations-from-spec bullets")
     args = ap.parse_args()
 
-    cur_doc = json.load(open(args.current))
+    if not os.path.exists(args.current):
+        fail(f"--current file not found: {args.current}")
+    try:
+        cur_doc = json.load(open(args.current))
+    except Exception as exc:
+        fail(f"--current file is unreadable ({args.current}): {exc}")
+    for key in ("matrix_returns", "window"):
+        if key not in cur_doc:
+            fail(f"--current has no '{key}' key ({args.current})")
     cur = cur_doc["matrix_returns"]
     win = cur_doc["window"]
     start = args.window_start or win["start"]
@@ -293,10 +412,43 @@ def main():
         prior = pd_.get("matrix_returns_prior") or pd_.get("matrix_returns")
     elif "matrix_returns_prior" in cur_doc:
         prior = cur_doc["matrix_returns_prior"]
-    if prior is None and "matrix_returns_prior" in cur_doc:
-        prior = cur_doc["matrix_returns_prior"]
-    partial = json.load(open(args.partial))["matrix_returns"] if args.partial else None
-    series = json.load(open(args.series)) if args.series else None
+
+    # --- REQUIRED INPUTS. These were optional until 2026-11-05, and the tolerance was
+    #     a defect: correlation_matrix.py did not write them, so the Performance table,
+    #     the price-level appendix and the excluded-partial-session proof silently
+    #     vanished and the run still reported success. Fail loudly instead.
+    for flag, path in (("--series", args.series), ("--partial", args.partial)):
+        if not path:
+            fail(f"{flag} is required — the Performance table, the price-level appendix "
+                 f"and the excluded-partial-session proof all depend on it.")
+        if not os.path.exists(path):
+            fail(f"{flag} file not found: {path}\n"
+                 f"  correlation_matrix.py writes series.json and mats_partial.json "
+                 f"itself; re-run it (--window-end auto --prior-window) and try again. "
+                 f"Refusing to write an artifact that silently omits its own evidence.")
+
+    try:
+        series = json.load(open(args.series))
+    except Exception as exc:
+        fail(f"--series file is unreadable ({args.series}): {exc}")
+    try:
+        pdoc = json.load(open(args.partial))
+    except Exception as exc:
+        fail(f"--partial file is unreadable ({args.partial}): {exc}")
+
+    missing_series = [s for s in syms if not series.get(s)]
+    if missing_series:
+        fail(f"--series is missing data for {missing_series} — every proxy needs a price "
+             f"series for the Performance table and the level-correlation appendix.")
+    if "matrix_returns" not in pdoc:
+        fail(f"--partial has no 'matrix_returns' key ({args.partial}) — it must carry the "
+             f"matrix computed over the window INCLUDING the in-progress session.")
+    partial = pdoc["matrix_returns"]
+    missing_partial = [s for s in syms if s not in partial]
+    if missing_partial:
+        fail(f"--partial is missing {missing_partial} — the excluded-partial-session "
+             f"comparison needs a value for every proxy.")
+
     quotes = json.load(open(args.quotes)) if args.quotes else None
 
     # DATE GUARD: a live quote is only used if the QUOTE ITSELF is stamped with the
@@ -328,12 +480,20 @@ def main():
 
     # regime + shift
     regime = args.regime or "see TL;DR"
-    shift_flag = "no"
+    shift_flag = "unknown"
     maxd = 0.0
     delta_md = ""
+    prior_present = bool(prior)
     if prior:
         delta_md, maxd = render_delta(cur, prior, syms)
-        shift_flag = "yes" if maxd > 0.20 else "no"
+        shift_flag = "yes" if maxd > SHIFT_THRESHOLD else "no"
+
+    # The one line the CHAT REPLY leads with. Computed here, from the same numbers the
+    # tables use, so the reply can never disagree with the artifact.
+    signal_line = build_signal_line(cur, prior, syms, maxd, prior_present)
+    div = best_diversifier(cur, syms)
+    best_div = f"{div['pair']} {div['corr']:+.2f}" if div else "unknown"
+    distance = (f"{SHIFT_THRESHOLD - maxd:.4f}" if prior_present else "unknown")
 
     # hedge pair (lowest |corr| pair among non-vol)
     pl = pair_list(cur, syms)
@@ -343,7 +503,17 @@ def main():
     # partial effect
     part_md = ""
     part_max = 0.0
+    part_note = ""
+    partial_includes = False
     if partial:
+        # Did the partial matrix ACTUALLY include a newer session than the published
+        # one? If it did not (the in-progress bar was not available for every proxy),
+        # the partial matrix is identical to the published one and every delta is 0.0000
+        # — which must NOT be reported as "including the bar changes no conclusion".
+        pwin = pdoc.get("window", {})
+        pend = pwin.get("end")
+        partial_includes = bool(pdoc.get("includes_in_progress_session")) or (
+            pend is not None and str(pend) > str(end))
         pd = []
         for x, y, r in pair_list(cur, syms):
             pd.append((abs(r - partial[x][y]), x, y, r, partial[x][y]))
@@ -353,6 +523,17 @@ def main():
         for a, x, y, r, p in pd[:5]:
             rows.append(f"| **{x}–{y}** | {sgn(r)} | {sgn(p)} | {p - r:+.4f} |")
         part_md = "\n".join(rows)
+        if partial_includes:
+            part_note = (
+                f"Including the in-progress bar moves no pair by more than "
+                f"**{part_max:.4f}** — no conclusion in this report changes.\n")
+        else:
+            part_note = (
+                f"**The in-progress session was NOT available for every proxy**, so the "
+                f"partial matrix covers the same sessions as the published one "
+                f"(last common session {pend}) and every delta below is 0.0000 by "
+                f"construction — this is NOT evidence that the in-progress bar changes "
+                f"nothing.\n")
 
     # source health rows
     src = []
@@ -372,32 +553,38 @@ def main():
 
     # levels appendix
     lv_md = ""
-    if series:
-        lv, n = levels_corr(series, start, end, syms)
-        if lv:
-            rows = ["| Pair | Level corr | Pair | Level corr |", "|---|---|---|---|"]
-            items = sorted(lv.items(), key=lambda kv: kv[1])
-            half = (len(items) + 1) // 2
-            for i in range(half):
-                a = items[i]
-                left = f"{mag_bucket(a[1])} **{a[0][0]}–{a[0][1]}** | {a[1]:+.2f}"
-                if i + half < len(items):
-                    b = items[i + half]
-                    right = f"{mag_bucket(b[1])} **{b[0][0]}–{b[0][1]}** | {b[1]:+.2f}"
-                else:
-                    right = " | "
-                rows.append(f"| {left} | {right} |")
-            lv_md = "\n".join(rows)
+    lv, n = levels_corr(series, start, end, syms)
+    if not lv:
+        fail(f"the price-level appendix could not be computed — only {n} common sessions in "
+             f"the window {start}→{end}. The appendix is part of the artifact contract, "
+             f"so refusing to write an artifact that silently omits it.")
+    rows = ["| Pair | Level corr | Pair | Level corr |", "|---|---|---|---|"]
+    items = sorted(lv.items(), key=lambda kv: kv[1])
+    half = (len(items) + 1) // 2
+    for i in range(half):
+        a = items[i]
+        left = f"{mag_bucket(a[1])} **{a[0][0]}–{a[0][1]}** | {a[1]:+.2f}"
+        if i + half < len(items):
+            b = items[i + half]
+            right = f"{mag_bucket(b[1])} **{b[0][0]}–{b[0][1]}** | {b[1]:+.2f}"
+        else:
+            right = " | "
+        rows.append(f"| {left} | {right} |")
+    lv_md = "\n".join(rows)
 
-    ret_md = ""
-    if series:
-        ret_md = render_returns(series, start, end, syms, quotes)
+    ret_md = render_returns(series, start, end, syms, quotes)
 
     # ---- assemble
+    # The front matter carries the SIGNAL LINE — the one line the chat reply leads with.
+    # It is computed here, from the same numbers the tables use, so the reply can never
+    # drift from the artifact. The checker asserts the reply carries it.
+    shift_text = ("🔴 YES" if shift_flag == "yes"
+                  else ("✅ NO" if shift_flag == "no" else "⚠️ UNKNOWN — no prior window"))
     parts = []
     parts.append(f"""---
 date: {args.date}
 cron: 12-cross-asset-correlation-snapshot
+contract: {CONTRACT_VERSION}
 iso_week: {iso}
 fire_time_et: {args.fire_et}
 window_start: {start}
@@ -409,6 +596,12 @@ universe: {len(syms)}
 regime: {regime}
 regime_shift: {shift_flag}
 max_pair_move: {maxd:.4f}
+shift_threshold: {SHIFT_THRESHOLD:.2f}
+distance_to_threshold: {distance}
+best_diversifier: {best_div}
+signal_line: {signal_line}
+partial_includes_in_progress: {'yes' if partial_includes else 'no'}
+partial_window_end: {pdoc.get('window', {}).get('end')}
 server_side: true
 engine: {cur_doc.get('engine')}
 window_end_derived_from_data: {str(cur_doc.get('window', {}).get('end_derived_from_data', False)).lower()}
@@ -422,7 +615,9 @@ errors: 0
 > **Window** {start} → {end} · **{win.get('n_sessions')} aligned sessions** ({win.get('n_return_obs')} log-return obs) · basis `{win.get('basis')}`
 > **Universe** {len(syms)} proxies ({', '.join(syms)}) — unchanged
 > **Regime** **{regime}**
-> **Regime shift** {'🔴 YES' if shift_flag == 'yes' else '✅ NO'} — largest pair move **{maxd:.4f}** (threshold 0.20)
+> **Regime shift** {shift_text} — largest pair move **{maxd:.4f}** (threshold {SHIFT_THRESHOLD:.2f})
+
+> **Signal** {signal_line}
 
 ### Legend
 
@@ -464,10 +659,7 @@ errors: 0
 
     if part_md:
         parts.append(f"\n## 🧪 Effect of the excluded partial session ({args.date})\n")
-        parts.append(
-            f"Including the in-progress bar moves no pair by more than **{part_max:.4f}** — "
-            "no conclusion in this report changes.\n"
-        )
+        parts.append(part_note)
         parts.append(part_md)
 
     parts.append("\n## 🩺 Source health\n")
@@ -493,12 +685,13 @@ errors: 0
         )
         parts.append(lv_md)
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     import re as _re
     body = _re.sub(r"\n{3,}", "\n\n", "\n\n".join(parts)).strip() + "\n"
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(body)
     print(f"wrote {args.out} ({os.path.getsize(args.out)} bytes)")
+    print(f"signal_line: {signal_line}")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,24 @@ USAGE
 
 Writes `/workspace/data_cross/mats.json` and prints a compact JSON summary.
 
+WHAT IT WRITES — ALL THREE FILES, NO WRAPPER
+-------------------------------------------
+The renderer needs three inputs. This helper writes ALL THREE itself, so the spec's
+render command works verbatim with no wrapper script:
+
+  mats.json         the published (server-side) returns matrix + the matched-length
+                    prior-week matrix + source health
+  series.json       {symbol: [[date, basis_close, raw_close], ...]} — the price series
+                    the renderer's Performance table and price-level appendix read
+  mats_partial.json {"matrix_returns": {...}} — the SAME window INCLUDING the
+                    in-progress session, computed through this helper's own
+                    build_sql + shibui_sql (server-side DuckDB corr(), never by hand)
+
+Before 2026-11-05 the last two were produced by an ad-hoc wrapper, so if the wrapper
+was not written the renderer silently DROPPED three load-bearing sections (Performance,
+Effect of the excluded partial session, Appendix) and still reported a clean run. The
+helper now emits them natively, and the renderer fails loudly when one is absent.
+
 PRICE SOURCE
 ------------
 Prices come from Yahoo Finance Chart API (`/v8/finance/chart/{sym}?range=1y&interval=1d`,
@@ -85,6 +103,26 @@ BRIDGE_URLS = [
 SHIBUI = "https://mcp.shibui.finance/mcp"
 UA = "Mozilla/5.0"          # short UA only; a long Chrome UA is 429'd by Yahoo's edge
 OUT_DIR = "/workspace/data_cross"
+# How far BEFORE the window start series.json reaches. The matrix's first return
+# observation is (first in-window session) / (the session before it) - 1, so the
+# renderer's Performance table needs that prior close. Two weeks is ~10 sessions.
+SERIES_LEAD_DAYS = 14
+# CAPABILITY MARKER. A run-time fetch must demand this string: an OLDER copy of this
+# helper (published before 2026-11-05) does not write series.json / mats_partial.json,
+# and the raw.githubusercontent CDN has been measured serving a stale blob for >17
+# minutes after a push. Without the marker check, a stale helper wins the fetch and the
+# renderer then fails on its missing inputs.
+HELPER_VERSION = "correlation-matrix-v2"
+
+
+def _write_json(path, payload):
+    """Write a JSON payload, creating the parent directory."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=1)
+    return path
 
 
 # ----------------------------------------------------------------- bridge
@@ -122,7 +160,12 @@ def shibui_sql(query, label="query"):
 
 # ----------------------------------------------------------------- yahoo
 def yahoo_series(symbol, basis="adjclose"):
-    """Return {ISO date: close} for one symbol, plus a status dict."""
+    """Return ({date: basis_close}, {date: raw_close}, status) for one symbol.
+
+    TWO series come back because the artifact needs both: the BASIS close is what the
+    published matrix is computed from, and the RAW close rides along in series.json's
+    third slot (the renderer reads the first two entries and ignores the third).
+    """
     enc = urllib.parse.quote(symbol, safe="")
     url = (f"https://query2.finance.yahoo.com/v8/finance/chart/{enc}"
            f"?range=1y&interval=1d")
@@ -133,31 +176,36 @@ def yahoo_series(symbol, basis="adjclose"):
     status = {"symbol": symbol, "http": p.stdout.strip(), "bars": 0, "nulls": 0}
     if p.stdout.strip() != "200":
         status["error"] = f"http_{p.stdout.strip()}"
-        return {}, status
+        return {}, {}, status
     try:
         d = json.load(open(path))
         r = d["chart"]["result"][0]
     except Exception as exc:
         status["error"] = f"parse: {exc}"
-        return {}, status
+        return {}, {}, status
     ts = r["timestamp"]
     quote = r["indicators"]["quote"][0]
+    raw_arr = quote.get("close") or []
     adj = r["indicators"].get("adjclose", [{}])[0].get("adjclose")
-    closes = adj if (basis == "adjclose" and adj) else quote["close"]
-    if closes is None:
+    basis_arr = adj if (basis == "adjclose" and adj) else raw_arr
+    if not basis_arr:
         status["error"] = "no_close_array"
-        return {}, status
-    series = {}
+        return {}, {}, status
+    basis_map, raw_map = {}, {}
     for i, t in enumerate(ts):
-        v = closes[i] if i < len(closes) else None
-        if v is None:
+        day = datetime.datetime.fromtimestamp(t, NY).date().isoformat()
+        rv = raw_arr[i] if i < len(raw_arr) else None
+        bv = basis_arr[i] if i < len(basis_arr) else None
+        if rv is None:
             status["nulls"] += 1
-            continue
-        series[datetime.datetime.fromtimestamp(t, NY).date().isoformat()] = float(v)
-    status["bars"] = len(series)
-    status["last_bar"] = max(series) if series else None
+        else:
+            raw_map[day] = float(rv)
+        if bv is not None:
+            basis_map[day] = float(bv)
+    status["bars"] = len(basis_map)
+    status["last_bar"] = max(basis_map) if basis_map else None
     status["raw_close_last"] = r["meta"].get("regularMarketPrice")
-    return series, status
+    return basis_map, raw_map, status
 
 
 def sql_alias(ticker):
@@ -340,9 +388,30 @@ def main():
     ap.add_argument("--basis", default="adjclose", choices=["adjclose", "close"])
     ap.add_argument("--cross-check", action="store_true", help="also run the shibui raw-close cross-check")
     ap.add_argument("--out", default=os.path.join(OUT_DIR, "mats.json"))
+    ap.add_argument("--series-out", default=None,
+                    help="where the price series the renderer reads are written "
+                         "(default: series.json NEXT TO --out, which is the path the "
+                         "spec's render command passes)")
+    ap.add_argument("--partial-out", default=None,
+                    help="where the matrix INCLUDING the in-progress session is written "
+                         "(default: mats_partial.json NEXT TO --out)")
+    ap.add_argument("--no-series", action="store_true",
+                    help="do NOT write series.json (the renderer will then fail loudly)")
+    ap.add_argument("--no-partial", action="store_true",
+                    help="do NOT write mats_partial.json (the renderer will then fail loudly)")
     args = ap.parse_args()
 
     tickers = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+
+    # The three files the renderer reads MUST sit together: the render command names
+    # them one by one, and a series in one directory while the matrix is in another is
+    # how a section goes missing. So the series/partial default to the DIRECTORY of
+    # --out, not to a hard-coded path.
+    out_dir = os.path.dirname(os.path.abspath(args.out))
+    if args.series_out is None:
+        args.series_out = os.path.join(out_dir, "series.json")
+    if args.partial_out is None:
+        args.partial_out = os.path.join(out_dir, "mats_partial.json")
 
     if not ensure_bridge():
         print(json.dumps({"error": "bridge_fetch_failed"}))
@@ -350,10 +419,11 @@ def main():
 
     # --- fetch the FULL series first: with --window-end auto the window end is
     #     DERIVED from the data, so it cannot be known before the fetch.
-    full_map, statuses = {}, []
+    full_map, raw_map, statuses = {}, {}, []
     for t in tickers:
-        ser, st = yahoo_series(t, basis=args.basis)
+        ser, raw, st = yahoo_series(t, basis=args.basis)
         full_map[t] = ser
+        raw_map[t] = raw
         statuses.append(st)
 
     auto_used = False
@@ -435,7 +505,7 @@ def main():
         rend = datetime.date.fromisoformat(args.rolled_end)
         rmap, rstat = {}, []
         for t in tickers:
-            s, st = yahoo_series(t, basis=args.basis)
+            s, _raw_s, st = yahoo_series(t, basis=args.basis)
             rmap[t] = {d: v for d, v in s.items()
                        if start.isoformat() <= d <= rend.isoformat()}
             rstat.append(st)
@@ -466,7 +536,62 @@ def main():
                         "not the published basis",
             }
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    # --- series.json: the price series the RENDERER reads, written by the helper itself
+    #     so the spec's render command needs no wrapper script.
+    #     SPAN: SERIES_LEAD_DAYS before the window start — the matrix's FIRST return
+    #     observation is (first in-window session) / (the session BEFORE it) - 1, so the
+    #     Performance table's window return is measured from a close that lies outside the
+    #     window; through TODAY, because the intraday column needs the in-progress bar.
+    series_doc, series_path = None, None
+    if not args.no_series:
+        lo = (start - datetime.timedelta(days=SERIES_LEAD_DAYS)).isoformat()
+        hi = now_et().date().isoformat()
+        series_doc = {}
+        for t in tickers:
+            rows = []
+            for d in sorted(full_map.get(t, {})):
+                if lo <= d <= hi:
+                    raw_v = raw_map.get(t, {}).get(d, full_map[t][d])
+                    rows.append([d, round(full_map[t][d], 6), round(raw_v, 6)])
+            series_doc[t] = rows
+        series_path = args.series_out
+        _write_json(series_path, series_doc)
+
+    # --- mats_partial.json: the SAME window INCLUDING the in-progress session.
+    #     Computed through this helper's own build_sql + shibui_sql, so the partial matrix
+    #     is still computed SERVER-SIDE (DuckDB corr() over the MCP bridge) and never by
+    #     hand. It is the proof that excluding the in-progress bar changed no conclusion.
+    partial_doc, partial_path = None, None
+    if not args.no_partial:
+        today_iso = now_et().date().isoformat()
+        pmap = {t: {d: v for d, v in full_map[t].items()
+                    if start.isoformat() <= d <= today_iso} for t in tickers}
+        pdates = common_dates(pmap)
+        if len(pdates) < 30:
+            print(json.dumps({"error": "partial_insufficient_common_dates", "n": len(pdates)}))
+            return 1
+        psql = build_sql(pmap, pdates, tickers, args.basis)
+        prow = shibui_sql(psql, f"{len(tickers)}-asset correlation matrix, window INCLUDING "
+                               f"the in-progress session ({pdates[0]} to {pdates[-1]})")
+        if isinstance(prow, dict) or not prow:
+            print(json.dumps({"error": "shibui_failed_partial", "detail": prow}))
+            return 1
+        prow = prow[0]
+        partial_doc = {
+            "matrix_returns": matrix_from_row(prow, tickers),
+            "window": {"start": pdates[0], "end": pdates[-1], "n_sessions": len(pdates),
+                       "n_return_obs": int(prow["n_obs"]), "basis": args.basis},
+            "published_window_end": end.isoformat(),
+            "includes_in_progress_session": pdates[-1] > end.isoformat(),
+            "server_side": True,
+            "engine": "shibui.stock_data_query (DuckDB corr(), one call)",
+            "note": "the same window as the published matrix, extended through the "
+                    "in-progress session",
+        }
+        partial_path = args.partial_out
+        _write_json(partial_path, partial_doc)
+
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=1)
 
@@ -477,6 +602,10 @@ def main():
         "n_sources_ok": sum(1 for s in statuses if s.get("http") == "200"),
         "n_sources_total": len(statuses),
         "out": args.out,
+        "series": series_path,
+        "partial": partial_path,
+        "partial_window_end": (partial_doc or {}).get("window", {}).get("end"),
+        "partial_includes_in_progress": (partial_doc or {}).get("includes_in_progress_session"),
         "crosscheck": "crosscheck_shibui_raw" in result,
     }, indent=1))
     return 0

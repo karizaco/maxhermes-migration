@@ -21,6 +21,10 @@ Single-purpose: produce a Pearson correlation matrix across the core asset proxi
 - `C:\Users\admin\.minimax\projects\coding-shared\research\correlations\YYYY-Wnn-snapshot.md`
   _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_)
 - Compact ≤ 10-line summary in chat reply.
+  _(Superseded 2026-11-05: the reply follows the fleet's standard `## DELIVERY` structure,
+  and its FIRST `### Signal` line is the artifact's `signal_line` — see "Reply — lead with
+  the implication, not the matrix" below. The line cap there was never the point; leading
+  with the implication is.)_
 
 ## Universe (hardcoded 8 proxies)
 
@@ -88,8 +92,33 @@ for U in \
 done
 [ -s "$BR" ] || echo "bridge fetch FAILED - fall back to web_search, then the curl ladder"
 
-SKILL=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
-curl -s -o /workspace/correlation_matrix.py "$SKILL/correlation_matrix.py"
+# --- fetch BOTH helper scripts, and require the CAPABILITY MARKER in each --------
+# The CONTENTS API is authoritative and is NOT CDN-cached; the two CDNs cache `main`
+# independently (measured 2026-11-04: raw.githubusercontent served a stale blob for >17
+# minutes after a push while jsDelivr was fresh). A MARKER, not an exit code, decides
+# which copy is current:
+#   * an OLDER helper does not write series.json / mats_partial.json at all,
+#   * an OLDER renderer silently drops three sections instead of failing.
+# So a stale copy must never win the fetch.
+SP=cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
+fetch_script() {   # $1 = filename, $2 = capability marker
+  dest="/workspace/$1"; mark="$2"
+  for u in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$SP/$1?ref=main" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$SP/$1" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$SP/$1" ; do
+    curl -sL --max-time 45 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$dest.tmp" "$u" 2>/dev/null
+    if head -1 "$dest.tmp" 2>/dev/null | grep -q '^#!' && grep -q "$mark" "$dest.tmp" 2>/dev/null; then
+      mv -f "$dest.tmp" "$dest"; echo "fetched $1 (marker $mark present)"; return 0
+    fi
+    rm -f "$dest.tmp"
+  done
+  echo "FETCH FAILED: $1 — no copy carries the marker $mark"
+  return 1
+}
+fetch_script correlation_matrix.py correlation-matrix-v2 || { echo "no artifact; no push"; exit 1; }
+fetch_script correlation_report.py cross-asset-v4 || { echo "no artifact; no push"; exit 1; }
 
 # window-end = the last COMPLETED session (see "partial session" rule below)
 python3 /workspace/correlation_matrix.py \
@@ -102,6 +131,25 @@ python3 /workspace/correlation_matrix.py \
 Add `--rolled-end <YYYY-MM-DD>` for a week-rolled comparison window.
 The helper prints a JSON summary and writes `mats.json` with
 `matrix_returns`, `window`, `sources`, and (with `--cross-check`) `crosscheck_shibui_raw`.
+
+### The helper writes ALL THREE files the renderer needs
+
+Since 2026-11-05 the helper itself emits every input the renderer reads, so **no wrapper
+script is involved and the render command below works verbatim**:
+
+| File | Written by | What it carries |
+|---|---|---|
+| `data_cross/mats.json` | `correlation_matrix.py` | the published server-side returns matrix + the matched-length prior-week matrix + source health |
+| `data_cross/series.json` | `correlation_matrix.py` | `{symbol: [[date, adjclose, rawclose], …]}` — from ~2 weeks **before** the window start (the matrix's first return observation needs the prior close as its base) through **today** (the intraday column needs the partial bar) |
+| `data_cross/mats_partial.json` | `correlation_matrix.py` | `{"matrix_returns": {…}}` for the same window **including** the in-progress session, computed through the helper's own `build_sql` + `shibui_sql` — server-side DuckDB `corr()`, never by hand |
+
+**Before this, `series.json` and `mats_partial.json` came from an ad-hoc wrapper.** If the
+wrapper was not written, three load-bearing sections silently vanished from the artifact —
+`📈 Performance`, `🧪 Effect of the excluded partial session` and `📎 Appendix — price-level
+correlations` — and the run still reported success. The 2026-11-04 artifact says so in its
+own deviations section. That class of defect is now closed on both sides: the helper
+writes the files, **and** the renderer FAILS when they are missing instead of dropping the
+section.
 
 **Price source:** Yahoo Finance Chart API `/v8/finance/chart/{sym}?range=1y&interval=1d`, short
 `User-Agent: Mozilla/5.0` (a long Chrome UA is 429'd by Yahoo's edge). The aligned series are
@@ -146,28 +194,15 @@ locally-computed matrix while implying the server-side one was used.
 `mats.json` written by `correlation_matrix.py` and emits the complete markdown report.
 
 ```bash
-# FETCH LADDER — jsDelivr FIRST. raw.githubusercontent.com caches a branch per file
-# and its invalidation LAGS BY MINUTES-TO-HOURS after a push, so a cron can run a
-# STALE spec or a STALE renderer. jsDelivr re-resolves the branch on every request.
-# Always verify what you fetched — never assume the first URL gave you the new bytes.
-SKILL_PATH=cloud-prompts/skills/cross-asset-correlation-snapshot/scripts
-for U in \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$SKILL_PATH/correlation_report.py" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$SKILL_PATH/correlation_report.py" ; do
-  curl -sL --max-time 60 -o /workspace/correlation_report.py "$U" 2>/dev/null
-  # a 404 body is a non-empty body that is NOT a script — never run one
-  head -1 /workspace/correlation_report.py 2>/dev/null | grep -q '^#!' && break
-done
-# VERIFY the fetched copy is current, not a cached older one: the current renderer
-# date-guards live quotes on the quote's own `as_of` stamp.
-grep -q 'as_of' /workspace/correlation_report.py \
-  || echo "WARNING: stale renderer (raw/jsDelivr cache) — the intraday column and the window-return base may be one bar off"
+# The two helper scripts are fetched (with their capability markers) in the block
+# above. Do NOT fetch them again here, and do NOT hand-edit them.
 
 # 1) the matrix (server-side) AND the matched-length prior-week window, in ONE call.
 #    --window-end auto DERIVES the last completed session FROM THE DATA. Never pass a
 #    hand-picked window end: on 2026-11-03 a hand-picked 2026-10-30 silently published
 #    the previous day's window (a duplicate of the 2026-11-02 artifact) even though
 #    Yahoo's series contained the 2026-11-02 bar.
+#    This one call also writes series.json and mats_partial.json — see the table above.
 python3 /workspace/correlation_matrix.py --symbols 'SPY,QQQ,IWM,TLT,GLD,UUP,EEM,^VIX' \
   --window-end auto --prior-window --basis adjclose --cross-check \
   --out /workspace/data_cross/mats.json
@@ -189,6 +224,13 @@ python3 /workspace/correlation_report.py \
   --date <YYYY-MM-DD> --iso-week <YYYY-Wnn> --fire-et <HH:MM> \
   --regime "<regime tag>" --out /workspace/cross-asset/<YYYY-MM-DD>.md
 ```
+
+**`--partial` and `--series` are REQUIRED, and the renderer FAILS (non-zero exit) when
+either file is absent.** That is deliberate: they used to be optional, and because the
+helper did not write them, a missing file silently dropped three sections while the run
+reported success. If the renderer exits non-zero, **do not work around it and do not push
+a hand-written replacement** — re-run `correlation_matrix.py` (check the helper's stdout
+for `series:` and `partial:` paths) and render again.
 
 ### What the renderer adds (and why)
 
@@ -224,7 +266,9 @@ you spot it.
 1. **Never hand-write a table.** Prose (TL;DR, deviations, regime tag) may be written by hand
    into `tldr.txt` / `deviations.txt`; every table comes from the script.
 2. **The renderer is not a source.** It formats `mats.json`; it never fetches data. If a
-   comparison window is missing, omit that section rather than hand-filling it.
+   comparison window is missing, omit that section rather than hand-filling it — but if
+   `--series` or `--partial` is missing, the renderer **FAILS**, and that is the intended
+   behaviour, not a bug to work around. Re-run the helper and render again.
 3. **A live quote may only be used if the QUOTE ITSELF is stamped with the snapshot's date.**
    Check each quote's own `as_of` field — NOT the feed's retrieval timestamp. Before the
    open a feed returns the PREVIOUS session's close with a fresh retrieval stamp, so a
@@ -239,6 +283,108 @@ you spot it.
 6. **The performance table's window return is measured from the close BEFORE the window's
    first session** — that is the base of the matrix's first return observation. Starting the
    return at the first in-window close is one bar short of the matrix it describes.
+
+## The artifact contract — MANDATORY pre-push check
+
+**Do not push an artifact you have not checked.** The acceptance criteria are machine
+assertions, not a reading exercise: the 2026-11-04 artifact looked fine and would have
+failed several of them.
+
+```bash
+C=/workspace/tools/check_cross_asset_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_cross_asset_artifact.py?ref=main" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_cross_asset_artifact.py" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_cross_asset_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if head -1 "$C.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'check_cross_asset_artifact' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+[ -s "$C" ] || { echo "checker unavailable — do not publish an unchecked artifact"; exit 1; }
+
+python3 "$C" \
+  --md  /workspace/cross-asset/{date}.md \
+  --mats /workspace/data_cross/mats.json \
+  --reply /workspace/reply.txt \
+  --outputs-repo karizaco/minimax-cloud-outputs --ref main
+```
+
+It asserts:
+
+- the front matter exists and carries `contract: cross-asset-v4` (a missing marker means a
+  **stale renderer** produced the file — re-fetch and re-run);
+- `window_end_derived_from_data: true` — a hand-picked `--window-end` is the 2026-11-03
+  stale-window bug and is refused;
+- `window_start` / `window_end` / `n_sessions` agree with `mats.json` (a hand-edited
+  front matter is caught);
+- all eight sections are present, including `📈 Performance`, `🧪 Effect of the excluded
+  partial session` and `📎 Appendix — price-level correlations`;
+- all five colour bands (🟥🟧🟨🟩🟦) are present and no markdown table has a ragged cell
+  count;
+- the front matter carries a `signal_line` holding the max pair move, the 0.20 threshold
+  and the hedge implication;
+- the excluded-partial-session section does **not** overstate itself: it may only claim
+  the proof when the partial matrix really included a newer session;
+- the reply's first `### Signal` line names the hedge pair, the max pair move, the 0.20
+  threshold and the hedge implication.
+
+### THE DUPLICATE-WINDOW ASSERTION
+
+The same check refuses to publish a **second artifact for a window that is already in
+`cross-asset/`**. On 2026-11-03 the run published a duplicate of the 2026-11-02 artifact
+because the window had not rolled; the recovery was a second corrective commit, so the
+wrong artifact was briefly the published one. A duplicate window is indistinguishable
+from a regression at read time, so it is refused at the source.
+
+**If the checker exits 1 with a `DUPLICATE WINDOW` line: DO NOT PUSH.** Report it:
+which file already carries that window end, and what the derived window end was. Re-push
+only after you have established why the duplicate exists — a genuinely new window is the
+only acceptable reason to publish.
+
+**If the checker exits 4** (the duplicate check could not run — the listing could not be
+fetched): that is **not** a pass. Re-run the fetch once; if it still fails, publish only
+with `duplicate_window_check: unavailable` stated in the artifact's deviations and
+reported in the reply. Never report a clean run for a check that did not run.
+
+**Exit 1** on any other assertion means the artifact is wrong. Fix the artifact and run
+the checker again. Do not report a clean run over a failing check.
+
+## Reply — lead with the implication, not the matrix
+
+The tables are the evidence; the reply is what gets read. The 2026-11-04 artifact's TL;DR
+already carried the sentence a trader acts on, but the chat reply led with something
+else — so the actionable line was a scroll away from where the reader starts.
+
+**The first line under `### Signal` in your reply must be the artifact's `signal_line`** —
+copy it verbatim from the artifact's front matter:
+
+```
+signal_line: SPY–TLT +0.31 → bonds move WITH equities, so TLT is a weak diversifier, not a hedge against a growth selloff; best equity offset in the universe is UUP–SPY -0.34 · best diversifier QQQ–TLT +0.16 · largest pair move 0.0346 vs the 0.20 regime-shift threshold (0.1654 to go)
+```
+
+It carries three facts, in this order:
+
+1. **the hedge implication** — which instrument actually offsets which risk, in one clause;
+2. **the best diversifier** in the universe, as a headline;
+3. **the distance to the shift threshold** — `max_pair_move` against the 0.20
+   regime-shift threshold, because that number is the routine's actual output and it says
+   how much has to change for the picture to flip.
+
+The renderer computes it from the same numbers the tables use, so the reply can never
+drift from the artifact. Do not recompute a correlation by hand to write it.
+
+The prose opener (2–4 sentences) states the same implication in sentence form — the reader
+must not have to reach the `### Signal` section to learn what the snapshot means. Do not
+open with the matrix, the session count or the source list.
+
+Write the final reply to `/workspace/reply.txt` **before** running the checker, so the
+`--reply` assertion can see it. The reply still follows the fleet's standard
+`## DELIVERY` structure (prose opener → `### Signal` → `### Method & caveats` →
+`### Files` → `### Push / errors`) — this section only fixes what the FIRST Signal line
+must say.
 
 ## Hard rules
 - Use only `financekit.correlation_matrix`. Do not compute correlations manually from `price_history` calls — that's redundant and slower.
