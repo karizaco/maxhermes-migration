@@ -435,3 +435,52 @@ directive in `references/crons.md` was updated in the same change.
 - **The cron #09 PROMPT was not touched.** Every change above is a *procedure* change, and
   the prompt fetches the skill spec at run time — so the next fire inherits all of it with
   no `cron_update` and no byte-drift risk.
+
+---
+
+## 12. A MISSING INPUT WAS RENDERING AS A POSITIVE SKIP-FLAG (2026-11-05)
+
+**Found during the 2026-11-05 end-of-day sweep.** Every one of the 1,407 candidates in
+`_results.json` carried `flag_ma_shrink_5d: true`, and the per-stylist markdown printed that
+flag on every row. It was not a signal — it was an artefact of the defaults in
+`scripts/screen.py::_compute_skip_flags`:
+
+```python
+rng5 = d.get("range_5d", 0)        # missing key -> 0
+rng20 = d.get("range_20d", 1e-9)   # missing key -> 1e-9
+if rng20 > 0:
+    flags["ma_shrink_5d"] = rng5 < 0.5 * rng20     # 0 < 5e-10 -> TRUE
+```
+
+A row that carries **no** range data evaluated to `True`. The same shape applied to
+`wicky_breakout` (`body = abs(close - open)` used `0` for a missing `open`, so the body
+became the whole close price) and to `atr_shrink` (missing inputs defaulted to `False`, i.e.
+a flag that could never fire).
+
+### The fix
+
+A flag is now **True / False / None**, and `None` means *not computable from this row's
+fields* — a third state that is never rendered as a positive signal:
+
+- `atr_shrink` → `None` unless BOTH `atr_14` and `atr_63_median` are present.
+- `wicky_breakout` → `None` unless `open`, `high` and `low` are all present AND a
+  `rvol_close` exists; `None` rather than a body computed from a missing `open`.
+- `ma_shrink_5d` → `None` unless BOTH `range_5d` and `range_20d` are present.
+- `day2_no_follow`, `no_reclaim_15m`, `second_bite_d2` → `None` (they need day-2 data and
+  a live tape; `False` would claim a clean signal that was never measured).
+
+`_results.json` and every markdown writer publish only **truthy** flags, so a `None` flag
+simply does not appear — it is never shown as `False` either.
+
+### Why it matters beyond the one artifact
+
+A flag that fires on every row is indistinguishable from a broken pipeline, and it is
+exactly the "silent zero that reads like a quiet tape" failure class this suite keeps
+guarding against — in mirror image: a **silent TRUE**. A reader who saw `ma_shrink_5d` on
+all 1,407 rows could not tell a real screen output from a default, and the flag column
+carried no information at all.
+
+`scripts/smoke_test.py` passes against the patched script (all guards green), and the
+2026-11-05 artifact was regenerated with it: no candidate carries a skip-flag, and the
+tier lists carry only the two flags that are genuinely computable from the 2026-11-04 OHLC
+(`wicky_breakout`, `ma_shrink_5d`).

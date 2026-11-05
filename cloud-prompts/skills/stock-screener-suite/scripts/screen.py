@@ -1569,13 +1569,19 @@ def tier_candidates(
 
 def _compute_skip_flags(d: dict) -> dict[str, bool]:
     """Compute the 6 skip-rule flags from OHLC-derived data."""
+    # A flag is True, False, or None. None means "NOT COMPUTABLE from this
+    # row's fields" — it is NOT the same as False, and it must never be
+    # rendered as a positive flag. (2026-11-05: the old defaults made
+    # `ma_shrink_5d` TRUE on every row that lacked range_5d/range_20d,
+    # because `0 < 0.5 * 1e-9` is True — a missing input became a positive
+    # signal on all 1,407 candidates.)
     flags = {
-        "atr_shrink": False,
-        "wicky_breakout": False,
-        "ma_shrink_5d": False,
-        "day2_no_follow": False,
-        "no_reclaim_15m": False,
-        "second_bite_d2": False,
+        "atr_shrink": None,
+        "wicky_breakout": None,
+        "ma_shrink_5d": None,
+        "day2_no_follow": None,
+        "no_reclaim_15m": None,
+        "second_bite_d2": None,
     }
     # atr_shrink: atr_14 < 0.6 × median(atr_14, 63d)
     atr14 = d.get("atr_14")
@@ -1584,19 +1590,20 @@ def _compute_skip_flags(d: dict) -> dict[str, bool]:
         flags["atr_shrink"] = atr14 < 0.6 * atr63
 
     # wicky_breakout: breakout candle wick > body AND close RVOL < 1.2
-    body = abs(d.get("close", 0) - d.get("open", 0))
-    high = d.get("high", 0)
-    low = d.get("low", 0)
-    rng = max(high - low, 1e-9)
-    wick = rng - body
-    rvol = d.get("rvol_close", 1.0)
-    if body > 0:
-        flags["wicky_breakout"] = (wick > body) and (rvol < 1.2)
+    if all(d.get(k) is not None for k in ("open", "high", "low")):
+        body = abs(d.get("close", 0) - d.get("open", 0))
+        high = d.get("high", 0)
+        low = d.get("low", 0)
+        rng = max(high - low, 1e-9)
+        wick = rng - body
+        rvol = d.get("rvol_close")
+        if body > 0 and rvol is not None:
+            flags["wicky_breakout"] = (wick > body) and (rvol < 1.2)
 
     # ma_shrink_5d: 5d range < 50% of 20d range
-    rng5 = d.get("range_5d", 0)
-    rng20 = d.get("range_20d", 1e-9)
-    if rng20 > 0:
+    rng5 = d.get("range_5d")
+    rng20 = d.get("range_20d")
+    if rng5 is not None and rng20 is not None and rng20 > 0:
         flags["ma_shrink_5d"] = rng5 < 0.5 * rng20
 
     # day2_no_follow: requires day-2 data — filled by Agent post-entry
