@@ -305,6 +305,340 @@ same pulls was the **after-hours** print stamped 18:36 ET (MRNA `primaryData` 25
 - Any same-day-print column must record WHICH of the two it used, or the reader cannot
   tell a settled close from an after-hours drift.
 
+#### ⚠ The `late_cycle` key trap — the flag that could never fire
+
+`emit_breadth_sql()` selects the index identifier into a column named **`ticker`**:
+
+```sql
+SELECT 'index_atr_extension', ticker, close, sma_20, sma_50, atr_14, atr_252d_avg, ...
+```
+
+A consumer that reads only `row.get("symbol")` therefore gets an **empty** extension map, and
+`late_cycle` — computed as `any(...)` over that empty map — is **always False**. It fails
+silently and looks plausible on every single run.
+
+**The rule:** read the key the PRODUCER emits, and read every alias the consumer accepts:
+`row.get("symbol") or row.get("ticker") or row.get("etf")`. `scripts/screen.py::compute_regime()`
+already does this, and `scripts/smoke_test.py` asserts that `late_cycle` CAN be `True` (a flag
+that can only ever be `false` is not a flag).
+
+**The runtime guard:** whenever the five index-ETF rows are present, `atr_extensions` MUST be
+non-empty. An empty map is a failed run, not a quiet tape — publish it as
+`probe_failed:atr_extensions_empty` and say so, rather than shipping `late_cycle = false`
+as if it had been computed.
+
+### 3.5. Breadth snapshot artifact contract (cron #10) — v1
+
+**Scope: cron #10 only** — the 14:00 ET intraday read, `daily-screens/<date>/breadth-snapshot.md`.
+Cron #09's `breadth.md` is the END-OF-DAY read and is **not** covered by this section; it keeps
+its own shape. This section is fetched at RUN time, so an edit here lands on the next fire with
+**no prompt edit and no byte-drift risk**. The checker (`tools/check_breadth_artifact.py`)
+asserts everything below; a run that breaks the contract FAILS instead of shipping.
+
+#### 3.5.1 WHAT THE 2026-11-03 ARTIFACT GOT WRONG — why this section exists
+
+1. **No advance/decline tally.** The run disclosed the gap honestly ("No live advance/decline
+   tally exists on any reachable feed") — but that is not true. The closes are already in the
+   universe this routine scans, and the tally is one `LAG()` self-join away. This is the
+   single most-watched breadth number in existence and the routine could not produce it.
+2. **A level with no context.** "65.19% of the 902 large caps are above their 20-DMA" is
+   unremarkable in one regime and alarming in another. A percentile fixes it.
+3. **The divergence was buried in a bullet.** The run's genuinely new finding — the broad
+   market healthy while the index posture stayed weak — is the highest-value output of a
+   breadth read and it changes position sizing. It is now a named, first-class metric.
+4. **The regime flags were one concatenated string** in the front matter, so comparing two
+   days meant parsing prose.
+5. **No TL;DR.**
+
+#### 3.5.2 THE FILES AND THE MARKER
+
+Four files, same directory:
+
+| file | what it is |
+|---|---|
+| `breadth-snapshot.md` | the artifact |
+| `breadth-snapshot.csv` | the contract CSV — one row per session, trailing window |
+| `breadth-snapshot.json` | every computed metric + provenance (machine-readable) |
+| `_regime-intraday.json` | the regime payload, **flat** schema v2 (cron #10 owns this name; cron #09 owns `_regime.json`) |
+
+**The marker** — in the front matter (`contract: breadth-artifact-v1`) AND on the marker line
+just under it:
+
+```
+_contract: breadth-artifact-v1 · data_date 2026-11-04 · universe 909 names · breadth 69.42% (pctile 94.3 · ABOVE_NORMAL) · divergence +29.42 pp (BROAD) · AD 658/250/1_
+```
+
+#### 3.5.3 THE HELPER — run it, it is the reference implementation
+
+`scripts/breadth_metrics.py` computes the whole settled layer, writes the CSV, the metrics JSON
+and the regime sidecar, and renders the contract-shaped markdown. **Fetch it at RUN time and
+require the capability marker** — an OLD copy would write the OLD artifact shape, and the
+checker would then fail the run for no visible reason:
+
+```bash
+mkdir -p /workspace/tools
+S=/workspace/tools/breadth_metrics.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/scripts/breadth_metrics.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/breadth_metrics.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/breadth_metrics.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && grep -q 'breadth-artifact-v1' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'breadth-artifact-v1' "$S"; then
+  echo "breadth_metrics.py: UNAVAILABLE (no copy carrying the current contract)"
+  echo "no artifact; no push"
+  exit 1
+fi
+```
+
+Then fetch the live tape (Cboe delayed-quote CDN for the volatility pair and the index levels,
+the `market-recap` bridge for the ETF tape), write the live-layer JSON, and run the helper ONCE
+— it computes the settled metrics, writes the CSV / JSON / regime sidecar, and renders the
+markdown:
+
+```bash
+python3 "$S" --date "$FIRE_DATE" --out-dir /workspace/daily-screens/$FIRE_DATE \
+    --bridge /workspace/mcp_bridge.py \
+    --render-md /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.md \
+    --live-json /workspace/live.json
+```
+
+The live-layer JSON carries the keys the renderer cannot know: `fire_time_et`, `live_date`,
+`vix_quote_time`, `vix_pair`, `banner`, `tldr`, `tape_block`, `volatility_block`, `flags_block`,
+`method_block`. **Any key you do not supply is rendered as a `<!-- FILL: ... -->` marker, and the
+checker REJECTS an artifact that still carries one.** A stub cannot ship.
+
+**If you re-implement the logic inline instead of running the helper, the artifact must carry
+exactly the same fields — the checker verifies the artifact, not the route you took.**
+
+#### 3.5.4 THE UNIVERSE — one population, and it is NOT frozen
+
+```
+NYSE/NASDAQ/AMEX · market cap > $10B · market_cap from the LATEST `valuation` row
+```
+
+- **The universe is NOT frozen.** The market-cap floor is applied to the latest `valuation` row,
+  so the count moves as those rows refresh (904 → 902 → 905 → 909 across four sessions in
+  November 2026). **Publish the count every run and say so when it moves.**
+- **Do NOT change the universe** (venue list, $10B floor). Changing it makes the series
+  non-comparable.
+- **The advance/decline tally uses the SAME population as the breadth percentage** — the
+  indicator-joined large-cap set, so `advancing + declining + unchanged` equals the published
+  universe count. A quote-only universe is a DIFFERENT population (it runs ~4-7 names larger,
+  because names without an indicator row that session are still trading) and mixing the two
+  denominators in one artifact is exactly the kind of thing a reader cannot see.
+
+#### 3.5.5 THE METRICS — definitions, bands, and what they mean
+
+**`breadth_pct`** — % of the universe above its own 20-DMA, on the settled session.
+**`breadth_pctile_1y`** — that level's rank in its own trailing 1-year distribution:
+`100 × (sessions at or below the current value) ÷ sessions in the window`. **0..100, always.**
+**`breadth_pct_band`** — `ABOVE_NORMAL` (pctile ≥ 80) · `NORMAL` (20 < pctile < 80) ·
+`BELOW_NORMAL` (pctile ≤ 20). The same percentile and band apply to the 50-DMA split
+(`breadth_pctile_1y_50dma`) and to the index-ETF count.
+
+**The advance/decline family** — computed from `stock_quotes` with a `LAG()` self-join over the
+same universe:
+
+| field | meaning |
+|---|---|
+| `advancing` / `declining` / `unchanged` | the settled session's counts |
+| `ad_ratio` | advancing ÷ declining |
+| `ad_net` | advancing − declining |
+| `ad_net_10d` | the net advances summed over the last 10 sessions (the ADL's CHANGE) |
+| `adl_slope_10d` | the OLS slope of the cumulative ADL over the last 10 sessions, in **net advances per session** |
+| `ad_ratio_10d` | Σ advancing ÷ Σ declining over the last 10 sessions |
+
+The ADL is a LEVEL (cumulative net advances since `adl_base_date`, the first session of the
+A/D series — ~60 sessions back, so the base is meaningful and not arbitrary) and the slope is
+the RATE. Publish both, and publish the base date. A slope needs a FULL 10-session window: a
+2-point slope off the start of the series is noise, and it is published blank instead.
+
+**`breadth_divergence`** — the large-cap universe's share above its own 20-DMA **minus** the
+index ETFs' share above their own 20-DMA, in percentage points:
+
+```
+breadth_divergence_pp = breadth_pct_above_sma_20_largecap − (index ETFs above their 20-DMA ÷ 5 × 100)
+```
+
+| band | condition | what it means |
+|---|---|---|
+| `BROAD` | ≥ +15 pp | the average large cap is materially healthier than the index — participation is broader than the headline index, and the index's own posture is the weak leg |
+| `MATCHED` | −15 pp < x < +15 pp | the broad universe and the index ETFs agree |
+| `NARROW` | ≤ −15 pp | the index is healthier than the average large cap — the cap-weighted index is carried by its biggest names while the average stock is not participating |
+
+**Publish the last 5 sessions of the divergence** so the reader can see whether it is widening
+or closing, and publish its own 1-year percentile.
+
+> **A sign error to not repeat.** The 2026-11-03 artifact described a POSITIVE divergence
+> (broad healthy, index weak) as "the signature of a megacap-led advance". It is the opposite:
+> when the cap-weighted index is BELOW its 20-DMA while the broad universe is above it, the
+> mega-caps are the WEAK leg. A positive divergence means the average stock is healthier than
+> the index. The `NARROW` band is the "the index is carried by a handful of megacaps" case.
+
+**The volatility pair** — ONE VIX/VIX3M pair, used everywhere, with its quote time and its
+source. The Cboe CDN's field semantics depend on the clock: during regular hours
+`close == current_price` (the live trade); **before 09:30 ET there is no live VIX print at all
+and the CDN serves the PRIOR session's settle** — and it has been seen serving a transient
+value for it minutes after the close (16.89 for a session that settled at 16.61). So the pair
+is pulled **twice**, and a disagreement is published as `vix_stable: false` and flagged, rather
+than hidden behind one number.
+
+#### 3.5.6 THE FRONT MATTER — structured, never a concatenated string
+
+```yaml
+---
+artifact: breadth-snapshot
+contract: breadth-artifact-v1
+cron: "#10 stock-screener-breadth-snapshot"
+fire_time_et: "2026-11-05 14:00:54 ET"
+data_date: "2026-11-04"          # the SETTLED session the breadth numbers describe
+live_date: "2026-11-05"          # the LIVE tape session — a SEPARATE field, never blended
+breadth_universe: "NYSE/NASDAQ/AMEX, market cap > $10B, 909 names"
+vix_quote_time: "2026-11-05 13:49:31 ET (Cboe delayed-quote CDN)"
+vix_pair: "VIX 16.61 / VIX3M 18.80 — single pair, used everywhere in this document"
+cross_reference: "end-of-day counterpart: daily-screens/2026-11-04/breadth.md (cron #09, 18:30 ET)"
+size_cut_pct: 0                  # STRUCTURED fields — one per line, machine-readable
+uncertainty: false
+late_cycle: false
+---
+```
+
+**`data_date` and `live_date` are separate fields, and they are usually different.** The
+breadth numbers are the SETTLED session (shibui is T+1); the tape and the volatility pair are
+LIVE. Never blend them into one number, and never collapse the regime flags into one string —
+`regime: "size_cut 0% · uncertainty false · late_cycle false"` is the shape this contract
+replaces. The three flags are flat fields with the SAME names the `_regime-intraday.json`
+payload uses, so a consumer can compare two days without parsing prose.
+
+#### 3.5.7 THE MARKDOWN SKELETON — these sections, in this order
+
+```
+# Breadth & Regime Snapshot — <Weekday, DD Month YYYY> (intraday, cron #10)
+<banner — the session, the snapshot clock, the source of record>
+## TL;DR
+## Breadth — <data_date> settled session (shibui)
+## Participation — advance/decline and the 10-session ADL
+## Breadth percentile — where today's level sits in its own history
+## Breadth divergence — broad market versus index ETFs
+## Index positioning — distance from the 50-DMA
+## Live tape — <live_date>
+## Volatility — single pair, live
+## Regime
+## Flags
+## Method, source health & caveats
+```
+
+- **`## TL;DR`** — **exactly 3 bullets**: what breadth did · the one most important divergence ·
+  the caveat that changes how to read it.
+- **`## Breadth`** — the headline table. **The advance/decline counts live in THIS table**, in
+  the first screen, not in a caveat. If a run ever falls back to the RSP-vs-SPY spread instead
+  of a real tally, it is a **cap-weight participation proxy, not an advance/decline tally** and
+  the table must say so in the same row.
+- **`## Participation`** — the per-session advance/decline table and the ADL.
+- **`## Breadth percentile`** — the percentile rows. The field names are mandatory:
+  `breadth_pct`, `breadth_pctile_1y`, `breadth_pct_50dma`, `breadth_pctile_1y_50dma`,
+  `index_etfs_above_20dma`.
+- **`## Breadth divergence`** — the `breadth_divergence` row (value in **pp**, band, percentile)
+  and the last 5 dated sessions.
+- **`## Flags`** — per-SYMBOL suspect numbers: a reading that is arithmetically distorted, a
+  source that disagreed with itself, an unstable volatility print. "Some data may be thin" is
+  not a flag; "SPY's 20-DMA is 2.1% below its close while the tape says otherwise — flagging"
+  is. Data-path caveats do NOT go here.
+- **`## Method, source health & caveats`** — about the RUN: every source tried and its status,
+  the universe and its drift, the settled-vs-live split, the percentile windows, the
+  `atr_extensions` note, and any degraded probe (`probe_failed:<reason>`).
+
+#### 3.5.8 THE CSV — one row per session
+
+```
+date, n_lc, pct_above_sma_20, pct_above_sma_50, n_etf_above_sma_20, n_etf_above_sma_50,
+breadth_divergence_pp, advancing, declining, unchanged, ad_net, adl_cum, adl_slope_10d,
+breadth_pctile_1y, divergence_pctile_1y, is_data_date
+```
+
+The trailing window (30 sessions by default). **Exactly one row carries `is_data_date=yes`** —
+the settled session the artifact describes. The percentile columns are expanding (against every
+session from the start of the window to that row).
+
+#### 3.5.9 VERIFY THE ARTIFACT BEFORE YOU REPORT IT
+
+```bash
+C=/workspace/tools/check_breadth_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_breadth_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_breadth_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_breadth_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_breadth_artifact.py'; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+python3 "$C" \
+  --md     /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.md \
+  --csv    /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.csv \
+  --json   /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.json \
+  --regime /workspace/daily-screens/$FIRE_DATE/_regime-intraday.json \
+  --reply  /workspace/reply.txt
+```
+
+Save the final chat reply to `/workspace/reply.txt` before running the checker — the `--reply`
+check asserts that the reply's `### Signal` names the divergence and the advance/decline tally.
+
+It asserts the section skeleton and its order, the contract marker, the **structured** regime
+fields (and that no concatenated `regime:` string is present), the TL;DR's 3 bullets, the
+advance/decline row in the headline table, `breadth_pctile_1y` inside 0..100 with its band,
+`breadth_divergence` with its band and its 5-session history, the CSV's columns and its
+agreement with the markdown, the regime payload's flat schema and its **non-empty**
+`atr_extensions`, and the reply contract. It exits 1 and prints each failure. **If it fails,
+fix the artifact and run it again — do not report a clean run over a failing check.** Do not
+eyeball these things; the 2026-11-03 artifact looked fine and failed them.
+
+**All four files ship.** `push_artifact.sh --out daily-screens` stages the whole output tree, so
+the CSV and the JSON land with the markdown — but verify **every** path, because a companion
+file that never lands starves the next fire's baseline:
+
+```bash
+for F in breadth-snapshot.md breadth-snapshot.csv breadth-snapshot.json _regime-intraday.json; do
+  sh /workspace/verify_delivery.sh --path "daily-screens/$FIRE_DATE/$F" --branch main
+done
+```
+
+**One push invocation, and `--add` the MARKDOWN path.** `push_artifact.sh` derives the routine
+number from the `--add` path via its own table: `daily-screens/*/breadth-snapshot.md` → `NN=10`.
+Adding the sidecars as extra `--add` flags is not needed (the whole tree is staged) and a path
+that matches no row produces a commit subject with **no routine number**, which cron #90's
+triage then reads as MISSING. Do not run the push once per file — that is the commit-storm
+shape the auditor flags.
+
+#### 3.5.10 THE REPLY
+
+The shared reply format from `_shared/PROMPT-BLOCKS.md` (`## DELIVERY`) applies, plus:
+
+- **`### Signal` names the divergence** — the metric that changes position sizing gets its own
+  line, with the value, the band and what the band MEANS (not the direction of the spread
+  alone).
+- **`### Signal` names the advance/decline tally** — the counts and the ratio.
+- **Never publish a live A/D figure you did not compute.** `probe_failed:<reason>` is correct;
+  a fabricated tally is not.
+
+#### 3.5.11 DO NOT
+
+- **Do not blend the settled breadth with the live tape.** Two fields, two sections, two labels.
+- **Do not change the universe.** (3.5.4)
+- **Do not claim a live A/D figure if you did not compute it.** (3.5.10)
+- **Do not publish a level without its percentile**, or a divergence without its band.
+- **Do not collapse the regime flags into one string**, and do not ship an empty
+  `atr_extensions` as a quiet `late_cycle = false`. (3.5.4 / the `late_cycle` key trap above)
+- **Do not skip the checker.** An unchecked artifact is a claim, not a deliverable.
+
 ### 4. Tier and merge (in-memory, zero MCP)
 
 `scripts/screen.py tier --date <YYYY-MM-DD>` produces:
