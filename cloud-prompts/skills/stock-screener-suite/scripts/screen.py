@@ -53,8 +53,120 @@ from typing import Any
 DEFAULT_VAULT = Path("C:/Users/admin/research/markets/daily-screens")
 
 
+# ---------------------------------------------------------------------------
+# shibui's per-query row ceiling
+# ---------------------------------------------------------------------------
+#
+# shibui hard-caps EVERY query result at 200 rows (the 2026-11-03 sweep measured
+# 233 names passing the 4%-breakout filter and 236 passing EP9M, so a single
+# capped query cannot return them). Two different limits must therefore never
+# be confused:
+#
+#   * the ROW CAP (200) is a hard server ceiling — one query cannot return more;
+#   * a PER-BRANCH LIMIT is a cap the EMITTER chose (50 / 30 / 60), and it is
+#     the bug: it silently truncated a book while the query still succeeded and
+#     every downstream count still looked plausible.
+#
+# The fix is: no branch carries its own LIMIT; a branch is fetched on its own,
+# paged 200 rows at a time, and every row carries `rows_passing` — the TRUE
+# count of rows that pass that branch's filter, computed inside the branch
+# before any cap applies. The run then asserts rows_kept == rows_passing.
+SHIBUI_ROW_CAP = 200
+
+# The per-branch caps that used to live in the emitters. They are kept here
+# ONLY as the signature of the defect: a published branch count equal to one of
+# these is the truncation fingerprint, not a screen outcome.
+LEGACY_BRANCH_CAPS = (30, 50, 60)
+
+
 def vault_dir(date: str, root: Path = DEFAULT_VAULT) -> Path:
     return root / date
+
+
+# ---------------------------------------------------------------------------
+# `_regime.json` — ONE declared shape, pinned
+# ---------------------------------------------------------------------------
+#
+# The payload changed shape between 2026-11-03 (flat) and 2026-11-04 (nested
+# under a `regime` key). A consumer doing `d.get("late_cycle")` on the nested
+# file gets `None`, which is indistinguishable from "not computed" — a silent
+# contract break in a file the suite spec calls "the file downstream routines
+# should read".
+#
+# The FLAT shape is canonical: it is what the 2026-11-03 consumers read and
+# what `compute_regime()` returns. The schema version travels in the payload so
+# a consumer can tell the shapes apart.
+REGIME_SCHEMA_VERSION = 2
+
+# Every one of these MUST be present in a published `_regime.json`. A missing
+# key is a failed run, not a default.
+REGIME_REQUIRED_KEYS = (
+    "size_cut_pct",
+    "uncertainty",
+    "late_cycle",
+    "breadth_pct_spx",
+    "index_below_20sma",
+    "vix",
+    "vix3m",
+    "atr_extensions",
+)
+
+
+class RegimeSchemaError(ValueError):
+    """Raised when a regime payload does not match the declared schema."""
+
+
+def assert_regime_schema(payload: dict) -> dict:
+    """Validate a regime payload against the declared schema.
+
+    Raises `RegimeSchemaError` when a required key is missing. A payload that
+    nests the regime under a `regime` key is ALSO rejected: that shape is the
+    2026-11-04 break, and accepting it would let the break persist.
+    """
+    if not isinstance(payload, dict):
+        raise RegimeSchemaError(f"regime payload is {type(payload).__name__}, expected dict")
+    if "regime" in payload and not any(k in payload for k in REGIME_REQUIRED_KEYS):
+        raise RegimeSchemaError(
+            "regime payload is NESTED under a 'regime' key — that is the "
+            "2026-11-04 schema break. The canonical shape is FLAT: the regime "
+            "fields sit at the top level next to '_schema'."
+        )
+    missing = [k for k in REGIME_REQUIRED_KEYS if k not in payload]
+    if missing:
+        raise RegimeSchemaError(
+            f"regime payload is missing required key(s): {', '.join(missing)}"
+        )
+    return payload
+
+
+def write_regime_payload(path: Path, payload: dict) -> dict:
+    """Write `_regime.json` in the canonical flat shape, with a schema version.
+
+    The payload is validated BEFORE it is written, so a broken shape never
+    lands on disk. `_schema` and `_note` are siblings of the regime fields,
+    never parents of them.
+    """
+    assert_regime_schema(payload)
+    out = {"_schema": REGIME_SCHEMA_VERSION}
+    out.update(payload)
+    Path(path).write_text(json.dumps(out, indent=2), encoding="utf-8")
+    return out
+
+
+def read_regime(path: Path) -> dict:
+    """Read a `_regime.json` into the flat shape, tolerating the legacy nesting.
+
+    A consumer must never see `None` where a regime field belongs. If the file
+    on disk is the 2026-11-04 nested shape, it is unwrapped here (and the
+    caller can see `read_regime` returned a payload whose `_schema` is absent).
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "regime" in data and isinstance(data["regime"], dict):
+        flat = dict(data["regime"])
+        flat["_note"] = data.get("_note") or flat.get("_note")
+        flat["_legacy_nested"] = True
+        return flat
+    return data
 
 
 # Vault layout reference (also documented in references/vault-concurrency.md):
@@ -354,10 +466,37 @@ def emit_sweep_sql_stockbee(date: str) -> str:
 
     The market-cap pre-filter floor is applied inside the query so the
     equity universe is enforced at the source, not after the merge.
+
+    NO BRANCH CARRIES ITS OWN LIMIT. Each branch used to end in
+    `LIMIT 50` / `LIMIT 50` / `LIMIT 30`, which silently truncated the book
+    while the query still succeeded — on 2026-11-04 the artifact published
+    `A_stockbee_4pct 50` and `B_stockbee_ep9m 50`, which are the CAPS, not
+    screen outcomes (the true passing counts that day were 233 and 236).
+    Every branch now carries `rows_passing` — `COUNT(*) OVER ()` computed
+    INSIDE the branch, before any cap applies — so the true passing count
+    travels with the rows and the coverage assertion can prove nothing was
+    dropped. The single outer `LIMIT 200` is shibui's own row ceiling and
+    must stay.
     """
+    support = _stockbee_support_ctes(date)
+    branches = _stockbee_branch_ctes(date)
+    union = "\nUNION ALL ".join(f"SELECT * FROM {name}" for name in branches)
+    cte_list = ",\n".join(branches.values())
     return f"""
 -- Stockbee sweep for {date}: 4% breakout + EP9M + Anticipation
-WITH mc AS (
+WITH {support},
+{cte_list}
+{union}
+ORDER BY origin, symbol
+LIMIT {SHIBUI_ROW_CAP}
+""".strip()
+
+
+def _stockbee_support_ctes(date: str) -> str:
+    """The CTEs every Stockbee branch reads: the market-cap lookup and the
+    per-symbol window frame (prev close/volume, rolling ATRs, 10-day range)."""
+    return f"""
+mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
   WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
@@ -375,11 +514,19 @@ today AS (
   JOIN mc ON mc.symbol = q.symbol AND mc.market_cap > 300000000
   WHERE q.date BETWEEN DATE '{date}' - INTERVAL '150 days' AND '{date}'
 AND q.exchange IN ('NYSE','NASDAQ','AMEX')
-),
+)""".strip()
+
+
+def _stockbee_branch_ctes(date: str) -> dict[str, str]:
+    """Branch name -> CTE text. No branch carries a LIMIT; every branch
+    carries `rows_passing` (the true count of rows passing its filter)."""
+    return {
+        "A_stockbee_4pct": f"""
 A_stockbee_4pct AS (
   SELECT 'A_stockbee_4pct' AS origin, symbol, close, volume,
      (close / NULLIF(prev_close, 0) - 1) * 100 AS chg_pct,
-     NULL AS dcr_pct, NULL AS trend_intensity, NULL AS base_width_pct
+     NULL AS dcr_pct, NULL AS trend_intensity, NULL AS base_width_pct,
+     COUNT(*) OVER () AS rows_passing
   FROM today
   WHERE date = '{date}'
 AND prev_close IS NOT NULL AND prev_close > 0
@@ -387,41 +534,35 @@ AND close / NULLIF(prev_close, 0) >= 1.04
 AND volume > prev_volume
 AND volume >= 100000
 AND close >= 3
-  ORDER BY chg_pct DESC
-  LIMIT 50
-),
+)""".strip(),
+        "B_stockbee_ep9m": f"""
 B_stockbee_ep9m AS (
   SELECT 'B_stockbee_ep9m' AS origin, symbol, close, volume,
      NULL AS chg_pct,
      (close - low) / NULLIF(high - low, 0) * 100 AS dcr_pct,
-     NULL AS trend_intensity, NULL AS base_width_pct
+     NULL AS trend_intensity, NULL AS base_width_pct,
+     COUNT(*) OVER () AS rows_passing
   FROM today
   WHERE date = '{date}'
 AND volume >= 8900000
 AND close >= 3
-  ORDER BY volume DESC
-  LIMIT 50
-),
+)""".strip(),
+        "K_stockbee_anticipation": f"""
 K_stockbee_anticipation AS (
   SELECT 'K_stockbee_anticipation' AS origin, symbol, close, NULL AS volume,
      NULL AS chg_pct, NULL AS dcr_pct,
      atr_7d / NULLIF(atr_65d, 0) AS trend_intensity,
-     (max_high_10d - min_low_10d) / NULLIF(close, 0) AS base_width_pct
+     (max_high_10d - min_low_10d) / NULLIF(close, 0) AS base_width_pct,
+     COUNT(*) OVER () AS rows_passing
   FROM today
   WHERE date = '{date}'
 AND atr_7d / NULLIF(atr_65d, 0) >= 1.05
 AND (max_high_10d - min_low_10d) / NULLIF(close, 0) <= 0.08
 AND prev_close IS NOT NULL
 AND close / NULLIF(prev_close, 0) < 1.04
-  ORDER BY trend_intensity DESC
-  LIMIT 30
-)
-SELECT * FROM A_stockbee_4pct
-UNION ALL SELECT * FROM B_stockbee_ep9m
-UNION ALL SELECT * FROM K_stockbee_anticipation
-ORDER BY origin, symbol
-LIMIT 200
-""".strip()
+)""".strip(),
+    }
+
 
 
 
@@ -438,10 +579,32 @@ def emit_sweep_sql_qullamaggie(date: str) -> str:
       * the CTE aliased close_252d_ago / close_126d_ago / close_63d_ago /
         close_21d_ago while the SELECT and WHERE referenced close_252 /
         close_126 / close_63 / close_21, which is a Binder Error.
+
+    NO BRANCH CARRIES ITS OWN LIMIT — the four branches used to end in
+    `LIMIT 60` / `LIMIT 30` x3, which silently truncated each book. Every
+    branch carries `rows_passing` (`COUNT(*) OVER ()` inside the branch) so
+    the true passing count travels with the rows and the coverage assertion
+    can prove nothing was dropped. The outer `LIMIT 200` is shibui's own row
+    ceiling and must stay.
     """
+    support = _qullamaggie_support_ctes(date)
+    branches = _qullamaggie_branch_ctes(date)
+    union = "\nUNION ALL ".join(f"SELECT * FROM {name}" for name in branches)
+    cte_list = ",\n".join(branches.values())
     return f"""
 -- Qullamägi sweep for {date}: multi-timeframe RS + EP + 5d movers
-WITH mc AS (
+WITH {support},
+{cte_list}
+{union}
+ORDER BY origin, symbol
+LIMIT {SHIBUI_ROW_CAP}
+""".strip()
+
+
+def _qullamaggie_support_ctes(date: str) -> str:
+    """mc + hist — the shared CTEs every Qullamägi branch reads."""
+    return f"""
+mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
   WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
@@ -460,14 +623,22 @@ hist AS (
   WHERE q.date BETWEEN DATE '{date}' - INTERVAL '430 days' AND '{date}'
 AND q.exchange IN ('NYSE','NASDAQ','AMEX')
   WINDOW w AS (PARTITION BY q.symbol ORDER BY q.date)
-),
+)""".strip()
+
+
+def _qullamaggie_branch_ctes(date: str) -> dict[str, str]:
+    """Branch name -> CTE text. No branch carries a LIMIT; every branch
+    carries `rows_passing` (the true count of rows passing its filter)."""
+    return {
+        "C_qullamaggie_rs": f"""
 C_qullamaggie_rs AS (
   SELECT 'C_qullamaggie_rs' AS origin, symbol, close,
      (close / NULLIF(close_252d_ago, 0) - 1) * 100 AS rs_12m,
      (close / NULLIF(close_126d_ago, 0) - 1) * 100 AS rs_6m,
      (close / NULLIF(close_63d_ago, 0) - 1) * 100 AS rs_3m,
      (close / NULLIF(close_21d_ago, 0) - 1) * 100 AS rs_1m,
-     adr_pct_20d, adv_dollar_20d, NULL AS m1, NULL AS m2
+     adr_pct_20d, adv_dollar_20d, NULL AS m1, NULL AS m2,
+     COUNT(*) OVER () AS rows_passing
   FROM hist
   WHERE date = '{date}'
 AND adv_dollar_20d >= 20000000
@@ -475,66 +646,80 @@ AND adr_pct_20d >= 4.5
 AND close_252d_ago IS NOT NULL AND close_126d_ago IS NOT NULL
 AND close_63d_ago IS NOT NULL AND close_21d_ago IS NOT NULL
 AND ((close / NULLIF(close_21d_ago, 0) - 1) >= 0.25 OR (close / NULLIF(close_63d_ago, 0) - 1) >= 0.50 OR (close / NULLIF(close_126d_ago, 0) - 1) >= 1.50)
-  ORDER BY rs_3m DESC
-  LIMIT 60
-),
+)""".strip(),
+        "D_qullamaggie_ep": f"""
 D_qullamaggie_ep AS (
   SELECT 'D_qullamaggie_ep' AS origin, symbol, close,
      NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
      NULL AS adr_pct_20d, adv_dollar_20d,
      (open / NULLIF(prev_close, 0) - 1) * 100 AS m1,
-     volume / NULLIF(adv_dollar_20d / NULLIF(close, 0), 0) AS m2
+     volume / NULLIF(adv_dollar_20d / NULLIF(close, 0), 0) AS m2,
+     COUNT(*) OVER () AS rows_passing
   FROM hist
   WHERE date = '{date}'
 AND prev_close IS NOT NULL AND prev_close > 0
 AND open / NULLIF(prev_close, 0) >= 1.10
 AND adv_dollar_20d >= 50000000
-  ORDER BY m1 DESC
-  LIMIT 30
-),
+)""".strip(),
+        "E_qullamaggie_5d_gainers": f"""
 E_qullamaggie_5d_gainers AS (
   SELECT 'E_qullamaggie_5d_gainers' AS origin, symbol, close,
      NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
      adr_pct_20d, adv_dollar_20d,
-     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2
+     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2,
+     COUNT(*) OVER () AS rows_passing
   FROM hist
   WHERE date = '{date}'
 AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
 AND (close / NULLIF(close_5d_ago, 0) - 1) >= 0.25
 AND adv_dollar_20d >= 50000000
-  ORDER BY m1 DESC
-  LIMIT 30
-),
+)""".strip(),
+        "F_qullamaggie_5d_losers": f"""
 F_qullamaggie_5d_losers AS (
   SELECT 'F_qullamaggie_5d_losers' AS origin, symbol, close,
      NULL AS rs_12m, NULL AS rs_6m, NULL AS rs_3m, NULL AS rs_1m,
      NULL AS adr_pct_20d, adv_dollar_20d,
-     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2
+     (close / NULLIF(close_5d_ago, 0) - 1) * 100 AS m1, NULL AS m2,
+     COUNT(*) OVER () AS rows_passing
   FROM hist
   WHERE date = '{date}'
 AND close_5d_ago IS NOT NULL AND close_5d_ago > 0
 AND (close / NULLIF(close_5d_ago, 0) - 1) <= -0.25
 AND (close / NULLIF(close_5d_ago, 0) - 1) >= -0.50
 AND adv_dollar_20d >= 50000000
-  ORDER BY m1 ASC
-  LIMIT 30
-)
-SELECT * FROM C_qullamaggie_rs
-UNION ALL SELECT * FROM D_qullamaggie_ep
-UNION ALL SELECT * FROM E_qullamaggie_5d_gainers
-UNION ALL SELECT * FROM F_qullamaggie_5d_losers
-ORDER BY origin, symbol
-LIMIT 200
-""".strip()
+)""".strip(),
+    }
+
 
 
 
 
 def emit_sweep_sql_peoplewish(date: str) -> str:
-    """peoplewish: ADR% > 5% + Dollar Volume > $50M, sort by velocity. Single shibui call."""
+    """peoplewish: ADR% > 5% + Dollar Volume > $50M, sort by velocity. Single shibui call.
+
+    The branch carries `rows_passing` (`COUNT(*) OVER ()` computed inside the
+    branch, before the cap applies) so the true passing count travels with
+    the rows. On 2026-11-03 **243** names passed this filter while the
+    published book held 200 — the shibui row ceiling, which the coverage
+    assertion must surface rather than hide. The outer `LIMIT 200` is
+    shibui's own ceiling and must stay; the branch itself is uncapped.
+    """
+    support = _peoplewish_support_ctes(date)
+    branch = _peoplewish_branch_ctes(date)
     return f"""
 -- peoplewish sweep for {date}: ADR + dollar volume + velocity
-WITH mc AS (
+WITH {support},
+{branch}
+SELECT * FROM G_peoplewish
+ORDER BY velocity_14d DESC, symbol
+LIMIT {SHIBUI_ROW_CAP}
+""".strip()
+
+
+def _peoplewish_support_ctes(date: str) -> str:
+    """mc + hist — the shared CTEs the peoplewish branch reads."""
+    return f"""
+mc AS (
   SELECT symbol, market_cap FROM shibui.valuation
   WHERE date = (SELECT MAX(date) FROM shibui.valuation WHERE date <= '{date}')
 ),
@@ -548,18 +733,24 @@ hist AS (
   WHERE q.date BETWEEN DATE '{date}' - INTERVAL '120 days' AND '{date}'
 AND q.exchange IN ('NYSE','NASDAQ','AMEX')
   WINDOW w AS (PARTITION BY q.symbol ORDER BY q.date)
-)
-SELECT 'G_peoplewish' AS origin, symbol, close,
-   adr_pct_20d,
-   adv_dollar_20d,
-   (close / NULLIF(close_14d_ago, 0) - 1) * 100 AS velocity_14d
-FROM hist
-WHERE date = '{date}'
+)""".strip()
+
+
+def _peoplewish_branch_ctes(date: str) -> str:
+    """The peoplewish branch as a CTE, with `rows_passing` and no LIMIT."""
+    return f"""
+G_peoplewish AS (
+  SELECT 'G_peoplewish' AS origin, symbol, close,
+     adr_pct_20d,
+     adv_dollar_20d,
+     (close / NULLIF(close_14d_ago, 0) - 1) * 100 AS velocity_14d,
+     COUNT(*) OVER () AS rows_passing
+  FROM hist
+  WHERE date = '{date}'
   AND adr_pct_20d >= 5
   AND adv_dollar_20d >= 50000000
-ORDER BY velocity_14d DESC
-LIMIT 200
-""".strip()
+)""".strip()
+
 def emit_sweep_sql(date: str) -> str:
     """Default sweep SQL (uses the Stockbee group)."""
     return emit_sweep_sql_stockbee(date)
@@ -839,6 +1030,11 @@ def emit_weekly_sql(date: str) -> str:
 
     Both branches emit the SAME explicitly-named column set, because a UNION
     ALL takes its output column names from the FIRST branch.
+
+    NO BRANCH CARRIES ITS OWN LIMIT — `ipo` used to end in `LIMIT 50` and
+    `hsf` in `LIMIT 30`, silently truncating both books. Each branch now
+    carries `rows_passing` (`COUNT(*) OVER ()` inside the branch) and the
+    outer `LIMIT 200` is shibui's own row ceiling.
     """
     return f"""
 -- Weekly refresh for {date}: recent IPOs + high short interest
@@ -849,19 +1045,19 @@ WITH mc AS (
 ipo AS (
   SELECT 'ipo' AS kind, g.symbol, g.name AS label, g.ipo_date AS event_date,
          mc.market_cap, NULL AS short_percent_float, NULL AS shares_float,
-         NULL AS volume, g.gics_sector AS sector, g.type AS security_type
+         NULL AS volume, g.gics_sector AS sector, g.type AS security_type,
+         COUNT(*) OVER () AS rows_passing
   FROM shibui.general_info g
   JOIN mc ON mc.symbol = g.symbol
   WHERE g.ipo_date >= DATE '{date}' - INTERVAL '365 days'
     AND g.type = 'Common Stock'
     AND mc.market_cap > 1000000000
-  ORDER BY g.ipo_date DESC
-  LIMIT 50
 ),
 hsf AS (
   SELECT 'high_short_float' AS kind, o.symbol, NULL AS label, NULL AS event_date,
          mc.market_cap, o.short_percent_float, o.shares_float,
-         q.volume, g.gics_sector AS sector, g.type AS security_type
+         q.volume, g.gics_sector AS sector, g.type AS security_type,
+         COUNT(*) OVER () AS rows_passing
   FROM shibui.ownership_stats o
   JOIN mc ON mc.symbol = o.symbol
   JOIN shibui.general_info g ON g.symbol = o.symbol
@@ -869,14 +1065,215 @@ hsf AS (
   WHERE o.short_percent_float > 0.20
     AND mc.market_cap > 1000000000
     AND q.volume > 1000000
-  ORDER BY o.short_percent_float DESC
-  LIMIT 30
 )
 SELECT * FROM ipo
 UNION ALL SELECT * FROM hsf
 ORDER BY kind, event_date DESC NULLS LAST, short_percent_float DESC NULLS LAST, symbol
-LIMIT 200
+LIMIT {SHIBUI_ROW_CAP}
 """.strip()
+
+
+# ---------------------------------------------------------------------------
+# Per-branch fetch — the coverage-safe path
+# ---------------------------------------------------------------------------
+#
+# The merged group queries above are the fast path (one call per stylist
+# group). But shibui caps every RESULT at 200 rows, so a merged group whose
+# branches pass more than 200 rows in total gets cut by the outer LIMIT —
+# silently, exactly like the old per-branch caps did.
+#
+# The coverage-safe path fetches ONE branch per call. The branch's filter is
+# uncapped; the query returns one page of at most 200 rows; every row
+# carries `rows_passing` — the TRUE count of rows that passed the branch's
+# filter — so the caller knows exactly how many more pages to fetch and can
+# assert that the published book is complete.
+#
+# `ORDER BY` is always TOTAL (the branch's sort key plus `symbol`), so
+# LIMIT/OFFSET paging is stable and a row cannot appear on two pages or on
+# none.
+
+SWEEP_BRANCH_ORDER = {
+    "A_stockbee_4pct": "chg_pct DESC, symbol",
+    "B_stockbee_ep9m": "volume DESC, symbol",
+    "K_stockbee_anticipation": "trend_intensity DESC, symbol",
+    "C_qullamaggie_rs": "rs_3m DESC, symbol",
+    "D_qullamaggie_ep": "m1 DESC, symbol",
+    "E_qullamaggie_5d_gainers": "m1 DESC, symbol",
+    "F_qullamaggie_5d_losers": "m1 ASC, symbol",
+    "G_peoplewish": "velocity_14d DESC, symbol",
+}
+
+# The eight shibui sweep branches, in tiering order.
+SWEEP_BRANCHES = tuple(SWEEP_BRANCH_ORDER)
+
+# Which stylist group each branch belongs to.
+SWEEP_BRANCH_GROUP = {
+    "A_stockbee_4pct": "stockbee",
+    "B_stockbee_ep9m": "stockbee",
+    "K_stockbee_anticipation": "stockbee",
+    "C_qullamaggie_rs": "qullamaggie",
+    "D_qullamaggie_ep": "qullamaggie",
+    "E_qullamaggie_5d_gainers": "qullamaggie",
+    "F_qullamaggie_5d_losers": "qullamaggie",
+    "G_peoplewish": "peoplewish",
+}
+
+
+def _branch_sql_parts(date: str, branch: str) -> tuple[str, str]:
+    """(support CTEs, branch CTE) for one sweep branch."""
+    stockbee = _stockbee_branch_ctes(date)
+    if branch in stockbee:
+        return _stockbee_support_ctes(date), stockbee[branch]
+    qullamaggie = _qullamaggie_branch_ctes(date)
+    if branch in qullamaggie:
+        return _qullamaggie_support_ctes(date), qullamaggie[branch]
+    if branch == "G_peoplewish":
+        return _peoplewish_support_ctes(date), _peoplewish_branch_ctes(date)
+    raise KeyError(f"unknown sweep branch: {branch!r}")
+
+
+def emit_sweep_sql_branch(
+    date: str,
+    branch: str,
+    *,
+    offset: int = 0,
+    limit: int = SHIBUI_ROW_CAP,
+) -> str:
+    """Emit the SQL for ONE sweep branch, one page.
+
+    The branch's filter is UNCAPCED — there is no `LIMIT` inside the branch
+    CTE, so `rows_passing` (`COUNT(*) OVER ()`) is the true number of names
+    that passed it. The only LIMIT is the page size, which is shibui's own
+    row ceiling and must never be applied inside the branch.
+
+    Fetch pages with `offset = 0, 200, 400, ...` until the number of rows
+    collected equals `rows_passing`.
+    """
+    if branch not in SWEEP_BRANCH_ORDER:
+        raise KeyError(f"unknown sweep branch: {branch!r}")
+    support, cte = _branch_sql_parts(date, branch)
+    order = SWEEP_BRANCH_ORDER[branch]
+    return f"""
+-- {branch} for {date} (page: offset {offset}, limit {limit})
+WITH {support},
+{cte}
+SELECT * FROM {branch}
+ORDER BY {order}
+LIMIT {limit} OFFSET {offset}
+""".strip()
+
+
+# ---------------------------------------------------------------------------
+# Coverage — the assertion that makes a truncated book impossible to ship
+# ---------------------------------------------------------------------------
+
+def branch_coverage(rows: list[dict]) -> dict[str, dict]:
+    """Per-branch `rows_passing` / `rows_kept`.
+
+    `rows_passing` is the count the branch itself reports (`COUNT(*) OVER ()`
+    computed inside the branch, before any cap applies). `rows_kept` is how
+    many rows for that branch were actually published. A branch where the two
+    differ was truncated — the defect this whole mechanism exists to catch.
+    """
+    out: dict[str, dict] = {}
+    for row in rows or []:
+        origin = row.get("origin")
+        if not origin:
+            continue
+        entry = out.setdefault(
+            origin,
+            {"rows_passing": None, "rows_kept": 0, "consistent": True},
+        )
+        entry["rows_kept"] += 1
+        raw = row.get("rows_passing")
+        if raw is None:
+            continue
+        try:
+            passing = int(raw)
+        except (TypeError, ValueError):
+            entry["consistent"] = False
+            continue
+        if entry["rows_passing"] is None:
+            entry["rows_passing"] = passing
+        elif entry["rows_passing"] != passing:
+            entry["consistent"] = False
+    return out
+
+
+def coverage_failures(coverage: dict[str, dict]) -> list[dict]:
+    """Branches whose published rows are short of what passed the filter."""
+    bad: list[dict] = []
+    for origin, c in sorted(coverage.items()):
+        passing = c.get("rows_passing")
+        kept = int(c.get("rows_kept", 0))
+        if not c.get("consistent", True):
+            bad.append({
+                "origin": origin,
+                "rows_passing": passing,
+                "rows_kept": kept,
+                "reason": "inconsistent rows_passing across the branch's rows",
+            })
+            continue
+        if passing is None:
+            continue
+        if kept != passing:
+            bad.append({
+                "origin": origin,
+                "rows_passing": passing,
+                "rows_kept": kept,
+                "short_by": passing - kept,
+                "reason": "published rows are fewer than the names that passed the filter",
+            })
+    return bad
+
+
+def coverage_cap_signature(coverage: dict[str, dict]) -> list[str]:
+    """Branches whose kept count lands EXACTLY on a known cap.
+
+    A branch that returns exactly 30, 50, 60 or 200 rows is a cap, not a
+    screen outcome — those are the legacy per-branch caps plus shibui's row
+    ceiling. It is reported as a warning even when rows_passing agrees,
+    because landing exactly on a cap means the branch MAY have been cut at
+    the boundary.
+    """
+    caps = set(LEGACY_BRANCH_CAPS) | {SHIBUI_ROW_CAP}
+    return sorted(
+        origin for origin, c in coverage.items()
+        if int(c.get("rows_kept", 0)) in caps
+    )
+
+
+def format_coverage_failure(failures: list[dict], coverage: dict[str, dict]) -> str:
+    """The loud, actionable message for a coverage failure."""
+    lines = [
+        "COVERAGE FAILURE — the screen book is INCOMPLETE and must NOT be published.",
+        "",
+        "A branch published fewer rows than the number of names that passed its filter.",
+        "Publishing it would ship a silently truncated book, which is the exact defect",
+        "this assertion exists to stop.",
+        "",
+        "  branch                       rows_passing  rows_kept  short_by",
+    ]
+    for f in failures:
+        lines.append(
+            f"  {f['origin']:<28} {str(f.get('rows_passing')):>12} "
+            f"{str(f.get('rows_kept')):>10} {str(f.get('short_by', '-')):>9}"
+        )
+    lines += [
+        "",
+        "FIX: re-fetch each short branch on its own and page it until the rows",
+        "collected equal rows_passing —",
+        "  python3 scripts/screen.py emit-branch <branch> <date> --offset <n> --limit 200",
+        "Then rebuild. Do NOT publish a truncated book.",
+    ]
+    sig = coverage_cap_signature(coverage)
+    if sig:
+        lines += [
+            "",
+            "CAP SIGNATURE (kept count lands exactly on a cap — the truncation fingerprint): "
+            + ", ".join(sig),
+        ]
+    return "\n".join(lines)
 
 
 def build_sweep_plan(date: str, *, resolve_latest: bool = False) -> SweepPlan:
@@ -944,40 +1341,44 @@ def build_sweep_plan(date: str, *, resolve_latest: bool = False) -> SweepPlan:
         }],
     ))
 
-    # Batch: 3 parallel shibui sweep calls (Stockbee group, Qullamägi group, peoplewish).
-    # The Stockbee group needs only ~30 days of history (LAG 1, rolling 7/65 atr);
-    # the Qullamägi group needs ~252 days (multi-timeframe RS); the peoplewish
-    # group needs ~30 days (14-day velocity + 20-day rolling). Splitting by
-    # lookback keeps each CTE small and avoids one giant query.
+    # Batch: one shibui sweep call PER BRANCH (8 branches, in parallel).
+    #
+    # This used to be 3 calls — one per stylist group, each a UNION ALL with
+    # an outer LIMIT 200. Two things were wrong with that:
+    #   * each BRANCH carried its own LIMIT (50 / 50 / 30 and 60 / 30 x3), so
+    #     a book was silently truncated while every count still looked
+    #     plausible (the 2026-11-04 artifact published `A_stockbee_4pct 50`
+    #     and `B_stockbee_ep9m 50` — the CAPS, not screen outcomes);
+    #   * even with the per-branch caps removed, shibui caps every RESULT at
+    #     200 rows, so a merged group whose branches pass more than 200 rows
+    #     in total gets cut by the outer LIMIT — the same silent truncation,
+    #     one level up.
+    #
+    # Fetching one branch per call fixes both: the branch's filter is
+    # uncapped, the query returns one page of at most 200 rows, and every row
+    # carries `rows_passing` — the TRUE count of names that passed the
+    # branch's filter. The Agent then pages any branch whose rows_passing
+    # exceeds the rows it collected, and `consume` asserts rows_kept ==
+    # rows_passing before anything is published.
+    sweep_calls = []
+    for branch in SWEEP_BRANCHES:
+        sweep_calls.append({
+            "tool": "mcp__shibui-finance__stock_data_query",
+            "label": f"sweep_branch_{branch}",
+            "args": {
+                "user_prompt": (
+                    f"Sweep branch {branch} on {date} (page 1). Every row carries "
+                    f"rows_passing = the number of names that passed this branch's "
+                    f"filter. If rows_passing exceeds the rows returned, fetch the "
+                    f"next page with --offset."
+                ),
+                "query": emit_sweep_sql_branch(sql_date, branch),
+            },
+        })
     plan.batches.append(MCPBatch(
         name="sweep_sql",
         parallel=True,
-        calls=[
-            {
-                "tool": "mcp__shibui-finance__stock_data_query",
-                "label": "sweep_stockbee",
-                "args": {
-                    "user_prompt": f"Stockbee sweep (4% breakout + EP9M + Anticipation) on {date}",
-                    "query": emit_sweep_sql_stockbee(sql_date),
-                },
-            },
-            {
-                "tool": "mcp__shibui-finance__stock_data_query",
-                "label": "sweep_qullamaggie",
-                "args": {
-                    "user_prompt": f"Qullamägi sweep (RS leaders + EP + 5d movers) on {date}",
-                    "query": emit_sweep_sql_qullamaggie(sql_date),
-                },
-            },
-            {
-                "tool": "mcp__shibui-finance__stock_data_query",
-                "label": "sweep_peoplewish",
-                "args": {
-                    "user_prompt": f"peoplewish sweep (ADR + dollar volume + velocity) on {date}",
-                    "query": emit_sweep_sql_peoplewish(sql_date),
-                },
-            },
-        ],
+        calls=sweep_calls,
     ))
 
     # Batch 3: parallel TradingView calls (Jeff Sun CANSLIM + sector ETF RS + volume breakout)
@@ -1307,7 +1708,15 @@ def compute_regime(breadth_rows: list, vix: float | None, vix3m: float | None) -
                 if pct is not None and float(pct) < 0.5:
                     index_below_20sma = True
             elif metric == "index_atr_extension":
-                sym = row.get("symbol")
+                # The breadth SQL emits the index identifier as `ticker`
+                # (`SELECT 'index_atr_extension', ticker, close, …`), and the
+                # documented pre-aggregated shape calls it `etf`. This
+                # function used to read `row.get("symbol")` ONLY, so the
+                # extension map came back EMPTY and `late_cycle` could
+                # never be anything but False — a flag that can only ever be
+                # false is not a flag. `tier_candidates` already reads
+                # `symbol or ticker`; this now reads the same chain.
+                sym = row.get("symbol") or row.get("ticker") or row.get("etf")
                 ext_pct = row.get("extension_pct")
                 if sym and ext_pct is not None:
                     atr_extensions[sym] = {"extension_pct": float(ext_pct)}
@@ -1368,7 +1777,15 @@ def write_per_stylist_markdown(path: Path, label: str, candidates: dict[str, Can
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_summary(path: Path, regime: dict, tier_a: dict, short_cands: list, long_cands: list, reversal: list) -> None:
+def write_summary(
+    path: Path,
+    regime: dict,
+    tier_a: dict,
+    short_cands: list,
+    long_cands: list,
+    reversal: list,
+    coverage: dict[str, dict] | None = None,
+) -> None:
     lines = [
         "# Daily sweep summary",
         "",
@@ -1381,6 +1798,28 @@ def write_summary(path: Path, regime: dict, tier_a: dict, short_cands: list, lon
         f"- late_cycle: **{regime.get('late_cycle', False)}**",
         f"- breadth % S&P > 20-DMA: **{regime.get('breadth_pct_spx', 'n/a')}**",
         "",
+    ]
+    if coverage:
+        lines += [
+            "## Screen coverage (rows_passing = names that passed the branch filter)",
+            "",
+            "| Branch | rows_passing | rows_kept |",
+            "|---|---|---|",
+        ]
+        for origin, c in sorted(coverage.items()):
+            lines.append(
+                f"| {origin} | {c.get('rows_passing')} | {c.get('rows_kept')} |"
+            )
+        lines.append("")
+        sig = coverage_cap_signature(coverage)
+        if sig:
+            lines += [
+                "> **Cap signature:** " + ", ".join(sig) + " land(s) exactly on a known cap "
+                "(30 / 50 / 60 / 200). When `rows_passing` agrees, that is the true count; "
+                "when it does not, the branch was truncated and the run must fail.",
+                "",
+            ]
+    lines += [
         f"## Tier-A (appears in ≥ {TIER_A_THRESHOLD_STYLISTS} stylists): {len(tier_a)}",
         "",
     ]
@@ -1507,6 +1946,41 @@ def cmd_consume(args: argparse.Namespace) -> int:
             + data.get("sweep_qullamaggie", [])
             + data.get("sweep_peoplewish", [])
         )
+
+    # --- Coverage assertion -------------------------------------------------
+    # Every shibui sweep row carries `rows_passing`: the number of names that
+    # passed ITS branch's filter, computed inside the branch before any cap
+    # applied. If a branch published fewer rows than that, the book was
+    # truncated, and a truncated book must NOT be published.
+    coverage = branch_coverage(sweep_rows)
+    declared = data.get("screen_coverage")
+    if isinstance(declared, dict) and declared:
+        # The Agent may declare its own per-branch measurement (it knows how
+        # many pages it fetched). Cross-check it against the rows: a declared
+        # count that disagrees with the rows is itself a defect.
+        for origin, d in declared.items():
+            if not isinstance(d, dict):
+                continue
+            entry = coverage.setdefault(
+                origin, {"rows_passing": None, "rows_kept": 0, "consistent": True}
+            )
+            try:
+                entry["rows_passing"] = int(d.get("rows_passing"))
+            except (TypeError, ValueError):
+                entry["consistent"] = False
+            try:
+                entry["rows_kept"] = int(d.get("rows_kept"))
+            except (TypeError, ValueError):
+                entry["consistent"] = False
+    failures = coverage_failures(coverage)
+    if failures:
+        print(format_coverage_failure(failures, coverage), file=sys.stderr)
+        print(
+            "COVERAGE FAILURE: nothing was written. Re-fetch the short branches "
+            "and rebuild.",
+            file=sys.stderr,
+        )
+        return 1
     prefilter_rows = data.get("prefilter", [])
     prefilter_symbols = {r.get("symbol") for r in prefilter_rows if r.get("symbol")}
     volume_breakout_rows = data.get("volume_breakout", [])
@@ -1536,7 +2010,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
 
     regime = compute_regime(breadth, vix, vix3m)
 
-    out_dir = vault_dir(args.date)
+    out_dir = vault_dir(args.date, Path(args.vault) if args.vault else DEFAULT_VAULT)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-stylist Markdown
@@ -1568,8 +2042,10 @@ def cmd_consume(args: argparse.Namespace) -> int:
     if reversal_rows:
         write_csv(out_dir / "reversal-bullish-3:55.csv", reversal_rows)
 
-    # Regime payload
-    (out_dir / "_regime.json").write_text(json.dumps(regime, indent=2))
+    # Regime payload — FLAT shape with a schema version, validated before it
+    # is written. A payload that nests the regime under a `regime` key (the
+    # 2026-11-04 break) is rejected here rather than published.
+    write_regime_payload(out_dir / "_regime.json", regime)
 
     # Machine-readable companion. Downstream routines (pre-market brief,
     # weekly recap, setup journal) read this instead of re-parsing Markdown,
@@ -1595,6 +2071,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
         },
         "tier_a_pool": len(tier_a_pool),
         "tier_a_truncated": len(tier_a_pool) > len(tier_a),
+        "screen_coverage": coverage,
         "tier_a": sorted(tier_a),
         "focus": sorted(focus),
         "short_candidates": short_cands,
@@ -1624,7 +2101,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
     }, indent=2))
 
     # Summary
-    write_summary(out_dir / "_summary.md", regime, tier_a, short_cands, long_reversal_cands, reversal_rows)
+    write_summary(out_dir / "_summary.md", regime, tier_a, short_cands, long_reversal_cands, reversal_rows, coverage)
 
     if dry_run:
         # Undo every write we just did. Cleaner than branching every path:
@@ -1707,10 +2184,23 @@ def main(argv: list[str] | None = None) -> int:
     cons_p.add_argument("--date", required=True)
     cons_p.add_argument("--dry-run", dest="dry_run", action="store_true",
                        help="compute tiering/regime and print what would be written, but DO NOT create any files")
+    cons_p.add_argument("--vault", default=None,
+                       help="Vault root that holds <date>/ directories (default: the local vault path).")
 
     fv_p = sub.add_parser("finviz-url", help="print a Finviz screener URL for tier-2 fallback")
     fv_p.add_argument("kind", choices=sorted(FINVIZ_BUILDERS.keys()) + ["custom"])
     fv_p.add_argument("--filter", dest="filters", action="append", default=[], help="filter codes (only with kind=custom)")
+
+    br_p = sub.add_parser(
+        "emit-branch",
+        help="emit the SQL for ONE sweep branch, one page (the coverage-safe fetch path)",
+    )
+    br_p.add_argument("branch", choices=list(SWEEP_BRANCHES))
+    br_p.add_argument("date")
+    br_p.add_argument("--offset", type=int, default=0,
+                      help="row offset for paging (default 0)")
+    br_p.add_argument("--limit", type=int, default=SHIBUI_ROW_CAP,
+                      help=f"page size (default {SHIBUI_ROW_CAP} = shibui's row ceiling)")
 
     fp_p = sub.add_parser("finviz-parse", help="parse Finviz screener HTML to tickers (used after web_fetch)")
     fp_p.add_argument("--html-file", required=True, help="path to a saved Finviz HTML page")
@@ -1744,6 +2234,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_consume(args)
     if args.cmd == "cache":
         return cmd_cache(args)
+    if args.cmd == "emit-branch":
+        print(emit_sweep_sql_branch(
+            args.date, args.branch, offset=args.offset, limit=args.limit))
+        return 0
     if args.cmd == "finviz-url":
         return _cmd_finviz_url(args)
     if args.cmd == "finviz-parse":

@@ -302,3 +302,136 @@ one and the shibui number to be published as the T+1 cross-check.
   to cron #08, which runs pre-market where the primaryData/secondaryData relationship is
   different, and changing another routine's data path blind is exactly the move this audit
   warns against. Flagged for cron #08's owner.
+
+---
+
+## 11. Second pass (2026-11-05): the four plumbing defects the 2026-11-04 run re-shipped
+
+**Scope:** the same routine, reviewed again after the 2026-11-04 fire. The *screening* is
+fine — 2026-11-04 produced a coherent Tier-A list (8 of a 13-name pool, `tier_a_truncated:
+true` recorded). The **plumbing** was broken in four ways, three of them silent. All four
+are fixed here, and all four now have a guard that makes them impossible to ship again.
+
+### 11.1 The per-branch `LIMIT` was still capping every book
+
+**Evidence.** The 2026-11-04 artifact publishes its own screen-origin counts:
+
+```
+TV_volume_breakout 462 · G_peoplewish 200 · jeff_sun_canslim 85 · A_stockbee_4pct 50
+B_stockbee_ep9m 50 · C_qullamaggie_rs 44 · K_stockbee_anticipation 30 · H_hernandez_theme 30
+```
+
+`A_stockbee_4pct` and `B_stockbee_ep9m` are **exactly 50**, and `K_stockbee_anticipation` is
+**exactly 30** — those are the caps in the emitters (`LIMIT 50` at L391/L403, `LIMIT 30` at
+L417, `LIMIT 60`/`LIMIT 30`×3 at L479/L493/L506/L520), not screen outcomes. The 2026-11-03
+run had already measured the real numbers: **233** names pass the 4% breakout and the cap
+kept 50; **236** pass EP9M and the cap kept 50. The 2026-11-03 artifact says so in its own
+method section: *"All four branches were re-run uncapped (in two batches each where needed)
+so the published books are complete; the Tier-A list differs from a limit-capped run."*
+The 2026-11-04 run went back to the capped emitters. The fix had never landed.
+
+**Why it shipped twice.** `sql_lint.py` had `L006` (a top-level SELECT *without* a LIMIT)
+and **nothing** against a per-branch one. The gap was in the lint, not only in the SQL.
+
+**Fix.** No branch carries a `LIMIT` any more. The outer `LIMIT 200` stays — shibui rejects
+a query returning more than 200 rows. Every branch now carries `rows_passing`
+(`COUNT(*) OVER ()` computed *inside* the branch, before any cap applies), which is the
+true number of names that passed that branch's filter. `consume` asserts
+`rows_kept == rows_passing` per branch and **writes nothing at all** when they differ.
+
+Because shibui returns at most 200 rows per query, a branch that passes more than 200
+names has to be **paged**, not capped: `scripts/screen.py emit-branch <branch> <date>
+--offset 200` and so on, until the rows collected equal `rows_passing`. The `ORDER BY` is
+always total (sort key + `symbol`), so pages never overlap or drop a row.
+
+This also removed two caps the audit brief did not mention: the weekly refresh's `ipo`
+(`LIMIT 50`) and `hsf` (`LIMIT 30`) CTEs.
+
+**New lint rule `L009`** — *a CTE carrying a per-branch `LIMIT` smaller than the outer cap
+is a silent truncation risk.* Run against the OLD emitters it reports **9** issues — three
+in Stockbee, four in Qullamägi, two in the weekly refresh. Run against the new emitters it
+reports zero.
+
+### 11.2 `compute_regime()` read the wrong key — `late_cycle` could never fire
+
+**Evidence.** The breadth SQL emits the index identifier as **`ticker`**:
+
+```sql
+SELECT 'index_atr_extension', ticker, close, sma_20, sma_50, atr_14, atr_252d_avg, …
+```
+
+`compute_regime()` read `row.get("symbol")` (L1310) — and only that. Executed against the
+exact row shape the SQL returns, `atr_extensions` came back `{}` and `late_cycle` came back
+`false` for an input where QQQ was **14.2% above its 50-DMA**, against the flag's own 6%
+threshold. The sibling `tier_candidates` already read `row.get("symbol") or
+row.get("ticker")`; `compute_regime` was never given the same fallback.
+
+The 2026-11-04 run published `late_cycle: false` with `atr_extensions` populated (SPY
+−0.03%, QQQ −4.37%, RSP +3.88%, IWM +0.29%) — that run took the **TradingView** path
+rather than the shibui SQL path, so the flag was merely *correct by luck*. **The shibui
+path still could not fire it.**
+
+**Fix.** The key chain is now `symbol or ticker or etf` (the last one covers the documented
+pre-aggregated shape in `references/agent-output-shape.md`). A regression test feeds
+`compute_regime()` a row with `extension_pct > 6` and asserts `late_cycle is True` — *a
+flag that can only ever be `false` must have a test that proves it can be `true`.*
+
+### 11.3 `_regime.json` changed shape between 2026-11-03 and 2026-11-04 — a silent contract break
+
+**Evidence.**
+
+| File | Shape |
+|---|---|
+| `daily-screens/2026-11-03/_regime.json` | **flat** — `{"size_cut_pct": 0, "uncertainty": false, "late_cycle": false, "breadth_pct_spx": 65.19, "index_below_20sma": true, "vix": 20.83, …}` |
+| `daily-screens/2026-11-04/_regime.json` | **nested** — `{"regime": {"size_cut_pct": 0, …, "atr_extensions": {…}, "_note": "…"}}` |
+
+Any consumer reading `d["late_cycle"]` now gets a **KeyError**; any consumer doing
+`d.get("late_cycle")` gets `None` — indistinguishable from "not computed". The 2026-11-04
+artifact's own `breadth.md` publishes the *flat* shape in its code block while the JSON on
+disk is nested: the two disagree inside the same routine.
+
+**Fix.** One shape, pinned: **FLAT**, with `_schema: 2` and `_note` as *siblings* of the
+regime fields (never parents). All eight regime keys are required. `scripts/screen.py`
+validates the payload against the declared schema **before** writing it, rejects the
+nested shape explicitly, and ships `read_regime()` so a consumer reading a legacy nested
+file still gets a flat object. The schema is published in `SKILL.md` §3 and the consumer
+directive in `references/crons.md` was updated in the same change.
+
+### 11.4 The guards, and proof they bite
+
+`scripts/smoke_test.py` gained six guards:
+
+1. **no per-branch `LIMIT` in any emitted SQL** (`L009`), across the group emitters *and*
+   every per-branch emitter;
+2. **every sweep branch reports `rows_passing`**;
+3. **`compute_regime()` returns `late_cycle=True`** for an index 6%+ above its 50-DMA, and
+   reads the `symbol`/`ticker`/`etf` key chain;
+4. **`_regime.json` has one declared shape**, a schema version, a writer that refuses a
+   nested payload, and a reader that unwraps a legacy one;
+5. **the coverage assertion** is silent when a branch is complete and fails loudly when it
+   is short;
+6. **the cap signature** — a kept count landing exactly on 30 / 50 / 60 / 200 — is
+   recognisable.
+
+**Proof the guards bite** (fault injection into a throwaway copy, then discarded):
+
+| Reintroduced defect | Result |
+|---|---|
+| `row.get("symbol")` only | **3 checks go red** — `late_cycle` returns `False`, `atr_extensions` is `{}` |
+| `LIMIT 50` back inside `A_stockbee_4pct` | **3 checks go red** — two lint checks + the L009 guard |
+| the nested `{"regime": {…}}` payload | **1 check goes red** — the schema guard |
+
+### 11.5 What did NOT change
+
+- **No gate value and no stylist definition.** The screening is fine; only the plumbing was
+  broken.
+- **The outer `LIMIT 200` stays.** shibui rejects a query returning more than 200 rows.
+- **The 2026-11-04 settled-close breadth change stays** (TradingView's settled close for the
+  EOD read, shibui as the T+1 cross-check). It is correct and it is published in the spec.
+- **No dated file is written to `daily-screens/breadth/`** — that path stays forbidden for
+  #09 and #10, and the spec's stale sentence pointing at it stays corrected.
+- **The slug-vs-bucket split stays fixed** — the files are slugs (`jeff-sun.md`,
+  `ariel-hernandez.md`), the buckets are not (`jeff_sun`, `hernandez`).
+- **The cron #09 PROMPT was not touched.** Every change above is a *procedure* change, and
+  the prompt fetches the skill spec at run time — so the next fire inherits all of it with
+  no `cron_update` and no byte-drift risk.

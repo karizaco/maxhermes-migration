@@ -40,6 +40,38 @@ that read like a quiet tape; and a `UNION ALL` publishing one metric under anoth
 metric's column header). `scripts/sql_lint.py` now checks all of that offline — run it
 before you run a sweep.
 
+### ⚠ A per-branch `LIMIT` is a SILENT TRUNCATION — never write one
+
+**A branch (a sub-screen) must never carry a `LIMIT` smaller than the server's row
+ceiling.** It is not a "sensible top-N": it is a cap that silently deletes names from the
+book while the query still SUCCEEDS, so nothing goes red and every downstream count still
+looks plausible.
+
+The published emitters carried exactly that until 2026-11-05: `LIMIT 50` / `50` / `30` in
+the Stockbee group, `LIMIT 60` / `30` × 3 in the Qullamägi group, `LIMIT 50` / `30` in
+the weekly refresh. The 2026-11-04 artifact published `A_stockbee_4pct 50` and
+`B_stockbee_ep9m 50` — those are the CAPS, not screen outcomes. The true passing
+counts on 2026-11-03 were **233** for the 4% breakout, **236** for EP9M, **150** for
+anticipation and **243** for peoplewish.
+
+The rules:
+
+1. **No branch carries a `LIMIT`.** The only `LIMIT` is the outer one, which is shibui's
+   200-row per-query ceiling. `scripts/sql_lint.py` enforces this as **L009** — a CTE
+   carrying a `LIMIT` smaller than the outer cap is an ERROR.
+2. **Every branch reports `rows_passing`** — `COUNT(*) OVER ()` computed inside the
+   branch, before any cap applies. It is the TRUE number of names that passed the
+   filter, and it travels with the rows.
+3. **Page instead of cap.** shibui returns at most 200 rows per query, so a branch whose
+   `rows_passing` exceeds 200 needs another page (`--offset 200`, `--offset 400`, …).
+   The `ORDER BY` must be TOTAL (sort key plus `symbol`) so pages never overlap or drop
+   a row.
+4. **Assert `rows_kept == rows_passing`** for every branch, and publish both numbers. If
+   they differ the book is INCOMPLETE and must not be published.
+
+A published branch count that lands EXACTLY on 30 / 50 / 60 / 200 is the truncation
+fingerprint — report it as a failure, never as a result.
+
 Pre-filter applied to every sub-screen unless noted:
 
 ```sql
@@ -155,8 +187,11 @@ WHERE date = CURRENT_DATE
   AND adv_dollar_20d >= 50_000_000
   AND adr_pct >= 5
 ORDER BY gain_5d DESC
-LIMIT 50
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 ## F. Qullamägi — 5-day losers (parabolic long / mean-reversion)
 
@@ -169,8 +204,11 @@ WHERE date = CURRENT_DATE
   AND adv_dollar_20d >= 50_000_000
   AND ABS(distance_to_sma200_pct) < 25
 ORDER BY loss_5d ASC
-LIMIT 50
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 ## G. peoplewish — ADR% + Dollar Volume + Velocity
 
@@ -185,8 +223,11 @@ WHERE date = CURRENT_DATE
   AND avg((high - low) / NULLIF(close, 0), 20) * 100 >= 5
   AND avg(close * volume, 20) >= 50_000_000
 ORDER BY velocity_14d DESC
-LIMIT 100
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 Velocity sort is the primary sort (per peoplewish's own December 29, 2024 post). Account-
 scaled `$vol` floor: replace `50_000_000` with `account_size × 10` (peoplewish's lower
@@ -347,8 +388,11 @@ WHERE date = CURRENT_DATE
   AND (close - min(low, 10)) / NULLIF(max(high, 10) - min(low, 10), 0) >= 0.5
   AND (close / prev_close - 1) < 0.04
 ORDER BY trend_intensity DESC
-LIMIT 50
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 ## L. Bonde — Reversal Bullish (3:55 PM)
 
@@ -485,8 +529,11 @@ WHERE g.ipo_date >= DATE '{resolved_date}' - INTERVAL '365 days'
   AND g.type = 'Common Stock'
   AND v.market_cap > 1000000000
 ORDER BY g.ipo_date DESC
-LIMIT 50
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 Run only on Sundays. Note `general_info.type` — filter to `Common Stock` or the list fills
 with ETFs and SPACs that also have an `ipo_date`.
@@ -512,8 +559,11 @@ WHERE o.short_percent_float > 0.20
   AND v.market_cap > 1000000000
   AND q.volume > 1000000
 ORDER BY o.short_percent_float DESC
-LIMIT 30
+LIMIT 200
 ```
+
+`LIMIT 200` is shibui's row ceiling, not a top-N. Never write a smaller cap on a branch
+— see "A per-branch `LIMIT` is a SILENT TRUNCATION" above.
 
 Run only on Sundays. Two caveats worth knowing:
 

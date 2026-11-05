@@ -200,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
             ("resolve_date", screen.emit_resolve_date_sql),
             ("weekly", screen.emit_weekly_sql),
         ]
+        # The per-branch emitters are the path the run actually takes — a cap
+        # must not be able to hide there.
+        emitters += [
+            (f"branch:{b}", (lambda b: (lambda d: screen.emit_sweep_sql_branch(d, b)))(b))
+            for b in screen.SWEEP_BRANCHES
+        ]
         lint_errors = 0
         for label, fn in emitters:
             issues = [i for i in sql_lint.lint_sql(fn(args.date), args.date) if i.severity == "ERROR"]
@@ -238,6 +244,196 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         failures += 1
         lines.append(f"  {FAIL}  sql-lint regression raised {type(e).__name__}: {e}")
+
+    # --- GUARD 1: no per-branch LIMIT in ANY emitted SQL --------------------
+    # The truncation that shipped twice. On 2026-11-04 the artifact published
+    # `A_stockbee_4pct 50` and `B_stockbee_ep9m 50` — those are the CAPS, not
+    # screen outcomes (the true passing counts that day were 233 and 236).
+    # A per-branch LIMIT truncates the book while the query still SUCCEEDS,
+    # so no downstream count goes red. Only the SQL's shape gives it away.
+    try:
+        import sql_lint
+
+        offenders = []
+        for label, fn in list(sql_dispatch.items()) + [
+            (f"branch:{b}", (lambda b: (lambda d: screen.emit_sweep_sql_branch(d, b)))(b))
+            for b in screen.SWEEP_BRANCHES
+        ]:
+            sql = fn(args.date)
+            issues = [i for i in sql_lint.lint_sql(sql, args.date) if i.code == "L009"]
+            if issues:
+                offenders.append(f"{label}: {issues[0].message}")
+        ok = not offenders
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD no per-branch LIMIT in any emitted SQL (L009)"
+            + ("" if ok else f" \u2014 {offenders[0][:100]}")
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD per-branch LIMIT check raised {type(e).__name__}: {e}")
+
+    # --- GUARD 2: every branch reports rows_passing --------------------------
+    # `rows_passing` (COUNT(*) OVER () inside the branch) is what makes the
+    # truncation VISIBLE: it is the true count of names that passed the
+    # branch's filter, carried on the rows themselves.
+    try:
+        missing = [
+            b for b in screen.SWEEP_BRANCHES
+            if "rows_passing" not in screen.emit_sweep_sql_branch(args.date, b)
+        ]
+        ok = not missing
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD every sweep branch reports rows_passing"
+            + ("" if ok else f" \u2014 missing in {', '.join(missing)}")
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD rows_passing check raised {type(e).__name__}: {e}")
+
+    # --- GUARD 3: late_cycle can actually be TRUE ---------------------------
+    # The breadth SQL emits the index identifier as `ticker`
+    # (`SELECT 'index_atr_extension', ticker, close, ...`). compute_regime()
+    # read `row.get("symbol")` ONLY, so atr_extensions came back EMPTY and
+    # late_cycle could never be anything but False. A flag that can only ever
+    # be false is not a flag \u2014 it needs a test that proves it can be true.
+    try:
+        extended_rows = [
+            {"metric": "largecap_breadth", "breadth_pct_largecap": 71.0},
+            {"metric": "index_above_sma_summary", "pct_above_sma_20": 0.8},
+            # QQQ 14.29% above its 50-DMA \u2014 the flag's own threshold is 6%
+            {"metric": "index_atr_extension", "ticker": "QQQ", "close": 600.0,
+             "sma_50": 525.0, "extension_pct": 14.285714285714288},
+        ]
+        regime_ext = screen.compute_regime(extended_rows, 16.61, 18.8)
+        ok = (
+            regime_ext.get("late_cycle") is True
+            and "QQQ" in regime_ext.get("atr_extensions", {})
+        )
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD compute_regime late_cycle=True for an index "
+            f"6%+ above its 50-DMA (ticker key)"
+            + ("" if ok else f" \u2014 got late_cycle={regime_ext.get('late_cycle')}, "
+                            f"atr_extensions={regime_ext.get('atr_extensions')}")
+        )
+        # the legacy `symbol` key and the documented `etf` key must work too
+        legacy_ok = True
+        for key in ("symbol", "etf"):
+            alt = [dict(r) for r in extended_rows]
+            alt[-1] = {("ticker" if k == "ticker" else k): v for k, v in alt[-1].items()}
+            alt[-1][key] = alt[-1].pop("ticker")
+            if screen.compute_regime(alt, 16.61, 18.8).get("late_cycle") is not True:
+                legacy_ok = False
+        failures += (0 if legacy_ok else 1)
+        lines.append(
+            f"  {PASS if legacy_ok else FAIL}  GUARD compute_regime reads the "
+            f"symbol/ticker/etf key chain"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD late_cycle check raised {type(e).__name__}: {e}")
+
+    # --- GUARD 4: the _regime.json schema is pinned --------------------------
+    # The payload changed shape between 2026-11-03 (flat) and 2026-11-04
+    # (nested under a `regime` key). A consumer doing d.get("late_cycle") on
+    # the nested file gets None \u2014 indistinguishable from "not computed".
+    try:
+        ok = True
+        detail = ""
+        flat = screen.compute_regime(extended_rows, 16.61, 18.8)
+        screen.assert_regime_schema(flat)
+        try:
+            screen.assert_regime_schema({"regime": flat})
+            ok = False
+            detail = "the nested shape was accepted"
+        except screen.RegimeSchemaError:
+            pass
+        try:
+            bad = dict(flat)
+            bad.pop("late_cycle")
+            screen.assert_regime_schema(bad)
+            ok = False
+            detail = "a missing key was accepted"
+        except screen.RegimeSchemaError:
+            pass
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "_regime.json"
+            screen.write_regime_payload(out, flat)
+            written = json.loads(out.read_text())
+            if written.get("_schema") != screen.REGIME_SCHEMA_VERSION:
+                ok = False
+                detail = "the payload carries no _schema version"
+            if "regime" in written:
+                ok = False
+                detail = "the payload was written nested"
+            if written.get("late_cycle") is not True:
+                ok = False
+                detail = "late_cycle did not survive the write"
+            if screen.read_regime(out).get("late_cycle") is not True:
+                ok = False
+                detail = "the round trip lost late_cycle"
+            legacy = Path(td) / "legacy.json"
+            legacy.write_text(json.dumps({"regime": flat, "_note": "x"}))
+            if screen.read_regime(legacy).get("late_cycle") is not True:
+                ok = False
+                detail = "a legacy nested file did not read flat"
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD _regime.json has one declared shape, "
+            f"a schema version, and a tolerant reader"
+            + ("" if ok else f" \u2014 {detail}")
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD regime schema check raised {type(e).__name__}: {e}")
+
+    # --- GUARD 5: the coverage assertion fires on a short branch -------------
+    try:
+        complete = [
+            {"origin": "A_stockbee_4pct", "symbol": "X", "rows_passing": 2},
+            {"origin": "A_stockbee_4pct", "symbol": "Y", "rows_passing": 2},
+        ]
+        cov_ok = screen.branch_coverage(complete)
+        passes_when_complete = not screen.coverage_failures(cov_ok)
+
+        short = [{"origin": "A_stockbee_4pct", "symbol": "X", "rows_passing": 233}]
+        cov_bad = screen.branch_coverage(short)
+        fails = screen.coverage_failures(cov_bad)
+        fires_when_short = (
+            len(fails) == 1
+            and fails[0].get("rows_passing") == 233
+            and fails[0].get("rows_kept") == 1
+        )
+        ok = passes_when_complete and fires_when_short
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD coverage assertion: silent when complete, "
+            f"fails loudly when a branch is short"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD coverage assertion raised {type(e).__name__}: {e}")
+
+    # --- GUARD 6: the cap signature is recognisable --------------------------
+    # A branch that returns EXACTLY 30 / 50 / 60 / 200 rows is a cap, not a
+    # screen outcome. That is the fingerprint the artifact check looks for.
+    try:
+        capped = screen.branch_coverage([
+            {"origin": "A_stockbee_4pct", "symbol": f"S{i}", "rows_passing": 50}
+            for i in range(50)
+        ])
+        sig = screen.coverage_cap_signature(capped)
+        ok = "A_stockbee_4pct" in sig
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD a kept-count that lands exactly on a cap is "
+            f"flagged as the truncation signature"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD cap signature check raised {type(e).__name__}: {e}")
 
     # Final summary
     if not args.quiet or failures:

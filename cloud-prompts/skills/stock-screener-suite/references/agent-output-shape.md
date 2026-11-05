@@ -21,9 +21,10 @@ follow this exactly.
 | `data_as_of` | `YYYY-MM-DD` | yes | Same as `date` for our case — the most recent settled bar. |
 | `run_at_utc` | ISO 8601 UTC | yes | When the Agent assembled this JSON. |
 | `prefilter` | `list[dict]` | yes | shibui SQL `prefilter` output. Each row: `{symbol, exchange, market_cap, sector, close, volume, sma_20, sma_50, sma_200, rsi_14, atr_14, ...}`. |
-| `sweep_stockbee` | `list[dict]` | yes | shibui SQL `sweep_stockbee` output (Stockbee 4%/volatility/breakout group). Each row: `{symbol, close, change_pct, volume, sma_50, rsi_14, atr_14, ...}`. |
+| `sweep_stockbee` | `list[dict]` | yes | shibui SQL `sweep_stockbee` output (Stockbee 4%/volatility/breakout group). Each row: `{origin, symbol, close, change_pct, volume, sma_50, rsi_14, atr_14, rows_passing, ...}`. |
 | `sweep_qullamaggie` | `list[dict]` | yes | shibui SQL `sweep_qullamaggie` output. |
 | `sweep_peoplewish` | `list[dict]` | yes | shibui SQL `sweep_peoplewish` output. |
+| `screen_coverage` | `dict[str, dict]` | optional | The Agent's own per-branch measurement: `{"A_stockbee_4pct": {"rows_passing": 233, "rows_kept": 233}, ...}`. `consume` cross-checks it against the rows and FAILS LOUDLY when a branch is short. Omit it and `consume` derives the coverage from the `rows_passing` each row carries. |
 | `jeff_sun_canslim` | `list[dict]` | optional | TV `screen_stocks` output (CANSLIM filters). Empty list is fine. |
 | `ariel_sector_rs` | `list[dict]` | optional | TV `screen_etf` output (base namespace, NOT advanced). Empty list is fine. |
 | `volume_breakout` | `list[dict]` | optional | TV-advanced `volume_breakout_scanner` output. Empty list is fine. |
@@ -92,6 +93,29 @@ naturally emits when it summarises Shape A)
 ```
 
 `compute_regime` parses direct keys.
+
+---
+
+## Every sweep row carries `rows_passing` — the coverage contract
+
+Each shibui sweep row MUST carry `rows_passing`: the number of names that passed
+**that row's branch's** filter, computed inside the branch as `COUNT(*) OVER ()`
+before any cap applies.
+
+It is the ONLY thing that makes a truncated book visible. The 2026-11-04 artifact
+published `A_stockbee_4pct 50` and `B_stockbee_ep9m 50` — the CAPS, not screen
+outcomes (the true passing counts that day were 233 and 236) — and nothing in the
+output said so.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `origin` | str | The branch that produced the row (`A_stockbee_4pct`, `B_stockbee_ep9m`, `C_qullamaggie_rs`, …). |
+| `rows_passing` | int | Names that passed this branch's filter. Identical on every row of the branch. |
+
+**`consume` asserts `rows_kept == rows_passing` for every branch and refuses to
+write anything when they differ.** A branch whose kept count lands exactly on
+30 / 50 / 60 / 200 is reported as the truncation fingerprint even when the counts
+agree.
 
 ---
 

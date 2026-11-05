@@ -18,15 +18,29 @@ _regime.json payload. Do NOT post to chat — the pre-market brief at 07:37 ET w
 pick up the output. Just write the files. Print "DONE" and exit.
 ```
 
+**Fetch each sweep branch on its own, uncapped, and page it** — no branch may carry a
+`LIMIT` of its own (that silently truncates the book; see `../SKILL.md` §2). Every row
+carries `rows_passing`, the true count of names that passed its branch's filter. Page
+until the rows collected equal `rows_passing`, then assert `rows_kept == rows_passing`
+for every branch and publish both numbers in `_results.json` under `screen_coverage`
+and in the artifact's method section. If a branch is short, the sweep is INCOMPLETE:
+say so and do not present the truncated book as complete.
+
 ---
 
 ## breadth-snapshot — 06:30 ET weekdays
 
 ```
 Run the breadth/regime portion of stock-screener-suite (step 3 only) for today's
-date. Write breadth/<YYYY-MM-DD>.md and _regime.json under the daily-screens
-directory. Do NOT re-run the full sweep — only the breadth + regime SQL. Quiet
-output.
+date. Write breadth/<YYYY-MM-DD>.md and _regime-INTRADAY.json under the
+daily-screens directory. Do NOT re-run the full sweep — only the breadth + regime
+SQL. Quiet output.
+
+NOTE: this cron is cron #10 (the 14:00 ET INTRADAY read) and it writes
+`_regime-intraday.json`, NOT `_regime.json`. The end-of-day sweep (#09, 18:30 ET)
+owns `_regime.json`. Two producers writing one filename means the later fire
+silently clobbers the earlier one — that is exactly what happened before the
+paths were split.
 ```
 
 ---
@@ -109,6 +123,20 @@ C:/Users/admin/<user>/research/markets/daily-screens/<yesterday>/. Prepend a
 short/long candidates, and 3:55 PM reversal-bullish list (only if yesterday's
 file exists).
 ```
+
+**`_regime.json` is FLAT.** The regime fields are at the TOP LEVEL of the file, next
+to `_schema` (version 2) and `_note` — they are never nested under a `regime` key:
+
+```
+size_cut_pct, uncertainty, late_cycle, breadth_pct_spx, index_below_20sma, vix,
+vix3m, atr_extensions
+```
+
+Read them as `d["late_cycle"]` / `d.get("late_cycle")` on the TOP-LEVEL object. A
+nested payload makes `late_cycle` read as `None`, which is indistinguishable from
+"not computed" — that is exactly the 2026-11-03 → 2026-11-04 contract break. Use
+`scripts/screen.py`'s `read_regime()` when you need to read a file that might still be
+in the legacy nested shape; it unwraps it.
 
 ---
 

@@ -78,10 +78,11 @@ python scripts/smoke_test.py --date <YYYY-MM-DD>            # full offline check
 **Run `sql_lint.py` before every sweep.** It fails on: a missing CTE separator, UNION
 branches with mismatched column counts, UNION branches with mismatched column NAMES, an
 identifier that resolves to nothing, a `LAG`/`LEAD` offset wider than the query's own
-lookback window, a missing `LIMIT`, a division without `NULLIF()`, and date arithmetic on
-a bare string literal. `smoke_test.py` additionally asserts that the linter still
-catches the five historical defects (fixtures in `scripts/testdata/`), so the guard
-cannot silently stop working.
+lookback window, a missing `LIMIT`, a division without `NULLIF()`, date arithmetic on
+a bare string literal, and — since 2026-11-05 — **a per-branch `LIMIT` smaller than the
+outer cap (`L009`), which is the silent truncation that shipped twice**. `smoke_test.py`
+additionally asserts that the linter still catches the historical defects (fixtures in
+`scripts/testdata/`), so the guard cannot silently stop working.
 
 ### 0.5. Resolve the latest available date (T+1 handling — daily sweep only)
 
@@ -156,13 +157,41 @@ row cannot demonstrate the floor, so it is out of the equity universe.
 
 ### 2. Run the 10 sub-screens in **two parallel batches**
 
-Run `scripts/screen.py sweep --date <YYYY-MM-DD>` which executes:
+**Batch 1 (slow, run in parallel):** the eight shibui sweep branches —
+Bonde 4% breakout, EP9M, Anticipation (coil), Kullamägi RS leaders, Qullamägi EP,
+Qullamägi 5-day gainers (parabolic short), Qullamägi 5-day losers (parabolic long),
+and peoplewish ADR+velocity.
 
-**Batch 1 (slow, run in parallel):**
-- shibui SQL for Bonde 4% breakout, EP9M, Anticipation (coil), Kullamägi 1M/3M/6M
-  leaders, Qullamàgi EP, Kullamägi 5-day gainers (parabolic short), Kullamägi
-  5-day losers (parabolic long), peoplewish ADR+velocity, Sun compression.
-- All in **one** `mcp__shibui-finance__stock_data_query` call using `UNION ALL`.
+> **Fetch each branch ON ITS OWN. No branch may carry a `LIMIT` of its own.**
+>
+> The old shape was one `UNION ALL` per stylist group with a per-branch
+> `LIMIT 50` / `30` / `60` inside each CTE. **That silently truncated every
+> book** while the query still succeeded and every downstream count still
+> looked plausible: the 2026-11-04 artifact published `A_stockbee_4pct 50` and
+> `B_stockbee_ep9m 50`, which are the CAPS, not screen outcomes — the true
+> passing counts that day were 233 and 236. The same defect shipped twice
+> (2026-11-03, 2026-11-04) because nothing in the lint looked for it.
+>
+> The shape that works:
+>
+> 1. **One branch per query.** `scripts/screen.py emit-branch <branch> <date>`
+>    emits it. The branch's filter is UNCAPED; the only `LIMIT` is the page
+>    size, which is shibui's own 200-row ceiling.
+> 2. **Every row carries `rows_passing`** — `COUNT(*) OVER ()` computed
+>    INSIDE the branch, before any cap applies. It is the TRUE number of names
+>    that passed that branch's filter, and it travels with the rows.
+> 3. **Page it.** shibui returns at most 200 rows per query, so a branch whose
+>    `rows_passing` is larger needs more pages:
+>    `emit-branch <branch> <date> --offset 200`, `--offset 400`, … Keep going
+>    until the rows collected equal `rows_passing`. The `ORDER BY` is always
+>    total (the sort key plus `symbol`), so pages never overlap or drop a row.
+> 4. **Assert.** `rows_kept == rows_passing` for every branch. When they
+>    differ the book is INCOMPLETE and **must not be published** — see
+>    §4 "The coverage assertion".
+>
+> A branch count that lands EXACTLY on 30 / 50 / 60 / 200 is a cap, not a
+> screen outcome — that is the truncation fingerprint, and it must be reported
+> as a failure, never as a result.
 
 **Batch 2 (parallel):**
 - One `mcp__tradingview__screen_stocks` call with the **Jeff Sun CANSLIM-calibrated**
@@ -202,14 +231,40 @@ It returns:
 - VIX / VIX3M ratio (one delayed-quote call)
 - Sector rotation (sector/industry ETF relative strength)
 
-Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus a `regime.json`:
+Output: `daily-screens/breadth/<YYYY-MM-DD>.md` plus `daily-screens/<date>/_regime.json`.
+
+**The `_regime.json` schema is PINNED — one shape, one version. Do not re-invent it.**
+
 ```json
 {
+  "_schema": 2,
   "size_cut_pct": 50,     // when (index < 20-DMA) AND (breadth_pct < 40)
-  "uncertainty": false,   // when vix_vxv_ratio > 1
-  "late_cycle": false     // when any of the 5 index symbols is > 6× historical ATR extension
+  "uncertainty": false,   // when vix_vix3m_ratio > 1
+  "late_cycle": false,    // when any of the 5 index symbols is > 6% ABOVE its 50-DMA
+  "breadth_pct_spx": 71.0,
+  "index_below_20sma": true,
+  "vix": 16.61,
+  "vix3m": 18.8,
+  "atr_extensions": {"QQQ": {"extension_pct": -4.37}}
 }
 ```
+
+- **FLAT.** The regime fields sit at the TOP LEVEL, next to `_schema` and
+  `_note`. They are NEVER nested under a `regime` key.
+- `_schema: 2` is the schema version and MUST be present.
+- All eight regime keys MUST be present. A missing key is a failed run, not a
+  default — `late_cycle` reading as `None` is indistinguishable from "not
+  computed", which is exactly how the 2026-11-03 → 2026-11-04 break hid.
+
+**The break that made this necessary:** on 2026-11-03 the payload was flat; on
+2026-11-04 the same routine wrote it nested (`{"regime": {\u2026}}`). Every
+consumer doing `d.get("late_cycle")` then read `None` instead of a boolean —
+a silent contract break in the file the suite spec calls "the file downstream
+routines should read", and the 2026-11-04 artifact's own `breadth.md` even
+published the flat shape in its code block while the JSON on disk was nested.
+`scripts/screen.py` validates the payload against the declared schema BEFORE
+writing it, and `read_regime()` unwraps a legacy nested file so a consumer
+never sees `None` where a regime field belongs.
 
 #### ⚠ An end-of-day read must use the SETTLED CLOSE of the cron day, not shibui's newest session
 
@@ -272,7 +327,10 @@ same pulls was the **after-hours** print stamped 18:36 ET (MRNA `primaryData` 25
 - `daily-screens/<date>/_results.json`        — **machine-readable** companion: every candidate with its
                                                origins, stylist buckets, skip flags and metrics, plus the tier
                                                lists, the regime, and the counts. Downstream routines read
-                                               this instead of re-parsing Markdown.
+                                               this instead of re-parsing Markdown. It also carries
+                                               `screen_coverage` — the per-branch `rows_passing` /
+                                               `rows_kept` table — so a truncated book is visible to any
+                                               consumer, not just to the run that produced it.
 - `daily-screens/<date>/_cache.json`          — cache marker (cron date, resolved data date, counts) used by
                                                `screen.py cache` / `plan --use-cache` to avoid repeating a
                                                completed sweep.
@@ -287,7 +345,7 @@ Stockbee 4% *and* Stockbee EP9M is one stylist with two hits.
 derived from Focus; when more than 8 names clear the bar the list is truncated and
 `_results.json` reports `tier_a_truncated: true` with the untruncated pool size.
 
-#### Two traps when the tiering is re-implemented inline (the Cloud runtime does not execute scripts/screen.py)
+#### Three traps when the tiering is re-implemented inline (the Cloud runtime does not execute scripts/screen.py)
 
 - **The per-stylist FILE names are slugs; the stylist BUCKET names are not.** The files are
   `stockbee.md`, `qullamaggie.md`, `jeff-sun.md`, `ariel-hernandez.md`, `peoplewish.md`, but
@@ -301,6 +359,36 @@ derived from Focus; when more than 8 names clear the bar the list is truncated a
   short/long lists mean anything. Export `m1` into the candidate CSV (and `m2`), or
   `short-candidates.csv` / `long-reversal-candidates.csv` ship with their defining metric
   missing.
+- **A per-branch `LIMIT` is a silent truncation.** See §2: no branch may carry its own
+  `LIMIT`, every row must carry `rows_passing`, and every branch must be paged until the
+  rows collected equal `rows_passing`. A book that was cut at 50 or 30 is not a small book
+  — it is a wrong one, and it looks entirely plausible.
+
+#### The coverage assertion — `rows_kept == rows_passing`, or the run fails
+
+This is the guard that makes the truncation impossible to ship. It is cheap and it is
+mandatory.
+
+**For every branch, publish `rows_passing` and `rows_kept`:**
+
+| Field | Meaning |
+|---|---|
+| `rows_passing` | The number of names that passed THAT branch's filter. Carried on every row as `COUNT(*) OVER ()` computed inside the branch, before any cap applies. |
+| `rows_kept` | The number of rows for that branch actually published. |
+
+- **`rows_kept` MUST equal `rows_passing` for every branch.** When they differ the book is
+  INCOMPLETE: **fail loudly, do not publish it.** Re-fetch the short branch, page it until
+  the counts agree, and rebuild.
+- **A branch count that lands exactly on 30 / 50 / 60 / 200 is a CAP, not a result.**
+  That is the truncation fingerprint — report it as a failure even if `rows_passing`
+  happens to agree.
+- **Publish the counts in `_results.json`** (under `screen_coverage`) **and in the
+  artifact's method section.** A coverage table the reader cannot see is not a guard.
+
+When the run genuinely cannot complete a branch, say so in the artifact — "branch
+`A_stockbee_4pct`: 233 passed, 200 retrieved (shibui's per-query ceiling), 33 names not
+published" — and mark the sweep INCOMPLETE. A truncated book presented as a complete
+one is the worst outcome available.
 
 ### 5. 3:55 PM ET Reversal Bullish (Bonde)
 
@@ -1140,17 +1228,24 @@ For full schema + SQL rules, see `references/filters.md`.
 | 0. Cache check | 0 | local file read | — |
 | 0.4 SQL lint | 0 | offline, no MCP | — |
 | 1. Pre-filter | 1 | shibui SQL | — |
-| 2a. Sweep SQL | 3 | one `UNION ALL` per stylist group (Stockbee / Qullamägi / peoplewish) | per-style Finviz URL (one per style) |
+| 2a. Sweep SQL | 8 + paging | **one query per branch**, uncapped, paged 200 rows at a time | per-style Finviz URL (one per style) |
 | 2b. TV screens | 3 | one parallel batch (CANSLIM + sector ETF + volume breakout) | per-screen Finviz URL |
 | 3. Breadth | 3 | one parallel batch (shibui SQL + VIX/VIX3M + sector RS) | Finviz groups + yahoo quote page |
 | 2.5 Same-day prints | 1 batched | one Nasdaq `/info` request per candidate, 12 at a time | skip — the sweep stands without it |
 | 4. Reversal bullish | 1 | shibui SQL inline with the 15:55 entry alert | `finviz_reversal_bullish()` |
 | 5. Pre-market gapper | **1 (batched)** | `finviz_premarket_gap_url(tickers)` → one `web_fetch` | per-ticker `stock_extended_hours` |
 | 6. Live RVOL rerank | **1 (batched)** | `stock_prices` with comma-separated `EXCHANGE:SYMBOL` list | per-ticker `coin_analysis` |
-| **Base sweep + live** | **~11 + 2 live** | | |
+| **Base sweep + live** | **~16 + 2 live** (8 branch calls + ~1 page each) | | |
+
+The sweep grew from 3 calls to 8 because a per-branch fetch is what makes the coverage
+assertion satisfiable: shibui returns at most 200 rows per query, so a merged group whose
+branches pass more than 200 rows in total is truncated at the outer cap exactly the way the
+old per-branch caps truncated it. Eight branch calls (plus a second page for the branches
+that need one) is the price of a book that is complete — and completeness is the whole
+point of the coverage assertion.
 
 Compare to naive approach (one screen call per stylist × 10 stylists × per-ticker live): ~40+
-TV calls + 20 shibui calls + 24 per-ticker live = **~85 MCP calls vs ~13 here**.
+TV calls + 20 shibui calls + 24 per-ticker live = **~85 MCP calls vs ~18 here**.
 
 ## Fallback chain (when MCP rate-limits)
 

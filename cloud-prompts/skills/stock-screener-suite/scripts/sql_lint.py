@@ -29,6 +29,9 @@ What it checks
   L006  a top-level SELECT without a LIMIT (shibui rejects >200 rows)
   L007  division by a column without NULLIF() (shibui returns inf/NaN)
   L008  date arithmetic on a bare string literal (DuckDB ambiguity error)
+  L009  a CTE carries a per-branch LIMIT smaller than the outer cap (silent
+        truncation: the query succeeds, the book is cut, every count still
+        looks plausible)
 
 Usage
 -----
@@ -152,6 +155,11 @@ class _Cte:
     name: str
     body: str
     select_items: list[str] = field(default_factory=list)
+    # Character span of the CTE body in the ORIGINAL sql string. strip_comments
+    # and mask_literals both preserve offsets, so the span is valid in every
+    # representation of the query.
+    start: int = -1
+    end: int = -1
 
 
 # --------------------------------------------------------------------------
@@ -281,7 +289,13 @@ def parse_ctes(sql: str) -> tuple[list[_Cte], list[Issue]]:
         if close == -1:
             break
         body = stripped[j + 1:close]
-        ctes.append(_Cte(name=name, body=body, select_items=select_items(body)))
+        ctes.append(_Cte(
+            name=name,
+            body=body,
+            select_items=select_items(body),
+            start=j + 1,
+            end=close,
+        ))
         i = close + 1
         k = i
         while k < len(masked) and masked[k] in " \t\r\n":
@@ -440,6 +454,26 @@ def _window_start(sql: str) -> tuple[_dt.date | None, str]:
     return starts[0][0], starts[0][1]
 
 
+def _outer_limit(sql: str, ctes: list[_Cte]) -> int | None:
+    """The cap on the QUERY's result — the LIMIT that sits outside every CTE.
+
+    Returns None when the query carries no top-level LIMIT (the outer cap is
+    then undefined and L009 has nothing to compare against).
+    """
+    masked = mask_literals(strip_comments(sql))
+    caps = [
+        int(m.group(1))
+        for m in re.finditer(r"\bLIMIT\s+(\d+)", masked, re.I)
+        if not _inside_any_cte(m.start(), ctes)
+    ]
+    return max(caps) if caps else None
+
+
+def _inside_any_cte(pos: int, ctes: list[_Cte]) -> bool:
+    """True when character position `pos` sits inside a CTE body."""
+    return any(c.start <= pos < c.end for c in ctes)
+
+
 def lint_sql(sql: str, target_date: str | None = None) -> list[Issue]:
     """Return every structural issue found in `sql`."""
     issues: list[Issue] = []
@@ -593,6 +627,32 @@ def lint_sql(sql: str, target_date: str | None = None) -> list[Issue]:
             f"- INTERVAL '...'",
         ))
 
+    # L009 — a per-branch LIMIT inside a CTE is a silent truncation
+    #
+    # The outer cap (shibui's 200-row ceiling) is the ONLY limit a query may
+    # carry. A CTE that ends in its own smaller LIMIT truncates that branch
+    # while the query still succeeds: the 2026-11-04 artifact published
+    # `A_stockbee_4pct 50` and `B_stockbee_ep9m 50` — the caps, not
+    # screen outcomes (the true passing counts that day were 233 and 236).
+    # L006 checks for a MISSING limit; nothing checked for a per-branch one,
+    # which is exactly the gap that let this ship twice.
+    outer_cap = _outer_limit(sql, ctes)
+    if outer_cap is not None:
+        for cte in ctes:
+            for m in re.finditer(r"\bLIMIT\s+(\d+)", masked, re.I):
+                if not (cte.start <= m.start() < cte.end):
+                    continue
+                branch_cap = int(m.group(1))
+                if branch_cap < outer_cap:
+                    issues.append(Issue(
+                        "ERROR", "L009",
+                        f"CTE '{cte.name}' carries LIMIT {branch_cap}, smaller than the "
+                        f"outer cap of {outer_cap} — this branch's book is silently "
+                        f"truncated while the query still succeeds. Every branch must be "
+                        f"uncapped; cap the QUERY, not the branch (and publish "
+                        f"rows_passing so the truncation cannot hide).",
+                    ))
+
     return issues
 
 
@@ -622,6 +682,16 @@ def _lint_emitters(date: str) -> list[tuple[str, list[Issue]]]:
             out.append((name, [Issue("ERROR", "L000", f"emitter raised {exc!r}")]))
             continue
         out.append((name, lint_sql(sql, date)))
+
+    # The per-branch emitters are the path the run actually takes — lint
+    # them too, so a cap cannot hide in the coverage-safe fetch path.
+    for branch in screen.SWEEP_BRANCHES:
+        try:
+            sql = screen.emit_sweep_sql_branch(date, branch)
+        except Exception as exc:  # pragma: no cover - defensive
+            out.append((f"branch:{branch}", [Issue("ERROR", "L000", f"emitter raised {exc!r}")]))
+            continue
+        out.append((f"branch:{branch}", lint_sql(sql, date)))
     return out
 
 
