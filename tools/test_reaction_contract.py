@@ -81,8 +81,19 @@ def find_scanner():
     return None
 
 
-def load_pure(path):
-    """Exec the scanner's side-effect-free region and return its namespace."""
+def exec_pure(path):
+    """Exec the scanner's pure region with TRIPWIRES on every side effect.
+
+    Returns (namespace, calls). `calls` lists the side effects that happened.
+
+    Why the tripwires are not optional: the self-heal's FUNCTION DEFINITIONS sit
+    inside the region (only its CALL is outside it). If that call ever moved
+    inside, a plain exec would run the real self-heal - which fetches the
+    remote script and RE-EXECS, replacing the file under test and re-running
+    this test forever. With the tripwires the region cannot reach the network,
+    the filesystem or the process table at all, and the attempt is RECORDED so
+    the test can fail with a message instead of hanging.
+    """
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
     if "# ==== PURE-HELPERS-BEGIN" not in src or "# ==== PURE-HELPERS-END" not in src:
@@ -91,10 +102,60 @@ def load_pure(path):
     body = src.split("# ==== PURE-HELPERS-BEGIN")[1]
     body = body.split("# ==== PURE-HELPERS-END")[0]
     body = "\n".join(body.split("\n")[1:])
-    ns = {"json": json, "subprocess": subprocess, "time": __import__("time"),
-          "datetime": datetime, "os": os, "sys": sys, "re": re}
+    calls = []
+
+    def trip(name):
+        def _boom(*a, **k):
+            calls.append(name)
+            raise AssertionError(f"the pure region called {name}")
+        return _boom
+
+    class TripSubprocess:
+        run = staticmethod(trip("subprocess.run"))
+        PIPE = subprocess.PIPE
+
+    class TripOS:
+        execv = staticmethod(trip("os.execv"))
+        remove = staticmethod(trip("os.remove"))
+        makedirs = staticmethod(trip("os.makedirs"))
+        path = os.path
+        environ = os.environ      # the REAL environ: the fetch reads GITHUB_TOKEN
+                                   # from it, and a missing attribute would abort
+                                   # the flow BEFORE the tripwire is reached
+
+    ns = {"json": json, "subprocess": TripSubprocess, "time": __import__("time"),
+          "datetime": datetime, "os": TripOS, "sys": sys, "re": re, "__file__": path}
     exec(compile(body, path, "exec"), ns)
+    return ns, calls
+
+
+def load_pure(path):
+    """The scanner's side-effect-free namespace. Fails loudly if the region
+    performed a side effect - it must never run the self-heal."""
+    ns, calls = exec_pure(path)
+    if calls:
+        raise RuntimeError(
+            f"the pure-helpers region performed a side effect ({sorted(set(calls))}) - "
+            f"the self-heal CALL must stay BELOW the PURE-HELPERS-END marker, or this "
+            f"test would re-exec and replace the file under test")
     return ns
+
+
+def test_pure_region_has_no_side_effects(path):
+    """A0 — exec'ing the pure region must not touch the network, the
+    filesystem or the process table."""
+    try:
+        _, calls = exec_pure(path)
+    except AssertionError as exc:
+        bad("A0-pure-region", str(exc))
+        return
+    if calls:
+        bad("A0-pure-region", f"executing the pure region called {sorted(set(calls))} — "
+                             f"the region must not touch the network, the filesystem or "
+                             f"the process table")
+        return
+    ok("A0 the pure-helpers region executes with no network, no file write and "
+       "no re-exec")
 
 
 # ------------------------------------------------------------------ part A
@@ -375,6 +436,7 @@ def main():
             print(f"  FAIL  the scanner's pure region could not be loaded: {exc}")
             FAILURES.append(f"the scanner's pure region could not be loaded: {exc}")
         else:
+            test_pure_region_has_no_side_effects(scanner)
             test_pipeline(ns)
 
     print("B. the checker accepts a conforming artifact")
