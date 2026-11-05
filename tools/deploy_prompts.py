@@ -47,7 +47,7 @@ TASKS = {
     "14-macro-calendar-week-ahead.md":          ("457172664209611", "0 15 * * 0"),
     "15-earnings-reaction-scanner.md":          ("457570777166058", "0 8 * * 1-5"),
     "16-unusual-options-flow-daily.md":         ("457305357095000", "35 16 * * 1-5"),
-    "17-us-stocks-in-play.md":                  ("457954144674016", "50 15 * * 1-5"),
+    "17-us-stocks-in-play.md":                  ("457954144674016", "50 9,15 * * 1-5"),
     "19-earnings-reminder-daily.md":            ("457569978294401", "0 6 * * 1-5"),
     "20-eod-watchlist-csv-snapshot.md":         ("457172664209610", "0 16 * * 1-5"),
     "22-weekly-market-recap-preview.md":        ("457956577145214", "47 17 * * 0"),
