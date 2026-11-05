@@ -34,6 +34,162 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 Surfaces the price action that the pre-market brief missed: every name in the S&P 500 top-200 with a meaningful pre-market or post-market move, the prior session's biggest movers across the full US universe, **EU/UK intraday movers during their live session** (started 03:00 ET, mid-session at scan time), and **Australia (ASX) prior-session movers** (ASX closed ~02:00 ET, 6h before scan). Four-pass design replaces the original watchlist-only Pass A and hardcoded 13-name Pass B.
 
+## ARTIFACT FORMAT CONTRACT v2 — `REACTION_ARTIFACT_V2` (authoritative)
+
+**This section is the contract. The pipeline that renders the artifact is
+`scripts/earnings_reaction_scanner.py` in `karizaco/minimax-cloud-outputs`
+(`SCRIPT_VERSION` + the marker `REACTION_ARTIFACT_V2`); the rest of this file
+is the procedure it implements.** A fetch of the pipeline that does not carry
+the marker `REACTION_ARTIFACT_V2` is a STALE copy and must not be run — the
+marker is the capability check, exactly as `WINDOW_CHECK_V2` is for the shared
+window check.
+
+**The contract lives here, not in the cron prompt, because the cron prompt
+fetches this file at RUN time. A change here lands on the next fire with no
+`cron_update` and no prompt drift.**
+
+### The skeleton (sections, in this order)
+
+```
+# Earnings reaction scanner — YYYY-MM-DD
+<front matter: cron, fire time, run type, source, method, artifact_contract,
+ ref_close_source, status>
+## TL;DR
+## Actionable read
+## US — Headline table
+## US — QUIET one-liners
+## EU/UK — Headline table
+## AU (ASX) — Headline table
+## Source health
+## Audit line
+```
+
+**There is no `## Catalysts` section.** The catalyst rides in the last column of
+its row (the one-table rule, below). A separate catalysts section duplicates the
+tables and lets a name appear twice.
+
+### The one-table rule — each name appears EXACTLY ONCE
+
+Each name appears exactly once in the markdown, in exactly one table, with its
+catalyst in that row's last column. This is the rule from
+`ntrt-gap-brief/SKILL.md` §2 and it exists because the 2026-11-03 artifact put
+names in both a table and a catalysts section.
+
+- A symbol that appears on a US venue **and** a foreign venue keeps the **US
+  row** — it carries the extended-hours columns and it is the line a US reader
+  can trade. The dropped foreign row is listed in source health
+  (`cross_region_rows_dropped`), so nothing is hidden.
+- The checker parses the tables and asserts `len(names) == len(set(names))`.
+
+### The required columns — every published row carries them
+
+Every published row of every table (including the QUIET one-liners) carries:
+
+| Column | Meaning |
+|---|---|
+| `Ref close` | the close the move is measured against |
+| `Ref source` | where that close came from (`yahoo_chart_daily`) |
+| `Ref asof` | the DATE of that close |
+| `US tradeable` | `US-listed` / `US-listed (ADR)` / `ADR (VENUE:TICKER)` / `none` |
+| `Move vs avg daily` | the reaction ÷ the name's own mean absolute daily move over its last 20 completed sessions (`n/a` when it cannot be derived) |
+
+`Move vs avg daily` is the point of the actionable layer: a −27% move in a name
+that averages ±3% is a different event from a −8% move in a name that averages
+±7%. `US tradeable` is what makes a foreign row actionable: a Euronext or
+Swedish ticker a US reader cannot buy is `none`, and an ADR carries its US
+ticker.
+
+### The reference close is resolved FIRST, and it is a hard gate
+
+The reference close is resolved **before any table is built**, from one
+authoritative source (Yahoo's daily chart bars), and the candidate universe is
+filtered against it:
+
+1. The screener's implied reference close (`close / (1 + change/100)`) is
+   compared with Yahoo's reference close. A disagreement above 0.5% means the
+   screener row was measured against a **stale** close — a phantom move — and
+   the row is **dropped**.
+2. A row whose reference close is **older than the previous session** is
+   **dropped**. The drop is COUNTED and published as
+   `rows_dropped_stale_ref` — never silently filtered.
+3. Every surviving row publishes `Ref close`, `Ref source` and `Ref asof`, so a
+   reader can see whether the row was checked against today's close or an older
+   one.
+
+**Session selection is by DATE and ORDER, never by a modal time-of-day.** Yahoo
+stamps a daily bar at the session open in the venue's local time, so the ET
+stamp of the SAME session moves by an hour across a DST boundary (a US bar:
+09:30 ET in summer, 10:30 ET in winter; an ASX bar: 19:00 ET before the change,
+18:00 ET after). A modal time-of-day filter keeps the OLDER bars and discards
+the NEWEST ones — it rolled the base back to the prior-prior session and cost
+66 US rows + 21 ASX rows on 2026-11-03 and 24 of 25 ASX rows on 2026-11-04.
+
+### `## Actionable read` — the actionable layer, above the tables
+
+Three things, in this order:
+
+1. **Move vs this name's own history** — how to read the `Move vs avg daily`
+   column.
+2. **US-listed and tradeable vs foreign-only** — how many published reactions
+   are on a US venue, how many foreign reactions have a US ADR line, and how
+   many are foreign-only.
+3. **Not yet fully priced — one name per region (US, EU/UK, AU)** — a
+   HYPOTHESIS with its evidence, never a recommendation. The hypothesis is
+   stated as: the move is still extending beyond the move it follows (for a US
+   row, the extended-hours print exceeds the regular session's move; for a
+   live EU session or a closed ASX session, the move exceeds the previous
+   session's move), and it is large relative to the name's own average daily
+   move. The evidence is published with it: the move, the average daily move,
+   the multiple, the reference close and its date, and the US access.
+   **No direction, no trade, no recommendation.** If no row in a region carries
+   the average daily move needed to judge it, say so and name no candidate.
+
+### `## Source health` — and the reply's `errors:` count
+
+Source health publishes `degraded_sources: <n>` followed by **one numbered
+entry per degraded source**, each naming which source and what happened. The
+chat reply's `errors:` count **must equal that number** — one entry per
+degraded source, not one per run. The 2026-11-03 reply reported `errors: 1` for
+two unverified rows plus a stale TradingEconomics table: three degraded sources
+counted as one.
+
+A degraded source is a source that did not answer: a rate-limited or failing
+Yahoo endpoint, a reference close that could not be resolved, a scanner call
+that failed, the US-line index that could not be built. A market returning few
+rows is **not** a degraded source (it is a coverage note), and a row dropped by
+the reference-close gate is **not** a degraded source either — it is counted in
+`rows_dropped_stale_ref`.
+
+### The audit line
+
+`earnings-reaction target=earnings-reactions:<date> candidates=<n>
+amc_reactions=<n> pre_gaps=<n> eu_reactions=<n> asx_reactions=<n>
+catalyst_lookups=<n> bod=<n> rows_dropped_stale_ref=<n> degraded_sources=<n>`
+
+### The catalyst catalog file
+
+The agent writes `catalog/catalysts/<date>.md` — one markdown table,
+`| Ticker | Region | Catalyst | Earnings-driven |`. The pipeline **merges each
+row into that ticker's row in the artifact** and never emits a separate
+catalysts section, so a re-run cannot duplicate a name. The file is never
+overwritten, so a re-run never wipes the agent's research. A row whose catalyst
+is missing says so honestly: `pending catalyst lookup` (it is inside the
+per-run budget) or `no catalyst lookup (outside the per-run budget)`.
+**Never fabricate a catalyst** — `no fresh catalyst found` is a valid cell.
+
+The per-run budget is 5 US + 3 EU + 2 AU = 10 lookups, and the ticker list is
+`earnings/<date>-catalyst-targets.json`.
+
+### The checker
+
+`tools/check_reaction_artifact.py` in `karizaco/maxhermes-migration` verifies a
+rendered artifact against this contract: the skeleton, the required columns on
+every published row, the reference-close floor, the one-table rule, and the
+`errors:` ↔ `degraded_sources:` agreement. `tools/test_reaction_contract.py`
+is its regression test (the ET window on a winter AND a summer date, the base
+close against the exact bar fixtures that broke 2026-11-03 and 2026-11-04, and
+a fault-injection pass that proves the checker bites).
+
 ## When
 - Cron: `0 8 * * 1-5` America/New_York (weekdays, 08:00 ET — 23 min after pre-market brief, ~90 min before US open; ~5h into the EU session; ~6h after ASX close)
 - Manual: user asks "what did names do overnight?" or "show me today's earnings reactions" or "what's moving in Europe?" or "what moved in Australia?"
@@ -202,17 +358,24 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 
 12. **Sort** by max(|pre-market|, |post-market|) for US, by |intraday %| for EU and AU. Each section sorted independently.
 
-13. **Write markdown:**
-    1. **TL;DR** (≤3 lines): how many AMC reactions, pre-market gaps, EU reactions, ASX reactions, biggest mover across all sections. Note EU/AU earnings detection limitation.
-    2. **US — Headline table:** ticker, primary exchange, pre-market %, post-market %, earnings-driven (Y/N), catalyst.
-    3. **US — QUIET one-liners** (cap 15 lines).
-    4. **EU — Headline table:** ticker, primary exchange, intraday %, local currency, USD-equiv, earnings-driven (Y/N), catalyst.
-    5. **AU — Headline table:** ticker, primary exchange (always ASX), intraday %, local currency (AUD), USD-equiv, earnings-driven (Y/N), catalyst.
-    6. **Source health:** screener / extended_hours / combined_analysis / earnings / stocktwits call counts (broken out by region), missing symbols, 429s, dedup stats (pre-filter dropped X rows by region), candidates-trimmed by region, EU/AU earnings detection method, catalyst cap hit.
-    7. **Audit line:** `earnings-reaction target=earnings-reactions:<date> candidates=<n> amc_reactions=<n> pre_gaps=<n> eu_reactions=<n> asx_reactions=<n> catalyst_lookups=<n>`.
+13. **Write markdown** — the **ARTIFACT FORMAT CONTRACT v2** above is
+    authoritative; the skeleton is fixed:
+    1. **TL;DR** (≤5 lines): how many AMC reactions, pre-market gaps, EU reactions, ASX reactions, biggest mover across all sections. Note EU/AU earnings detection limitation.
+    2. **Actionable read**: move vs the name's own history, US-listed vs foreign-only, and the one not-yet-fully-priced hypothesis per region.
+    3. **US — Headline table:** ticker, venue, close, change %, pre-market %, post-market %, move vs avg daily, ref close, ref source, ref asof, US tradeable, last earnings, tag, earnings-driven, catalyst.
+    4. **US — QUIET one-liners** (cap 15 lines), same required columns.
+    5. **EU/UK — Headline table:** ticker, market, venue, close, change %, currency, move vs avg daily, ref close, ref source, ref asof, US tradeable, last earnings, earnings-driven, catalyst.
+    6. **AU (ASX) — Headline table:** same, without the market column.
+    7. **Source health:** call counts, the reference-close result, `rows_dropped_stale_ref`, the pre-market check, dedup stats, `degraded_sources: <n>` with one numbered entry per degraded source.
+    8. **Audit line:** the fixed `earnings-reaction target=…` line, including `rows_dropped_stale_ref` and `degraded_sources`.
+    **No `## Catalysts` section** — the catalyst is the last column of its row.
 
 ## Hard rules
 - Read-only. No trade ideas.
+- **One name, one table, one row.** Never a separate `## Catalysts` section — the catalyst is the last column of its row.
+- **The reference close is a hard gate**, resolved before the tables are built. A row that fails it is dropped AND counted (`rows_dropped_stale_ref`).
+- **Session selection is by DATE and order, never by a modal time-of-day** — a DST boundary shifts the ET stamp of the same session by an hour.
+- **The reply's `errors:` count equals the artifact's `degraded_sources` count** — one entry per degraded source.
 - Don't fabricate catalyst headlines — if the relevant call returns nothing, write "no fresh catalyst found" and move on.
 - Always show both pre- and post-market % for US when both present.
 - EU threshold (2.5%) > US pre-market threshold (2%) — live session is noisier than extended hours.
@@ -260,6 +423,7 @@ For now, document the cross-region case in source health: `cross_region_dupes_kn
 - Structured EU/AU earnings calendar — TradingView's `earnings_release_next_date` screener field is a known untested path; documented above.
 
 ## Change history
+- **v4 — 2026-11-05.** The **ARTIFACT FORMAT CONTRACT v2** (`REACTION_ARTIFACT_V2`) above. Four fixes: (1) the pre-market checker's Eastern-time handling — the ET window is now 04:00-09:30 ET resolved with `zoneinfo` on a WINTER and a SUMMER date, the base close is the IMMEDIATELY prior session, and the pipeline is fetched only when it carries the capability marker, so a stale CDN blob cannot run the old procedure; (2) the reference close is resolved FIRST from one authoritative source and is a hard gate — every published row carries `Ref close` / `Ref source` / `Ref asof`, and a row whose base is older than the previous session is dropped and counted in `rows_dropped_stale_ref`; (3) a new `## Actionable read` section with the `Move vs avg daily` and `US tradeable` columns and one not-yet-fully-priced hypothesis per region; (4) the one-table rule — the separate `## Catalysts` section is gone and the catalyst rides in the row. `degraded_sources` counts each degraded source separately and the reply's `errors:` must match it. Checker `tools/check_reaction_artifact.py`, regression test `tools/test_reaction_contract.py`.
 - **v3.3 — 2026-09-23.** Added **coverage gap detector** — `total_count < 5` triggers `_warn=empty_screener_<market>`. Catches the `south_korea` → 0 bug class. Also serves as holiday detector. Added **Holiday / market-status detection** section documenting common holidays per region (US, UK/EU, AU) with the screener-as-signal pattern. Documented **cross-region dedupe** limitation (companies like ASML on AMS + NASDAQ appear in separate sections; v4 plan to dedupe via ISIN from yahoo-finance `get_company_info`).
 - **v3.2 — 2026-09-23.** Added Pass D (Australia/ASX). 1 market (australia), threshold 2.5%, market_cap floor $500M (lower than EU/US because ASX has fewer mega-caps), close floor $1 (lower because ASX has many $2-5 real listings). ASX exchange added to priority table at #19. Catalyst budget 2 calls for AU (cap by |change %|). Earnings cycle note for ASX (Feb interim + Aug full-year reporting seasons). Out-of-scope: TSX (Pass E candidate) and NZX.
 - **v3.1 — same day.** Added mandatory **primary-listing exchange whitelist** (step 2). Drops OTC/PINK/LS/LSX/LSIN retail mirrors and FWB/SWB/GETTEX secondary German venues when XETR is also present. Dedupe rule: European primary beats US ADR. Documents EU earnings calendar gap.

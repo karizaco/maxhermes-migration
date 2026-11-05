@@ -391,6 +391,9 @@ is in `cloud-prompts/cron-prompts/README.md`.
    `errors: <n>` — count of **SOURCE** failures that degraded the artifact.
    0 = clean run. The absent `mcp__*` tools are NOT an error and must not be
    counted.
+   **If the artifact publishes a `degraded_sources:` count, the reply's
+   `errors:` MUST equal it exactly** — one entry per degraded source, not one
+   per run. Three degraded sources are `errors: 3`, never `errors: 1`.
 
 **Formatting rules — the reply is rendered in a chat client, not read as a diff.**
 - Use a compact markdown **table** whenever there are 3+ comparable numeric rows (index

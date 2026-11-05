@@ -132,14 +132,21 @@ ladder below is ordered by AUTHORITATIVENESS, not speed:
 
 **Validate the BODY, never the status code.** A 403/404 body is NOT empty: the unauthenticated
 API returns `{"message":"API rate limit exceeded ...", ...}`, and saving that as the script breaks
-the run. The `valid()` check below requires a real script — the `SCRIPT_VERSION` marker AND a
-clean Python compile.
+the run. The `valid()` check below requires a real script — the `SCRIPT_VERSION` marker, the
+**`REACTION_ARTIFACT_V2` capability marker**, and a clean Python compile.
+
+**The capability marker is mandatory, not decoration.** An OLDER copy of the pipeline carries
+`SCRIPT_VERSION` and compiles perfectly, so `SCRIPT_VERSION` alone cannot tell a stale blob from
+the current one — and a stale pipeline silently runs the OLD procedure (the 2026-11-03 build
+rolled every reference close back to the prior-prior session because of it). The marker names the
+contract the copy implements, so only a copy that carries it may run.
 
 ```bash
 cd /workspace
 mkdir -p scripts
 S=scripts/earnings_reaction_scanner.py
 valid() { [ -s "$1" ] && grep -q 'SCRIPT_VERSION' "$1" 2>/dev/null \
+          && grep -q 'REACTION_ARTIFACT_V2' "$1" 2>/dev/null \
           && python3 -c "import sys;compile(open(sys.argv[1]).read(),'x','exec')" "$1" 2>/dev/null; }
 
 # 1) GitHub connector - authoritative, not CDN-cached
@@ -267,18 +274,30 @@ names apply the skill's keyword test (earnings / results / Q1-Q4 / beats / misse
 guidance; plus interim, half-year, full-year, dividend, ASIC, iron ore, lithium, gold for AU).
 
 **Then write the catalyst table to `/workspace/catalog/catalysts/<date>.md`** (mkdir -p first)
-and re-run the pipeline, which splices that file into the artifact's `## Catalysts` section.
-Doing it this way means a re-run never wipes your work. You may also edit the table in place
-instead, but then do not re-run the pipeline afterwards.
+and re-run the pipeline, which **merges each row into that ticker's row in the artifact**. The
+artifact has NO separate `## Catalysts` section — the catalyst is the last column of its row, so
+a name can never appear twice in the markdown. Doing it this way means a re-run never wipes your
+work. You may also edit the table in place instead, but then do not re-run the pipeline afterwards.
+
+The file's format is one markdown table — `| Ticker | Region | Catalyst | Earnings-driven |` —
+with the tickers from `/workspace/earnings/<date>-catalyst-targets.json` (5 US + 3 EU + 2 AU).
+The pipeline writes a starter skeleton if the file is missing; fill it in and re-run.
 
 **Never fabricate a headline.** If a search returns nothing usable, write "no fresh catalyst found".
 
 ## STEP 5 — WRITE THE ARTIFACT
 
-The pipeline writes `/workspace/earnings/<date>-reactions.md` with the TL;DR, the US headline
-table, US QUIET one-liners, the EU/UK table, the ASX table, source health and the audit line.
-Keep every other section as the pipeline wrote it — it carries the row counts, the cross-check
-result and the freshness stamps.
+The pipeline writes `/workspace/earnings/<date>-reactions.md` with the TL;DR, the **Actionable
+read** section, the US headline table, US QUIET one-liners, the EU/UK table, the ASX table,
+source health and the audit line. The artifact's skeleton, its required columns and the
+one-table rule are the **ARTIFACT FORMAT CONTRACT v2** in the skill spec — read it there, not
+from memory. Keep every section as the pipeline wrote it — it carries the row counts, the
+cross-check result and the freshness stamps.
+
+**Every published row carries `Ref close`, `Ref source`, `Ref asof`, `US tradeable` and
+`Move vs avg daily`**, and the source-health section publishes `rows_dropped_stale_ref` and
+`degraded_sources: <n>`. **The reply's `errors:` count MUST equal that `degraded_sources`
+number** — one entry per degraded source, not one per run.
 
 If the script failed and no artifact exists, write a stub with `_source=skill_fetch_failed` and
 report the error. Never improvise the tables from memory.
@@ -288,6 +307,34 @@ The pipeline dates the artifact from the **scheduled** date of this fire, not th
 If this run is a delayed replay (the platform re-dispatches a session whose quota was exhausted),
 the artifact must still carry the scheduled date, and it must say in the artifact that it is a
 reconstruction produced late. A replay is normal, not an error — do not write a SKIPPED marker.
+
+## STEP 5b — VERIFY THE ARTIFACT AGAINST THE CONTRACT (before the push)
+
+The pipeline renders the contract by construction, but a manual edit can break it — and the
+contract is the thing the reader relies on. Fetch the independent checker and run it on the
+artifact. It exits 1 and names every violation.
+
+```bash
+C=/workspace/check_reaction_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_reaction_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_reaction_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_reaction_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && grep -q 'REACTION_ARTIFACT_V2' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ -s "$C" ]; then
+  python3 "$C" /workspace/earnings/${DATE}-reactions.md || echo "CONTRACT CHECK FAILED - fix the artifact before pushing"
+fi
+```
+
+If the checker cannot be fetched, say so in `### Method & caveats` and carry on — do not fail the
+run over a missing verifier. If it RUNS and fails, fix the artifact (or re-run the pipeline) and
+run it again. Do not push an artifact the checker rejected.
 
 ## GIT PUSH (OPTIONAL)
 
