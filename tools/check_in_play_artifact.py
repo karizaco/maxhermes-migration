@@ -495,16 +495,21 @@ def check_md(path, slot):
         # pre-close board instead — and its own check is the section order above.
         if slot == "open":
             dtxt = "\n".join(tb)
-            if not (re.search(r"\d{4}-\d{2}-\d{2}-open\.md", dtxt)
-                    or re.search(r"\d{4}-\d{2}-\d{2}-open\.md", front)):
-                if re.search(r"no prior open board|first link in the open-board chain",
-                             dtxt + front, re.I):
-                    ok("the artifact states there is no prior open board to diff against")
-                else:
-                    bad("the artifact does NOT name the prior open board file it read — the "
-                        "open board's delta is computed against the previous day's `-open.md`, "
-                        "and the artifact must say which file that was (the newest file in "
-                        "the directory is usually the PRE-close board)")
+            if re.search(r"\d{4}-\d{2}-\d{2}-open\.md", dtxt) or re.search(
+                    r"\d{4}-\d{2}-\d{2}-open\.md", front):
+                # EVERY check must report on its PASS path too. A check that only
+                # speaks when it fails is indistinguishable from a check that never
+                # ran, and the count of assertions silently drops below the contract.
+                ok("the artifact names the prior OPEN board file it read "
+                   "(the delta is computed against the previous day's `-open.md`)")
+            elif re.search(r"no prior open board|first link in the open-board chain",
+                           dtxt + front, re.I):
+                ok("the artifact states there is no prior open board to diff against")
+            else:
+                bad("the artifact does NOT name the prior open board file it read — the "
+                    "open board's delta is computed against the previous day's `-open.md`, "
+                    "and the artifact must say which file that was (the newest file in "
+                    "the directory is usually the PRE-close board)")
         else:
             # The pre-close slot diffs a full session against a full session, so it must
             # name the previous day's PRE-close board — never an open board. A slot that

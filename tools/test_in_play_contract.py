@@ -50,6 +50,12 @@ ck = _load(CK_PATH, "ck")
 
 CONTRACT = "in-play-artifact-v1"
 
+# The number of checks the checker MUST report for a conforming OPEN artifact.
+# Every check reports on its PASS path — a silent pass is indistinguishable
+# from a check that never ran (see the delta-source check, fixed 2026-11-06).
+OPEN_CHECK_COUNT = 31
+PRECLOSE_CHECK_COUNT = 20
+
 
 # ---------------------------------------------------------------------------
 # the synthetic OPEN artifact
@@ -718,6 +724,23 @@ def main():
         print(out)
         return 1
 
+    # --- 1a. every check must REPORT on its PASS path -------------------------
+    # A check that only speaks when it fails is indistinguishable from a check
+    # that never ran: the count of assertions silently drops and a broken gate
+    # looks like a passing one. The open slot's delta-source check shipped
+    # exactly that way (2026-11-06) — it bit on failure but said nothing on
+    # success, so the reported count was 30 when the contract has 31 checks.
+    # Pinning the count makes that class of defect a test failure.
+    n_open = out.count("\n  ok ")
+    if n_open == OPEN_CHECK_COUNT:
+        print(f"{PASS} every check reports on its PASS path "
+              f"(open slot: {n_open} checks reported)")
+    else:
+        print(f"{FAIL} the open slot reports {n_open} checks, expected {OPEN_CHECK_COUNT} — "
+              "a check is missing its PASS-path output (a check that only speaks when it "
+              "fails cannot be told apart from one that never ran)")
+        return 1
+
     # --- 1b. the PRE-CLOSE slot's contract must also be satisfiable -----------
     pmd, pcsv = write_preclose_fixture(tmpdir)
     rc, out = run_checker(pmd, pcsv, slot="preclose")
@@ -727,6 +750,15 @@ def main():
     else:
         print(f"{FAIL} the pre-close contract CANNOT be met — a conforming artifact fails:")
         print(out)
+        return 1
+
+    n_pre = out.count("\n  ok ")
+    if n_pre == PRECLOSE_CHECK_COUNT:
+        print(f"{PASS} every check reports on its PASS path "
+              f"(pre-close slot: {n_pre} checks reported)")
+    else:
+        print(f"{FAIL} the pre-close slot reports {n_pre} checks, expected "
+              f"{PRECLOSE_CHECK_COUNT} — a check is missing its PASS-path output")
         return 1
 
     # --- 2b. the pre-close slot's own source-naming rule must bite ------------
