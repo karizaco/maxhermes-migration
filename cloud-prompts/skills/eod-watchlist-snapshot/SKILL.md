@@ -432,6 +432,36 @@ move disagree.
 (`LEN-B` → `LEN` would publish the Class A COMMON line's price under the Class B ticker):
 `ABR-P-E` → Yahoo `ABR-PE`, `USB-P-H` → `USB-PH`, `BRK-A` → `BRK-A`.
 
+## 2b. The close, the prior close, and the settle (2026-11-06)
+
+**THE DAILY BAR'S CLOSE IS STILL DRIFTING FOR THE FIRST ~10 MINUTES AFTER THE CLOSE.**
+Measured 2026-11-06: a history pull at 16:01 ET and a second at 16:10 ET differed on **150 of
+4,775 session closes**, while the session VOLUME was already unchanged between the two passes
+(median ratio 1.0000). **The close keeps moving after the volume has settled**, so a single
+pull at 16:0x publishes 150 closes that are not the official close. **Pull the history TWICE
+and let the LATER pass win the session bar** (the merge keeps the earlier bars from either
+pass). The bar's own close and its synthetic final bar agree once it settles; the vendor's
+`/info` stamp is not the test (see the 2026-11-05 note).
+
+**`change_pct` IS COMPUTED AGAINST THE QUOTE SERVICE'S PREVIOUS CLOSE, NOT THE BAR'S PRIOR
+CLOSE.** The price history is SPLIT-adjusted but **not dividend-adjusted**, so on an
+ex-distribution date the raw bar basis prints a false market move: SITE Centers (SITC) went
+ex a $3.00 special distribution on 2026-11-06 and reads **-81.3%** on the raw bar basis
+(3.57 -> 0.6678) against the official **+17.2%** (0.57 -> 0.6678). The quote service's
+previous close is dividend-adjusted, and it is the basis every reader's screen shows.
+**37 of 4,775 rows have a prior close that differs by more than 2% between the two bases** —
+publish the adjusted basis and name the divergence in `## Method & caveats`. The DERIVED
+columns (`gap_pct`, `pct_from_52w_high/low`, the moving averages) stay on the split-adjusted
+series the contract defines, so on a distribution date they inherit the artefact — the caveat
+must say so, because `change_pct` and `gap_pct` are then on different bases.
+
+**A ROW WITH NO SESSION BAR GETS EMPTY PRICE CELLS — AND "NO BAR" IS NOT ALWAYS "DID NOT
+TRADE".** On 2026-11-06, 117 rows had no session bar: 43 last traded on an earlier session,
+and **70 had a sub-second CTA closing print** (a handful of shares) that the daily-bar feed
+does not publish and that Yahoo's own quote service timestamps to an EARLIER session. For
+those rows the two sources disagree on the price AND on whether a print occurred, so **no
+close is published** — check them against CNBC/CTA and publish the count.
+
 ## 3. `data_quality` — a per-row flag, so a consumer can trust a row
 
 **A row is published with empty cells and NO marker only when the marker is `OK`.** An

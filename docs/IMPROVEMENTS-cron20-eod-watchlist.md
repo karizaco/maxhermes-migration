@@ -130,3 +130,46 @@ CNBC/CTA cross-check (54 names) → assemble → formatter regression test → r
 
 **Result:** 4,896 rows, 4,840 settled closes, 4,889 volumes, 4,506 caps, 2,781 trailing P/Es,
 4,528 GICS sectors, 56 rows that did not trade.
+
+## 8. The close drifts after the close, and the bar series is not dividend-adjusted (2026-11-06)
+
+**Result:** 4,892 rows, 4,775 settled closes, 4,775 volumes, 4,738 caps, 2,626 trailing P/Es,
+4,527 GICS sectors, 117 rows with no session close. The formatter reproduced **36,034/36,034**
+numeric strings of the 2026-11-05 file byte-for-byte. The independent checker passed 27/27.
+
+**Three findings, all of them silent.**
+
+1. **The close is not settled at 16:0x — the volume is.** A history pull at 16:01 ET and one
+   at 16:10 ET agreed on every session volume (median ratio 1.0000) but **disagreed on 150 of
+   4,775 session closes**. So the close keeps moving for ~10 minutes after the volume has
+   frozen, and a single early pull publishes 150 closes that are not the official close. The
+   fix is a second pass with the LATER bar winning. The synthetic final 1-minute bar
+   (O=H=L=C, volume 0) is the close of record; the vendor's `/info` "Closed at 4:00 PM ET"
+   stamp is not (2026-11-05).
+
+2. **The price history is SPLIT-adjusted but NOT dividend-adjusted, so the bar's prior close
+   is the wrong denominator for `change_pct` on an ex-distribution date.** SITE Centers
+   (SITC) went ex a $3.00 special distribution on 2026-11-06: the raw bar basis reads
+   **-81.3%** (3.57 -> 0.6678) and the official move is **+17.2%** (0.57 -> 0.6678). The
+   quote service's `previous close` is dividend-adjusted. 37 of 4,775 rows differ by more
+   than 2% between the two bases; the published `change_pct` now uses the adjusted basis, and
+   the derived columns stay on the split-adjusted series (so `gap_pct` and the 52-week
+   extremes inherit the artefact on a distribution date — the artifact says so).
+
+3. **"No session bar" is not "did not trade".** 117 rows had no bar: 43 last traded earlier,
+   and **70 carry a sub-second CTA closing print** that the daily-bar feed does not publish
+   and that Yahoo's own quote service timestamps to an earlier session. Where the two sources
+   disagree on the price AND on whether a print occurred, no close is published.
+
+**One builder defect, fixed here:** `build_eod_report.py` aggregated the sector move with
+`statistics.mean()` over a list that could contain NaN, so **one row with a close and no
+`change_pct` printed `+nan%` for its whole sector** (Financials, Utilities — 22 such rows
+this session). The sector read now excludes non-numeric moves. Verified on the published
+artifact: the Market read table carries no `nan`.
+
+**Run shape that worked (2026-11-06, 16:00 ET -> ~16:30 ET):** window check -> skill fetch ->
+shibui `general_info` universe (4,892 rows, keyset) -> shibui `valuation` + `ownership_stats`
+(the vendor's own carrier map, 4,147 caps, 4,370 floats) -> Yahoo `v7/finance/quote` batch
+(4,892/4,892 in 20 s) -> Yahoo chart daily history, **two passes** (4,892 symbols each,
+~30/s) -> merge (later pass wins) -> base assembly -> `eod_derive.py` -> `build_eod_report.py`
+-> the checker -> push (verified byte-identical against `origin/main` via the contents API).

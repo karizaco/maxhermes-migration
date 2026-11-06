@@ -143,10 +143,15 @@ def main() -> int:
             idx_rows.append((label, sym, c, ch))
 
     # ---- sector read
+    # A row can carry a close and NO change_pct (a line with no prior close: a new listing or
+    # a note line with a single bar).  statistics.mean() over a list containing NaN returns
+    # NaN, so ONE such row printed "+nan%" for its whole sector.  Non-numeric moves are
+    # excluded from the aggregation, never averaged in.
     by_sector = defaultdict(list)
     for r in closes:
-        if r["sector"]:
-            by_sector[r["sector"]].append(f(r["change_pct"]))
+        v = f(r["change_pct"])
+        if r["sector"] and v == v:
+            by_sector[r["sector"]].append(v)
     sector_rows = []
     for s in SECTOR_ORDER:
         vals = by_sector.get(s)
