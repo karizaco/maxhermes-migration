@@ -21,6 +21,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-cron17-us-stocks-in-play.md`](IMPROVEMENTS-cron17-us-stocks-in-play.md) | IMPROVEMENTS — cron #17 `us-stocks-in-play` — Findings from the 2026-11-04 pre-close fire (settled session, 15:50 ET). |
 | [`IMPROVEMENTS-cron19-earnings-reminder.md`](IMPROVEMENTS-cron19-earnings-reminder.md) | Improvements — cron #19 earnings-reminder-daily — Reviewed 2026-10-25. Evidence base: 16 recorded runs (2026-10-10 → 2026-10-25), the deployed |
 | [`IMPROVEMENTS-cron20-eod-watchlist.md`](IMPROVEMENTS-cron20-eod-watchlist.md) | IMPROVEMENTS — cron #20 (eod-watchlist-csv-snapshot) — Running notes on what the routine's data path does in the Cloud runtime. Written by the |
+| [`IMPROVEMENTS-cron23-post-market-brief.md`](IMPROVEMENTS-cron23-post-market-brief.md) | Improvements — cron #23 (agentic-post-market-brief): the brief is named POST-MARKET, so tomorrow's setup is the product — Four reader-hostile defects in the post-market brief, fixed in the routine's **skill spec** |
 | [`IMPROVEMENTS-cron25-ntrt-gap-brief.md`](IMPROVEMENTS-cron25-ntrt-gap-brief.md) | Improvements — cron #25 ntrt-gap-brief-daily — Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03; section 13 added |
 | [`IMPROVEMENTS-cron26-agentic-pre-market-brief.md`](IMPROVEMENTS-cron26-agentic-pre-market-brief.md) | Improvements — cron #26 agentic-pre-market-brief — Reviewed 2026-11-03, after the routine's own 08:30 ET fire on 2026-11-03. Evidence base: the |
 
