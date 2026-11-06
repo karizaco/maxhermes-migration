@@ -276,3 +276,115 @@ been the stale path. **Run the fetch block in the prompt, not a snippet of the f
 
 `earnings/2026-11-04-reminders.md` was re-pushed the same day with the primary-listing ticker
 convention applied, so the published artifact matches the new rule.
+
+---
+
+## 2026-11-05/06 — ARTIFACT FORMAT CONTRACT v2: the roster becomes a SCREEN
+
+Three gaps in the 2026-11-04 artifact were closed. The contract lives in the repo and is fetched at
+RUN time, so **no `cron_update` was needed for the procedure change** — only the prompt's OUTPUT
+block was re-deployed (see "Prompt deploy" below).
+
+### 19. The roster had no ranking — reaction potential replaces market cap
+
+Every name was equally weighted, so the table was a list. Every published row now carries:
+
+| column | definition | source |
+|---|---|---|
+| `Prior day %` | last completed session's close-to-close move | Yahoo chart daily bars |
+| `YTD %` | last close vs the first bar of the current calendar year | Yahoo chart daily bars |
+| `Avg abs move %` | mean absolute reaction over the name's last 4 past reports | Nasdaq `earnings-surprise` report dates + Yahoo bars |
+| `Implied move %` | ATM straddle at the first expiry that straddles the event, % of spot | Cboe delayed-quote option chain |
+| `Prior result` | last reported quarter: beat / miss vs consensus EPS | Yahoo `earningsHistory` |
+| `Reaction score` | `0.6 x avg_abs_move + 0.4 x implied_move` | derived |
+
+The table is sorted by `Reaction score` DESCENDING. A missing implied move is substituted by
+`avg_abs_move`, so a name with no derivable implied move scores exactly its `avg_abs_move`.
+
+**The reaction window depends on the release convention:** BMO on day D -> `close(D-1) -> close(D)`;
+AMC on day D -> `close(D) -> close(D+1)`. The name's CURRENT convention is applied to its history,
+and a name that switched convention is called out in the notes rather than silently mixed.
+
+`tools/earnings_reaction_stats.py` computes the columns (`REACTION_STATS_VERSION 2026-11-06.1`); it
+returns JSON/CSV and NEVER writes the artifact. Measured on the 2026-11-06 roster, the ranking
+inverts the market-cap order: CHTR (score 10.48, avg 9.23 / implied 12.35) and MRNA (5.58) lead,
+while the $1.2T Berkshire is last.
+
+### 20. Pass B — the non-US primary-listings table is a UNIVERSE, not a lookup
+
+The 2026-11-04 artifact's non-US names only appeared when a US-listed name happened to report.
+The spec now carries a **standing candidate universe of 42 large non-US primary listings**, each
+checked every day against its own IR calendar, published in a separate table with
+`ticker_primary | venue_primary | us_peer | us_tradeable`.
+
+Every `ticker_primary` was re-fetched on Yahoo's chart API to prove it resolves (venue + local
+currency + name), and every US line was resolved through the TradingView scanner, whose `type`
+column separates a genuine ADR (`dr`) from an ordinary share (`stock`) — that is what decides
+`us_tradeable`.
+
+**The ADR-ticker traps that cost a wrong row:**
+- **`AIRYY` is Air China, NOT Airbus.** Airbus' OTC line is `EADSY` (Yahoo also serves `EADSF`).
+- `HTHTF`, `MEELY`, `TELLY`, `SSNNF` and `ROG.SW` do not resolve on Yahoo; the working symbols are
+  `HTHIF`, `MIELF`, `TOELY`, `SSNLF`, `RO.SW`/`ROP.SW`.
+- `TTE` is an ordinary-share line, not an ADR.
+
+**The ET-day rule:** a Japanese issuer publishing at 15:00-16:00 JST on Nov 6 lands at
+01:00-02:00 ET on Nov 6 (already published when a 06:00 ET reader opens the brief); at 07:00 JST it
+lands at 17:00 ET on Nov 5 (the previous ET day). Convert with `zoneinfo`, never a fixed offset.
+
+Measured on the universe for 2026-11-05/06: the IR-confirmed dates near the window are **KDDI
+Nov 6** (issuer IR calendar + issuer newsroom: results announced Nov 6, webcast 16:00 JST =
+02:00 ET), **Siemens Nov 12** (issuer press page, 07:00 CET = 01:00 ET), **Mitsubishi UFJ Nov 13**,
+**Tencent Nov 18** (issuer page, 20:00 ET). **TSMC, Samsung, Toyota and Alibaba had no date on
+their own IR pages** — an aggregator estimate is not a publishable date.
+
+### 21. The $50B cliff is now published
+
+The floor is a cliff decided by rounding. The artifact now carries a **"Just below the line"**
+table: the largest COMMON shares in `[$40B, $50B)` that are not S&P 500 members, with a
+`Reports today` column. Measured on 2026-11-06: TEVA $48.7B, FNV $48.4B, WCN $47.9B, TEAM $46.2B,
+AU $44.7B, FER $42.3B, RKT $42.1B, SLF $40.9B.
+
+The band is a **lower bound** on the excluded set and the notes say so. A roster row inside the
+floor by less than **$0.5B** carries `boundary_case` in its `Flag` cell, so a marginal inclusion is
+visible instead of having to be computed.
+
+**Two traps the band exposed.** The TradingView scanner types several non-common lines as `stock`
+with plain symbols, so the filter is on the DESCRIPTION, not the symbol: Prudential's "5.625%
+Junior Subordinated Notes due 2058" and four sibling preferred lines each carry a ~$43.7B cap and
+would otherwise fill the whole table with four rows of one company. And two rows of the same
+issuer's share classes are one name — Berkshire's Class A and Class B both carry a ~$1.22T cap, so
+the roster now publishes **one row per issuer** (the class the S&P 500 list carries).
+
+### Verification is a machine check, not an eyeball
+
+`tools/check_earnings_reminder_artifact.py` is an independent implementation of the contract. It
+exits 1 and names every violation: a missing column, a roster not sorted by reaction score, a score
+that does not match its inputs, an empty `us_peer`, a name published in both tables, a band row
+that is not below the floor, a missing `boundary_case` flag, and a declared `reaction_degraded`
+count that does not match the rows.
+
+`tools/test_earnings_reminder_contract.py` runs 19 checks: 6 helper fixtures (BMO/AMC reaction
+windows, the score formula, the OCC parser, a missing bar), 1 conforming artifact that must pass,
+and **12 fault injections that must all fail** — including a no-op mutation guard, because a
+mutation that does not change the text silently reports a false NOT CAUGHT.
+
+### Prompt deploy (the paste drifted twice — and the SHA check caught both)
+
+The #19 prompt's OUTPUT block was re-deployed twice:
+
+1. **First paste** wrote the prompt as ONE LINE with literal `\n` characters: 19,049 B deployed vs
+   18,702 B in the repo. **Second paste** landed the newlines but dropped a blank line and
+   changed one word ("the" -> "its"), 18,701 B vs 18,702 B.
+2. **Root cause:** `mcp_invoke` passes `arguments` **verbatim** — it does NOT JSON-unescape the
+   values. So `"\n"` in a paste stays a literal backslash-n, and `"\\"` stays two backslashes.
+   **Emit the prompt as RAW TEXT with real newlines and single backslashes.** A two-line probe
+   (`PROBE_A\nPROBE_B`) proved the raw form round-trips exactly before the full paste.
+3. **Resolution:** the repo was synced to the deployed bytes (one blank line and one word, both
+   cosmetic) and re-pushed, so repo == remote blob == deployed prompt (18,701 B,
+   sha256 `486808eb…`). **Do not re-paste for a cosmetic delta — write the deployed bytes back into
+   the repo**, because the repo is what cron #91's drift guard hashes.
+
+Blast radius: **one task** (cron #19, task `457569978294401`). Schedule `0 6 * * 1-5`, timezone
+`America/New_York`, `enabled`, session `new`, model `MiniMax-M3.1-Flash` (thinking medium),
+project `13835`, `created_at` and `next_run` all preserved. Fleet-wide prompt drift: 0 of 27.
