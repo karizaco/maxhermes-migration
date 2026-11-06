@@ -160,6 +160,9 @@ def check_procedure(path):
     # 7. the fetch ladder demands the capability marker
     check("PREOPEN_CHECKPOINT_V1" in t,
           "the script fetch demands the PREOPEN_CHECKPOINT_V1 capability marker")
+    check("CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1" in t,
+          "the script fetch ALSO demands the script version (a marker alone cannot "
+          "detect a stale copy that already carries it)")
 
 
 def check_script(path):
@@ -169,6 +172,7 @@ def check_script(path):
         bad(f"{path} is missing or empty")
         return
     check("PREOPEN_CHECKPOINT_V1" in t, "carries the PREOPEN_CHECKPOINT_V1 marker")
+    check("CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1" in t, "carries the script version")
     m = re.search(r"TAPE_KEYS\s*=\s*\[([^\]]*)\]", t)
     keys = re.findall(r'"([^"]+)"', m.group(1)) if m else []
     check(keys == TAPE_KEYS,

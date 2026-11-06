@@ -1,5 +1,5 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
-<!-- PROCEDURE_VERSION: 2026-11-06.1 -->
+<!-- PROCEDURE_VERSION: 2026-11-06.2 -->
 
 Runs three times per session-day (08:30, 09:20, 09:50 ET). Writes an append-only **catalyst
 tape** that cron #17 (`us-stocks-in-play`, 15:50 ET) reads to explain *why* a stock moved and
@@ -54,15 +54,20 @@ for U in \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_checkpoint.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_checkpoint.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  # The capability marker is what decides, NOT the byte count: a 404 body is non-empty
-  # JSON, and an OLD copy of this script has no marker.
-  if [ -s "$S.tmp" ] && grep -q 'PREOPEN_CHECKPOINT_V1' "$S.tmp" 2>/dev/null; then
+  # The capability marker AND the script version are what decide, NOT the byte count:
+  # a 404 body is non-empty JSON, and an OLD copy of this script has no marker. The
+  # version is demanded TOO, because a marker alone cannot detect a stale copy that
+  # already carries it (measured 2026-11-05: every mirror served the same stale blob
+  # and "highest version wins" picked it).
+  if [ -s "$S.tmp" ] && grep -q 'PREOPEN_CHECKPOINT_V1' "$S.tmp" 2>/dev/null \
+     && grep -q 'CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
-if [ ! -s "$S" ] || ! grep -q 'PREOPEN_CHECKPOINT_V1' "$S" 2>/dev/null; then
-  echo "preopen checkpoint: UNAVAILABLE (no copy carrying PREOPEN_CHECKPOINT_V1)"
+if [ ! -s "$S" ] || ! grep -q 'PREOPEN_CHECKPOINT_V1' "$S" 2>/dev/null \
+   || ! grep -q 'CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1' "$S" 2>/dev/null; then
+  echo "preopen checkpoint: UNAVAILABLE (no copy carrying PREOPEN_CHECKPOINT_V1 + version 2026-11-06.1)"
   echo "no tape; no digest; report probe_failed:checkpoint_script"
   exit 1
 fi

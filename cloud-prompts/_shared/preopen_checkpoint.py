@@ -4,6 +4,7 @@ preopen_checkpoint.py — build one pre-open checkpoint: the tape, the human boa
 and the fail-closed trail.
 
 PREOPEN_CHECKPOINT_V1
+# CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1
 
 WHY THIS EXISTS
 ---------------
@@ -62,6 +63,12 @@ import sys
 # The version marker the fetch ladder must find. A stale copy of this script has no
 # marker, so the procedure refuses it instead of running an old-shaped merge.
 PREOPEN_CHECKPOINT_V1 = "PREOPEN_CHECKPOINT_V1"
+
+# The capability marker alone CANNOT detect a stale copy that already carries it —
+# the same failure the fleet hit on 2026-11-05, when every mirror served the same
+# stale blob and "highest version wins" picked it. So the fetch ladder demands THIS
+# version too. Bump it whenever this script changes.
+CHECKPOINT_SCRIPT_VERSION = "2026-11-06.1"
 
 # The scanner column list, in the order the procedure requests it. The merge zips by
 # NAME, never by position: the 10-column variant read a PRICE into a PERCENT column on
