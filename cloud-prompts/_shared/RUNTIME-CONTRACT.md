@@ -469,6 +469,49 @@ grep -c "<your marker>" /tmp/remote     # a marker string, not just the file's e
 Put a **marker string** in the change you are publishing (a section heading, a version token) so
 this check is a `grep -c` and not a byte-diff against something you are unsure about.
 
+### 5c. `cron_update` stores the prompt with ONE trailing newline (measured 2026-11-06)
+
+The scheduler's `cron_update` transport does three things that matter when you deploy a prompt
+byte-exactly (all measured on cron #25's task `457578106761360`, 2026-11-06):
+
+1. **Multi-line prompt text is stored as real newlines** — it does not flatten the prompt into
+   one line, and it does not interpret backslash escapes. A 2-line probe came back as
+   `"PROBE LINE 1\nPROBE LINE 2"` with a genuine newline between them.
+2. **It APPENDS one trailing `\n` to whatever you send.** A paste that already ended with the
+   repo file's own final newline was stored with **one byte more** than the repo blob — a
+   permanent one-byte PROMPT-DRIFT for the fleet's guard to report, forever.
+   **So: paste the file's content WITHOUT its final newline.** The transport puts it back and
+   the deployed prompt is byte-identical to the repo blob.
+3. **`enabled` must NOT be sent.** It is coerced to the string `"true"` and the call fails
+   validation. Send `task_id`, `schedule`, `timezone` and `prompt` only — and always send
+   `timezone`, because omitting it resets it to `Etc/GMT-7` (UTC+7).
+
+**Verify by hash, never by eye.** After deploying, take a FRESH `cron_read view=list`, read the
+prompt out of the **persisted chunk** (the inline preview is truncated and drops the middle of the
+list), and compare its SHA-256 with the repo blob fetched through the contents API:
+
+```bash
+# deployed prompt -> the persisted chunk
+python3 - <<'PY'
+import json, glob, hashlib, urllib.parse
+for f in glob.glob("/workspace/.mavis/tool-results/*/call_*/chunks/*"):
+    raw = open(f, encoding="utf-8", errors="replace").read()
+    if "25-ntrt-gap-brief-daily" not in raw: continue
+    for t in (json.loads(raw).get("response") or {}).get("tasks") or []:
+        if urllib.parse.unquote(t.get("cron_name","")) == "25-ntrt-gap-brief-daily.md":
+            print(hashlib.sha256(t["prompt"].encode()).hexdigest(), len(t["prompt"].encode()))
+PY
+# repo blob -> the same hash
+curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/cron-prompts/25-ntrt-gap-brief-daily.md?ref=main" \
+  | sha256sum
+```
+
+The 2026-11-06 deployment of #25 took **three attempts**: one character mistyped in the paste
+(`view=runs` → `view:runs`, caught by the hash check, not by reading), and then the trailing
+newline above. Both were caught by the hash comparison and neither would have been caught by
+reading the deployed prompt — which is exactly why the hash is the check.
+
 ### 5b. Another session may be editing the same file — resolve by content, not by base
 
 The same 2026-11-06 push hit a conflict on `docs/IMPROVEMENTS-cron05-eod-international.md`,

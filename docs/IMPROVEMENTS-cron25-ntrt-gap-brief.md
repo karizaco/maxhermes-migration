@@ -573,6 +573,28 @@ spec is a rule the run can miss at 09:00 with a truncated pull.
   with the repo blob after a fresh `cron_read view=list`, with schedule, timezone, enabled,
   session mode, model, project_id and created_at unchanged.
 
+### 19a. The deployment facts (2026-11-06) — the prompt took three attempts
+
+The v4 prompt was deployed to task `457578106761360` and verified byte-exactly:
+**SHA-256 `d0fccf9db932ac84d9f6de2bdb0f2afefe9ff163d9b229bc2bd7234ecd003741`, 16,862 bytes**,
+identical to the repo blob on `main` (commit `e922b56`).
+
+It took **three** deployments, and every failure was caught by the hash comparison rather than by
+reading the prompt:
+
+1. **One character mistyped** in the paste (`cron_read view=runs` → `view:runs`) — 16,863 bytes
+   against the blob's 16,862. The text looked right; the hash did not.
+2. **The transport appends a trailing newline.** The stored prompt was the repo content **plus**
+   one `\n`, because the repo file already ends with a newline. Fixed by pasting the file's
+   content **without** its final newline — the transport puts it back and the two match exactly.
+
+Both facts are now fleet-wide in `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §5c, with the
+verification snippet. The blast radius of the deployment was measured: only `prompt` and
+`updated_at` changed; `task_id`, `schedule` (`0 9 * * 1-5`), `timezone`
+(`America/New_York`), `enabled`, `cron_name`, `session.mode` (`new`), `model`
+(MiniMax-M3.1-Flash, thinking, effort medium), `project_id` (10645), `created_at` and `next_run`
+were all unchanged.
+
 ## Revert
 
 ```bash
