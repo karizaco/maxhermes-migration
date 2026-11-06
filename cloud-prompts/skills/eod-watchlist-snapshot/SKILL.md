@@ -786,6 +786,47 @@ actually has, not yesterday's date.
     non-zero volume or a different close is found, and report that date. A Spanish name that has
     not printed since 28 October must not be stamped with yesterday's date.
 
+### Catalyst research: do it INLINE with `web_search` — do NOT fan out to subagents (2026-11-04)
+
+The artifact's **Top movers** table needs a dated, sourced catalyst for each of roughly 14 headline
+movers plus the largest mover per region — on the order of 100 lookups across 16 regions. That is
+the only part of this routine that is genuinely open-ended, and it is where a run can lose all of
+its time.
+
+**Measured 2026-11-04: two background research subagents were spawned — one for the
+Canada/Australia/Japan/Taiwan cluster, one for the twelve EU venues — and neither produced a usable
+per-ticker result inside the run window.** Both were still mid-research when they were canceled
+(the EU agent had identified the macro driver and nothing else; the other had built a todo list of
+the gold cohort). **Every catalyst that was actually published came from the main session's own
+`web_search` calls**, and the fan-out cost roughly 25 minutes of wall clock for nothing that reached
+the artifact.
+
+**So: research the catalysts inline, in the main session.** The recipe that worked on 2026-11-04:
+
+- **Batched two `web_search` calls per turn**, each covering several names, and go after the
+  **biggest movers first** — the top 14 of the movers table plus the 16 per-region maxima. A
+  search per ticker is the wrong shape; a search per *cluster* (all the Canadian gold names, all
+  the European bank names) is what actually resolves.
+- **Yahoo's dated news API is the fastest per-ticker route**:
+  `https://query2.finance.yahoo.com/v1/finance/search?q=<SYMBOL>&newsCount=12` — the
+  `providerPublishTime` field dates each item, which is the only way to separate a 2026 release
+  from the same company's 2025 one. Always check the year before quoting a number.
+- **Exchange and index levels are not catalyst research** — they come from the Yahoo chart API and
+  the press cross-check, and are a separate step from the per-ticker attribution.
+- **When nothing company-specific exists, say exactly that** and name the driver you DID source
+  ("no company-specific release found — precious-metals bid: gold +2.9–3.4% to ~$4,050/oz"). Never
+  publish an unattributed guess, and never dress a sector move up as a company event.
+- **A subagent's output is a lead, not a source.** If you do delegate, every line it returns must be
+  independently re-sourced before it is published, and the delegation must be time-boxed. On
+  2026-11-04 the delegated half of the work had to be redone from scratch.
+
+The 2026-11-04 artifact's movers tables carry catalysts sourced this way — company IR releases and
+datelines (Heidelberg Materials' 4 Nov Q3, Pandora's Q3, Wolters Kluwer's nine-month update, M6's
+3 Nov Q3, Yamato/Farallon's 2 Nov filing), exchange wires (ANSA on Technoprobe's CTO exit, Reuters
+on the TSX and the gold move, Irish Times on Glanbia), and analyst actions (Morgan Stanley's
+Soitec downgrade) — with "no company-specific release found" wherever the move was purely the
+sector's.
+
 The cron prompt is intentionally short (~1.5KB). All orchestration logic lives in `run_intl_cron.py` with two CLI subcommands:
 
 ### `run_intl_cron.py plan` — pure planning, no MCP calls

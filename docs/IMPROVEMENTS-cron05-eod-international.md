@@ -364,3 +364,38 @@ of `_manifest.json`, `_excluded.json` and `_carryover.json`. **That section did 
 It now does, and it specifies the manifest's per-region `excluded` map (a nested map, because a
 closed reason set cannot grow a sixth reason without another flat key), the published table
 counts (`mover_rows`, `below_gate_rows`, `no_catalyst_rows`), and the `csv_columns` field.
+
+## 11. Delegating the catalyst research did not pay off (2026-11-04)
+
+The one genuinely open-ended part of this routine is attributing a dated catalyst to each of ~100
+headline movers. On 2026-11-04 that work was split across **two background research subagents** —
+one for the Canada/Australia/Japan/Taiwan cluster, one for the twelve EU venues.
+
+**Outcome: neither returned a usable per-ticker result inside the run window.** At cancel time the
+EU agent had produced a macro-driver summary and no ticker lines; the other had built a todo list
+for the Canadian gold cohort and was still working through it. Both were canceled and **every
+catalyst in the published artifact was sourced by the main session's own `web_search` calls** —
+company IR releases, exchange wires, analyst actions, and index-level press. The delegation cost
+roughly 25 minutes of wall clock and contributed nothing that reached the file.
+
+**What the spec now says (`SKILL.md`, "Catalyst research: do it INLINE with `web_search`"):**
+
+- Research catalysts inline in the main session; **batch two `web_search` calls per turn** and
+  search per *cluster* (all the gold names together, all the bank names together), not per ticker.
+- Use Yahoo's dated news API
+  (`query2.finance.yahoo.com/v1/finance/search?q=<SYMBOL>&newsCount=12`, `providerPublishTime`
+  gives the date) as the fastest per-ticker route — and always confirm the **year** before quoting
+  a number.
+- Keep index levels and per-ticker catalysts as separate steps; the first comes from the chart API
+  and press, the second from the news path.
+- Write "no company-specific release found" plus the sourced driver when nothing company-specific
+  exists. Never publish an unattributed guess.
+- **A subagent's output is a lead, not a source.** If you delegate, re-source every line
+  independently and time-box it.
+
+**The generalisable lesson for the fleet:** a delegated *research* step inside a scheduled, timed
+routine is a liability when it cannot be verified inside the same window — the artifact has to ship
+with whatever the main session can source itself. Delegation pays off for work whose output can be
+re-checked at leisure; here it could not. The data half of this routine (scanner pull, FX, floors,
+carry-over, verification) was never delegated and should not be: those steps produce the numbers,
+and they are cheap.
