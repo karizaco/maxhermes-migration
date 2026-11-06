@@ -144,35 +144,246 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    USD — NVO revenue 73.40B is DKK (≈$11.0B), ITOCY/MITSY 4,013B is JPY. Convert with a NAMED rate
    (Yahoo `DKK=X`, `JPY=X` close) and label the currency, or publish the local figure as-is. Never
    publish a converted EPS next to a US ADR EPS estimate without saying which currency it is in.
-9. **Write the markdown file** with a front-matter header (`date`, `cron`, `fire_time_et`,
-   `snapshot_et`, `source`, `primary_source`, `status`, `pending_count`, `already_reported_count`)
-   so downstream consumers can parse it without guessing.
-10. **Append audit line** (local Mavis only — skip on Cloud):
+9. **Reaction potential — rank the roster by what can MOVE, not by size.**
+   A roster where every name is equally weighted is a list, not a screen. At 06:00 ET the reader
+   wants to know which of today's names is capable of moving and by how much. Every published row
+   therefore carries five extra columns, and the table is sorted by their composite.
+
+   **Run the helper.** It is fetched at RUN time, so a fix lands with no redeploy, and it is the
+   only way to compute these columns consistently:
+
+   ```bash
+   mkdir -p /workspace/tools
+   S=/workspace/tools/earnings_reaction_stats.py
+   for U in \
+     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/earnings_reaction_stats.py?ref=main" \
+     "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/earnings_reaction_stats.py" \
+     "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/earnings_reaction_stats.py" ; do
+     curl -sL --max-time 30 -A "Mozilla/5.0" -o "$S.tmp" "$U" 2>/dev/null
+     # Require the CAPABILITY marker: an older copy silently lacks the columns.
+     if grep -q 'REACTION_STATS_VERSION' "$S.tmp" 2>/dev/null; then mv -f "$S.tmp" "$S"; break; fi
+     rm -f "$S.tmp"
+   done
+   if [ ! -s "$S" ]; then echo "reaction-stats: UNAVAILABLE"; else
+     python3 "$S" --tickers-file /workspace/.cache/roster.txt \
+                 --timing-file /workspace/.cache/timing.txt \
+                 --earnings-date "$DATE" --out /workspace/.cache/reaction.json \
+                 --csv /workspace/.cache/reaction.csv
+   fi
+   ```
+
+   `--tickers-file` is the published roster (one US ticker per line, in the order the roster will
+   be published); `--timing-file` is the matching `BMO`/`AMC` list. **The helper NEVER writes the
+   artifact** — it returns the columns; you merge them into the rows.
+
+   **Column definitions** (these are the contract — do not improvise them):
+
+   | Column | Definition | Source |
+   |---|---|---|
+   | `Prior day %` | last COMPLETED session's close-to-close % move | Yahoo chart daily bars |
+   | `YTD %` | last close vs the first bar of the current calendar year | Yahoo chart daily bars |
+   | `Avg abs move %` | mean ABSOLUTE reaction over the name's last 4 past reports | Nasdaq `earnings-surprise` report dates + Yahoo chart bars |
+   | `Implied move %` | ATM straddle cost at the first expiry that straddles the event, as % of spot | Cboe delayed-quote option chain |
+   | `Prior result` | last reported quarter: `beat` / `miss` vs consensus EPS | Yahoo `earningsHistory` |
+   | `Reaction score` | `0.6 x avg_abs_move + 0.4 x implied_move` | derived |
+
+   - **Reaction window.** BMO report on day D -> `close(D-1) -> close(D)`. AMC report on day D ->
+     `close(D) -> close(D+1)`. The name's CURRENT release convention is applied to its historical
+     reports; if a name switched convention between reports, say so in the notes rather than mixing
+     the two windows silently.
+   - **Implied-move expiry.** BMO -> the expiry ON the report date (the event lands before that
+     expiry's close). AMC -> the first expiry AFTER the report date. Use the ATM strike nearest the
+     spot and the mid of the call and the put at that strike.
+   - **A missing implied move is substituted by `avg_abs_move`**, so a name with no derivable implied
+     move scores exactly its `avg_abs_move`. Never leave the score blank while the inputs exist.
+   - **`reaction_score` is rounded to 2 decimals and the table is sorted by it DESCENDING.** Ties
+     break by market cap descending. A name whose score could not be computed sorts last with
+     `n/a` — it is NOT dropped from the roster.
+   - **A degraded column is declared, never hidden.** If the helper could not compute a row, publish
+     `n/a` in the derived cells, set `reaction_degraded: <n>` in the front-matter with the exact
+     number of degraded rows, and name the cause in the notes. A name with `n/a` and a name with a
+     number are not the same thing; the reader must be able to tell them apart.
+
+   **Fallback when the helper is unavailable** (fetch failed, or it errored): compute the columns
+   yourself from the same four sources — Yahoo chart API for the bars, Yahoo `quoteSummary`
+   (`modules=earningsHistory`) for the prior result, Nasdaq
+   `api.nasdaq.com/api/company/<SYM>/earnings-surprise` for the past report dates (its
+   `dateReported` is `M/D/YYYY`, NOT ISO), and the Cboe chain for the implied move. Publish what
+   you measured and declare the rest as degraded. **Never estimate a reaction column from the
+   market cap or from a similar name.**
+
+10. **Pass B — the non-US primary listings table.** The roster above is US-calendar-shaped, so a
+    non-US issuer only appears when a US-listed name happens to report. That is a LOOKUP, not a
+    universe. This step builds the universe: a standing candidate list of non-US issuers with
+    US-market relevance, checked against each issuer's OWN IR calendar.
+
+    1. **Candidate list** — the issuers in `## Pass B candidate universe` below. It is a STANDING
+       list, not a per-day discovery: every candidate is checked every day, so an issuer that
+       reports is never missed because no US calendar carried it.
+    2. **Date resolution (Rule B, step 8's ladder)** — the issuer's IR financial calendar or results
+       press release gives the DATE and the LOCAL announcement time. Convert the local time to ET
+       with `zoneinfo` (never a hardcoded offset) and compare it with the FIRE's instant. A date
+       confirmed only by an aggregator is **not** published.
+    3. **Publish a row only for an issuer whose results fall on the fire date.** Every row carries
+       `ticker_primary`, `venue_primary`, `us_peer` and `us_tradeable`:
+       - `ticker_primary` — the issuer's PRIMARY listing with its exchange suffix (`7203.T`,
+         `005930.KS`, `NESN.SW`).
+       - `venue_primary` — the exchange name.
+       - `us_peer` — the US-listed security a US trader would actually trade for this issuer: its
+         own US ADR/ADS line when one exists (`TM (NYSE ADR)`, `ASML (Nasdaq ADR)`), otherwise the
+         closest US-listed name that tracks it.
+       - `us_tradeable` — exactly one of `ADR (US-listed)`, `ADR (OTC)`, `US-listed`, `none`.
+    4. **No duplicates.** If an issuer is ALREADY published in the US roster that day, do not repeat
+       it here — record the skip in the notes with the count. The two tables must not overlap.
+    5. **Do not merge the two tables.** The US roster's "every S&P 500 constituent" contract is
+       useful precisely because it is scoped; the non-US table is a second, clearly-titled table.
+    6. **A covered issuer whose date cannot be confirmed from an issuer-owned page is not
+       published.** Say in the notes how many candidates were checked and how many had no
+       issuer-confirmed date.
+
+11. **The $50B floor is a cliff — publish what it excludes.** A hard floor decided by rounding is
+    invisible to the reader. Publish the band just under it.
+
+    - **Band:** market cap in `[$40B, $50B)` — the names the floor excluded. `band_low_usd` in the
+      front-matter carries the exact number used.
+    - **Candidates:** every name on TODAY's calendar in that band that is NOT an S&P 500 member
+      (an S&P 500 member is already in the roster, whatever its cap).
+    - **Columns:** `Ticker | Company | Mkt cap | Reports today` — the last column answers the
+      question the reader actually has ("does this one matter today?"). Sort by market cap
+      descending. Publish 5-10 rows; if fewer exist in the band, publish what exists and say so.
+    - **The band is a LOWER BOUND on the excluded set**: names below $40B are excluded by the band,
+      not by the floor, and the notes must say so.
+    - **Boundary case:** a roster row whose cap is inside the floor by less than **$0.5B** carries
+      `boundary_case` in its `Flag` cell (`-` otherwise). The reader can then see that the
+      inclusion is marginal instead of having to compute it.
+
+12. **Write the markdown file** with a front-matter header (`date`, `cron`, `fire_time_et`,
+    `snapshot_et`, `source`, `primary_source`, `status`, `pending_count`, `already_reported_count`,
+    `non_us_count`, `reaction_ranked`, `band_low_usd`) so downstream consumers can parse it without
+    guessing. `reaction_ranked` is `true`. If any reaction column was degraded, add
+    `reaction_degraded: <n>`.
+13. **Append audit line** (local Mavis only — skip on Cloud):
    `earnings_reminder target=earnings:{date} watchlist_hits={n} bigcap_hits={n}`
+
+## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)
+
+The artifact is a SCREEN, not a list. Three tables, in this order, then the notes.
+
+1. **`## Big S&P 500 today`** — the US roster: S&P 500 constituents plus US-listed names above the
+   market-cap floor. Columns, in this order:
+
+   `Ticker | Company | Time | EPS est | Rev est | Mkt cap | Prior day % | YTD % | Avg abs move % | Implied move % | Prior result | Reaction score | Status | Flag`
+
+   Sorted by `Reaction score` **DESCENDING** (ties break by market cap descending). `Status` is
+   `pending` or `reported`. `Flag` is `boundary_case` for a name inside the floor by less than
+   $0.5B, otherwise `-`.
+2. **`## Non-US primary listings`** — Pass B. Columns:
+
+   `ticker_primary | venue_primary | Company | Report time (local) | us_peer | us_tradeable | Status`
+
+   Rows only for issuers whose results fall on the fire date, with the date confirmed on an
+   issuer-owned page. `us_tradeable` is one of `ADR (US-listed)` / `ADR (OTC)` / `US-listed` /
+   `none`.
+3. **`## Just below the line`** — the band just under the market-cap floor that the floor
+   excluded. Columns: `Ticker | Company | Mkt cap | Reports today`.
+4. **`## Already reported (before 06:00 ET)`** — only when a name printed before the fire.
+5. **`## Notes`**, **`## Source health`**, **`## Rules applied`**.
+
+**The three tables must not overlap.** A non-US issuer is published in ONE of them, never in two.
+The US roster keeps its own scope (every S&P 500 constituent, whatever its cap); the non-US table
+is a separate universe, not an extension of the roster.
+
+The front-matter carries `date`, `cron`, `fire_time_et`, `snapshot_et`, `source`,
+`primary_source`, `status`, `pending_count`, `already_reported_count`, `non_us_count`,
+`reaction_ranked: true` and `band_low_usd`; add `reaction_degraded: <n>` when a reaction column
+could not be computed for exactly `n` rows.
+
+**Verify the artifact before pushing.** The checker is a separate implementation of this contract:
+
+```bash
+curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_earnings_reminder_artifact.py \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_earnings_reminder_artifact.py"
+python3 /workspace/tools/check_earnings_reminder_artifact.py /workspace/earnings/{date}-reminders.md
+```
+
+It exits 1 and names every violation — a missing column, a roster that is not sorted by reaction
+score, a score that does not match its inputs, an empty `us_peer`, a name published in two
+tables, a band row that is not actually below the floor, a missing `boundary_case` flag. **Do not
+push an artifact the checker rejects.**
 
 ## Sample output
 
 ```markdown
 ---
-date: 2026-09-22
+date: 2026-11-06
 cron: 19-earnings-reminder-daily
 fire_time_et: 06:00
-snapshot_et: 06:00
-source: Yahoo Finance earnings calendar
-primary_source: Yahoo (market cap, EPS) | Investing.com (revenue)
+snapshot_et: 06:04
+source: EarningsWhispers earnings calendar + Yahoo Finance + Nasdaq earnings API
+primary_source: Yahoo Finance (market cap) | EarningsWhispers (EPS est, revenue est, release time)
 status: ok
-pending_count: 2
-already_reported_count: 0
+pending_count: 12
+already_reported_count: 3
+non_us_count: 2
+reaction_ranked: true
+band_low_usd: 40000000000
 ---
 
-# Earnings — Tue 2026-09-22
+# Earnings - Fri 2026-11-06
 
 ## Big S&P 500 today
-| Ticker | Company | Time | EPS est | Rev est | Mkt cap | Status |
+
+| Ticker | Company | Time | EPS est | Rev est | Mkt cap | Prior day % | YTD % | Avg abs move % | Implied move % | Prior result | Reaction score | Status | Flag |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ARM | Arm Holdings plc | AMC 4:05 PM | 0.48 | $1.37B | $216.3B | -13.08 | 45.32 | 9.07 | 12.34 | beat | 10.38 | pending | - |
+| QCOM | Qualcomm Incorporated | AMC 4:00 PM | 1.46 | $10.15B | $175.6B | -9.49 | -9.38 | 8.92 | 8.58 | beat | 8.78 | pending | - |
+| KDP | Keurig Dr Pepper Inc. | BMO 6:30 AM | 1.02 | $4.60B | $50.1B | +0.40 | -3.10 | 3.10 | n/a | beat | 3.10 | pending | boundary_case |
+
+## Non-US primary listings
+
+| ticker_primary | venue_primary | Company | Report time (local) | us_peer | us_tradeable | Status |
 |---|---|---|---|---|---|---|
-| MU | Micron | AMC | 1.24 | 9.10B | 186.2B | pending |
-| AZO | AutoZone | BMO | 34.12 | 18.90B | 65.4B | pending |
-| 8001.T (ITOCY) | ITOCHU Corporation | BMO (reported 01:00 ET) | 0.23 | 25.3B | 99.3B | reported |
+| 7203.T | Tokyo Stock Exchange | Toyota Motor Corp | Nov 6, 07:00 JST | TM (NYSE ADR) | ADR (US-listed) | pending |
+| 005930.KS | Korea Exchange | Samsung Electronics | Nov 6, 08:00 KST | SSNLF (OTC) | ADR (OTC) | pending |
+
+## Just below the line - excluded by the $50B floor
+
+| Ticker | Company | Mkt cap | Reports today |
+|---|---|---|---|
+| MDLN | Medline Industries | $45.9B | no |
+| SLF | Sun Life Financial | $44.8B | no |
+
+## Already reported (before 06:00 ET)
+
+| Ticker | Company | Released | Actual | vs consensus |
+|---|---|---|---|---|
+| NOVO-B.CO (NVO) | Novo Nordisk A/S | ~01:00 ET | Q3 rev $12.19B, adj EPS $0.89 | beat |
+
+## Notes
+
+- **Ranked by reaction potential**, not by market cap: ARM and QCOM lead on their typical and
+  implied reaction size, not on size.
+- **KDP is $0.1B inside the $50B floor** and is flagged `boundary_case`; the band below the floor
+  is a lower bound, so names under $40B are excluded by the band and not by the floor.
+- **Ticker convention (primary listing first):** ADR and OTC lines are shown on the issuer's
+  PRIMARY listing with its exchange suffix, with the US line in parentheses - `8001.T (ITOCY)`,
+  `NOVO-B.CO (NVO)`.
+- **No watchlist section.** `research/watchlist.yaml` does not exist in this runtime, so the
+  `## Your watchlist` section is omitted rather than shipped empty.
+
+## Source health
+
+| Source | URL / query | Status | Notes |
+|---|---|---|---|
+| EarningsWhispers calendar | `https://www.earningswhispers.com/calendar/20261106` | ok | server-rendered |
+| Yahoo chart API | `query1.finance.yahoo.com/v8/finance/chart/<SYM>` | ok | daily bars for the reaction columns |
+
+## Rules applied
+
+- S&P 500 membership verified against the live constituent list - never from memory.
+- Report dates confirmed against issuer sources for every name near the inclusion boundary.
+- Reaction columns computed from measured bars, past report dates and option chains; a value that
+  could not be measured is published as `n/a` and counted in `reaction_degraded`.
 ```
 
 ## Hard rules
@@ -187,6 +398,14 @@ already_reported_count: 0
   date AND the report time.
 - **A local-currency number without its currency label is a defect.** Local figures are fine when
   labelled; a converted figure must name the rate it was converted at.
+- **The roster is ranked by reaction potential, not by market cap.** Every published row carries the
+  reaction columns, and the table is sorted by `Reaction score` descending.
+- **A reaction column that was not measured is `n/a` and is counted in `reaction_degraded`.** Never
+  estimate one from the market cap, a peer name, or a guess.
+- **The non-US table is a separate table, and it never overlaps the US roster.** A name published in
+  one is not repeated in the other.
+- **The market-cap floor is published with what it excludes.** The band table names the names the
+  floor kept out, and a row inside the floor by less than $0.5B is flagged `boundary_case`.
 
 ## Source facts (measured 2026-11-04 — re-verify before relying on them)
 
@@ -214,6 +433,30 @@ already_reported_count: 0
 - **stockanalysis.com** (`/quote/<exch>/<sym>/`, `/api/search?q=`) is the best non-US source:
   local listing, local-currency market cap, earnings date, "Main Listing" link for OTC lines, and
   a filings feed that reports whether results are already published.
+
+## Source facts (measured 2026-11-05/06 for the reaction layer — re-verify before relying on them)
+
+- **Yahoo chart API needs NO crumb.** `query1.finance.yahoo.com/v8/finance/chart/<SYM>?interval=1d&range=2y`
+  answers with the crumb-less request (AAPL: 501 daily bars over 2y). The rows carry a close per
+  session; `prior_day_move_pct` and `ytd_move_pct` come straight from it.
+- **Yahoo `quoteSummary` DOES need the cookie+crumb handshake, and the jar must be SEEDED.** The
+  handshake is: `curl -c jar https://fc.yahoo.com` FIRST, then
+  `curl -b jar -c jar https://query1.finance.yahoo.com/v1/test/getcrumb`. Skipping the seed makes
+  `getcrumb` answer with the literal body `{"finance":{"result":null,"error":{"code":"Unauthorized"}}}`
+  and every `quoteSummary` call then returns an EMPTY body (not an error). `modules=earningsHistory`
+  gives the prior beat/miss; `modules=calendarEvents` gives only the NEXT date, never history.
+- **Nasdaq `api.nasdaq.com/api/company/<SYM>/earnings-surprise` is the past-REPORT-date source.**
+  Its `dateReported` is `M/D/YYYY` ("11/2/2026"), NOT ISO — an ISO regex silently returns zero dates
+  and every `Avg abs move %` becomes `n/a`. It carries four quarters at most, so the reaction
+  average is a 4-event mean and the sample size is published with it.
+- **Cboe's delayed-quote chain works and is current**: `cdn.cboe.com/api/global/delayed_quotes/options/<SYM>.json`
+  (AAPL: 3,432 contracts). The underlying block's `close` is the settled close and `prev_day_close`
+  the prior close. **The chain carries NO expiry field** — parse the OCC symbol
+  `{ROOT}{YYMMDD}{C|P}{strike*1000 padded to 8}`: `strike = int(s[-8:])/1000`, `side = s[-9]`,
+  `expiry = s[-15:-9]`. Cast every date part to `int` or the parse throws.
+- **TradingView scanner**: the payload key is `filter` (SINGULAR) — `filters` is silently ignored
+  and returns the whole universe. Numeric ops are `greater` / `less` (not `egreater`). `market_cap_basic`
+  is USD. Use `type in (stock, dr)` so ADRs are not dropped.
 
 ## Out of scope
 

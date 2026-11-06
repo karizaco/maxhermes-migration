@@ -238,14 +238,42 @@ primary_source: Yahoo (market cap, EPS) | Investing.com (revenue)
 status: ok | degraded_no_company_source | failed_no_calendar
 pending_count: N
 already_reported_count: N
+non_us_count: N
+reaction_ranked: true
+band_low_usd: 40000000000
 ---
 ```
 
-Then: a `## Your watchlist` section ONLY IF a watchlist is actually available, then a
-`## Big S&P 500 today` table with one row per name and a `Status` column:
-`| Ticker | Company | Time | EPS est | Rev est | Mkt cap | Status |`
+Add `reaction_degraded: <n>` when a reaction column could not be computed for exactly `n` rows.
+
+Then: a `## Your watchlist` section ONLY IF a watchlist is actually available, then the THREE
+tables defined by the SKILL's `## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)` section —
+read that section and follow it exactly. In short:
+
+1. `## Big S&P 500 today` — the US roster, one row per name, carrying the reaction columns
+   (`Prior day % | YTD % | Avg abs move % | Implied move % | Prior result | Reaction score`),
+   **sorted by Reaction score DESCENDING** — reaction potential, NOT market cap.
+2. `## Non-US primary listings` — Pass B, with `ticker_primary | venue_primary | us_peer |
+   us_tradeable` on every row. A SEPARATE table; it never overlaps the US roster.
+3. `## Just below the line` — the $40B-$50B band the $50B floor excluded, with each name's cap.
+
 `Status` is `pending` or `reported` — on many days European/Indian names have already printed
-before this cron fires, and the reader needs that distinction.
+before this cron fires, and the reader needs that distinction. A roster row inside the $50B floor
+by less than $0.5B carries `boundary_case` in its `Flag` cell.
+
+**Check the artifact against the contract BEFORE pushing.** The checker exits 1 and names every
+violation — a missing column, a roster that is not sorted by reaction score, a score that does not
+match its inputs, an empty `us_peer`, a name published in two tables, a band row that is not
+actually below the floor, a missing `boundary_case` flag:
+
+```bash
+mkdir -p /workspace/tools
+curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_earnings_reminder_artifact.py \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_earnings_reminder_artifact.py"
+python3 /workspace/tools/check_earnings_reminder_artifact.py /workspace/earnings/{date}-reminders.md
+```
+
+Do not push an artifact the checker rejects.
 
 If no watchlist exists, omit the section entirely and say so once in the notes. Do not ship an
 empty table every day. If the calendar cannot be reached at all, write a stub with
