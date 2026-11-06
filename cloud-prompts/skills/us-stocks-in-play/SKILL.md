@@ -316,6 +316,9 @@ Two rules make the order matter:
   annex is the part that says *which gaps held*; burying it under a 610-name TECH_WATCH
   table hides the board's actual finding. Tier A → Soft-A → gap annex → TECH_WATCH →
   Tier B → Tier C.
+  **The order is enforced by the checker.** The 2026-11-05 open board placed its gap annex
+  *after* Tier C and would have failed the order check; the gap annex belongs **between
+  Soft-A and TECH_WATCH**.
 - **`TECH_WATCH` is capped at 30 published rows and `Tier B` at 25**, but the heading
   must still state the **full** tier count (`610 names; the top 30 by turnover are
   published`). The count is what makes the tradeable-vs-technical imbalance visible —
@@ -531,6 +534,31 @@ Discover on the **trigger**, not on the close-to-close move. A name that gapped 
 5. Compute RVol as session volume ÷ the **trailing 10 settled sessions from the same series**
    and state that denominator. A screener's own RVol column uses a different denominator and is
    not comparable across sources.
+
+#### Pulling the TradingView universe: ONE unpaginated call (2026-11-06)
+
+**`range` pagination returns DUPLICATE rows and MISSES others — never page a fast-moving
+filter.** Measured 2026-11-06: a 9-page offset pull of the US cash universe
+(`type` in (stock, dr), 13,203 rows requested at 1,500 per page) returned **13,500 rows
+containing only 8,689 unique symbols** — 3,876 symbols appeared more than once, with
+identical name, description, exchange and type. The same universe pulled in **one** call
+with `range [0, 6093]` returned **6,093 rows / 6,093 unique** — clean.
+
+The failure is silent: the response looks healthy (rows ≥ `totalCount`), so no row-count
+check catches it, and the duplicated names are then counted twice in every tier count and
+every dollar-volume ranking. The full evidence and reasoning is in
+`docs/IMPROVEMENTS-cron17-us-stocks-in-play.md` §1.
+
+**Rule:** pull the universe — and any filter on a fast-moving column (`change`, `gap`,
+`premarket_change`) — in **ONE** scan call with `range [0, totalCount]`, and assert
+`len(rows) == totalCount` **and** `len(unique(symbols)) == totalCount`. If either fails the
+pull is corrupt: discard it and re-pull in one call. Paging is only safe on a static filter.
+
+**The scanner has a native `gap` filter and column** — the gap leg of the trigger set
+needs no local computation. `{"left": "gap", "operation": "greater", "right": 2}` is a valid
+filter (measured 2026-11-06: `gap > 2` → 3,461 names). The `gap` column on a row is the
+open-vs-prior-close gap, and it agrees with a 5-minute-bar reconstruction to a
+**median 0.000pp** (p90 0.50pp) across 644 names — so it can be published directly.
 
 #### RVol and session volume: use the market-wide feed, not per-symbol history (2026-11-03)
 

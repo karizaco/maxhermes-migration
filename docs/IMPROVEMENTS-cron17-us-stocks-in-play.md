@@ -70,3 +70,43 @@ Unchanged from 2026-11-03 — the session's own bar was still not published at r
 (six attempts across the run). The RVol **denominator** is unaffected because it
 excludes today by construction; the **numerator** has to come from the TradingView
 re-pull. Recording it here so nobody treats "the bar does not exist yet" as a bug.
+
+---
+
+## 4. The one-call rule was in the docs but NOT in the skill spec — and the universe pull is worse than §1 measured
+
+**Audited 2026-11-06 (the 09:50 ET open fire).** §1 of this file already said *"NEVER
+paginate a volatile TradingView filter — pull it in ONE call"*. That rule lived **only in
+this file**. `cloud-prompts/skills/us-stocks-in-play/SKILL.md` — the file the routine
+actually fetches at RUN time — had **no** mention of `totalCount`, of `range`, or of the
+one-call rule, so every fire had to rediscover it. The rule is now in the skill spec
+(`#### Pulling the TradingView universe: ONE unpaginated call (2026-11-06)`), which is the
+lever that changes the next fire with **no `cron_update` and no prompt drift**.
+
+**Today's measurement is worse than §1's.** §1 measured a *trigger* filter (1,852 names,
+398 missed). Today's accident was the **universe** pull, and the corruption was
+duplication-heavy:
+
+| Pull method | `totalCount` | rows returned | unique symbols |
+|---|---|---|---|
+| 9-page offset pull, `type` in (stock, dr), 1,500/page | 13,203 | 13,500 | **8,689 — a 34% hole** |
+| **One call, `range [0, 6093]`** (same filter, US venues only) | 6,093 | 6,093 | **6,093 — complete** |
+
+3,876 symbols came back **more than once**, with identical name, description, exchange and
+type. This is the dangerous shape of the failure: the row count (13,500) is *larger* than
+`totalCount`, so the §1 detector ("rows ≥ totalCount looks healthy") would have passed it.
+**The only detector that catches it is `len(unique(symbols)) == totalCount`** — which is
+why the skill spec now asserts BOTH numbers.
+
+**Second finding: the scanner has a native `gap` filter and column.** The trigger set's gap
+leg does not need to be computed locally. `{"left": "gap", "operation": "greater", "right":
+2}` is a valid filter (measured 2026-11-06: `gap > 2` → 3,461 names; `gap < -2` → 956).
+The `gap` column on a row is the open-vs-prior-close gap, and it agrees with a
+5-minute-bar reconstruction to a **median 0.000pp** (p90 0.50pp, max 5.47pp) across 644
+names — so it is publishable directly, with the bar series kept for the 09:50 snapshot.
+
+**Third finding, mechanical:** the checker's **section order** is enforced, and the
+2026-11-05 open board placed its **gap annex after Tier C** — i.e. after the capped bulk
+tiers — which violates the contract's own order (Tier A → Soft-A → **gap annex** →
+TECH_WATCH → B → C). The spec already states that order; the 2026-11-06 board was written
+to it, and the artifact contract section now says so explicitly.
