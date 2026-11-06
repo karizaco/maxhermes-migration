@@ -177,6 +177,16 @@ cause vocabulary (P01/P02) and the prompt's reply templates, verbatim (P03).
 | `tools/gen_roster.py` | + #26b's artifact; accepts the raw `cron_read` envelope (it used to crash with `TypeError: 'bool' object is not a mapping`); only counts `.md` tasks as routines |
 | `cloud-prompts/cron-prompts/README.md`, `ROSTER.md`, `roster.json` | regenerated (26 routines, #26b listed) |
 
+## Deployed
+
+| What | Value |
+|---|---|
+| Deployed prompt | `90-delivery-auditor.md`, 12,319 B, SHA-256 `96f88fb02863c9d0dc776584b42bf36d8336176edef80bed1138df24bf89aada` |
+| Task | `457957802930526`, schedule `0 7 * * *`, timezone `America/New_York`, `session.mode=new`, project `14002`, model/thinking preserved |
+| Paste | **byte-exact on the FIRST attempt** — read back from the persisted `cron_read view=list` chunk and SHA-256'd against the repo blob |
+| Blast radius | exactly one field in the whole fleet changed: #90's prompt. #26's and #91's prompts also moved, but those are a concurrent session's deploys, not this one. |
+| Procedure fetch | all four ladder sources resolve to the same bytes (SHA-256 `993cfd9c91355df1…`), version `2026-11-06.1` — the ladder's selection was simulated end to end and picks the repo's file |
+
 ## Verify
 
 ```bash
