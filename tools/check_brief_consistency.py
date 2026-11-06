@@ -34,7 +34,9 @@ import re
 import sys
 
 # The sections the brief must contain, in order. Section 6 (the watchlist) is conditional —
-# it is omitted when no watchlist is published — so it is not required here.
+# it is omitted when no watchlist is published — so it is not required here. The two
+# unnumbered blocks (`## Bottom line`, `## Yesterday's brief — what happened`) are
+# optional here and owned by check_premarket_brief.py.
 SECTIONS = [
     "## 1. TL;DR",
     "## 2. Theme clusters",
@@ -50,6 +52,35 @@ SECTIONS = [
 PLACEHOLDERS = ("{date}", "@@", "TODO", "FIXME", "None%", "nan%", "None |")
 TICKER_RE = re.compile(r"[A-Z][A-Z0-9.\-]{0,6}")
 SEPARATOR_RE = re.compile(r"^\|[\s:|-]+\|$")
+
+
+def section_positions(md: str):
+    """{section title -> (start, end)} for every `##` heading.
+
+    Heading-ANCHORED, not a bare `md.find()`: the brief's new `## Bottom line` block
+    talks about `## 1. TL;DR`, and a substring search would read that mention as the
+    section and reorder everything after it.
+    """
+    lines = md.split("\n")
+    heads = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"^##\s+(.*?)\s*$", ln)
+        if m:
+            heads.append((i, m.group(1).strip()))
+    out = {}
+    for n, (i, title) in enumerate(heads):
+        end = heads[n + 1][0] if n + 1 < len(heads) else len(lines)
+        out[title] = (i, end)
+    return out
+
+
+def find_section(secs, needle: str):
+    """The first section whose heading starts with `needle` (case-insensitive)."""
+    key = needle.lower().lstrip("#").strip()
+    for title, span in secs.items():
+        if title.lower().lstrip("#").strip().startswith(key):
+            return span
+    return None
 
 
 def cells(line: str) -> list:
@@ -103,6 +134,13 @@ def pre_market_cols(header: list):
 def load_csv(path: str) -> dict:
     """ticker -> {pct: today's pre-market %, session_pct: the prior session's %, px: price}.
 
+    The column names are read with FALLBACKS, so the linter works on a v2 CSV
+    (`gap_pct` / `premarket_last` / `prior_session_change_pct`) and on a legacy one
+    (`premarket_change_pct` / `premarket_close` / `nov_2_change_pct`) alike. The legacy
+    date-named column is exactly why v2 renamed them: `nov_2_change_pct` sat in the
+    2026-11-04 CSV holding the *Nov 3* move, so a date-pinned reader silently compares
+    the wrong session.
+
     A bold "TICKER -12.3%" in the prose is EITHER a pre-market gap or a prior-session move (the
     brief deliberately reports both sessions), so the prose check accepts either column. The
     TABLE check is strict: a table row's price and gap must be the pre-market ones.
@@ -114,15 +152,19 @@ def load_csv(path: str) -> dict:
             if not t:
                 continue
 
-            def _f(k):
-                try:
-                    return float(row.get(k) or "")
-                except ValueError:
-                    return None
+            def _f(*keys):
+                for k in keys:
+                    try:
+                        v = float(row.get(k) or "")
+                        return v
+                    except ValueError:
+                        continue
+                return None
 
-            out[t] = {"pct": _f("premarket_change_pct"),
-                      "session_pct": _f("nov_2_change_pct"),
-                      "px": _f("premarket_close")}
+            out[t] = {"pct": _f("gap_pct", "premarket_change_pct"),
+                      "session_pct": _f("prior_session_change_pct", "prev_change_pct",
+                                        "nov_2_change_pct"),
+                      "px": _f("premarket_last", "premarket_close")}
     return out
 
 
@@ -144,15 +186,16 @@ def main() -> int:
     problems = []
 
     # --- 1. sections present and in order ---
+    secs = section_positions(md)
     pos = -1
     for sec in SECTIONS:
-        i = md.find(sec)
-        if i < 0:
+        span = find_section(secs, sec)
+        if span is None:
             problems.append(f"missing section: {sec}")
-        elif i < pos:
+        elif span[0] < pos:
             problems.append(f"section out of order: {sec}")
         else:
-            pos = i
+            pos = span[0]
 
     # --- 2. unfinished-render tokens ---
     for ph in PLACEHOLDERS:

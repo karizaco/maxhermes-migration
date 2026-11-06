@@ -37,9 +37,12 @@ scanner is the primary screener. Full ladder and fallback rules: `cloud-prompts/
 - `C:\Users\admin\.minimax\projects\coding-shared\research\briefs\YYYY-MM-DD-pre_market.md`
   _(In Cloud this path does not exist — it is the local Mavis host's location. In Cloud, write to the `## OUTPUT` path in the cron prompt.)_
 - A machine-readable companion `YYYY-MM-DD-pre_market.csv` ships **alongside** the markdown:
-  one row per name seen in the pre-market screens, columns
-  `ticker,name,premarket_change_pct,premarket_close,prev_close,prev_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news`.
-  It is the same screen the tables are built from, so it must never contradict them.
+  one row per name seen in the pre-market screens. The exact header is pinned in
+  `## ARTIFACT FORMAT CONTRACT v2` (§C3) — **date-independent column names only** (a column
+  named after a session date is a defect: the 2026-11-03 CSV shipped `nov_2_2026_close` and
+  `nov_2_change_pct`, and the 2026-11-04 CSV carried `nov_2_change_pct` still holding the
+  *Nov 3* move). The CSV is the same screen the tables are built from, so it must never
+  contradict them, and the routine **asserts the header before pushing** (§C4).
 - Compact ≤ 60-line chat summary on top of the markdown.
 - Audit log line on `research\logs\audit.log`: `action=brief_rendered target=pre_market:<date>`.
 
@@ -75,14 +78,24 @@ Origin: https://www.tradingview.com
 
 | Column | What it is | Use it for |
 |---|---|---|
-| `close` | the **last completed regular session** close (yesterday) | the denominator of the pre-market gap |
+| `close` | the **last completed regular session** close (yesterday) | the denominator of the pre-market gap; the **prior close** |
 | `change` | that **same regular session's** % move vs the prior session | "yesterday's tape" context tables |
 | `change_abs` | that session's absolute move | sanity check |
 | `premarket_close` | the **live pre-market print** | the price you publish |
 | `premarket_change` | the live pre-market % vs `close` | **the gap you publish** |
+| `premarket_high` | the pre-market **high** so far | the top of the **pre-market range** |
+| `premarket_low` | the pre-market **low** so far | the bottom of the **pre-market range** |
+| `high` | the last completed session's high | breakout / prior-day-high key level |
+| `low` | the last completed session's low | breakdown / prior-day-low key level |
 | `premarket_volume` | running pre-market share counter | the liquidity gate |
 | `average_volume_30d` | 30-day average daily volume | `%ADV` = `premarket_volume / average_volume_30d` |
 | `halted` | halt flag | the halts table |
+
+> **The pre-market range is part of the price, not a nicety.** `premarket_high`/`premarket_low`
+> are measured live and verified against the `america` scanner on 2026-11-06 (AAPL
+> `premarket_low` 349.79 / `premarket_high` 355.35 for the 2026-11-05 session, against a
+> `close` of 344.17). A reader needs to know whether the gap is **holding** or already
+> half-filled — the last price alone cannot say.
 
 > **Never label a `change` figure a pre-market gap.** They are different sessions and a brief that
 > mixes them is wrong in a way that reads as plausible. If a section is titled "pre-market", every
@@ -103,7 +116,8 @@ Origin: https://www.tradingview.com
  "options":{"lang":"en"},"markets":["america"],
  "symbols":{"query":{"types":[]},"tickers":[]},
  "columns":["name","description","close","change","change_abs","volume","average_volume_30d_calc",
-            "premarket_close","premarket_change","premarket_volume","market_cap_basic","sector",
+            "premarket_close","premarket_change","premarket_high","premarket_low",
+            "premarket_volume","market_cap_basic","sector",
             "exchange","type","halted","premarket_time","earnings_release_next_date"],
  "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,400]}
 ```
@@ -259,6 +273,7 @@ downstream routine can read it without parsing markdown (cron #19 and #15 alread
 ---
 date: <YYYY-MM-DD>
 cron: 26-agentic-pre-market-brief
+contract: premarket-brief-artifact-v2
 fire_time_et: <YYYY-MM-DD HH:MM>
 snapshot_et: <HH:MM>          # when the pre-market tape was pulled
 source: TradingView america scanner + MCP-bridge market-recap
@@ -269,19 +284,24 @@ down_3pct: <n>
 ---
 ```
 
-Order (load-bearing — do NOT re-order):
+**The order below is load-bearing — do NOT re-order, and do NOT renumber §1–§11.** The two
+unnumbered blocks (`## Bottom line`, `## Yesterday's brief — what happened`) sit ABOVE §1; the
+numbered sections keep their numbers because other routines and the user reference them by
+number.
 
-1. **TL;DR** — clustered, theme-first. ≥ 4 named themes from Step 4 with their tickers and magnitudes in bullet form. Single-sentence "watchlist" line at the bottom that says which watchlist names happen to align with the day's themes.
-2. **Theme clusters** — one section per cluster with anchors, leader, corroborators, magnitudes, news URL.
-3. **Pre-market gaps — top 25 market-wide** — from the Step 2 **gainer screen** (`premarket_*` columns), Gate A + Gate B, plus a "thin tape" block for the Gate A-only names. Add a **"yesterday's tape"** sub-table (`change`/`close` columns) for context — clearly labelled as the prior session.
-4. **Top losers — top 10 market-wide** — from the Step 2 **loser screen** (`premarket_*` columns), same gates.
-5. **StockTwits lead read** — trending list with thesis text shown inline, not buried. Truncate each thesis to ~300 characters and cap the column; a full-sentence dump makes the table unreadable.
-6. **Watchlist** — quote + pre-market gap, sorted. **Omit the whole section if there is no published watchlist** (Step 7).
-7. **Overnight / futures / index / crypto** — compact block.
-8. **Macro calendar** — ≤ 5 lines.
-9. **Earnings today** — only if anything material, split BMO / AMC.
-10. **Source health** — every source that succeeded/failed.
-11. **Open research queue** — ≤ 5 carry-forwards.
+1. **`## Bottom line`** — exactly three lines, the decision. See §C1.
+2. **`## Yesterday's brief — what happened`** — the scorecard on yesterday's calls. See §C5.
+3. **`## 1. TL;DR`** — clustered, theme-first. ≥ 4 named themes from Step 4 with their tickers and magnitudes in bullet form. Single-sentence "watchlist" line at the bottom that says which watchlist names happen to align with the day's themes.
+4. **`## 2. Theme clusters`** — one section per cluster with anchors, leader, corroborators, magnitudes, news URL. **Every name carries the §C2 level columns.**
+5. **`## 3. Pre-market gaps — top 25 market-wide`** — from the Step 2 **gainer screen** (`premarket_*` columns), Gate A + Gate B, plus a "thin tape" block for the Gate A-only names. Add a **"yesterday's tape"** sub-table (`change`/`close` columns) for context — clearly labelled as the prior session. **Every name carries the §C2 level columns.**
+6. **`## 4. Top losers — top 10 market-wide`** — from the Step 2 **loser screen** (`premarket_*` columns), same gates. **Every name carries the §C2 level columns.**
+7. **`## 5. StockTwits lead read`** — trending list with thesis text shown inline, not buried. Truncate each thesis to ~300 characters and cap the column; a full-sentence dump makes the table unreadable.
+8. **`## 6. Watchlist`** — quote + pre-market gap, sorted. **Omit the whole section if there is no published watchlist** (Step 7).
+9. **`## 7. Overnight / futures / index / crypto`** — compact block.
+10. **`## 8. Macro calendar`** — ≤ 5 lines.
+11. **`## 9. Earnings today`** — only if anything material, split BMO / AMC.
+12. **`## 10. Source health`** — every source that succeeded/failed.
+13. **`## 11. Open research queue`** — ≤ 5 carry-forwards.
 
 Cap top news to **10 items**, **all theme-anchored** (no per-ticker news for non-theme watchlist names).
 
@@ -303,10 +323,210 @@ It exits non-zero when the prose, the tables and the CSV disagree, when a sectio
 of order, or when an unfinished placeholder is left in the file. **A non-zero exit means the
 artifact is not ready to push.** (Fetch it to a file first; `python3 <url>` does not work.)
 
+**Then run the CONTRACT gate** — the one that asserts §C1–§C5 of this spec:
+
+```bash
+mkdir -p /workspace/tools
+curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_premarket_brief.py \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py"
+python3 /workspace/tools/check_premarket_brief.py \
+  --md /workspace/daily-briefs/{date}-pre-market.md \
+  --csv /workspace/daily-briefs/{date}-pre-market.csv
+```
+
+**Both checkers must exit 0 before the push.** A non-zero exit from either means the artifact is
+not ready to push.
+
 ### Step 10 — Audit + chat summary
 
 - Append: `2026-MM-DDTHH:MM:SSZ action=brief_rendered target=pre_market:<date> session=me sources=<csv> model=… skill=agentic-pre-market-brief themes=<count>` to `research\logs\audit.log`.
 - Return a compact ≤ 60-line chat summary, **theme-first**. Do NOT paste the full markdown.
+
+---
+
+## ARTIFACT FORMAT CONTRACT v2 — `premarket-brief-artifact-v2`
+
+This section IS the contract. It is fetched at RUN time, so an edit here changes the next fire
+with no prompt edit and no prompt drift. `tools/check_premarket_brief.py` asserts every clause
+below and prints each violation; `tools/test_premarket_brief_contract.py` proves the contract is
+satisfiable AND that the checker bites. **An artifact that fails the gate MUST NOT be pushed.**
+
+### C1 — `## Bottom line`: three lines, above the theme TL;DR
+
+The 2026-11-03 brief was a 44 KB map of the day with no decision in it: six themes, excellent
+analysis, no call. The trader's first fifteen seconds need a decision, so the brief opens with
+one. **The six-theme clustering stays exactly where it is, below this block** — the contract is
+additive, and the clustering is what makes a 44 KB artifact navigable.
+
+```
+## Bottom line
+
+1. **The one setup** — <NAME or theme> — <level> is the trigger; <invalidation> kills it.
+2. **The one risk** — <what breaks it> — <catalyst time | level | macro event>.
+3. **The one thing to watch** — <name or level> — <condition>.
+```
+
+- **EXACTLY three lines.** Not two, not four.
+- The three labels are literal, capitalised and in this order: `The one setup`, `The one risk`,
+  `The one thing to watch`.
+- Line 1 MUST carry a level and its invalidation: it contains a digit **and** the word
+  `invalidat*`. "AMD is the referee tonight" is not a setup. "AMD above 161.30, invalidated by a
+  trade back under 159.00" is.
+- Lines 2 and 3 each name a thing and a condition. "The market is fragile" is neither.
+- The block sits above `## 1. TL;DR`, directly under the title/front-matter block. No prose
+  between the heading and the first line.
+
+### C2 — Every published name carries its levels
+
+Every name published in **§2 (theme clusters)**, **§3 (pre-market gaps)** and **§4 (top losers)**
+carries these columns. A setup without a level is an opinion.
+
+| Column | What it is | Source |
+|---|---|---|
+| `Prior close` | the last completed regular session's close | scanner `close` |
+| `Pre-market last` | the live pre-market print | scanner `premarket_close` |
+| `Gap %` | the pre-market move vs the prior close | scanner `premarket_change` |
+| `PM range` | the pre-market low–high — is the gap holding? | scanner `premarket_low` / `premarket_high` |
+| `Key level` | the price that decides the setup | derived, see below |
+| `Invalidation` | the level or event that kills the thesis | derived, see below |
+
+**`Key level` — deterministic ladder, first match wins:**
+
+1. A level published by the **sourced catalyst** (an all-stock deal's implied value for the other
+   leg, an offering price, a 52-week high) → that level, with the source named in the cell.
+2. Otherwise → the **prior close** — the gap-fill level. The question a gap raises is "does it
+   hold", and the prior close is the level that answers it.
+
+**`Invalidation` — deterministic ladder, first match wins:**
+
+1. The **event** that kills it, when the catalyst publishes one ("if the guide comes in below
+   $1.95 adj EPS", "if the 16:00 ET call is cancelled").
+2. Otherwise the **price**:
+   - gap-up (`Gap %` > 0): a trade back **to or below the prior close** — the gap filled, the
+     thesis is dead.
+   - gap-down (`Gap %` < 0): a trade **below the pre-market low** — the pre-market seller won.
+
+Every `Invalidation` cell MUST contain a digit and must not be a placeholder. A vague cell
+("if momentum fades") is a broken cell, not a soft one.
+
+The pre-market range is published, not just the last price: a reader needs to know whether the gap
+is holding or already half-filled, and the last price alone cannot say.
+
+### C3 — The CSV schema (date-independent column names)
+
+The companion CSV ships with exactly this header, in this order:
+
+```
+ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published
+```
+
+- **No column name may contain a date.** The 2026-11-03 CSV shipped `nov_2_2026_close` and
+  `nov_2_change_pct`; the 2026-11-04 CSV then carried `nov_2_change_pct` while it actually held
+  the *Nov 3* move. A date-named column is a lie waiting for the next session.
+- `prior_close` = the last completed regular session's close. `gap_pct` = the pre-market move
+  vs it. `prior_session_change_pct` = that session's own % move (the "yesterday's tape" number).
+- `key_level` and `invalidation` carry the §C2 values for every name, so the next morning's
+  review (§C5) can test them mechanically.
+- `setup_published` = `yes` for every name published as a setup in §2 (the theme clusters) and
+  `no` otherwise. **This column is what makes the next run's review possible.**
+- `setup_theme` = the cluster label for that name (empty for names not in a cluster).
+- `has_news` = `yes` **only** where a catalyst is sourced in this run. On 2026-11-03 exactly 35 of
+  1,491 rows had one, and the count is meaningful precisely because it is small. Never fill it
+  from a theme's existence — only from a source.
+- Round what you publish: prices to 2 dp, percentages to 2 dp. The 2026-11-04 CSV shipped
+  `3.06406685236769` for a gap of 3.06%.
+
+### C4 — The header assertion (before the push, not after)
+
+The spec promised columns the CSV did not have — that is how a shipped artifact contradicts its
+own contract. So the routine **reads the CSV's own header and asserts every column §C3 promises,
+before pushing**. The check is mechanical:
+
+```bash
+python3 - <<'PY'
+import csv, sys
+want = "ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published".split(",")
+with open("/workspace/daily-briefs/{date}-pre-market.csv", newline="", encoding="utf-8") as fh:
+    got = csv.DictReader(fh).fieldnames or []
+missing = [c for c in want if c not in got]
+extra = [c for c in got if c not in want]
+print("csv columns:", len(got))
+if missing:
+    print("CSV HEADER MISSING:", missing); sys.exit(1)
+if extra:
+    print("CSV HEADER HAS UNPROMISED COLUMNS:", extra); sys.exit(1)
+print("csv header OK")
+PY
+```
+
+A non-zero exit means **do not push** — fix the CSV, then push.
+
+The same gate covers the commit subject: the push subject must carry the routine number, i.e.
+the string `cron 26` must appear in the subject of the commit that last touched the artifact.
+`push_artifact.sh` derives it from the artifact path, and `verify_delivery.sh --nn 26` fails with
+exit 4 when it is missing. The path→number table in `push_artifact.sh` covers BOTH
+`daily-briefs/*-pre-market.md` and `daily-briefs/*-pre-market.csv` — the CSV row was added on
+2026-11-03 after a CSV pushed with the subject `cron daily-briefs 2026-11-03` (no number) was
+reported MISSING by cron #90's triage.
+
+### C5 — `## Yesterday's brief — what happened`
+
+The brief's last section is `## 11. Open research queue` — good, and it stays. But nothing
+records what happened to yesterday's calls, so the routine cannot learn. This section closes the
+loop. **It is the highest-leverage addition in the fleet: it is what turns a daily brief into a
+trackable process.**
+
+It appears in EVERY run, directly under `## Bottom line`, and carries exactly this table:
+
+```
+| Name | Setup (yesterday) | Yesterday's close | Today's move | Thesis held? |
+```
+
+**How to build it (do not improvise):**
+
+1. **Pick the reviewed brief.** Walk back from the fire date to the most recent earlier date that
+   has a DAILY brief at `daily-briefs/{date}-pre-market.md` on the outputs repo (`main`). Read it
+   with the **GitHub contents API** (authoritative, not CDN-cached). Skip the
+   `-pre-market-refresh.md` file — it is a different routine (#26b). **A day with no brief is
+   skipped, and the artifact says so** (e.g. "the 2026-11-05 fire published nothing — quota
+   wall — so this reviews the 2026-11-04 brief").
+2. **Take the setups from that brief's own CSV** — the rows with `setup_published = yes` — and
+   their `key_level` / `invalidation` values. If that CSV predates the column, fall back to the
+   tickers in the reviewed brief's §2 theme-cluster tables.
+3. **Get the outcome.** Use the helper, which does the pulls and the arithmetic:
+
+   ```bash
+   mkdir -p /workspace/tools
+   curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/yesterday_review.py \
+     "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/yesterday_review.py"
+   python3 /workspace/tools/yesterday_review.py --date {date} \
+     --out-md /workspace/daily-briefs/{date}-pre-market.md
+   ```
+
+   It reads the reviewed brief and the previous evening's post-market brief (cron #23,
+   `daily-briefs/{date}-post-market.md`), pulls the session bars for the setup names through the
+   MCP bridge (`market-recap price_history`) and the Yahoo chart API for the intraday extremes,
+   and prints the table plus a JSON sidecar. It prints the legend line too — paste it above the
+   table.
+4. **The legend defines the columns, in one line**, because "yesterday" is ambiguous when a
+   session was missed:
+   - `Yesterday's close` = the close of the **last completed regular session** at the time of
+     writing.
+   - `Today's move` = **that session's** % change vs its own prior close.
+   - `Thesis held?` = judged against the invalidation the reviewed brief published: `HELD`
+     (the invalidation was not touched and the move ran with the thesis), `BROKE` (the
+     invalidation level was traded through in the adverse direction), `PARTIAL` (the invalidation
+     held but the move ran against the thesis), `UNJUDGED` (no invalidation level was published,
+     or there is no price for the name — say which).
+5. **The section always exists.** If the reviewed brief is missing, if the helper cannot reach a
+   source, or if there are no setups to review, the section still ships, with one line naming the
+   reason (`no prior brief available`, `the reviewed brief's CSV carries no setup rows`, …). A
+   section that silently disappears is how a loop dies.
+
+**Cross-check, don't assume:** the previous evening's post-market brief is the narrative
+cross-check for the session's closes; when it names a setup name in its movers tables, its close
+must agree with the helper's. If it does not, the section says so rather than publishing two
+numbers.
 
 ## Failure modes (these are real, learned from prior runs)
 
@@ -320,6 +540,41 @@ artifact is not ready to push.** (Fetch it to a file first; `python3 <url>` does
 | **Prose contradicting its own tables** | The live tape was pulled twice; the prose took one pull and the tables another, so the same ticker carried two different percentages. | One pull per brief; the Step 9 consistency check before rendering. |
 | **A permanently empty section** | The watchlist file never existed in this runtime, yet the brief carried an explanatory "not published" block every day. | Step 7: omit the section; one line in Source health. |
 | **A delivered artifact reported MISSING** | The push script derives the commit subject's routine number from `--add`, and `--add` overwrites — so passing a second path wiped the number and the auditor's `cron (#)?NN ` grep no longer matched. | Pass `--add` once, with the primary artifact path; verify the commit subject, not just the path. |
+| **A 44 KB brief with no decision in it** | The TL;DR was a *map* of the brief (six themes) rather than a call. The trader had to do the synthesis. | §C1: `## Bottom line`, exactly three lines, above the theme TL;DR. |
+| **Setups with no prices** | The 2026-11-03 brief named "AMD is the referee tonight", Oracle's $20B capex and the Marvell/Lumentum spread — and published no level for any of them. A trader cannot act on a name without a number. | §C2: `Prior close`, `Pre-market last`, `Gap %`, `PM range`, `Key level`, `Invalidation` on every published name. |
+| **The CSV contradicted the spec** | The spec promised columns the CSV did not have, and the CSV carried date-named columns (`nov_2_2026_close`) that silently went stale. | §C3: a pinned, date-independent header; §C4: assert the header before the push. |
+| **The brief had no follow-up** | Nothing recorded what happened to yesterday's calls, so the routine could not learn. | §C5: `## Yesterday's brief — what happened`, every run, with a `Thesis held?` column. |
+| **A stale shared helper** | `push_artifact.sh` was fetched with `[ -s file ] || curl`, so an old local copy kept using the old path→number table, and raw.githubusercontent served a stale blob for >17 min after a push. | Fetch-ladder rule below: contents API first, then raw, then jsDelivr, reject a 404 body, **refresh every run**. |
+
+## The fetch-ladder rule (every shared helper, every run)
+
+The contents API is authoritative and is **not** CDN-cached; the two CDNs cache `main`
+independently (measured 2026-11-04: raw.githubusercontent served a stale blob for >17 minutes after
+a push while jsDelivr was fresh). So:
+
+1. Try the **GitHub contents API** first, then raw, then jsDelivr.
+2. Reject a response whose **body** is a 404 JSON (`{"message": "Not Found", ...}`) — on its body,
+   not on its byte count.
+3. **Refresh on every run.** Never skip the fetch because the file already exists: a stale local
+   copy of a shared helper silently keeps using the old table.
+4. When the helper carries a capability marker (a version string), require it — an older copy
+   that silently ignores new flags is worse than no copy.
+
+```bash
+S=/workspace/push_artifact.sh
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+[ -s "$S" ] || echo "push script UNAVAILABLE — use the inline fallback"
+```
 
 ## Fallback discipline (required on every step)
 
@@ -341,6 +596,9 @@ Do NOT chain a third MCP after a fallback. The Playbook's day-window has its own
 - **One pull per brief.** A live tape pulled twice yields two versions of the same number. Pick one pull and make every section agree with it.
 - If the brief is short of themes (≤ 2), surface "thin tape" in the TL;DR — do not pad.
 - If MCP `financial_news` (`MARKETAUX_API_TOKEN not configured`) fails, fall back to `web_search` + the bridge and note in `Source health`.
+- **The `mcp__*` tool names do not exist in this runtime.** Do not call them and do not spend turns proving they are absent.
+- **Both checkers exit 0 before the push** (§Step 9): `check_brief_consistency.py` (prose ≡ tables ≡ CSV) and `check_premarket_brief.py` (the §C1–§C5 contract).
+- **The commit subject carries the routine number** — `cron 26 <name> <date>`. `verify_delivery.sh --nn 26` exits 4 when it does not, and cron #90's triage greps subjects for `cron (#)?26 `.
 
 ## Out of scope
 

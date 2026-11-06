@@ -188,15 +188,56 @@ The skill ships TWO outputs and both are required:
                                                      pre-market screens). It must never contradict
                                                      the markdown.
 
+**Both outputs are gated before the push.** The skill spec's `## ARTIFACT FORMAT CONTRACT v2` is
+the contract; run BOTH checkers and do not push unless both exit 0:
+
+```bash
+mkdir -p /workspace/tools
+curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_brief_consistency.py \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py"
+curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_premarket_brief.py \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py"
+python3 /workspace/tools/check_brief_consistency.py \
+  --md /workspace/daily-briefs/{date}-pre-market.md --csv /workspace/daily-briefs/{date}-pre-market.csv
+python3 /workspace/tools/check_premarket_brief.py \
+  --md /workspace/daily-briefs/{date}-pre-market.md --csv /workspace/daily-briefs/{date}-pre-market.csv
+```
+
+The brief carries `contract: premarket-brief-artifact-v2` in its front matter, opens with a
+`## Bottom line` block of exactly three lines, publishes `prior close / pre-market last / gap % /
+PM range / key level / invalidation` for every name in the theme, gaps and losers tables, and
+carries a `## Yesterday's brief - what happened` section whose table has a `Thesis held?`
+column. The checker names every violation.
+
 ## GIT PUSH (OPTIONAL)
 
 ```bash
-B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
+# --- fetch the shared push helper (run-time fetch: fixes land with no redeploy) ---
+# The CONTENTS API is authoritative and is NOT CDN-cached; the two CDNs cache `main`
+# independently - measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
+# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# NEVER reach its fallback (the first successful download satisfied the file-exists
+# guard), so a stale local copy of push_artifact.sh silently kept using the OLD
+# path->routine-number table - and the 2026-11-03 CSV went out with the subject
+# `cron daily-briefs 2026-11-03`, no routine number, which cron #90's triage reported as
+# MISSING. So: REFRESH ON EVERY RUN, never skip the fetch because the file exists, and
+# reject a response whose BODY is a 404 JSON - a 404 page is a non-empty body that is
+# NOT a script.
+S=/workspace/push_artifact.sh
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/push_artifact.sh?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/push_artifact.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
+if [ ! -s "$S" ]; then echo "push script UNAVAILABLE - use the inline fallback below"; fi
 # ONE --add, and it is the .md. The script stages the routine's WHOLE output tree, so the
-# companion CSV rides along in the same commit — you do NOT need a second --add, and passing
+# companion CSV rides along in the same commit - you do NOT need a second --add, and passing
 # one is actively harmful: --add OVERWRITES, so a second path wipes the routine number out of
 # the commit subject, and cron #90 attributes a push by grepping subjects for "cron (#)?26 ".
 # A delivered artifact would then be reported as MISSING.
@@ -260,6 +301,12 @@ branch is a FAILED delivery whatever the platform's run record says.
    earnings roster from search when that file is there.
 8. The commit subject must carry the routine number — `cron 26 <name> <date>`. Pass `--add` ONCE
    (the `.md` path) and confirm the subject after the push. See DELIVERY VERIFICATION above.
+9. The brief opens with a DECISION: a `## Bottom line` block of exactly three lines above the
+   theme TL;DR, and every published name carries its levels (prior close, pre-market last, gap %,
+   PM range, key level, invalidation). A setup without a level is an opinion.
+10. The brief carries a `## Yesterday's brief - what happened` section with a `Thesis held?`
+    column, and the CSV header is asserted against the spec's column list BEFORE the push.
+    Both checkers above must exit 0.
 
 ================================================================
 END OF CRON PROMPT
