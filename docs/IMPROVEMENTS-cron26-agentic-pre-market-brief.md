@@ -293,3 +293,146 @@ clustering and no rewriting. Its procedure is the shared file
 - **Migrating the remaining prompts.** The parallel work already migrated 20 of 28. The rest are
   #90 (the auditor, which needs the list for CLASSIFICATION rather than skipping) and #01/#91,
   which publish no market artifact.
+
+---
+
+# Round 2 — 2026-11-06: the brief gets a decision, levels, and a loop
+
+Evidence base: the 2026-11-03 artifact (`daily-briefs/2026-11-03-pre-market.md`, 43,999 B, 1,491
+CSV rows) and the 2026-11-04 artifact, the deployed cron task `457175063601252` (prompt
+SHA-256 `3b530c820b467d2cda81f32a8b82c391f354dccb524f2e8fa3746b25580367ea`, 19,446 B, byte-identical
+to `cloud-prompts/cron-prompts/26-agentic-pre-market-brief.md` after this round), and the live
+`karizaco/minimax-cloud-outputs` remote.
+
+The round-1 review (above) fixed how the brief is BUILT. This round fixes what a reader can DO
+with it: the 2026-11-03 brief was the largest artifact the fleet produces and it still could not
+be acted on.
+
+## 8. The TL;DR was a map of the brief, not a decision — HIGH
+
+`## 1. TL;DR — six themes, clustered` is good analysis and it is a *map*: it tells the reader what
+the brief contains, and leaves the synthesis — which setup, which risk, which level — to them. The
+ntrt routine (#25) already pins the answer: **exactly three bullets**. The pre-market brief did not.
+
+**Fix:** `## ARTIFACT FORMAT CONTRACT v2` §C1 adds a `## Bottom line` block ABOVE §1 — exactly three
+lines, the literal labels `The one setup` / `The one risk` / `The one thing to watch`, in that order,
+and line 1 must carry a level AND its invalidation (a digit and the word `invalidat*`). The
+six-cluster clustering is untouched: §1–§11 keep their numbers and their method.
+
+## 9. Every setup was published without a price — HIGH
+
+The brief names setups all day — Oracle's $20B AI capex template, the Marvell/Lumentum $115B
+all-stock deal with a wide spread, "AMD is the referee tonight" — and publishes **no level for any
+of them**. "AMD is the referee tonight" is untradeable without knowing where the decision is.
+
+**Fix:** §C2. Every name in the theme clusters, the gaps table and the losers table now carries
+`Prior close`, `Pre-market last`, `Gap %`, `PM range`, `Key level` and `Invalidation`, with a
+**deterministic ladder** so the level is never a judgement call: a level published by the sourced
+catalyst wins (a deal's implied value, an offering price), otherwise the prior close — the
+gap-fill level, which is the level that answers "does the gap hold". The invalidation is a
+downside trigger for a gap-up (a trade back to/below the prior close) and the pre-market low for a
+gap-down, and every cell must contain a digit.
+
+The pre-market **range** needed a source that was not in the spec: the `america` scanner does
+carry `premarket_high` / `premarket_low` (verified live 2026-11-06: AAPL `premarket_low` 349.79 /
+`premarket_high` 355.35 against a `close` of 344.17), plus `high`/`low` for the prior session's
+extremes. The scanner's column list and the spec's column contract now say so.
+
+## 10. The CSV contradicted its own spec, and carried columns named after a date — HIGH
+
+The spec promised `prev_close,prev_change_pct`; the 2026-11-03 CSV shipped neither. It shipped
+`nov_2_2026_close` and `nov_2_change_pct` — **date-named columns** — and the 2026-11-04 CSV then
+carried `nov_2_change_pct` while it actually held the *Nov 3* move. A date-named column is a lie
+waiting for the next session. The 2026-11-04 CSV also shipped `3.06406685236769` for a gap of 3.06%.
+
+**Fix:** §C3 pins a 21-column, date-independent header
+(`premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,…`) and
+forbids a date in a column name; §C4 makes the routine **assert the header against the spec
+before the push**, and `tools/check_premarket_brief.py` fails an artifact whose header is missing a
+promised column, carries an unpromised one, or carries a date-named one.
+
+The CSV also gained `setup_published` and `setup_theme` — the columns that make §11 possible.
+
+## 11. The push subject lost the routine number, and the helper could be stale — HIGH
+
+The 2026-11-03 CSV was pushed with the subject `cron daily-briefs 2026-11-03` — **no routine
+number** — which is exactly what cron #90's triage greps for, so a delivered artifact was reported
+as MISSING. The path→number table in `push_artifact.sh` now has a row for BOTH
+`daily-briefs/*-pre-market.md` and `daily-briefs/*-pre-market.csv` (verified: the live commits read
+`cron 26 agentic-pre-market-brief 2026-11-03` and `… 2026-11-04`).
+
+The prompt's fetch block was `[ -s push_artifact.sh ] || curl …` over raw + jsDelivr. That guard
+means the **fallback was dead code** — the first successful download satisfied it — so a stale local
+copy of the helper kept using the old path→number table. Measured 2026-11-04: raw.githubusercontent
+served a stale blob for >17 minutes after a push while jsDelivr was fresh.
+
+**Fix:** the deployed prompt now uses the fleet's contents-API-first ladder, **refreshes the helper
+on every run**, and rejects a response whose *body* is a 404 JSON. The same ladder is now written
+into the skill spec, so it applies to every shared helper the routine fetches.
+
+## 12. The brief had no follow-up — HIGH
+
+The last section was `## 11. Open research queue`, and nothing anywhere recorded what happened to
+yesterday's calls. A brief that cannot be scored is a brief nobody can trust, and the routine never
+learns.
+
+**Fix:** §C5 adds `## Yesterday's brief — what happened`, on EVERY run, directly under the Bottom
+line, with the table the fleet already knows how to read:
+
+```
+| Name | Setup (yesterday) | Yesterday's close | Today's move | Thesis held? |
+```
+
+`tools/yesterday_review.py` builds it from real data: the reviewed brief (the most recent prior
+DAILY brief — the 2026-11-05 fire published nothing on a quota wall, so the 2026-11-06 run reviews
+the 2026-11-04 brief and SAYS so), its CSV's `setup_published` rows, the MCP bridge's
+`market-recap price_history` for the closes and moves, the Yahoo chart API for the intraday extremes
+that a "traded through the level" test needs, and the previous evening's post-market brief (cron
+#23) as the cross-check on the closes.
+
+The verdict is a TEST, not a re-judgement: `BROKE` = the invalidation level the reviewed brief
+published was traded through; `HELD` = it held and the session moved with the setup; `PARTIAL` = it
+held but the session moved against it; `UNJUDGED` = no level or no price, with the reason.
+
+**Measured on the real 2026-11-04 brief (46 setups, session 2026-11-05):** AMD −17.26%, TBLA
+−20.80%, NVDA −9.26%; NVDA `BROKE` (the 206.69 invalidation was traded through), FSLR / NXT / PLUG
+/ ENPH / SEDG `BROKE`, ARRY / HL / SCZM / MUX / EXK `PARTIAL`, and the closes agreed with the
+2026-11-05 post-market brief. The 2026-11-04 brief predates the invalidation column, so its rows
+say the level was **derived** from that brief's own published prior close — derived, never faked.
+
+## 13. The gate, and what it caught
+
+`tools/check_premarket_brief.py` is the contract gate (6 clauses: C0 marker, C1 Bottom line, C2
+levels, C3 CSV header + rows, C5 yesterday section). `tools/test_premarket_brief_contract.py`
+proves the contract is SATISFIABLE (a synthetic compliant artifact passes) and that the checker
+**bites** — 16 mutations, one per clause, all caught:
+
+the Bottom line deleted · two lines instead of three · wrong labels · the block moved below §1 ·
+the setup line with no level and no invalidation · a level column missing from the cluster table ·
+an empty invalidation · a gap that disagrees with the CSV · a published name that is not in the CSV ·
+a promised CSV column missing · a date-named CSV column · a setup row with an empty key_level · the
+yesterday section deleted · no `Thesis held?` column · a verdict outside the vocabulary · the
+contract marker missing.
+
+`tools/check_brief_consistency.py` (the older linter: prose ≡ tables ≡ CSV) now reads the v2 column
+names with LEGACY fallbacks, matches sections by HEADING rather than by a bare substring (the new
+Bottom line block talks about `## 1. TL;DR`, and a substring search would have read that mention as
+the section), and still passes on the legacy 2026-11-03 artifact.
+
+## Files changed
+
+- `cloud-prompts/skills/agentic-pre-market-brief/SKILL.md` — ARTIFACT FORMAT CONTRACT v2 (§C1–§C5),
+  the scanner column contract, the fetch-ladder rule, the failure-mode table.
+- `tools/check_premarket_brief.py` — NEW, the gate.
+- `tools/test_premarket_brief_contract.py` — NEW, 16 mutations.
+- `tools/yesterday_review.py` — NEW, the loop builder.
+- `tools/check_brief_consistency.py` — v2 columns with legacy fallbacks; heading-anchored sections.
+- `cloud-prompts/cron-prompts/26-agentic-pre-market-brief.md` — the push fetch ladder, the two
+  checkers, two new CRITICAL REMINDERS. Deployed byte-exactly (19,446 B, SHA-256 `3b530c82…`);
+  schedule `30 8 * * 1-5`, timezone `America/New_York`, model and session binding preserved.
+
+## Revert
+
+`git revert f4b5ca8` (or `git revert --no-commit f4b5ca8` to keep the prompt), and re-deploy the
+previous prompt blob — the pre-round prompt was SHA-256
+`e681545e9502e5c646b990fb41b9a43c9ebf108038b8225eda82f0550f88786d`, 16,334 B.
