@@ -362,6 +362,243 @@ The full run log for 2026-11-05 is in `docs/IMPROVEMENTS-cron20-eod-watchlist.md
 
 **Why shibui, not TradingView, for US?** The international TradingView screener response strips `volume` / `pe_ratio` / `sector`. The shibui JOIN schema (`stock_quotes` + `valuation` + `fundamentals_derived_daily`) gives the full CSV row in one query. Swapping US to TradingView would lose three columns.
 
+---
+
+# The US fact table — schema v2, derived columns, quality flags (2026-11-06)
+
+**The US file is the fleet's shared end-of-day fact table.** Before this revision it was a
+data dump: a session snapshot with 14 columns, and every downstream routine re-derived
+relative volume, the moving averages, the ATR and the gap on its own, from whatever it
+happened to have. Two routines then disagreed about what "relative volume" meant, and a
+consumer could not tell an empty cell from a failed fetch.
+
+**This section is the contract for the US file.** It is fetched at RUN time, so an edit here
+lands with the next fire and needs no prompt redeploy.
+
+## 1. The schema — 30 columns, the first 14 unchanged
+
+```
+date,ticker,name,open,high,low,close,volume,change_pct,market_cap,pe_ratio,sector,currency,exchange,
+rel_volume,pct_from_52w_high,pct_from_52w_low,sma_20,sma_50,sma_200,pct_vs_sma_50,pct_vs_sma_200,
+atr_14,atr_pct,gap_pct,avg_daily_dollar_volume,float_shares,market_cap_usd,cap_source_symbol,data_quality
+```
+
+- **The first 14 columns are the original session columns, in the original order.** A
+  consumer that reads by position keeps working; the new columns are appended.
+- **State the column count in `## Method` whenever it differs from the previous session** —
+  the archive now holds 14-column and 30-column files, and a consumer must be able to tell
+  them apart without parsing the header.
+- The numeric rule is unchanged: 4 significant figures with the fractional trailing zeros
+  stripped, except values ≥ 100000 which keep full precision; `volume`, `market_cap`,
+  `market_cap_usd`, `avg_daily_dollar_volume` and `float_shares` are integers.
+  **Regression-test the formatter every run**: re-format every numeric string of the
+  PREVIOUS published file and compare byte-for-byte.
+
+## 2. The derived columns — computed ONCE, here
+
+Every routine in this fleet used to re-derive these. Now the routine derives them once,
+from ONE price-history pull, and every consumer reads the same number. The definitions are
+the contract:
+
+| column | definition |
+|---|---|
+| `rel_volume` | session volume ÷ mean volume of the **30 sessions before** the session |
+| `avg_daily_dollar_volume` | mean(`close` × `volume`) over those same 30 prior sessions |
+| `sma_20` / `sma_50` / `sma_200` | mean close over the last 20 / 50 / 200 bars **ending at** the session bar |
+| `pct_vs_sma_50` / `pct_vs_sma_200` | (`close` ÷ `sma` − 1) × 100 |
+| `atr_14` | mean true range over the last 14 bars ending at the session bar; TR = max(h−l, \|h−prev_close\|, \|l−prev_close\|) |
+| `atr_pct` | `atr_14` ÷ `close` × 100 — the stop-distance measure |
+| `pct_from_52w_high` / `pct_from_52w_low` | (`close` − the 252-bar high/low) ÷ that extreme × 100 |
+| `gap_pct` | (published `open` − prior close) ÷ prior close × 100 |
+| `float_shares` | the vendor's public float (`ownership_stats.shares_float`) |
+| `market_cap_usd` | equal to `market_cap` on this file — see the currency rule below |
+
+**One history pull serves both the session and the derived columns.** Ask the daily-bar
+feed for a YEAR of daily bars, not one day: the session bar is the last bar, and the
+moving averages, the ATR, the 52-week extremes and the 30-session averages all come out
+of the same response. A second pull is a second chance to disagree with itself.
+
+**The price history is split-adjusted**, so the averages and the extremes sit on the same
+basis as the session close. A reverse split inside the window is not a data error.
+
+**Class-share symbol forms are per vendor, and the plain base is never a fallback**
+(`LEN-B` → `LEN` would publish the Class A COMMON line's price under the Class B ticker):
+`ABR-P-E` → Yahoo `ABR-PE`, `USB-P-H` → `USB-PH`, `BRK-A` → `BRK-A`.
+
+## 3. `data_quality` — a per-row flag, so a consumer can trust a row
+
+**A row is published with empty cells and NO marker only when the marker is `OK`.** An
+empty cell with no flag is the defect this column exists to remove: a consumer cannot
+distinguish "not applicable" from "the fetch failed".
+
+The vocabulary is closed. A cell may carry several flags joined with `|`, in this fixed
+precedence (most severe first):
+
+| flag | meaning |
+|---|---|
+| `NO_CAP` | the row's issuer cap could not be resolved — the cell is empty, **never zero** |
+| `CAP_CARRIED` | the cap was resolved from another line of the same issuer — see `cap_source_symbol` |
+| `HIGH_LOW_UNAVAILABLE` | high/low left empty on purpose: no range bracketed the close |
+| `RANGE_ADJUSTED` | high/low came from the vendor's day range, not the daily bar |
+| `NO_HISTORY` | no session bar in the price history, so no derived column exists |
+| `NO_PE` | no trailing P/E for the row |
+| `NO_SECTOR` | no GICS sector for the row |
+| `OK` | none of the above — and it appears only alone |
+
+**The Coverage table publishes BOTH the populated counts and the per-flag counts.**
+"Populated" alone is not a coverage statement: 4,840 populated closes out of 4,896 rows
+reads as 98.8% coverage when 65 of those rows carry a range that had to be abandoned.
+
+## 4. The market-cap carrier rule — one issuer, one cap
+
+**The cap belongs to the ISSUER, and the carrier is the VENDOR'S OWN row** — never a
+volume heuristic. The vendor stamps a company-level cap on one class row per company and
+leaves the siblings null; LILA carries its cap over LILAK despite 4× the volume. Pull the
+vendor's `valuation` rows, take the rows that carry a non-null cap, and that IS the carrier
+map.
+
+**Every line of that issuer publishes the issuer's cap, and every non-carrier line says
+which row it came from.** `cap_source_symbol` is the carrier's ticker; it equals the row's
+own ticker on the carrier row. This is the same contract the international file already
+uses, and it is what makes a preferred line's cap correct: every quote service reports the
+ISSUER's common-share count on a preferred line, so a per-line cap on a preferred row is
+the wrong number, while the issuer's cap is right.
+
+**The consequence must be stated in the artifact: one issuer now appears on more than one
+row, so a cap-weighted aggregate MUST deduplicate on `cap_source_symbol` first.** The file
+still does not support cap-weighted sector aggregates (the vendor's caps are coarse and
+the sector ETFs disagree with them) — the flag makes the double count visible instead of
+silent.
+
+- The carrier map is resolved **before** the floor or any cap filter, so a published row
+  never points at a `cap_source_symbol` that is not in the file.
+- A cap that cannot be resolved is left **empty with `NO_CAP`**. Never zero.
+- The `market_cap / close` implied share count must be plausible (order 10³–10¹³) on every
+  capped row. That is the guard that catches a cap carried across issuers.
+
+## 5. The currency rule — the `currency` column must do its job
+
+**Every row of the US file is USD.** `market_cap` is USD, `open`/`high`/`low`/`close` are
+USD, and the `currency` column says `USD` on every row.
+
+- **Publish `market_cap_usd` explicitly.** It equals `market_cap` on this file, and a
+  consumer that re-derives a USD cap must never have to guess.
+- **State the conversion direction in `## Method`**: *no FX conversion is applied to this
+  file*. The identity to assert downstream is `cap_usd × 1.0 == cap_local`. On the
+  international file the identity is `usd_cap × FX_per_USD == market_cap_local` — a
+  MULTIPLY against a local-per-USD rate, and the direction that produced cron #05's
+  100–200× error on 2026-11-04.
+- **The guard that catches that class of bug is cheap**: `market_cap / close` must return a
+  plausible share count, and one row must satisfy the identity above. On the US file it is
+  a no-op guard. Run it anyway.
+
+## 6. The markdown skeleton (fixed order)
+
+```
+# EOD US market snapshot — <session>
+## TL;DR
+## Coverage
+## Market read
+## Top movers
+## Source health
+## Method & caveats
+```
+
+- **`## TL;DR` — exactly three bullets**: what the session did (with the counts), the one
+  most consequential move, and the caveat that changes how to read the numbers. A fourth
+  bullet is a defect.
+- **`## Coverage`** — the populated count AND the basis of every column, then the
+  per-flag counts of `data_quality`.
+- **`## Market read`** — a **table**, never prose: the index proxies with their closes and
+  changes, the advance/decline counts, and the sector table (sector, average move, median
+  move, names, up, down, the sector ETF and its move). At least six numeric rows.
+- **`## Top movers`** — the liquid names (volume ≥ 100,000), gainers and losers, with the
+  relative volume and the ATR% so the row carries its own context.
+- **`## Method & caveats`** — the column count, the market-cap currency and the conversion
+  direction, the carrier rule and the dedupe warning, the `data_quality` vocabulary, every
+  derived-column definition, the range rule and the never-zero rule.
+
+## 7. The run-time fetch — the scripts, and the marker that keeps a stale copy out
+
+The derive stage is a **script**, not prose, so the numbers cannot drift between runs:
+
+```bash
+# --- fetch the derive-stage scripts (run-time fetch: fixes land with no redeploy) ---
+# The CAPABILITY marker is mandatory: an OLDER copy of these scripts is still published
+# and it would silently write the 14-column file. The contents API is authoritative and
+# is NOT CDN-cached, so it is tried first.
+mkdir -p /workspace/eod_scripts
+for F in fetch_eod_history.py fetch_eod_vendor_refs.py eod_derive.py build_eod_report.py; do
+  S=/workspace/eod_scripts/$F
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+    if [ -s "$S.tmp" ] && grep -q 'EOD_DERIVE_V2' "$S.tmp" 2>/dev/null; then
+      mv -f "$S.tmp" "$S"; break
+    fi
+    rm -f "$S.tmp"
+  done
+  if [ ! -s "$S" ] || ! grep -q 'EOD_DERIVE_V2' "$S" 2>/dev/null; then
+    echo "eod-derive: UNAVAILABLE ($F has no version carrying the EOD_DERIVE_V2 marker)"
+    echo "no derived columns; no push"
+    exit 1
+  fi
+done
+```
+
+**A missing script is a FAILURE, not a degraded run.** Publishing the old 14-column file
+after the fleet has started reading `rel_volume` and `data_quality` is worse than
+publishing nothing: the consumer cannot tell which shape it is holding.
+
+Then, in order:
+
+```bash
+# 1. the universe + the vendor's carrier rows and public floats (keyset, sequential)
+python3 /workspace/eod_scripts/fetch_eod_vendor_refs.py <universe.json> /workspace/work/vendor_refs.json
+
+# 2. ONE history pull per symbol (a year of daily bars serves the session AND the derived columns)
+python3 /workspace/eod_scripts/fetch_eod_history.py --symbols <symbols.csv> \
+    --out /workspace/work/history.jsonl --session <YYYY-MM-DD> --threads 24
+
+# 3. derive the columns, the flags, the carrier map and the manifest
+python3 /workspace/eod_scripts/eod_derive.py --base <base.csv> \
+    --history /workspace/work/history.jsonl --vendor /workspace/work/vendor_refs.json \
+    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.csv --manifest /workspace/work/manifest.json
+
+# 4. build the report FROM the published CSV (never hand-written)
+python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<YYYY-MM-DD>.csv \
+    --manifest /workspace/work/manifest.json --history /workspace/work/history.jsonl \
+    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json>
+
+# 5. the assertions — the artifact is not finished until they pass
+python3 tools/check_eod_artifact.py --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md
+```
+
+**The checker is INDEPENDENT of the builder** — it re-implements the issuer-grouping rule
+instead of importing `eod_derive.py`, because a checker that shares code with the thing it
+checks cannot catch a bug in that code. It asserts: every required column is present;
+`data_quality` is never empty and never off-vocabulary; every `CAP_CARRIED` row names a
+row of the SAME issuer; no `HIGH_LOW_UNAVAILABLE` row has a populated high/low; no close
+sits outside its own range; no missing value is written as zero; `market_cap_usd` equals
+`market_cap`; the implied share count is plausible; the TL;DR has exactly three bullets;
+the Market read is a table with ≥ 6 numeric rows; the Coverage table reports both
+populated and per-flag counts; and the Method section states the cap currency and the
+conversion direction.
+
+## 8. What did NOT change (do not re-litigate these)
+
+- **The universe and the floor.** The ~4,900-row US set with a settlement-stamped close is
+  the right shape.
+- **A close is never published outside its own range.** Where the daily bar cannot bracket
+  it, the vendor's day range is used and the row is flagged `RANGE_ADJUSTED`; where neither
+  brackets it, high/low are left empty and the row is flagged `HIGH_LOW_UNAVAILABLE`.
+- **A missing value is empty, never zero.**
+- **The base session fields are not restated by the derive stage.** It adds columns and the
+  carrier rule; it does not change a price, a volume, a P/E, a sector or a name. The only
+  base value that changes is `market_cap` on a row that now carries its issuer's cap.
+
 ## Steps — International (cron `5edfb4aa…`) — v2 + compute-opt flow
 
 ### The summary.md skeleton (fixed order — load-bearing)
