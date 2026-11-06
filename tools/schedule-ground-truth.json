@@ -253,9 +253,9 @@
         "marker": "Pre-market refresh"
       },
       "90-delivery-auditor.md": {
-        "spec_path": "tools/schedule-ground-truth.json",
-        "bundle": "tools",
-        "marker": "session_mode_invariant"
+        "spec_path": "cloud-prompts/_shared/auditor-procedure.md",
+        "bundle": "cloud-prompts/_shared",
+        "marker": "AUDITOR_PROCEDURE_V1"
       },
       "91-schedule-drift-guard.md": {
         "spec_path": "tools/schedule-drift.py",
