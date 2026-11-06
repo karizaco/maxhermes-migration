@@ -388,3 +388,74 @@ The #19 prompt's OUTPUT block was re-deployed twice:
 Blast radius: **one task** (cron #19, task `457569978294401`). Schedule `0 6 * * 1-5`, timezone
 `America/New_York`, `enabled`, session `new`, model `MiniMax-M3.1-Flash` (thinking medium),
 project `13835`, `created_at` and `next_run` all preserved. Fleet-wide prompt drift: 0 of 27.
+
+---
+
+## 2026-11-06 fire — the `Prior result` column was publishing a YEAR-OLD verdict
+
+The 2026-11-06 06:00 ET fire produced `earnings/2026-11-06-reminders.md` — 8 US rows, 3 non-US
+rows, 8 band rows, `reaction_ranked: true`, no degraded reaction columns, and it passed
+`tools/check_earnings_reminder_artifact.py` on the first run.
+
+### 22. `prior_report_result()` picked the OLDEST quarter — CRITICAL
+
+Yahoo's `earningsHistory` array is ordered **OLDEST-FIRST**. `earnings_reaction_stats.py` iterated
+that array and returned the **first** entry with an EPS surprise, so the published `Prior result`
+was the verdict of a report that was **four quarters old**:
+
+| ticker | helper published | the latest quarter (ended 2026-06-30) | truth |
+|---|---|---|---|
+| CHTR | **miss -10.3%** (qtr ended 2025-09-30) | act 10.66 vs est 10.06 | **beat +5.9%** (reported 2026-07-24) |
+| MRNA | beat +76.6% (2025-09-30) | act -1.97 vs est -2.06 | beat +4.3% (reported 2026-07-31) |
+| VST | miss -10.5% (2025-09-30) | act 0.76 vs est 1.66 | miss -54.2% |
+| ENB | miss -9.8% (2025-09-30) | act 0.63 vs est 0.60 | beat +5.6% |
+| PPL | beat +5.3% (2025-09-30) | act 0.33 vs est 0.34 | miss -4.0% |
+
+The artifact's **reaction score** was unaffected (it uses `avg_abs_move` and `implied_move`), and
+the machine checker does not look at this column — so nothing flagged the error. Only the reader
+would have been told Charter missed when it beat.
+
+**Fix (in the repo, no `cron_update`):** `select_latest_report()` picks the entry with the latest
+quarter-end date; `prior_report_result()` uses it; `REACTION_STATS_VERSION` → `2026-11-06.2`.
+`tools/test_earnings_reaction_prior_result.py` is the guard — 8 checks, **observed to fail** against
+the old behaviour (`FAIL latest quarter is selected (got 2025-09-30)`) and to pass after the fix.
+The run's artifact carries the corrected column.
+
+### 23. Three large non-US issuers were missing from the standing Pass B universe
+
+The standing list had 42 candidates and none of them was Hong Kong Exchanges & Clearing, Macquarie
+Group or Constellation Software. All three are ≥$50B with a US line, and all three reported around
+the fire date — they surfaced only through a TradingView sweep of every US name whose next report
+date falls on the fire date. Added to the standing universe with proven US lines (`HKXCY`, `MQBKY`,
+`CNSWF`, each verified on Yahoo's chart API for venue, currency and name).
+
+**The sweep is the lesson:** the candidate list is a standing list, so it can only ever find what it
+already knows. A completeness sweep over the whole US market (filter `earnings_release_next_date`
+to the fire date, then intersect with the S&P 500 list and the $50B floor) is what proved the roster
+was complete on 2026-11-06 — and it is what found the three missing issuers.
+
+### 24. Two issuers announced on 6 November locally but land on 5 November in ET
+
+**Mitsubishi Heavy Industries** published its H1 FY2026 results on 6 Nov JST at 13:30 (TDnet
+timestamp) = **5 Nov 23:30 ET**; **Macquarie Group** announced its 2027 half-year result on 6 Nov
+at 07:00 AEDT = **5 Nov 15:00 ET**. Both are "6 November" announcements and both belong to the
+**5 November** ET day, so a brief dated 6 November must not carry them. The ET-day rule is now
+stated with these two worked examples in the skill spec.
+
+### 25. Two more source quirks worth keeping
+
+- **EarningsWhispers company pages are walled again.** The offline `ewc` cookie trick from the
+  2026-11-04 run returned the 2 KB wall page for all 10 tickers on 2026-11-06, so per-name EPS and
+  revenue estimates had to come from Nasdaq/Zacks (EPS) and TradingView (revenue). Check the page
+  LENGTH, and fall back rather than re-deriving the cookie.
+- **Yahoo's `quoteSummary` crumb endpoint returned HTTP 429 from this egress** mid-run, while the
+  `v7/finance/quote` and `v8/finance/chart` endpoints kept working. `earningsTrend` (revenue) was
+  therefore unavailable; `earningsHistory` worked with a seeded cookie jar. A run must not treat one
+  Yahoo endpoint's 429 as "Yahoo is down" — the other endpoints are separate paths.
+
+### Artefact of the run
+
+`earnings/2026-11-06-reminders.md` — 8 US rows ranked by reaction score (CHTR 10.48 → PPL 2.59),
+3 non-US rows (KDDI reported 02:00 ET, HKEX reported, Constellation pending after the TSX close),
+8 band rows, 2 exclusions confirmed on issuer pages (BRK.B posts on Sat 7 Nov; ECHO filed its 10-Q
+on 3 Nov). `errors: 0` — no source was degraded in a way that changed a published number.

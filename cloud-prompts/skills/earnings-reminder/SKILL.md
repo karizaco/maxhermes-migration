@@ -188,7 +188,7 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    | `YTD %` | last close vs the first bar of the current calendar year | Yahoo chart daily bars |
    | `Avg abs move %` | mean ABSOLUTE reaction over the name's last 4 past reports | Nasdaq `earnings-surprise` report dates + Yahoo chart bars |
    | `Implied move %` | ATM straddle cost at the first expiry that straddles the event, as % of spot | Cboe delayed-quote option chain |
-   | `Prior result` | last reported quarter: `beat` / `miss` vs consensus EPS | Yahoo `earningsHistory` |
+   | `Prior result` | **the MOST RECENT** reported quarter: `beat` / `miss` vs consensus EPS | Yahoo `earningsHistory` |
    | `Reaction score` | `0.6 x avg_abs_move + 0.4 x implied_move` | derived |
 
    - **Reaction window.** BMO report on day D -> `close(D-1) -> close(D)`. AMC report on day D ->
@@ -200,6 +200,13 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
      spot and the mid of the call and the put at that strike.
    - **A missing implied move is substituted by `avg_abs_move`**, so a name with no derivable implied
      move scores exactly its `avg_abs_move`. Never leave the score blank while the inputs exist.
+   - **`Prior result` is the LATEST quarter, and Yahoo's array is OLDEST-FIRST.** Measured
+     2026-11-06: MRNA's `earningsHistory` starts at the quarter ended 2025-09-30 and ends at
+     2026-06-30. Taking the FIRST element publishes a YEAR-OLD verdict — it called CHTR a miss
+     when the latest quarter (ended 2026-06-30, reported 2026-07-24) was a beat of +5.9%.
+     **Always select the entry with the latest quarter-end date.** `earnings_reaction_stats.py`
+     does this in `select_latest_report()` and `tools/test_earnings_reaction_prior_result.py`
+     guards it (it fails against the old behaviour).
    - **`reaction_score` is rounded to 2 decimals and the table is sorted by it DESCENDING.** Ties
      break by market cap descending. A name whose score could not be computed sorts last with
      `n/a` — it is NOT dropped from the roster.
@@ -327,10 +334,13 @@ to prove it resolves** (venue + local currency + name). `us_peer` is the US-list
 | Banco Santander | `SAN.MC` | Bolsa de Madrid | SAN (NYSE) | ADR (US-listed) |
 | Alibaba Group | `9988.HK` | Hong Kong | BABA (NYSE) | ADR (US-listed) |
 | Tencent | `0700.HK` | Hong Kong | TCEHY (OTC) | ADR (OTC) |
+| Hong Kong Exchanges & Clearing | `0388.HK` | Hong Kong Stock Exchange | HKXCY (OTC) | ADR (OTC) |
 | BHP | `BHP.AX` | ASX | BHP (NYSE) | ADR (US-listed) |
 | Commonwealth Bank of Australia | `CBA.AX` | ASX | CBAUF (OTC) | ADR (OTC) |
+| Macquarie Group | `MQG.AX` | ASX | MQBKY (OTC) | ADR (OTC) |
 | Vale | `VALE3.SA` | B3 (Brazil) | VALE (NYSE) | ADR (US-listed) |
 | Petrobras | `PETR4.SA` | B3 (Brazil) | PBR (NYSE) | ADR (US-listed) |
+| Constellation Software | `CSU.TO` | Toronto Stock Exchange | CNSWF (OTC) | ADR (OTC) |
 
 ### ADR-ticker traps — every one of these cost a wrong row
 
@@ -346,6 +356,10 @@ The US line of a non-US issuer is NOT guessable from the company name. Measured 
   participation certificate) — note it so the reader is not stuck.
 - **`TTE` is an ordinary-share line, not an ADR** — TradingView types it `stock`, so
   `us_tradeable` is `US-listed`, not `ADR (US-listed)`.
+- **Added 2026-11-06, all three proven on Yahoo's chart API (venue + currency + name):**
+  `HKXCY` (also served as `HKXCF`) → Hong Kong Exchanges & Clearing, OTC/USD;
+  `MQBKY` → Macquarie Group, OTC/USD; `CNSWF` → Constellation Software, OTC/USD, a 1:1
+  depositary line for `CSU.TO` (whose own quote is CAD on Toronto).
 
 ### Which day does a non-US print belong to?
 
@@ -364,6 +378,16 @@ Nov 6, 2026** (issuer IR calendar + issuer newsroom: results announced Nov 6, we
 (issuer page), **Tencent Nov 18** (issuer page: 20:00 ET). **TSMC, Samsung, Toyota and Alibaba had
 NO date published on their own IR pages** — an aggregator estimate is not a publishable date, so
 those candidates stay unpublished until the issuer posts one.
+
+**Two more IR-confirmed dates measured on the 2026-11-06 fire, both on the PREVIOUS ET day:**
+**Mitsubishi Heavy Industries** disclosed its H1 FY2026 results on 6 Nov JST at 13:30 (TDnet
+timestamp) = **5 Nov 23:30 ET**, and **Macquarie Group** announced its 2027 half-year result on
+6 Nov at 07:00 AEDT = **5 Nov 15:00 ET**. Both are announced ON 6 November locally and both land on
+**5 November** in ET — a brief dated 6 November must NOT carry them. Conversely **HKEX** announced
+its Q3 2026 results on 6 November HKT (issuer financial calendar; released after the Hong Kong
+close, so already public at 06:00 ET) and **Constellation Software** released its Q3 results after
+the TSX close on 6 November (16:00 ET, issuer press release) — both belong to the 6 November ET
+day. The local announcement date is never the ET date; convert it.
 
 ## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)
 
@@ -557,6 +581,13 @@ band_low_usd: 40000000000
 - **TradingView scanner**: the payload key is `filter` (SINGULAR) — `filters` is silently ignored
   and returns the whole universe. Numeric ops are `greater` / `less` (not `egreater`). `market_cap_basic`
   is USD. Use `type in (stock, dr)` so ADRs are not dropped.
+- **Scanner filter traps measured 2026-11-06:** `{"left":"type","operation":"in","right":[...]}` is
+  rejected with **HTTP 400** — filter the type in python after the call instead of in the payload.
+  `in_range` needs BOTH `right` and `second_right` (a single value is a 400). To select a DATE
+  column, use `greater` / `less` with **epoch seconds** (the value must be a whole hour boundary:
+  `1793959200` works, `1793959199` returns HTTP 400). A date-column sweep is the cheapest
+  completeness check for a roster: filter every US name whose `earnings_release_next_date` falls on
+  the fire date and compare that set with the calendar-derived roster.
 
 ## Out of scope
 

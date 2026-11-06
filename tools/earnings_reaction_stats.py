@@ -2,7 +2,7 @@
 """
 earnings_reaction_stats.py — reaction-potential columns for the cron #19 earnings reminder.
 
-REACTION_STATS_VERSION: 2026-11-06.1
+REACTION_STATS_VERSION: 2026-11-06.2
 
 Computes, for a list of US-traded tickers:
 
@@ -33,7 +33,7 @@ Exit codes: 0 ok, 1 usage error, 2 every ticker failed.
 import argparse, csv, json, os, re, subprocess, sys, tempfile, time
 from datetime import date, datetime, timedelta
 
-REACTION_STATS_VERSION = "2026-11-06.1"
+REACTION_STATS_VERSION = "2026-11-06.2"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 # The cookie jar NEVER lives next to the script: the script is fetched into a repo tree and a
@@ -201,28 +201,52 @@ def avg_abs_move_pct(bars, report_dates, timing, n_events=4):
     return round(sum(moves) / len(moves), 2), len(moves)
 
 
+def select_latest_report(history):
+    """The MOST RECENT entry of a Yahoo `earningsHistory` array.
+
+    Yahoo returns that array OLDEST-FIRST (verified 2026-11-06: MRNA's first element is the
+    quarter ended 2025-09-30 and its last is 2026-06-30), so taking the FIRST element publishes a
+    YEAR-OLD beat/miss. The most recent report is the entry with the LATEST quarter-end date.
+    Entries without a parseable quarter fall back to the first usable entry, so a malformed
+    payload still returns something instead of raising.
+    """
+    usable = [h for h in (history or []) if (h.get("epsActual") or {}).get("raw") is not None]
+    if not usable:
+        return None
+    dated = []
+    for h in usable:
+        raw = (h.get("quarter") or {}).get("fmt")
+        try:
+            dated.append((date.fromisoformat(raw), h))
+        except Exception:
+            continue
+    if dated:
+        return max(dated, key=lambda pair: pair[0])[1]
+    return usable[0]
+
+
 def prior_report_result(symbol):
-    """Last reported quarter: beat / miss from Yahoo earningsHistory."""
+    """Last reported quarter: beat / miss from Yahoo earningsHistory (the LATEST quarter)."""
     res = yahoo_quote_summary(symbol, "earningsHistory")
     try:
         hist = res["earningsHistory"]["history"]
     except Exception:
         return None
-    for h in hist:
-        act = (h.get("epsActual") or {}).get("raw")
-        est = (h.get("epsEstimate") or {}).get("raw")
-        if act is None:
-            continue
-        sp = (h.get("surprisePercent") or {}).get("raw")
-        if sp is not None:
-            verdict = "beat" if sp >= 0 else "miss"
-            return {"result": verdict, "surprise_pct": round(sp * 100.0, 2),
-                    "eps_actual": act, "eps_estimate": est,
-                    "quarter": (h.get("quarter") or {}).get("fmt")}
-        if est is not None:
-            verdict = "beat" if act >= est else "miss"
-            return {"result": verdict, "surprise_pct": None, "eps_actual": act,
-                    "eps_estimate": est, "quarter": (h.get("quarter") or {}).get("fmt")}
+    h = select_latest_report(hist)
+    if h is None:
+        return None
+    act = (h.get("epsActual") or {}).get("raw")
+    est = (h.get("epsEstimate") or {}).get("raw")
+    sp = (h.get("surprisePercent") or {}).get("raw")
+    if sp is not None:
+        verdict = "beat" if sp >= 0 else "miss"
+        return {"result": verdict, "surprise_pct": round(sp * 100.0, 2),
+                "eps_actual": act, "eps_estimate": est,
+                "quarter": (h.get("quarter") or {}).get("fmt")}
+    if est is not None:
+        verdict = "beat" if act >= est else "miss"
+        return {"result": verdict, "surprise_pct": None, "eps_actual": act,
+                "eps_estimate": est, "quarter": (h.get("quarter") or {}).get("fmt")}
     return None
 
 
