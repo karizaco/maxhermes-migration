@@ -433,3 +433,57 @@ See `cloud-prompts/cron-prompts/README.md` for the push block and the delivery-v
 step. Summary: never `git add -A` in a fresh sandbox (it staged 283 deletions on 2026-10-25);
 use a git worktree of `origin/main`, stage only this cron's output dir, abort on any staged
 deletion, push `HEAD:main`, then verify with `git cat-file -e "origin/main:<path>"`.
+
+### 5a. Never `git rebase` inside a `--depth 1` clone — it replays the shallow boundary
+
+Measured 2026-11-06 while publishing a skill-spec fix to this repo. A `--depth 1` clone was
+re-based onto a moved `origin/main`, and because the shallow boundary has no parent objects, git
+tried to **replay the clone's own base commit** onto the new tip. The result was a long
+"both added" conflict list (`AGENTS.md`, `PROMPT-BLOCKS.md`, `RUNTIME-CONTRACT.md`, …) for files
+nobody had actually touched, and the `push` then printed **"Everything up-to-date"** — because the
+in-progress rebase had already moved `HEAD` onto the fetched tip. **The commit was silently
+absent from the remote**, and only the contents API showed it.
+
+**Rule: never rebase a shallow clone.** Either deepen it first (`git fetch --unshallow`, or
+`--depth 200`) or skip the rebase entirely:
+
+```bash
+git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+git reset --hard origin/main          # discard the local commits, keep the tree
+# re-apply ONLY your own change as a patch, then commit and push
+git diff <your-base-commit> -- <your files> > /tmp/my_delta.patch
+git apply --3way /tmp/my_delta.patch
+```
+
+**"Everything up-to-date" on a push you believe landed is a red flag, not a success.** It means
+`HEAD` already equals the remote — which, mid-rebase, can be true while your commit is nowhere.
+**Verify every publish against the GitHub contents API**, never against the push output and never
+against a local ref (`git cat-file -e origin/main:<path>` reads a stale ref in a shallow clone):
+
+```bash
+curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/<owner>/<repo>/contents/<path>?ref=main" -o /tmp/remote
+grep -c "<your marker>" /tmp/remote     # a marker string, not just the file's existence
+```
+
+Put a **marker string** in the change you are publishing (a section heading, a version token) so
+this check is a `grep -c` and not a byte-diff against something you are unsure about.
+
+### 5b. Another session may be editing the same file — resolve by content, not by base
+
+The same 2026-11-06 push hit a conflict on `docs/IMPROVEMENTS-cron05-eod-international.md`,
+because another session had appended ~132 lines to it between my base commit and the new tip.
+**Do not resolve such a conflict by taking one side wholesale** — that silently drops the other
+session's work. Take the **tip's** version of the file and **append your own section** to it,
+then check that every section heading is still present exactly once:
+
+```bash
+git checkout origin/main -- <the file>          # tip's version, their content intact
+# append your new section to it
+grep -c "^## 11\. " <the file>                    # yours, exactly once
+grep -c "^## 10\. " <the file>                    # theirs, still intact
+```
+
+This is the same "anchor edits by content, never by line number" rule the rest of the fleet
+already follows for prompt files, applied to shared docs.
+
