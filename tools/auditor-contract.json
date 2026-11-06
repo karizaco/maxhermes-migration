@@ -1,7 +1,6 @@
 {
   "contract_version": "auditor-contract-v1",
   "_note": "THE contract for cron #90 (delivery-auditor). One file, shared by three consumers: the prompt (which fetches it at RUN time and applies it), tools/check_auditor_contract.py (the gate that validates a produced status.json + digest), and tools/test_auditor_contract.py (the fault injections). A contract that lives only in prose is a claim; a contract that lives here and is asserted is a contract. The prompt also carries a COMPACT INLINE COPY of the cause vocabulary and the state list as a fallback for a failed fetch - tools/check_auditor_contract.py --prompt parses that copy out of the prompt and FAILS if it disagrees with this file, so the fallback can never silently drift.",
-
   "states": {
     "delivered": "The artifact exists on origin/main and was byte-verified.",
     "missing": "The routine was due, produced nothing, and the failure reason is KNOWN (no run at all, a failed run, or a lost push). Counted in `missing`. Never used for a routine that skipped by design.",
@@ -10,11 +9,24 @@
     "written_off": "A specific gap the operator accepted. NOT a finding.",
     "not_due": "The schedule does not fire on the audited weekday. NOT a finding."
   },
-  "state_vocabulary": ["delivered", "missing", "not_yet_fired", "skipped_by_design", "written_off", "not_due"],
-
-  "gap_labels": ["MISSING", "reconstructed", "present_but_empty", "partial", "stale", "never_delivered", "roster_desync"],
+  "state_vocabulary": [
+    "delivered",
+    "missing",
+    "not_yet_fired",
+    "skipped_by_design",
+    "written_off",
+    "not_due"
+  ],
+  "gap_labels": [
+    "MISSING",
+    "reconstructed",
+    "present_but_empty",
+    "partial",
+    "stale",
+    "never_delivered",
+    "roster_desync"
+  ],
   "_gap_labels_note": "A LABEL says WHAT happened; a CAUSE says WHY. Every gap carries both, and the cause must come from `causes`. `possible_holiday`, `weekend_no_us_session` and `not_due` are NOT gap labels: a holiday or a weekend is a non-finding and is never reported as a gap line (a gap line without a cause is a failed audit).",
-
   "causes": [
     "platform_500",
     "timeout",
@@ -27,7 +39,6 @@
     "never_fired"
   ],
   "_causes_note": "The controlled vocabulary is CLOSED. A gap line whose cause is not in this list (or whose reason is empty) is a FAILED AUDIT and increments `errors`. `never_fired` is the one addition to the operator's list: 'the scheduler never dispatched this routine on a due day' is a real cause with a different fix from every other token, and mislabelling it as one of the others would send the operator to the wrong place.",
-
   "cause_glossary": {
     "platform_500": "The platform itself failed the fire (HTTP 500 / CRON_EXECUTION_FAILED / no session ever started).",
     "timeout": "The run exceeded its time budget and was cut off before it could write or push.",
@@ -39,57 +50,125 @@
     "cron_update_failed": "A `cron_update` that was meant to change the routine's schedule or prompt did not land.",
     "never_fired": "The scheduler never dispatched the routine on a day its own schedule said it should fire."
   },
-
   "label_causes": {
-    "MISSING": ["platform_500", "timeout", "quota_2067", "push_failure", "cron_update_failed", "never_fired"],
-    "reconstructed": ["platform_500", "timeout", "quota_2067", "push_failure", "delayed_replay", "cron_update_failed"],
-    "present_but_empty": ["platform_500", "timeout", "push_failure"],
-    "partial": ["platform_500", "timeout", "push_failure"],
-    "stale": ["push_failure", "never_fired", "cron_update_failed"],
-    "never_delivered": ["platform_500", "timeout", "quota_2067", "push_failure", "cron_update_failed", "never_fired"],
-    "roster_desync": ["cron_update_failed"]
+    "MISSING": [
+      "platform_500",
+      "timeout",
+      "quota_2067",
+      "push_failure",
+      "cron_update_failed",
+      "never_fired"
+    ],
+    "reconstructed": [
+      "platform_500",
+      "timeout",
+      "quota_2067",
+      "push_failure",
+      "delayed_replay",
+      "cron_update_failed"
+    ],
+    "present_but_empty": [
+      "platform_500",
+      "timeout",
+      "push_failure"
+    ],
+    "partial": [
+      "platform_500",
+      "timeout",
+      "push_failure"
+    ],
+    "stale": [
+      "push_failure",
+      "never_fired",
+      "cron_update_failed"
+    ],
+    "never_delivered": [
+      "platform_500",
+      "timeout",
+      "quota_2067",
+      "push_failure",
+      "cron_update_failed",
+      "never_fired"
+    ],
+    "roster_desync": [
+      "cron_update_failed"
+    ]
   },
   "_label_causes_note": "Which causes may pair with which label. A pair outside this map is a FAILED AUDIT: e.g. `skipped_by_design` is never a cause OF a MISSING gap, because a routine that skipped by design is not missing at all.",
-
   "skip_marker": {
     "glob": "refs/skipped-markers/{date}_SKIPPED_*.md",
     "branch": "main",
     "reason_line": "- Reason: <reason>",
     "_note": "A skip marker IS the audit trail for a deliberate skip: the routine fired and declined. Its presence proves `skipped_by_design` - never `missing`. The marker's commit subject carries the routine number (`cron <NN> ... SKIPPED <date>`), which is how a marker is attributed to a routine."
   },
-
   "roster_gap": {
     "line": "roster_gap: <name> (task <id>) is live but not in schedule-ground-truth.json",
     "ground_truth": "tools/schedule-ground-truth.json",
     "detector": "tools/auditor_roster_check.py",
     "_note": "A routine that is LIVE on the scheduler but absent from the ground truth is UNMONITORED: the auditor never checks it, the drift guard cannot repair it, and nothing screams. This is the standing self-check that makes that class of bug impossible to hide again."
   },
-
   "digest": {
     "summary": "audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>",
-    "gap": "gap: <routine> <label> <path> — cause=<cause> age_h=<n> — <detail>",
+    "gap": "gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>",
     "skipped": "skipped: <routine> <reason> — <marker path>",
     "roster_gap": "roster_gap: <name> (task <id>) is live but not in schedule-ground-truth.json",
     "streak": "streak: <routine> <n> consecutive missed fires",
-    "push": "push: ok (verified) | push: skipped (token unset) | push: FAILED (<reason>)",
+    "push": "push: ok (verified)",
+    "push_alternates": [
+      "push: skipped (token unset)",
+      "push: FAILED (<reason>)"
+    ],
     "errors": "errors: <n>",
     "line_cap": 8,
-    "_line_cap_note": "The cap of 8 lines covers the FRAMING (summary, push, errors). The per-item lines - one per gap, per skip, per roster gap, per dead streak - are additional and are NEVER merged, truncated or dropped: a routine with a gap is worth more than the line budget. This is how the format already behaved once a run had more than four gaps."
+    "_line_cap_note": "The cap of 8 lines covers the FRAMING (summary, push, errors). The per-item lines - one per gap, per skip, per roster gap, per dead streak - are additional and are NEVER merged, truncated or dropped: a routine with a gap is worth more than the line budget. This is how the format already behaved once a run had more than four gaps.",
+    "_parity_note": "These templates are asserted VERBATIM against the deployed prompt by tools/check_auditor_contract.py. The prompt owns the reply format; the procedure file owns the method. If they ever disagree, the PROMPT wins."
   },
-
   "status_schema": {
     "version": 2,
     "required_top_level": [
-      "audit_date_et", "audit_run_et", "origin_main_sha",
-      "due", "delivered", "missing", "skipped_by_design_count",
-      "not_yet_fired", "written_off", "roster_gap", "gaps", "routines", "audit_status"
+      "audit_date_et",
+      "audit_run_et",
+      "origin_main_sha",
+      "due",
+      "delivered",
+      "missing",
+      "skipped_by_design_count",
+      "not_yet_fired",
+      "written_off",
+      "roster_gap",
+      "gaps",
+      "routines",
+      "audit_status"
     ],
-    "gap_fields": ["routine", "path", "label", "cause", "gap_age_hours", "streak"],
-    "skipped_fields": ["routine", "reason", "marker"],
-    "roster_gap_fields": ["name", "task_id"],
-    "routine_fields": ["routine", "state", "streak"],
+    "gap_fields": [
+      "routine",
+      "path",
+      "label",
+      "cause",
+      "gap_age_hours",
+      "streak"
+    ],
+    "skipped_fields": [
+      "routine",
+      "reason",
+      "marker"
+    ],
+    "roster_gap_fields": [
+      "name",
+      "task_id"
+    ],
+    "routine_fields": [
+      "routine",
+      "state",
+      "streak"
+    ],
     "streak_rule": "Consecutive DUE fires missed. Carried forward from the previous status.json on the audit/status branch: +1 when the routine is MISSING this cycle, 0 when it is delivered, and UNCHANGED when the routine was not due on the audited day (a routine that is not due must never reset its own streak).",
     "gap_age_hours_rule": "Hours from the routine's MISSED FIRE INSTANT on the audited date (its own scheduled ET time) to the audit run's instant, rounded to one decimal. It is the age of the most recent missed fire, so a three-day-old gap is distinguishable from a twenty-minute-old one.",
-    "audit_status_values": ["ok", "gaps_found", "failed_no_repo", "skipped_no_token"]
+    "audit_status_values": [
+      "ok",
+      "gaps_found",
+      "failed_no_repo",
+      "skipped_no_token"
+    ]
   }
 }

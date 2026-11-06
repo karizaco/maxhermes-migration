@@ -131,7 +131,8 @@ def record(ok, name, detail=""):
     return ok
 
 
-def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None):
+def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None,
+                procedure=None):
     s = tmp / "status.json"
     s.write_text(json.dumps(status, indent=1), encoding="utf-8")
     d = tmp / "digest.txt"
@@ -145,6 +146,8 @@ def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None)
         cmd += ["--ground-truth", str(ground_truth)]
     if prompt is not None:
         cmd += ["--prompt", str(prompt)]
+    if procedure is not None:
+        cmd += ["--procedure", str(procedure)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     first = ""
     for line in p.stdout.splitlines():
@@ -306,28 +309,50 @@ def main():
     record(rc != 0, "the gate fails when the status file claims a roster gap that is not real",
            detail)
 
-    # --- 4. the prompt's inline fallback copy must agree with the contract -------
+    # --- 4. the deployed surfaces must still agree with the contract ------------
+    # The PROMPT owns the reply format; the PROCEDURE file (fetched at run time)
+    # owns the method and carries the inline fallback copy of the contract.
     prompt = ROOT / "cloud-prompts" / "cron-prompts" / "90-delivery-auditor.md"
-    if prompt.exists():
-        text = prompt.read_text(encoding="utf-8")
-        if "AUDITOR-CONTRACT-CAUSES" in text:
-            p2 = tmp / "prompt.md"
-            p2.write_text(text, encoding="utf-8")
-            rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
-                                     tasks=copy.deepcopy(TASKS), prompt=str(p2))
-            record(rc == 0, "the deployed prompt's inline contract copy agrees with the contract",
-                   detail)
-            broken = text.replace("platform_500", "platform_500X", 1)
-            p3 = tmp / "prompt-broken.md"
-            p3.write_text(broken, encoding="utf-8")
-            rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
-                                     tasks=copy.deepcopy(TASKS), prompt=str(p3))
-            record(rc != 0, "a drifted inline contract copy in the prompt is caught", detail)
-        else:
-            record(False, "the deployed prompt carries an inline contract copy",
-                   "no AUDITOR-CONTRACT-CAUSES block found")
+    procedure = ROOT / "cloud-prompts" / "_shared" / "auditor-procedure.md"
+    if prompt.exists() and procedure.exists():
+        ptext = prompt.read_text(encoding="utf-8")
+        proc_text = procedure.read_text(encoding="utf-8")
+        p2 = tmp / "prompt.md"
+        p2.write_text(ptext, encoding="utf-8")
+        pr2 = tmp / "procedure.md"
+        pr2.write_text(proc_text, encoding="utf-8")
+        rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
+                                 tasks=copy.deepcopy(TASKS), prompt=str(p2),
+                                 procedure=str(pr2))
+        record(rc == 0, "the deployed prompt and procedure agree with the contract", detail)
+
+        broken = proc_text.replace("platform_500", "platform_500X", 1)
+        p3 = tmp / "procedure-broken.md"
+        p3.write_text(broken, encoding="utf-8")
+        rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
+                                 tasks=copy.deepcopy(TASKS), prompt=str(p2),
+                                 procedure=str(p3))
+        record(rc != 0, "a drifted inline contract copy in the procedure is caught", detail)
+
+        broken_prompt = ptext.replace("audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>",
+                                       "audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<x>")
+        p4 = tmp / "prompt-broken.md"
+        p4.write_text(broken_prompt, encoding="utf-8")
+        rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
+                                 tasks=copy.deepcopy(TASKS), prompt=str(p4),
+                                 procedure=str(pr2))
+        record(rc != 0, "a reply template that drifted in the prompt is caught", detail)
+
+        no_marker = proc_text.replace("AUDITOR_PROCEDURE_V1\n", "", 1)
+        p5 = tmp / "procedure-nomarker.md"
+        p5.write_text(no_marker, encoding="utf-8")
+        rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,
+                                 tasks=copy.deepcopy(TASKS), prompt=str(p2),
+                                 procedure=str(p5))
+        record(rc != 0, "a procedure file with no capability marker is caught", detail)
     else:
-        record(False, "the deployed prompt exists", str(prompt))
+        record(False, "the deployed prompt and the procedure file both exist",
+               f"{prompt} / {procedure}")
 
     print("-" * 78)
     failures = 0

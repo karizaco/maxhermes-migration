@@ -33,8 +33,11 @@ USAGE
                   check and prove every live-but-unrostered routine was named
   --ground-truth  default: tools/schedule-ground-truth.json
   --contract      default: tools/auditor-contract.json
-  --prompt        the deployed prompt, to assert its inline fallback copy of
-                  the contract still agrees with the contract file
+  --prompt        the deployed prompt, to assert it still carries the contract's
+                  reply templates verbatim
+  --procedure     the procedure file the prompt fetches at run time, to assert
+                  its inline fallback copy of the contract still agrees with the
+                  contract file
 
 EXIT CODES
 ----------
@@ -429,24 +432,50 @@ def check_roster(tasks_path, ground_truth, status, reply, rep):
 
 
 def check_prompt_parity(prompt_path, contract, rep):
-    """The prompt's inline fallback copy must agree with the contract file."""
+    """The deployed prompt must still speak the contract's reply dialect."""
     try:
         with open(prompt_path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError as exc:
-        rep.fail("P01", f"could not read the prompt: {exc}")
+        rep.fail("P03", f"could not read the prompt: {exc}")
         return
+    templates = dict(contract["digest"])
+    templates.pop("line_cap", None)
+    templates.pop("_line_cap_note", None)
+    templates.pop("_parity_note", None)
+    for key, tpl in templates.items():
+        if key == "push_alternates":
+            for alt in tpl:
+                rep.check(alt in text, "P03",
+                          f"the prompt no longer carries the reply template '{alt}'")
+            continue
+        rep.check(tpl in text, "P03",
+                  f"the prompt no longer carries the reply template '{tpl}'")
+
+
+def check_procedure_parity(procedure_path, contract, rep):
+    """The procedure file's inline fallback copy must agree with the contract file."""
+    try:
+        with open(procedure_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        rep.fail("P01", f"could not read the procedure file: {exc}")
+        return
+    marker = re.search(r"^AUDITOR_PROCEDURE_V\d+\s*$", text, re.M)
+    rep.check(marker is not None, "P01",
+              "the procedure file carries no 'AUDITOR_PROCEDURE_V<n>' marker on its own line - "
+              "the fetch ladder would reject it and the routine could not run")
     for cid, marker, key in (("P01", "AUDITOR-CONTRACT-CAUSES", "causes"),
                              ("P02", "AUDITOR-CONTRACT-STATES", "state_vocabulary")):
         m = re.search(r"<!--\s*" + marker + r"\s*\n(.*?)\n-->", text, re.S)
         if not rep.check(m is not None, cid,
-                         f"the prompt carries no '<!-- {marker} ... -->' block - the inline "
+                         f"the procedure carries no '<!-- {marker} ... -->' block - the inline "
                          f"fallback copy of the contract is gone"):
             continue
         inline = m.group(1).split()
         expected = list(contract[key])
         rep.check(inline == expected, cid,
-                  f"the prompt's inline {key} {inline} does not match the contract file "
+                  f"the procedure's inline {key} {inline} does not match the contract file "
                   f"{expected}")
 
 
@@ -458,7 +487,9 @@ def main():
     ap.add_argument("--tasks", help="saved cron_read view=list JSON")
     ap.add_argument("--ground-truth", default=DEFAULT_GROUND_TRUTH)
     ap.add_argument("--contract", default=DEFAULT_CONTRACT)
-    ap.add_argument("--prompt", help="the deployed prompt, for the parity check")
+    ap.add_argument("--prompt", help="the deployed prompt, for the reply-template parity check")
+    ap.add_argument("--procedure", help="the procedure file the prompt fetches, for the "
+                                        "inline-contract parity check")
     args = ap.parse_args()
 
     for p in (args.status, args.contract, args.ground_truth):
@@ -493,6 +524,8 @@ def main():
 
     if args.prompt:
         check_prompt_parity(args.prompt, contract, rep)
+    if args.procedure:
+        check_procedure_parity(args.procedure, contract, rep)
 
     if rep.failures:
         for f in rep.failures:

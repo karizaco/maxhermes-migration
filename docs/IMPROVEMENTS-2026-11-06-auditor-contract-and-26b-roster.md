@@ -135,11 +135,39 @@ line `audit: <date> due=<n> delivered=<n> missing=<n>` is byte-for-byte what it 
 forced the cap to yield: the new states each need their own line, and a routine with a gap is
 worth more than the line budget.
 
+## The procedure moved to a run-time file, because a 62 KB prompt cannot be deployed
+
+With the three fixes in, cron #90's prompt was **62 KB** — and a prompt that size cannot be
+deployed byte-exactly. Hand-emitting it drifts: measured, a 31 KB paste drifted 4 → 1 → 0
+deviations over three tries, and a drifted prompt is worse than an unredeployed one. There is
+no scriptable cron API (`agent.minimax.io/api/v1/cron/*` → 404, no MCP endpoint for the
+platform's own tools), so the prompt can only reach the scheduler through my own output.
+
+So the procedure moved to `cloud-prompts/_shared/auditor-procedure.md` — **fetched at RUN time**,
+the pattern the other 21 routines already use for their skills:
+
+- the **deployed prompt is 12 KB**: the title block, the fetch ladder, the reply format and the
+  critical reminders. That is inside the range that pastes byte-exact on the first try.
+- the **procedure is 56 KB** in one file, with the `AUDITOR_PROCEDURE_V1` capability marker and
+  a `PROCEDURE_VERSION` so the fetch ladder can rank the four candidate copies (contents API →
+  git blob API for the tip of `main` → raw → jsDelivr) and take the highest version that
+  carries the marker. A stale mirror cannot win.
+- **every future change to the method now lands on the next 07:00 ET fire with no
+  `cron_update` and no prompt drift** — which is the whole point of the pattern.
+- if the fetch fails, the routine says so and publishes **nothing** (`errors: 1`). A missing
+  audit is visible; a wrong audit is not.
+
+The reply format stays in the PROMPT (it is the contract with cron #91's triage, and the prompt
+is the thing deployed byte-exactly); the method stays in the procedure file. The gate asserts
+both surfaces against `tools/auditor-contract.json`: the procedure's inline fallback copy of the
+cause vocabulary (P01/P02) and the prompt's reply templates, verbatim (P03).
+
 ## Files
 
 | File | Change |
 |---|---|
-| `cloud-prompts/cron-prompts/90-delivery-auditor.md` | STEP 4c-1/2/3 (cause vocabulary, age, streak), STEP 4d (`skipped_by_design`), STEP 4e (`roster_gap`), STEP 5 (states vs labels), STEP 6 (status schema v2), STEP 6b (the gate), the DELIVERY block, reminders 8–11 |
+| `cloud-prompts/_shared/auditor-procedure.md` | **new** — the whole method, fetched at run time: the roster table, the stale check, the gap diagnosis, STEP 4c-1/2/3 (cause vocabulary, age, streak), STEP 4d (`skipped_by_design`), STEP 4e (`roster_gap`), STEP 5 (states vs labels), STEP 6 (status schema v2), STEP 6b (the gate), the push and delivery verification |
+| `cloud-prompts/cron-prompts/90-delivery-auditor.md` | reduced to 12 KB: the title block, the four-source fetch ladder with the capability marker, the REPLY FORMAT, the critical reminders 1–11 |
 | `tools/auditor-contract.json` | **new** — the contract |
 | `tools/auditor_roster_check.py` | **new** — the live-vs-ground-truth roster detector |
 | `tools/check_auditor_contract.py` | **new** — the gate |
