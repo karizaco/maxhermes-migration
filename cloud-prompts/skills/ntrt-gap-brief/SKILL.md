@@ -459,9 +459,13 @@ done
   unusable, so the file may simply not exist. **That is not an error** — fall back to
   `web_search` for the catalyst and record `pre-open tape: absent` in the source-health
   section. Never invent a tape.
-- **A tape of ~120 rows is a REGRESSION SIGNATURE** (the expected size is ≈600–750 rows: 678 on
-  2026-11-04, 700 on 2026-11-05). A short tape means the checkpoint sorted by volume instead of
+- **A tape of ~120 rows is a REGRESSION SIGNATURE** — the checkpoint sorted by volume instead of
   by move. Do not treat a short tape as the day's screen — fall back to `web_search` and say so.
+  **The tape's size is #92's to define, not this skill's**: it was 678 rows on 2026-11-04 and 700
+  on 2026-11-05 under the old ±3% snapshot, and **849 on 2026-11-06** when #92's movers-sorted
+  ±2.5% snapshot landed. A tape **longer** than the old band is normal, not a deviation; only a
+  ~120-row tape is. Read the expected size out of `cloud-prompts/_shared/preopen-capture.md`
+  (`PROCEDURE_VERSION`) if you need to quote it.
 - **A tape row is a lead, not a verdict.** Use the tape's `why` as the catalyst **only when it
   carries a `ref` URL and its `conf` is not `low`**; then the cell names the driver and the
   source URL. For `conf: unverified` or a missing `ref`, **verify it with one fetch of the URL**
