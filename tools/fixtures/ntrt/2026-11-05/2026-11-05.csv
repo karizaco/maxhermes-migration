@@ -1,0 +1,482 @@
+ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volume_30d,pct_of_adv,mkt_cap_usd,sector,exchange,catalyst,noise
+MNTN,-50.82,5.10,10.37,715507,812317,88.082,775708785,Technology Services,NYSE,Q3 revenue $80.3M vs $86-89M guide; adj EBITDA $19.9M vs $22-25M target; FY26 revenue cut to $311-314M from $347-357M; ~40% of salesforce quit; CEO replaced,false
+VCYT,-44.00,29.41,52.52,195413,1318365,14.822,4222121272,Health Technology,NASDAQ,"Q3 revenue $151.8M +15% beat, but Decipher Prostate volume below plan; FY26 testing-revenue guide trimmed to $571-573M; $100M buyback authorized",false
+ROCK,-26.55,32.01,43.58,18444,381392,4.836,1068620062,Producer Manufacturing,NASDAQ,Q3 (pre-market): net sales $479.6M +54% but adj EPS $1.01 vs $1.21 est; 2026 adj EPS guide cut to $2.25-2.40 after the D.S. Brown divestiture,false
+GIL,-25.51,32.23,43.27,225826,1617370,13.963,6070588664,Consumer Non-Durables,NYSE,"Q3 miss: FY26 adj EPS cut to $3.70-3.80 from $4.65-4.75, net sales to $5.4-5.5B from $6.0-6.2B; 2026-28 objectives withdrawn; new 5% NCIB",false
+LZ,-24.71,5.20,6.90,40332,2515305,1.603,1017313023,Technology Services,NASDAQ,"Q3 (post-close 11/4): revenue $195.1M +3% beat, non-GAAP EPS $0.19 vs $0.21 est; FY26 adj EBITDA guide cut to $180-185M",false
+DDD,-21.59,2.07,2.64,423496,2463154,17.193,304879818,Technology Services,NYSE,"Q3 EPS -$0.06 vs -$0.04 est, revenue $99.3M beat but Q4 guide missed; all $92M of 5.875% 2030 converts exchanged for 13.5M new shares + $20M cash",false
+TRIP,-21.18,8.04,10.20,410270,3302064,12.425,998538365,Consumer Services,NASDAQ,"Q3 EPS $0.37 vs $0.52 est, revenue $436.4M vs $457M est; CEO Matt Goldberg and CFO Michael Noonan both departing; short interest 32.8%",false
+TDUP,-20.09,1.75,2.19,147978,1633519,9.059,208164628,Retail Trade,NASDAQ,"Q3 revenue $88.2M +7%, net loss $5.5M; Q4 guided to $77-79M (-2% y/y) with adj EBITDA margin of (4.0)%-(2.0)%",false
+MBUU,-19.15,20.01,24.75,1652,247633,0.667,427304085,Consumer Durables,NASDAQ,"FQ1 FY27 (pre-market): revenue $252.9M +30% but adj EPS $0.15 vs $0.22 est; Q2 revenue guide $242M, ~2.4% below consensus",true
+FSLY,-18.47,17.15,21.04,351758,5426905,6.482,2617299031,Technology Services,NASDAQ,"Q3 beat (EPS $0.17 vs $0.12 est), but go-to-market head Scott Lovett retiring; shares fell >15% after the print",false
+PCT,-17.38,2.31,2.79,373996,6894231,5.425,355601518,Industrial Services,NASDAQ,Q3 revenue $2.3M vs $4.5M q/q; Ironton reliability issues plus NJ food-contact delay pushed ~50M lbs of volume out; 2026 exit rate no longer expected,false
+CAI,-17.22,27.50,33.22,44677,3494719,1.278,7615940497,Health Technology,NASDAQ,"Q3 (post-close 11/4): revenue $275.4M +27% beat, EPS $0.05 vs $0.03, FY guide raised to $1.04-1.05B, but operating cash flow turned negative",false
+RELY,-17.06,22.46,27.08,142047,2843734,4.995,4645406497,Commercial Services,NASDAQ,"Q3 (post-close 11/4): adj EPS $0.48 vs $0.33 est, FY26 guide raised, but 2027 revenue growth guided to the low end of high-teens with flat margins",false
+GRAL,-16.82,119.50,143.66,1841,1007916,0.183,5653628593,Health Technology,NASDAQ,"Q3 (post-close 11/4): Galleri revenue $37.3M +14%, but net loss widened to $103.6M; the FDA Galleri decision is expected early Q1 2027",true
+ROOT,-16.01,48.00,57.15,8190,164113,4.990,805324828,Finance,NASDAQ,"Q3 (post-close 11/4): EPS $0.86 vs $0.60 est, but revenue $381M missed and gross written premium -8% to $358M on auto pricing competition",false
+CSV,-15.23,30.50,35.98,1358,251784,0.539,478374737,Consumer Services,NYSE,"Q3 (post-close 11/4): adj EPS $0.59 vs $0.79 est, revenue $100.3M vs $109.5M est; FY26 adj EPS cut to $2.90-3.05",true
+WMS,-15.21,122.15,144.07,2373,701282,0.338,9440749311,Producer Manufacturing,NYSE,"FQ2 FY27 (pre-market): revenue $889.4M vs $933.6M est, adj EPS $1.88 vs $1.89 est; FY revenue guide $3.3-3.4B",true
+ARQT,-14.83,29.00,34.05,40523,2249102,1.802,3393682930,Health Technology,NASDAQ,Q3 (post-close 11/4): Zoryve sales $143.9M +45% beat but GAAP EPS $0.06 missed by $0.10; a $200M ATM shelf was filed on Nov 4,false
+BROS,-14.64,37.55,43.99,259263,4412087,5.876,6385497083,Consumer Services,NYSE,Q3 EPS $0.20 vs $0.25 est; FY26 same-store guide trimmed to at least 5%; Executive Chairman Boersma sold $106.4M of stock,false
+EOLS,-14.06,6.42,7.47,9618,712045,1.351,463674060,Health Technology,NASDAQ,,false
+NOA,-14.00,9.83,11.43,284,102757,0.276,264563584,Non-Energy Minerals,NYSE,,true
+CPS,-13.79,19.00,22.04,13000,293196,4.434,318957279,Producer Manufacturing,NYSE,,false
+QCOM,-13.36,150.06,173.19,586461,11153468,5.258,167314430896,Electronic Technology,NASDAQ,"Handset chip revenue -26% to $5.1B, below est; Q1 EPS midpoint $2.25 vs ~$2.35 expected; rising memory costs flagged",false
+GPGI,-13.30,11.08,12.78,1338,1552336,0.086,3646817459,Producer Manufacturing,NYSE,,true
+DAVE,-12.37,294.62,336.22,2603,288305,0.903,3444178064,Finance,NASDAQ,,true
+FOUR,-11.76,39.55,44.82,63225,1967739,3.213,3051808366,Commercial Services,NYSE,,false
+CCOI,-11.63,6.00,6.79,10573,1826110,0.579,285271628,Communications,NASDAQ,,true
+BLLN,-11.49,100.80,113.89,4258,504898,0.843,5031581964,Health Services,NASDAQ,,true
+VIAV,-10.89,26.18,29.38,161765,5722544,2.827,6403811799,Technology Services,NASDAQ,,false
+SNAP,-10.64,5.29,5.92,2500151,38622661,6.473,8896038652,Technology Services,NYSE,"Q3 revenue $1.72B vs $1.73B est, daily users 495M vs 499M est; ad revenue only +4%; Q4 revenue guide $1.95-1.99B",false
+ROAD,-10.35,88.97,99.24,9762,632714,1.543,4725467337,Industrial Services,NASDAQ,,false
+KE,-10.32,23.19,25.86,1640,175150,0.936,517476151,Electronic Technology,NASDAQ,,true
+PACB,-10.20,2.29,2.55,239076,18438897,1.297,822147316,Health Technology,NASDAQ,,false
+QUAD,-9.84,6.96,7.72,1509,316442,0.477,400016647,Commercial Services,NYSE,,true
+EXPE,-9.78,285.00,315.88,28209,1665346,1.694,33544079457,Consumer Services,NASDAQ,,false
+IMXI,-9.75,7.50,8.31,9249,621065,1.489,216919485,Commercial Services,NASDAQ,,false
+EVH,-9.58,4.34,4.80,38890,1893948,2.053,526291219,Commercial Services,NYSE,,false
+VISN,-9.47,5.83,6.44,238566,5551655,4.297,1354930134,Electronic Technology,NASDAQ,,false
+CIM,-9.22,7.88,8.68,96243,1537381,6.260,675554431,Finance,NYSE,Q3 GAAP loss $193.7M ($2.31/sh) vs a $22M loss a year ago; book value per share fell 16.5% to $14.82; 52-week low,false
+STRA,-9.18,67.50,74.32,5775,268983,2.147,1529763162,Consumer Services,NASDAQ,,false
+LSPD,-9.00,10.52,11.56,4953,841118,0.589,1344338983,Technology Services,NYSE,,true
+CAVA,-8.91,56.46,61.98,141866,3153702,4.498,6553995728,Consumer Services,NYSE,,false
+GOLD,-8.86,37.76,41.43,6568,477245,1.376,1096645239,Finance,NYSE,,false
+REAX,-8.71,15.51,16.99,6056,599497,1.010,578068616,Finance,NASDAQ,,false
+ZGN,-8.60,13.60,14.88,11905,1021917,1.165,5758283826,Consumer Non-Durables,NYSE,,false
+Z,-8.55,31.00,33.90,331719,4478062,7.408,7037056178,Technology Services,NASDAQ,"Zillow Q3: adj EPS $0.55 vs $0.60 est, revenue $724M vs $754M est, GAAP loss $0.70/sh; for-sale housing traffic still contracting",false
+ROK,-8.53,406.00,443.88,5082,799795,0.635,45418911914,Producer Manufacturing,NYSE,,true
+ZG,-8.51,31.52,34.45,71766,1153057,6.224,7006828341,Technology Services,NASDAQ,"Zillow Q3: adj EPS $0.55 vs $0.60 est, revenue $724M vs $754M est, GAAP loss $0.70/sh; for-sale housing traffic still contracting",false
+TXG,-8.18,62.00,67.52,25556,3768697,0.678,7983200019,Health Technology,NASDAQ,,true
+NTGR,-8.15,20.50,22.32,625,290367,0.215,524555114,Technology Services,NASDAQ,,true
+MXL,-8.05,52.27,56.85,87882,3393266,2.590,4445350253,Electronic Technology,NASDAQ,,false
+MELI,-7.98,1601.00,1739.88,44553,569531,7.823,76664203424,Retail Trade,NASDAQ,"Q3 revenue $10.75B +45% beat, but non-GAAP EPS $8.83 vs ~$9.27-9.55 est; operating margin 6.3%, down 40bp q/q on shipping costs",false
+MRVI,-7.77,7.12,7.72,39507,2457452,1.608,1954043393,Health Technology,NASDAQ,,false
+ZJYL,-7.77,2.85,3.09,1372,145266,0.944,484075258,Health Technology,NASDAQ,,true
+AXTI,-7.59,43.93,47.54,366451,9624022,3.808,2650115171,Electronic Technology,NASDAQ,,false
+AMD,-7.52,452.02,488.78,1281674,21686153,5.910,701498982381,Electronic Technology,NASDAQ,"Q3 beat and Q4 guide above estimates, yet sold with the post-midterm chip selloff; PHLX Semiconductor index -3% pre-open on AI-spending doubts",false
+RGNX,-7.39,7.14,7.71,9295,1340580,0.693,505991172,Health Technology,NASDAQ,,true
+ACDC,-7.30,3.68,3.97,53988,1241824,4.347,650906792,Industrial Services,NASDAQ,,false
+FICO,-7.29,649.90,701.03,16047,1175923,1.365,15562068754,Commercial Services,NYSE,,false
+SNDK,-7.17,963.00,1037.40,902376,8414942,10.723,128100972655,Electronic Technology,NASDAQ,NAND pricing and AI-fund unwind; consumer revenue -29% q/q; Kioxia's cautious December-quarter guide; 8-for-1 split effective Nov 20,false
+IRM,-7.08,110.26,118.66,18871,1370838,1.377,32512125956,Finance,NYSE,,false
+BUUU,-7.00,5.88,6.32,430,987360,0.044,1185507820,Commercial Services,NASDAQ,,true
+PDFS,-6.99,37.01,39.79,9458,612708,1.544,1490515149,Technology Services,NASDAQ,,false
+AEHR,-6.97,56.60,60.84,120412,2796510,4.306,1696842760,Electronic Technology,NASDAQ,,false
+VSH,-6.97,24.04,25.84,20672,3716737,0.556,3561470198,Electronic Technology,NYSE,,true
+P,-6.95,104.00,111.77,12258,3727768,0.329,32582960934,Electronic Technology,NYSE,,true
+PENG,-6.93,45.00,48.35,39338,4267909,0.922,2490380254,Electronic Technology,NASDAQ,,true
+HMH,-6.82,14.35,15.40,8139,169623,4.798,539259246,Industrial Services,NASDAQ,,false
+LMAT,-6.73,82.00,87.92,339,273425,0.124,1926734859,Health Technology,NASDAQ,,true
+REPX,-6.72,40.00,42.88,2263,235966,0.959,919714436,Energy Minerals,AMEX,,true
+MTSI,-6.70,217.50,233.13,115127,1560377,7.378,15573559536,Electronic Technology,NASDAQ,"FQ4 revenue $424.8M +63% and EPS $1.78 vs $1.58 est, yet sold with the semis; UBS flags data-center capex-pause risk",false
+PGEN,-6.63,4.72,5.05,125302,6007769,2.086,1575355036,Health Technology,NASDAQ,,false
+AMCR,-6.60,45.30,48.50,24951,3236661,0.771,21129197237,Process Industries,NYSE,,true
+STX,-6.54,520.65,557.06,65820,5308447,1.240,112678464133,Electronic Technology,NASDAQ,,false
+RWTN,-6.45,21.75,23.25,100,14460,0.692,409496510,Finance,NYSE,,true
+NWSA,-6.38,28.61,30.56,20808,3494934,0.595,15640775760,Consumer Services,NASDAQ,,true
+PAYC,-6.38,251.06,268.16,939,585702,0.160,11329946736,Technology Services,NYSE,,true
+LRCX,-6.36,207.34,221.43,188754,10092949,1.870,254318719653,Producer Manufacturing,NASDAQ,,false
+SMTC,-6.34,103.92,110.96,15928,3314220,0.481,9061917875,Electronic Technology,NASDAQ,,true
+NVTS,-6.32,8.74,9.33,405793,16040653,2.530,2185706114,Electronic Technology,NASDAQ,,false
+FORM,-6.26,79.90,85.24,12086,1971837,0.613,5924923200,Electronic Technology,NASDAQ,,true
+RDW,-6.22,7.24,7.72,789714,12128259,6.511,1662450842,Electronic Technology,NYSE,Q3 revenue $109.0M missed the $126.5M consensus; backlog +75% to $619.7M and FY26 guide of $450-500M maintained,false
+MRAM,-6.22,12.22,13.03,13394,732429,1.829,268599014,Electronic Technology,NASDAQ,,false
+ACMR,-6.21,41.67,44.43,36488,1165434,3.131,2835418738,Producer Manufacturing,NASDAQ,,false
+TROX,-6.20,3.33,3.55,6647,2226244,0.299,532599584,Process Industries,NYSE,,true
+ARKO,-6.19,3.79,4.04,9822,607882,1.616,419574597,Retail Trade,NASDAQ,,false
+BE,-6.18,188.01,200.40,872973,15301202,5.705,50146327500,Electronic Technology,NYSE,Fell with the AI-power complex; Q3 free cash flow -$181M vs +$7M a year ago; Barclays cut its target to $289 from $316 even while upgrading,false
+TDAY,-6.18,5.70,6.07,70244,2679605,2.621,892653052,Consumer Services,NYSE,,false
+AMAT,-6.16,346.65,369.40,202863,6798995,2.984,272729666132,Producer Manufacturing,NASDAQ,,false
+KTB,-6.15,76.92,81.96,2078,704198,0.295,4521767338,Consumer Non-Durables,NYSE,,true
+WDC,-6.14,303.96,323.83,140486,8896686,1.579,106884262856,Electronic Technology,NASDAQ,,false
+NUVB,-6.13,4.44,4.73,23464,5360805,0.438,1598639471,Health Technology,NYSE,,true
+WD,-6.10,36.00,38.34,1072,542490,0.198,1310134728,Finance,NYSE,,true
+TTMI,-6.04,68.95,73.38,32688,4144833,0.789,6749302215,Electronic Technology,NASDAQ,,true
+CMI,-6.03,443.40,471.84,102292,1166977,8.766,63647111373,Producer Manufacturing,NYSE,"Q3 EPS $8.25 vs $8.38 est, revenue $9.44B vs $9.89B est; FY26 revenue-growth guide cut to about 10% from 10-13%",false
+KLIC,-6.01,64.33,68.44,2636,579487,0.455,3227136514,Producer Manufacturing,NASDAQ,,true
+DELL,-6.00,350.00,372.36,393421,6471348,6.079,214205310088,Electronic Technology,NYSE,"AI-hardware unwind; the $95B AI server backlog is intact but memory cost, PC softness and margin pressure dominate the tape",false
+PZZA,-6.00,18.79,19.99,70925,1424825,4.978,656623061,Consumer Services,NASDAQ,,false
+XTND,-5.98,1.08,1.15,83189,3323074,2.503,207128305,Producer Manufacturing,NYSE,,false
+CIEN,-5.95,256.03,272.24,35852,2983275,1.202,34194999309,Electronic Technology,NYSE,,false
+OUST,-5.90,31.56,33.54,104146,2714193,3.837,2146116842,Electronic Technology,NASDAQ,,false
+SHAZ,-5.90,22.98,24.42,24480,1886002,1.298,774787847,Technology Services,NASDAQ,,false
+PURR,-5.88,9.12,9.69,397288,15410576,2.578,2393104997,Finance,NASDAQ,,false
+ANET,-5.87,168.00,178.48,93420,6229318,1.500,208045300459,Electronic Technology,NYSE,,false
+NET,-5.87,250.94,266.58,46104,3043924,1.515,86482856281,Technology Services,NYSE,,false
+PLPC,-5.85,268.53,285.20,2508,79582,3.151,1267393502,Producer Manufacturing,NASDAQ,,false
+ONTO,-5.82,174.07,184.82,7019,961877,0.730,8225334606,Electronic Technology,NYSE,,true
+CION,-5.82,6.64,7.05,4749,327156,1.452,314159257,Miscellaneous,NYSE,,false
+EROC,-5.79,7.48,7.94,78210,2861318,2.733,1562128578,Producer Manufacturing,NYSE,,false
+UCTT,-5.77,41.50,44.04,23413,1453728,1.611,1895865137,Producer Manufacturing,NASDAQ,,false
+HTZ,-5.75,2.13,2.26,3741187,19812547,18.883,747300390,Finance,NASDAQ,"Q3 adj EPS $0.14 vs $0.25 est, revenue $2.62B vs $2.64B est; GAAP net income $116M vs $184M a year ago; leverage stays high",false
+FATE,-5.74,1.97,2.09,4398,1233428,0.357,231852693,Health Technology,NASDAQ,,true
+FN,-5.69,322.20,341.64,6383,1000413,0.638,11026889994,Electronic Technology,NYSE,,true
+EOSE,-5.61,2.02,2.14,5295223,27074802,19.558,691918768,Producer Manufacturing,NASDAQ,"Record Q3 revenue $82.7M +171%, but gross margin still -53%; consolidating two Pennsylvania plants for $16-18M of restructuring charges",false
+FIG,-5.60,20.89,22.13,407751,10136762,4.022,10141307092,Technology Services,NYSE,,false
+COHR,-5.56,184.24,195.09,436662,7447542,5.863,34760516671,Electronic Technology,NYSE,"FQ1 beat (EPS $2.09 vs $2.00 est) and raised full-year targets, but sold with the optics complex after a 39% one-month slide",false
+FIX,-5.55,1030.78,1091.31,4124,536493,0.769,34659484284,Industrial Services,NYSE,,true
+AOSL,-5.53,20.00,21.17,2870,474375,0.605,578220754,Electronic Technology,NASDAQ,,true
+BRUN,-5.49,6.28,6.64,70858,3479105,2.037,502232389,Technology Services,NASDAQ,,false
+KLAC,-5.48,141.58,149.79,54979,10912719,0.504,182844836021,Electronic Technology,NASDAQ,,true
+AMKR,-5.44,33.72,35.66,111258,4844802,2.296,8068699448,Electronic Technology,NASDAQ,,false
+CEVA,-5.42,26.50,28.02,2846,496386,0.573,708356458,Electronic Technology,NASDAQ,,true
+IOVA,-5.40,8.23,8.70,1222042,17133491,7.132,3716630547,Health Technology,NASDAQ,"Q3 revenue $121.5M beat the $117.8M estimate, loss $0.05 vs $0.09 est; FY26 guide $410-420M kept; lung-cancer data still the swing factor",false
+KMDA,-5.39,7.02,7.42,7898,89227,8.852,405013816,Health Technology,NASDAQ,"No company news found: Q3 is due Nov 9; the pre-print bid reversed (stock -4.4% on Nov 2); 4 analysts Buy, average target $13.50",false
+MU,-5.37,752.54,795.23,1970691,26237020,7.511,811784824582,Electronic Technology,NASDAQ,"Bloomberg reported Micron paused construction on its $4.5B Taiwan Fab 11E amid the Taoyuan union dispute, on top of the chip selloff",false
+ALAB,-5.35,211.33,223.27,91390,4166654,2.193,33892918659,Electronic Technology,NASDAQ,,false
+POWI,-5.34,44.30,46.80,4716,759040,0.621,2181293543,Electronic Technology,NASDAQ,,true
+ALGM,-5.31,29.59,31.25,18985,3251535,0.584,5368855723,Electronic Technology,NASDAQ,,true
+NBIS,-5.31,134.01,141.52,897264,20111435,4.461,33666552699,Technology Services,NASDAQ,,false
+MRVL,-5.31,151.32,159.80,1004329,23709939,4.236,126991260920,Electronic Technology,NASDAQ,,false
+WLY,-5.30,49.53,52.30,200,375940,0.053,2673888137,Consumer Services,NYSE,,true
+KEEL,-5.24,1.99,2.10,2062795,26161375,7.885,1148686065,Technology Services,NASDAQ,Q3 revenue $28M vs $68M as bitcoin mining stopped; adj EBITDA -$27M; $55M non-cash capped-call loss; still no anchor hyperscaler lease,false
+AVTX,-5.23,6.70,7.07,4578,2261065,0.202,360393539,Health Technology,NASDAQ,,true
+AEIS,-5.23,200.50,211.56,4859,587199,0.827,7777723841,Electronic Technology,NASDAQ,,true
+CYPH,-5.23,2.72,2.87,536749,13486599,3.980,273182695,Finance,NASDAQ,,false
+FPS,-5.21,21.27,22.44,344050,9273518,3.710,5878522095,Producer Manufacturing,NYSE,,false
+LITE,-5.20,594.16,626.75,149275,5624128,2.654,50018780816,Producer Manufacturing,NASDAQ,,false
+NVMI,-5.20,280.00,295.35,48369,278837,17.347,9174168972,Electronic Technology,NASDAQ,Record Q3 revenue $287.8M +28% and GAAP EPS $2.64; sold anyway with the semis; Q4 guide $305-315M,false
+BW,-5.15,3.50,3.69,19589,4593299,0.426,481425279,Electronic Technology,NYSE,,true
+TWST,-5.15,135.24,142.58,3382,2826266,0.120,8531223462,Health Technology,NASDAQ,,true
+VRT,-5.13,195.00,205.55,146193,6422771,2.276,70931976284,Electronic Technology,NYSE,,false
+LWLG,-5.12,4.08,4.30,57860,3446424,1.679,592773108,Process Industries,NASDAQ,,false
+ICHR,-5.10,31.99,33.71,10395,936284,1.110,1113761661,Producer Manufacturing,NASDAQ,,false
+LCII,-5.07,98.99,104.28,896,556443,0.161,2543286100,Producer Manufacturing,NYSE,,true
+LRMR,-5.07,2.62,2.76,100,1474491,0.007,281522751,Health Technology,NASDAQ,,true
+ALMR,-5.04,26.01,27.39,2311,763634,0.303,1834744768,Health Technology,NASDAQ,,true
+AAP,-5.00,48.21,50.75,34328,1578104,2.175,2996746075,Retail Trade,NYSE,,false
+INGR,-5.00,92.49,97.36,48941,717632,6.820,6119413347,Consumer Non-Durables,NYSE,Guidance CUT: FY26 adj EPS to $9.25-9.70 and F&II-US/Canada operating income now down 35-40% on Argo's slow recovery; Q3 EPS $2.28,false
+LSCC,-4.99,101.90,107.25,6331,2285063,0.277,14283370758,Electronic Technology,NASDAQ,,true
+VICR,-4.98,151.15,159.07,11332,1008626,1.124,6496338651,Electronic Technology,NASDAQ,,false
+LUCK,-4.98,4.20,4.42,265,65989,0.402,572574951,Consumer Services,NYSE,,true
+HPE,-4.97,47.60,50.09,211726,17811745,1.189,61003641470,Electronic Technology,NYSE,,false
+POWL,-4.96,136.00,143.10,5202,643818,0.808,4677941389,Producer Manufacturing,NASDAQ,,true
+LUMN,-4.90,4.25,4.47,77378,14063810,0.550,4058737594,Communications,NASDAQ,,true
+CAMT,-4.88,96.51,101.46,12412,539532,2.301,4403842270,Electronic Technology,NASDAQ,,false
+CYTK,-4.87,60.50,63.60,7886,1829262,0.431,7867335275,Health Technology,NASDAQ,,true
+Q,-4.87,113.00,118.78,8790,1668160,0.527,23711695891,Electronic Technology,NYSE,,true
+SLF,-4.85,78.00,81.98,9076,381810,2.377,43264353373,Finance,NYSE,,false
+TSEM,-4.84,141.60,148.80,86792,2521343,3.442,15645572092,Electronic Technology,NASDAQ,,false
+FCEL,-4.84,10.03,10.54,90944,6516794,1.396,725184528,Electronic Technology,NASDAQ,,false
+HLLY,-4.83,2.76,2.90,700,965811,0.072,313566424,Producer Manufacturing,NYSE,,true
+KEN,-4.82,60.01,63.05,100,16120,0.620,3165585167,Utilities,NYSE,,true
+RMBS,-4.81,78.91,82.90,13035,1821800,0.716,7901006469,Electronic Technology,NASDAQ,,true
+IBTA,-4.81,60.00,63.03,4501,350368,1.285,1402667612,Technology Services,NYSE,,false
+AIP,-4.81,17.23,18.10,1986,589054,0.337,805111471,Electronic Technology,NASDAQ,,true
+CRDO,-4.81,129.94,136.50,149109,8403124,1.774,23244953650,Technology Services,NASDAQ,,false
+DOCN,-4.78,80.00,84.02,10422,2859815,0.364,8948877782,Technology Services,NYSE,,true
+INFQ,-4.78,8.15,8.56,269567,6361502,4.237,1721727872,Electronic Technology,NYSE,,false
+VCTR,-4.78,114.45,120.19,5910,538807,1.097,6979444668,Finance,NASDAQ,,false
+DIOD,-4.77,75.67,79.46,853,481994,0.177,3331154605,Electronic Technology,NASDAQ,,true
+CIFR,-4.77,6.19,6.50,1188450,47339731,2.510,2669735907,Technology Services,NASDAQ,,false
+BLZE,-4.76,8.00,8.40,22721,2370025,0.959,484743983,Electronic Technology,NASDAQ,,true
+HBB,-4.73,33.00,34.64,100,74037,0.135,419127137,Consumer Durables,NYSE,,true
+ZTS,-4.71,85.00,89.20,171485,4077151,4.206,35603344355,Health Technology,NYSE,,false
+VPG,-4.70,47.05,49.37,654,337094,0.194,577707018,Electronic Technology,NYSE,,true
+MPWR,-4.68,1202.00,1261.08,4799,805157,0.596,58330916949,Electronic Technology,NASDAQ,,true
+UMAC,-4.68,12.42,13.03,91939,2773783,3.315,595946361,Electronic Technology,AMEX,,false
+NNE,-4.66,10.44,10.95,19098,1870543,1.021,524915448,Producer Manufacturing,NASDAQ,,false
+CLS,-4.61,225.50,236.41,49710,2740463,1.814,26946307754,Electronic Technology,NYSE,,false
+IREN,-4.61,20.71,21.71,3447264,50767526,6.790,7798965872,Technology Services,NASDAQ,Neocloud selloff after the midterms (Bernstein cut its target to $55 from $100); Q1 FY27 due after today's close; $4B contracted ARR target in focus,false
+AMPX,-4.60,8.08,8.47,42826,5594318,0.766,1102178368,Producer Manufacturing,NYSE,,true
+QMCO,-4.59,16.00,16.77,5405,1705378,0.317,574203713,Electronic Technology,NASDAQ,,true
+LGN,-4.58,30.66,32.13,12860,1415835,0.908,2939436911,Industrial Services,NASDAQ,,true
+QTTB,-4.57,8.56,8.97,378,851215,0.044,256017419,Health Technology,NASDAQ,,true
+INOD,-4.53,41.34,43.30,24906,1567803,1.589,1323735528,Technology Services,NASDAQ,,false
+NXDR,-4.51,2.33,2.44,39418,1717649,2.295,899422561,Technology Services,NASDAQ,,false
+COHU,-4.50,42.00,43.98,2717,1186645,0.229,1828977902,Electronic Technology,NASDAQ,,true
+LASR,-4.49,31.51,32.99,3125,921940,0.339,1751762921,Electronic Technology,NASDAQ,,true
+ERII,-4.46,6.85,7.17,17930,781812,2.293,346084264,Producer Manufacturing,NASDAQ,,false
+AVGO,-4.42,311.10,325.48,438629,21255644,2.064,1476889531144,Electronic Technology,NASDAQ,,false
+INIO,-4.41,14.09,14.74,24373,6164982,0.395,10229999840,Producer Manufacturing,NASDAQ,,true
+SMCI,-4.39,28.30,29.60,1725136,37066015,4.654,17899022364,Electronic Technology,NASDAQ,,false
+ADI,-4.38,388.44,406.24,17179,3532682,0.486,190056260233,Electronic Technology,NASDAQ,,true
+MIR,-4.37,17.18,17.97,10080,4544945,0.222,4268445139,Electronic Technology,NYSE,,true
+SIBN,-4.37,23.86,24.95,200,760094,0.026,1118709847,Health Technology,NASDAQ,,true
+PRIM,-4.36,65.47,68.45,2202,1502962,0.147,3300729093,Industrial Services,NYSE,,true
+ENTG,-4.35,136.66,142.87,8706,2689910,0.324,20544723708,Producer Manufacturing,NASDAQ,,true
+BELFB,-4.34,207.99,217.43,4954,171867,2.882,2891229490,Electronic Technology,NASDAQ,,false
+CGNX,-4.33,50.76,53.06,5022,1808322,0.278,8173155790,Electronic Technology,NASDAQ,,true
+ABSI,-4.29,10.03,10.48,37715,3878035,0.973,1640629899,Health Technology,NASDAQ,,true
+FLNC,-4.29,5.80,6.06,396393,6358974,6.234,985744609,Producer Manufacturing,NASDAQ,Continuation of the Oct 30 CEO/CFO exit and the Sept 16 guidance cut; securities class-action filings piling up; FY26 report due Nov 23,false
+TEM,-4.27,72.38,75.61,61670,6590920,0.936,12715218296,Technology Services,NASDAQ,,true
+CG,-4.26,40.93,42.75,2200,3227411,0.068,14378029476,Finance,NASDAQ,,true
+RBRK,-4.21,113.98,118.99,18077,2906193,0.622,22643862670,Technology Services,NYSE,,true
+AAOI,-4.18,56.79,59.27,455890,11422513,3.991,4350173706,Electronic Technology,NASDAQ,,false
+KOPN,-4.18,3.21,3.35,52119,3205015,1.626,532116076,Electronic Technology,NASDAQ,,false
+ATER,-4.18,0.77,0.80,4462,128107,3.483,205602593,Retail Trade,NASDAQ,,false
+GLW,-4.17,113.82,118.77,165950,8811648,1.883,92566162066,Electronic Technology,NYSE,,false
+KVYO,-4.17,20.47,21.36,13515,5108428,0.265,6130181769,Technology Services,NYSE,,true
+PLAB,-4.16,26.24,27.38,12061,758262,1.591,1523896841,Electronic Technology,NASDAQ,,false
+RL,-4.14,395.00,412.06,25179,512686,4.911,23644353228,Consumer Non-Durables,NYSE,,false
+MDU,-4.14,19.00,19.82,500,1701611,0.029,4174994918,Utilities,NYSE,,true
+IESC,-4.12,162.10,169.07,7610,401220,1.897,6136006228,Industrial Services,NASDAQ,,false
+NVT,-4.12,108.17,112.82,5866,2584889,0.227,16516938509,Electronic Technology,NYSE,,true
+POET,-4.10,4.68,4.88,301056,7867924,3.826,755398581,Producer Manufacturing,NASDAQ,,false
+GFS,-4.07,38.70,40.34,47562,5247871,0.906,20995214777,Electronic Technology,NASDAQ,,true
+TE,-4.03,2.62,2.73,1546631,18846199,8.207,675369958,Producer Manufacturing,NYSE,"No catalyst confirmed: the screen carries ticker 'TE' (NYSE, Producer Manufacturing); no matching company news found for the move",false
+NNBR,-4.02,3.10,3.23,208988,2805091,7.450,265296199,Producer Manufacturing,NASDAQ,"Q3 beat (EPS $0.07 vs $0.02, sales $131.1M) but the stock still fell 13% on Nov 4 and sits 23% below its 52-week high",false
+DXPE,-4.02,152.01,158.38,100,169265,0.059,2127245887,Distribution Services,NASDAQ,,true
+RDVT,-4.00,76.80,80.00,581,164785,0.353,1096249041,Technology Services,NASDAQ,,true
+CRWV,-3.94,46.51,48.42,1619972,50172166,3.229,24455131279,Technology Services,NASDAQ,,false
+CRWD,-3.93,231.53,241.00,101010,8410507,1.201,225163265698,Technology Services,NASDAQ,,false
+MOD,-3.93,94.69,98.56,10935,1841509,0.594,4829748109,Producer Manufacturing,NYSE,,true
+RGTI,-3.93,10.77,11.21,401131,13537494,2.963,3349369294,Electronic Technology,NASDAQ,,false
+STRL,-3.92,272.54,283.66,40649,821892,4.946,7734513098,Industrial Services,NASDAQ,,false
+RXT,-3.91,2.70,2.81,17111,4488363,0.381,647377022,Technology Services,NASDAQ,,true
+HOS,-3.91,5.90,6.14,8047,2607861,0.309,1293009557,Industrial Services,NYSE,,true
+AGX,-3.90,279.31,290.66,2152,299063,0.720,3727308017,Industrial Services,NYSE,,true
+ZS,-3.85,215.80,224.44,10276,2672474,0.385,33766998761,Technology Services,NASDAQ,,true
+CURB,-3.85,29.00,30.16,3113,1450339,0.215,3671867387,Finance,NYSE,,true
+LTGO,-3.85,13.50,14.04,2121,275206,0.771,718021925,Health Technology,NASDAQ,,true
+ACCV,-3.85,11.25,11.70,5101,,,1173219610,Producer Manufacturing,NASDAQ,,true
+GOOS,-3.82,8.57,8.91,13804,839687,1.644,877179022,Consumer Non-Durables,NYSE,,false
+OSCR,-3.81,33.85,35.19,354354,4816983,7.356,9918583295,Health Services,NYSE,"Q3 revenue $5.12B +72% beat, net income $167.3M vs a $0.17 loss expected; MLR improved to 84%; FY26 revenue guide raised to $19.0-19.3B",false
+GEV,-3.78,801.39,832.83,53329,2880426,1.851,208343201177,Producer Manufacturing,NYSE,,false
+BB,-3.77,8.43,8.76,127420,15173347,0.840,4801923628,Technology Services,NYSE,,true
+MBI,-3.76,4.35,4.52,4518,283856,1.592,230594331,Finance,NYSE,,false
+CBRS,-3.76,88.40,91.85,256130,10332708,2.479,18868192487,Technology Services,NASDAQ,,false
+PWR,-3.72,558.84,580.44,3728,1235712,0.302,79974152167,Industrial Services,NYSE,,true
+TER,-3.71,241.68,250.99,40880,3231236,1.265,35724467417,Electronic Technology,NASDAQ,,false
+AMBQ,-3.71,40.00,41.54,1982,415383,0.477,914901016,Electronic Technology,NYSE,,true
+SMR,-3.70,4.94,5.13,642270,29435386,2.182,1989618814,Producer Manufacturing,NYSE,,false
+AMBA,-3.69,58.67,60.92,13719,1361156,1.008,2507207142,Electronic Technology,NASDAQ,,false
+OKTA,-3.69,184.00,191.05,13279,4279429,0.310,30602373695,Technology Services,NASDAQ,,true
+WULF,-3.68,11.27,11.70,454159,39676930,1.145,5274647822,Technology Services,NASDAQ,,false
+APLD,-3.67,16.00,16.61,738635,25586304,2.887,4460210117,Technology Services,NASDAQ,,false
+NWS,-3.65,32.17,33.39,4939,928419,0.532,15607695558,Consumer Services,NASDAQ,,true
+NUAI,-3.65,2.11,2.19,133334,9877203,1.350,210808094,Industrial Services,NASDAQ,,false
+RZLV,-3.65,1.32,1.37,474986,9124814,5.205,485652265,Technology Services,NASDAQ,"52-week low $1.37 after the H1 print; Titan Partners cut its target to $5 from $12; H1 revenue +1,970% but no profitability yet",false
+EME,-3.64,616.00,639.25,943,416497,0.226,26198714157,Industrial Services,NYSE,,true
+LUNR,-3.63,9.57,9.93,236482,7164373,3.301,2037447119,Electronic Technology,NASDAQ,,false
+PRME,-3.62,4.79,4.97,7259,5481737,0.132,843402370,Health Technology,NASDAQ,,true
+ON,-3.59,68.68,71.24,34147,10490938,0.325,26231934225,Electronic Technology,NASDAQ,,true
+CIM/PC,-3.58,18.60,19.29,1700,43504,3.908,726618645,Finance,NYSE,,false
+ARHS,-3.57,12.68,13.15,15204,1761515,0.863,1793159348,Consumer Durables,NASDAQ,,true
+DASH,-3.57,191.51,198.59,33999,4365570,0.779,76300797585,Transportation,NASDAQ,,true
+MKSI,-3.57,188.00,194.95,10026,1283328,0.781,12576864793,Producer Manufacturing,NASDAQ,,true
+PL,-3.56,12.20,12.65,117303,9272085,1.265,4302502269,Technology Services,NYSE,,false
+MNDY,-3.55,93.36,96.80,6651,1042244,0.638,3980319566,Technology Services,NASDAQ,,true
+MITK,-3.54,18.41,19.09,150,526370,0.028,820324792,Technology Services,NASDAQ,,true
+NTCT,-3.54,36.75,38.10,251,505620,0.050,2496769047,Technology Services,NASDAQ,,true
+SPT,-3.53,10.40,10.78,900,798436,0.113,659885643,Technology Services,NASDAQ,,true
+BTDR,-3.52,6.30,6.53,117502,9830936,1.195,1592644014,Technology Services,NASDAQ,,false
+LPTH,-3.52,6.85,7.10,100910,2731216,3.695,437353668,Electronic Technology,NASDAQ,,false
+LAES,-3.50,1.38,1.43,162866,4105820,3.967,293488634,Electronic Technology,NASDAQ,,false
+IMSR,-3.48,2.77,2.87,29848,1651107,1.808,274810492,Industrial Services,NASDAQ,,false
+VECO,-3.47,34.75,36.00,4964,807229,0.615,2036228391,Electronic Technology,NASDAQ,,true
+BKV,-3.46,18.44,19.10,200,1852447,0.011,2088073801,Energy Minerals,NYSE,,true
+CRCL,-3.44,73.50,76.12,304303,9824595,3.097,17644884482,Technology Services,NYSE,,false
+JAN,-3.43,29.04,30.07,1816934,1966762,92.382,9142717772,Finance,NYSE,"Janus Living priced an upsized 26.25M-share offering at $28.50, roughly 13.6% of shares outstanding; Q3 beat and FY guidance raised",false
+ONDS,-3.42,5.09,5.27,3104054,47510779,6.533,2773740543,Electronic Technology,NASDAQ,"Multi-million counter-UAS contract wins in Europe and Asia, yet the stock fell 9% on Nov 4; short interest 44.5%; Q3 due Nov 12",false
+ESLT,-3.41,679.50,703.46,626,97375,0.643,31456659893,Electronic Technology,NASDAQ,,true
+GILT,-3.40,6.82,7.06,33324,897803,3.712,508395721,Electronic Technology,NASDAQ,,false
+RKLB,-3.40,50.59,52.37,352465,19132932,1.842,27888225078,Electronic Technology,NASDAQ,,false
+XFOR,-3.40,3.13,3.24,8798,758418,1.160,306363439,Health Technology,NASDAQ,,false
+NTAP,-3.39,181.31,187.67,2470,2284131,0.108,34803483395,Electronic Technology,NASDAQ,,true
+SPCX,-3.38,131.32,135.92,3257889,96792120,3.366,1713475225825,Communications,NASDAQ,,false
+WGS,-3.37,67.00,69.34,628,782128,0.080,1920720605,Health Services,NASDAQ,,true
+NTRA,-3.37,377.86,391.03,899,1738265,0.052,53292259810,Health Technology,NASDAQ,,true
+CYH,-3.36,2.30,2.38,4399,1635645,0.269,344105059,Health Services,NYSE,,true
+PROK,-3.36,1.08,1.12,177,1383373,0.013,311442330,Health Technology,NASDAQ,,true
+CHPT,-3.33,11.03,11.41,7632,971100,0.786,295085063,Producer Manufacturing,NYSE,,true
+JBL,-3.32,249.98,258.56,1998,1394556,0.143,25365701459,Producer Manufacturing,NYSE,,true
+RIOT,-3.32,14.86,15.37,301278,20071940,1.501,5276140680,Technology Services,NASDAQ,,false
+SANM,-3.32,139.00,143.77,400,715912,0.056,7125232570,Electronic Technology,NASDAQ,,true
+VSAT,-3.31,64.58,66.79,700,2145059,0.033,8525721195,Electronic Technology,NASDAQ,,true
+HIVE,-3.30,1.76,1.82,113993,10488971,1.087,462157317,Technology Services,NASDAQ,,false
+QBTS,-3.28,10.04,10.38,385280,13754104,2.801,3532425803,Electronic Technology,NASDAQ,,false
+QUBT,-3.27,6.22,6.43,102171,6358975,1.607,1315075237,Technology Services,NASDAQ,,false
+BELFA,-3.26,168.51,174.19,860,94066,0.914,2927500319,Electronic Technology,NASDAQ,,true
+CAPR,-3.25,8.63,8.92,34844,3522738,0.989,493018626,Health Technology,NASDAQ,,true
+FLEX,-3.25,74.73,77.24,17396,5139311,0.338,26207702218,Electronic Technology,NASDAQ,,true
+HLIT,-3.23,9.88,10.21,11205,1495063,0.749,1044462183,Electronic Technology,NASDAQ,,true
+ENVX,-3.23,2.70,2.79,78725,9705494,0.811,543135109,Producer Manufacturing,NASDAQ,,true
+SNOW,-3.19,281.32,290.60,18506,4351694,0.425,96257950691,Technology Services,NYSE,,true
+VST,-3.19,116.45,120.29,150091,7344103,2.044,38772577775,Utilities,NYSE,,false
+ADTN,-3.17,4.58,4.73,15735,1731686,0.909,351999679,Electronic Technology,NASDAQ,,true
+PANW,-3.17,337.01,348.04,52131,5377231,0.969,261208618159,Technology Services,NASDAQ,,true
+BEAM,-3.17,26.91,27.79,1719,1737689,0.099,2756627257,Health Technology,NASDAQ,,true
+CHRN,-3.15,11.67,12.05,410,141388,0.290,1634052227,Technology Services,NASDAQ,,true
+SPHR,-3.15,105.42,108.85,3308,930091,0.356,4054646288,Consumer Services,NYSE,,true
+INDI,-3.14,1.54,1.59,52965,5583491,0.949,329214989,Electronic Technology,NASDAQ,,true
+CRML,-3.14,6.17,6.37,83458,5876542,1.420,847948095,Non-Energy Minerals,NASDAQ,,false
+ETN,-3.14,342.00,353.08,16791,2504552,0.670,131293570006,Producer Manufacturing,NYSE,,true
+SWKS,-3.14,80.32,82.92,20310,6096002,0.333,19880306618,Electronic Technology,NASDAQ,,true
+BHE,-3.13,63.22,65.26,400,418456,0.096,2204396735,Electronic Technology,NYSE,,true
+PSIX,-3.12,38.43,39.67,2690,402275,0.669,864031670,Producer Manufacturing,NASDAQ,,true
+SECZ,-3.11,7.79,8.04,52366,3191345,1.641,1209798727,Technology Services,NYSE,,false
+INTC,-3.11,56.46,58.27,3743223,117567279,3.184,285362883741,Electronic Technology,NASDAQ,,false
+KRP,-3.10,15.00,15.48,105960,743900,14.244,1977787198,Miscellaneous,NYSE,"Q3 EPS $0.12 vs $0.24 est and revenue $86.3M missed; record production of 27,565 Boe/d and a $0.45 distribution partly offset",false
+NVAX,-3.10,10.32,10.65,184572,7382114,2.500,1679147415,Health Technology,NASDAQ,,false
+AYI,-3.09,327.00,337.44,6805,371250,1.833,9869009955,Producer Manufacturing,NYSE,,false
+PDEX,-3.06,61.50,63.44,988,45811,2.157,203520059,Health Technology,NASDAQ,,false
+SWRD,-3.05,2.86,2.95,274,217091,0.126,660180590,Non-Energy Minerals,NASDAQ,,true
+ABTC,-3.04,6.05,6.24,36020,921821,3.907,409246824,Technology Services,NASDAQ,,false
+CDNS,-3.04,319.51,329.52,1362,2334899,0.058,86459563115,Technology Services,NASDAQ,,true
+CXT,-3.03,59.75,61.62,2386,612588,0.389,3339706916,Producer Manufacturing,NYSE,,true
+FRVO,-3.03,8.63,8.90,20000,8778375,0.228,2414110465,Utilities,NASDAQ,,true
+DDOG,-3.03,183.01,188.72,19239,3465611,0.555,62267203534,Technology Services,NASDAQ,,true
+GEO,-3.01,26.70,27.53,19956,2465993,0.809,3473440885,Commercial Services,NYSE,,true
+TWLO,-3.01,207.07,213.50,638,3941768,0.016,30940615448,Technology Services,NYSE,,true
+TBI,34.96,13.28,9.84,100372,202578,49.547,372943214,Commercial Services,NYSE,Q3 revenue $521M +21% vs $468M est; swing to $0.28 net income from a $0.06 loss; adj EBITDA $21M vs $11M; energy vertical doubled,false
+APP,28.79,350.00,271.75,1041075,4774770,21.804,121638942994,Technology Services,NASDAQ,"Record Q3: revenue $2.18B +55% (est $2.07B), EPS $4.30 vs $4.03; Q4 guide $2.365-2.395B above consensus; buyback raised to $3.6B",false
+SEZL,26.32,172.66,136.69,44326,508283,8.721,5688955995,Technology Services,NASDAQ,"Record Q3: revenue $166.5M +42.6% (est $155.0M), EPS $1.38 +84%; FY26 revenue-growth guide raised to ~42.5%; Needham target to $220",false
+LYNX,22.47,11.50,9.39,22859,466707,4.898,1320663561,Technology Services,NYSE,"Q3 FY26 (post-close 11/4): revenue $194.4M vs $136.9M est, adj EPS $0.15 vs $0.08, FY revenue guide $623-630M above consensus; two brokers upgraded",false
+WRBY,20.95,25.75,21.29,331654,3131945,10.589,3117395095,Retail Trade,NYSE,"Q3 revenue $244.7M +10.4% (missed $250.0M), EPS $0.11 vs $0.10; gross margin 54.4%; Intelligent Eyewear pre-orders open Nov 12",false
+XERS,19.50,12.50,10.46,168699,3024833,5.577,2454031415,Health Technology,NASDAQ,"Q3 revenue $107.2M +44% (est $101.7M), Recorlev +93% to $71.5M; CEO sees Recorlev near $1B sales 3-4 years earlier; FY26 guide raised",false
+RUN,19.34,10.49,8.79,2609814,9399644,27.765,2341032682,Electronic Technology,NASDAQ,"Q3 revenue $1.10B +52%, EPS $0.56 vs $0.26; but FY26 cash generation cut to about $200M from $200-375M and affiliate volumes -67%",false
+GROY,16.61,3.37,2.89,227585,1291112,17.627,734404757,Non-Energy Minerals,AMEX,Gold Royalty posted record Q3 and nine-month results; revenue $10.25M vs $8.40M est; gold +1.1% on the day,false
+ACHC,16.25,37.49,32.25,8898,1646282,0.540,3490329240,Health Services,NASDAQ,"Q3 (post-close 11/4): revenue $895.3M vs $877.8M est, adj EPS $0.60 vs $0.46 est; FY guide raised to revenue $3.44-3.46B",true
+FUN,16.02,9.20,7.93,1180856,5365017,22.010,982748181,Consumer Services,NYSE,Q3 adj EPS $2.70 vs $1.97 est on in-line revenue of $1.17B; but a $366M net loss includes $688M of impairment and Q4 same-park EBITDA is guided down,false
+BKSY,15.44,19.36,16.77,82742,915580,9.037,763248410,Technology Services,NYSE,"Record Q3 revenue $42.8M +118% (est $39.5M), EPS $0.10 vs -$0.22; FY26 revenue guide raised to $140-150M; cash $231M",false
+TXO,15.28,15.09,13.09,1000,115961,0.862,728565800,Energy Minerals,NYSE,,true
+IRWD,14.85,4.33,3.77,202410,1727017,11.720,687398228,Health Technology,NASDAQ,"Q3 revenue $133M beat, GAAP net income $59.8M; FY26 LINZESS US sales guide raised to $1.20-1.25B and adj EBITDA to over $350M",false
+ADMA,14.60,12.01,10.48,221434,3271388,6.769,2795328686,Health Technology,NASDAQ,"Q3 revenue $141.1M +5%, GAAP net income $49.9M +37%; ASCENIV revenue $124.7M +31%; FY26 guidance reaffirmed at >=$530M",false
+EWTX,14.58,43.00,37.53,44217,1479926,2.988,4230130866,Health Technology,NASDAQ,"Q3 (post-close 11/4): net income $1,166M on a $1.348B gain from the July sevasemten sale; first patient dosed in the Ph2 EDG-15400 HFpEF trial",false
+VERX,14.32,18.20,15.92,15691,1361747,1.152,2833954276,Technology Services,NASDAQ,"Q3 (post-close 11/4): revenue $213.3M +11% above the guidance high end, adj EBITDA $64.8M +50%; FY revenue raised to $828.9-830.9M",false
+JOBY,14.26,5.77,5.05,3493344,20393851,17.129,5217841063,Electronic Technology,NYSE,"Q3 revenue $55.1M +144% (est $40.4M), loss $0.22 vs $0.25 est; Air Force autonomy contracts up to ~$37M; FY26 revenue guide raised to $135-140M",false
+EPAM,13.72,156.20,137.36,118112,1075290,10.984,8333360610,Technology Services,NYSE,"Q3 revenue $1.426B +2.3%, non-GAAP EPS $3.51 vs $3.38 est; buyback raised to $1.8B with a $500M ASR next week; margin +70bp",false
+MGNI,13.60,25.89,22.79,48619,2023455,2.403,3854524557,Technology Services,NASDAQ,"Q3 (post-close 11/4): revenue $204.2M vs $190.2M, adj EPS $0.33 vs $0.29 est; FY26 adj EBITDA growth guided to ~30%",false
+TPR,13.32,142.00,125.31,110173,2579305,4.271,27314625189,Retail Trade,NYSE,"FQ1 FY27 (pre-market): revenue $1.894B +11% (Coach +16%), non-GAAP EPS $1.82 vs $1.56 est; FY revenue guide raised to $8.5-8.6B",false
+SABR,13.22,1.97,1.74,64796,7392363,0.877,700216892,Technology Services,NASDAQ,"Q3 (pre-open 11/5): adj EPS $0.11 vs $0.02 est, revenue $738.4M beat by 1.3%; the shares faded from +2.3% pre-market to close -3.5%",true
+U,13.17,48.05,42.46,5783211,10263032,56.350,20904223639,Technology Services,NYSE,"Q3 revenue $14.77B beat, adj EPS $0.88 at the top of guide, gross bookings +20% to $59.8B; Q4 EPS guide below consensus; 700 driverless vehicles by year-end",false
+RPD,13.03,17.00,15.04,53727,1810862,2.967,1052798031,Technology Services,NASDAQ,"Q3 (post-close 11/4): revenue $212.4M vs $209.2M, non-GAAP EPS $0.60 vs $0.40 est, ARR $819.7M above guidance; FY26 guidance raised",false
+ENOV,12.49,27.47,24.42,4106,1524647,0.269,1674722018,Health Technology,NYSE,"Q3 (pre-market): sales $559M +5% organic, adj EPS $0.88 vs $0.77 est; FY26 adj EPS raised to $3.58-3.79, new $200M buyback",true
+PTLO,12.48,6.13,5.45,166698,2046168,8.147,491595652,Consumer Services,NASDAQ,"Q3 revenue $194.1M in line, EPS $0.06 vs $0.02 est, adj EBITDA $26.5M a 25% beat; FY26 EBITDA guide $99.5M above consensus; closing weak stores",false
+VNT,12.40,42.24,37.58,3261,1223267,0.267,5402592141,Transportation,NYSE,,true
+CLYM,12.33,10.48,9.33,2808,1128858,0.249,513480093,Health Technology,NASDAQ,,true
+ALNT,12.27,89.32,79.56,4151,206631,2.009,1327981156,Producer Manufacturing,NASDAQ,,false
+PLTK,12.26,2.38,2.12,26843,1079781,2.486,942141001,Technology Services,NASDAQ,,false
+ENHA,12.24,7.98,7.11,2770,80239,3.452,271023205,Finance,NYSE,,false
+GCT,11.96,64.80,57.88,10550,621385,1.698,2252244712,Distribution Services,NASDAQ,,false
+LEGH,11.71,35.50,31.78,100,81621,0.123,791499494,Consumer Durables,NASDAQ,,true
+PKOH,11.68,48.58,43.50,397,76280,0.520,629156204,Producer Manufacturing,NASDAQ,,true
+TASK,11.24,9.60,8.63,2847,289890,0.982,849480264,Commercial Services,NASDAQ,,true
+APPN,10.60,55.10,49.82,35682,957715,3.726,3797374074,Technology Services,NASDAQ,,false
+VCEL,10.53,50.27,45.48,10330,589392,1.753,2788199975,Health Technology,NASDAQ,,false
+ASPN,10.42,5.30,4.80,79473,907875,8.754,393781799,Process Industries,NYSE,"Q3 revenue $85.2M +71% q/q, above the high end of guide; adj EBITDA $19.8M vs $6.3M a year ago; first data-center Energy Industrial order won",false
+EVMN,10.10,6.65,6.04,3294,938536,0.351,247149296,Health Technology,NYSE,,true
+PGNY,9.83,33.06,30.10,12433,998222,1.246,2624440194,Commercial Services,NASDAQ,,false
+ALTO,9.43,3.83,3.50,57685,925076,6.236,291269690,Process Industries,NASDAQ,"Q3 net sales $257.9M (est $251.0M), net income $12.7M, adj EBITDA $21.0M; expects at least $20M of 2026 Section 45Z credit earnings",false
+PTON,9.16,5.96,5.46,726558,7981545,9.103,2417403655,Consumer Services,NASDAQ,"FQ1 revenue $559.2M beat $555.8M, GAAP EPS $0.19 vs $0.11 est; gross margin 61.3% (+975bp) though part non-recurring",false
+AGL,9.11,105.00,96.23,400,206013,0.194,2036270128,Health Services,NYSE,,true
+SD,9.03,13.77,12.63,6142,326186,1.883,482349635,Energy Minerals,NYSE,,false
+COLL,8.83,25.76,23.67,6987,655157,1.066,825122051,Health Technology,NASDAQ,,false
+ECPG,8.83,108.75,99.93,7695,206428,3.728,2416807245,Finance,NASDAQ,,false
+COTY,8.36,3.76,3.47,6134,5175692,0.119,3527149311,Consumer Non-Durables,NYSE,,true
+CPAY,8.34,453.53,418.60,4708,476180,0.989,30762179317,Commercial Services,NYSE,,true
+MYGN,8.14,6.51,6.02,21888,2633808,0.831,612731660,Health Technology,NASDAQ,,true
+ULCC,8.04,7.66,7.09,129952,3418022,3.802,1637116667,Transportation,NASDAQ,,false
+MDA,7.85,28.29,26.23,11775,1614783,0.729,4533177102,Electronic Technology,NYSE,,true
+PBYI,7.74,11.52,10.69,2537,350280,0.724,540978287,Health Technology,NASDAQ,,true
+FWONA,7.67,98.01,91.03,998,213865,0.467,26778131636,Technology Services,NASDAQ,,true
+AMPL,7.62,18.50,17.19,33654,1797812,1.872,2154794635,Technology Services,NASDAQ,,false
+CERT,7.57,11.93,11.09,12513,2579590,0.485,1680977464,Technology Services,NASDAQ,,true
+CTRI,7.55,22.09,20.54,3255,2119825,0.154,2007145691,Utilities,NYSE,,true
+WU,7.28,7.07,6.59,176924,7709496,2.295,2296988647,Finance,NYSE,,false
+CHYM,7.16,32.01,29.87,24528,3598778,0.682,11944322237,Technology Services,NASDAQ,,true
+DLX,7.13,25.09,23.42,2077,445899,0.466,1242017589,Commercial Services,NYSE,,true
+DK,7.07,70.09,65.46,2708,1757479,0.154,3999685544,Energy Minerals,NYSE,,true
+CDRE,7.00,33.00,30.84,1000,492150,0.203,1421648440,Electronic Technology,NYSE,,true
+FWONK,6.91,105.77,98.93,101757,2369127,4.295,26502058818,Technology Services,NASDAQ,,false
+CELH,6.80,32.84,30.75,446950,5444112,8.210,7770073780,Consumer Non-Durables,NASDAQ,Q3 swung from a $61M loss to a profit on revenue +17%; FY26 consensus revenue ~$800M with EPS ~$0.31; buybacks and insider buying,false
+ECX,6.64,0.75,0.70,4873,927464,0.525,272910791,Technology Services,NASDAQ,,true
+KLRA,6.48,13.63,12.80,164,1187682,0.014,1549241960,Health Technology,NASDAQ,,true
+BGC,6.39,11.99,11.27,2800,3074668,0.091,5200193898,Finance,NASDAQ,,true
+ECVT,6.32,10.60,9.97,266,1187334,0.022,1176237979,Process Industries,NYSE,,true
+GLIBK,6.27,24.73,23.27,100,404148,0.025,966224339,Technology Services,NASDAQ,,true
+SCTX,6.21,17.82,16.78,300,446867,0.067,307261159,Health Technology,NASDAQ,,true
+OBE,6.19,9.78,9.21,8121,667506,1.217,632718554,Energy Minerals,AMEX,,false
+GTM,6.10,4.52,4.26,69799,4637065,1.505,1156143611,Technology Services,NASDAQ,,false
+TPL,6.01,304.94,287.65,4847,325643,1.488,20728269804,Miscellaneous,NYSE,,false
+AXS,5.90,114.14,107.78,426,722699,0.059,7866782183,Finance,NYSE,,true
+MAIR,5.89,25.00,23.61,625,2304789,0.027,11564706273,Producer Manufacturing,NYSE,,true
+MIDD,5.84,135.00,127.55,2640,479488,0.551,5934076549,Producer Manufacturing,NASDAQ,,true
+CRON,5.70,3.71,3.51,94072,950897,9.893,1423915701,Health Technology,NASDAQ,Q3 net income $13.8M vs $0.04 est; organic net revenue +73% y/y with records in Canada and Germany; closed the CanAdelaar acquisition,false
+LFST,5.56,15.00,14.21,15560,3195850,0.487,5898549233,Health Services,NASDAQ,,true
+LFTO,5.48,16.55,15.69,1263,624928,0.202,2799896736,Technology Services,NASDAQ,,true
+PH,5.47,960.00,910.19,11848,608606,1.947,119000932933,Producer Manufacturing,NYSE,,false
+MATX,5.47,223.00,211.44,100,277283,0.036,6687609344,Transportation,NYSE,,true
+JBLU,5.34,3.75,3.56,1195761,29520618,4.051,1341485759,Transportation,NASDAQ,,false
+CW,5.28,476.00,452.13,200,399023,0.050,16713759644,Electronic Technology,NYSE,,true
+RGLD,5.21,258.89,246.08,3232,583627,0.554,21731001565,Non-Energy Minerals,NASDAQ,,true
+LPG,5.20,52.00,49.43,2064,512678,0.403,2109613989,Transportation,NYSE,,true
+RVMD,5.16,210.00,199.70,30495,1894433,1.610,40723920275,Health Technology,NASDAQ,,false
+OCGN,5.16,0.92,0.87,247362,6597815,3.749,294449563,Health Technology,NASDAQ,,false
+AMLX,5.10,30.90,29.40,2916,1245544,0.234,3633602641,Health Technology,NASDAQ,,true
+TRP,5.03,65.76,62.61,100,2714979,0.004,66824760776,Industrial Services,NYSE,,true
+ALB,5.03,99.75,94.97,35565,2387696,1.490,11964238001,Process Industries,NYSE,,false
+CLDT,4.94,15.72,14.98,333,417096,0.080,695224577,Finance,NYSE,,true
+ADPT,4.83,28.00,26.71,13658,2092911,0.653,4395668284,Health Technology,NASDAQ,,true
+APPS,4.82,10.00,9.54,53427,2702868,1.977,1191693474,Technology Services,NASDAQ,,false
+SUPX,4.82,5.00,4.77,5500,344755,1.595,218382122,Commercial Services,NASDAQ,,false
+OFLX,4.74,27.18,25.95,123,41703,0.295,263461817,Producer Manufacturing,NASDAQ,,true
+OGC,4.73,27.00,25.78,2709,521355,0.520,5994960540,Non-Energy Minerals,NYSE,,true
+HNST,4.73,4.65,4.44,167938,1755761,9.565,492435337,Retail Trade,NASDAQ,FQ3 due after today's close (consensus $80.8M revenue); the pre-print bid came with the FY26 revenue estimate raised to $322.6M,false
+VIRT,4.68,55.51,53.03,1766,1186676,0.149,8570156562,Finance,NYSE,,true
+NSIT,4.67,183.83,175.62,1488,345973,0.430,5048002103,Technology Services,NASDAQ,,true
+PRMB,4.66,22.00,21.02,35202,4728715,0.744,7816174924,Consumer Non-Durables,NYSE,,true
+FA,4.58,23.50,22.47,2863,1678756,0.171,4007013526,Technology Services,NASDAQ,,true
+ONT,4.46,16.85,16.13,2738,685626,0.399,665123976,Industrial Services,NYSE,,true
+IDR,4.44,20.95,20.06,794,307007,0.259,309876399,Non-Energy Minerals,AMEX,,true
+TIGO,4.42,80.50,77.09,16887,925210,1.825,13515518316,Communications,NASDAQ,,false
+CF,4.32,116.50,111.68,6022,2293700,0.263,18296778698,Process Industries,NYSE,,true
+ALNY,4.30,168.00,161.08,9763,2127252,0.459,22190777892,Health Technology,NASDAQ,,true
+AQST,4.21,3.96,3.80,1000,2073780,0.048,474471084,Health Technology,NASDAQ,,true
+FSK,4.19,11.94,11.46,46316,2044291,2.266,3363061109,Miscellaneous,NYSE,,false
+FTI,4.19,67.20,64.50,301,2722063,0.011,25013648987,Industrial Services,NYSE,,true
+HCSG,4.18,27.65,26.54,1400,755141,0.185,1807852165,Commercial Services,NASDAQ,,true
+BSY,4.17,45.46,43.64,26451,2536582,1.043,14224043327,Technology Services,NASDAQ,,false
+MTRX,4.16,9.51,9.13,1049,486950,0.215,259578384,Industrial Services,NASDAQ,,true
+SVCO,4.12,6.06,5.82,25509,315475,8.086,215852281,Technology Services,NASDAQ,Record TCAD bookings $10.3M +89% on a new tier-1 FTCO win; Q4 revenue guide $22M implies +35% q/q and +17% FY growth,false
+LXRX,4.05,1.54,1.48,117411,2283215,5.142,709704721,Health Technology,NASDAQ,Q3 loss $0.03 vs $0.06 est; SONATA-HCM enrollment complete at 542 patients with topline in Q1 2027; ZYNQUISTA NDA resubmission planned Q1 2027,false
+CNL,4.05,12.58,12.09,1886,173410,1.088,1033967276,Non-Energy Minerals,NASDAQ,,false
+GLIBA,4.03,24.00,23.07,100,42294,0.236,965150365,Technology Services,NASDAQ,,true
+FSLR,3.99,202.27,194.51,125079,2414561,5.180,20792778181,Electronic Technology,NASDAQ,Democratic sweep lifts clean-energy policy hopes; William Blair upgraded to Outperform; $500M buyback; 44GW contracted backlog; 38c/w import floor from Dec 4,false
+LIME,3.86,19.10,18.39,6472,435957,1.485,1245097075,Consumer Services,NASDAQ,,false
+CD,3.86,7.00,6.74,150,326577,0.046,708435444,Technology Services,NASDAQ,,true
+ZURA,3.85,4.17,4.02,17174,4073919,0.422,371816106,Health Technology,NASDAQ,,true
+QNST,3.84,20.00,19.26,8760,809140,1.083,1192821630,Commercial Services,NASDAQ,,false
+PSEC,3.82,1.50,1.44,98658,6973071,1.415,776703612,Miscellaneous,NASDAQ,,false
+MTRN,3.71,194.21,187.26,130,253162,0.051,3833613619,Electronic Technology,NYSE,,true
+PR,3.70,23.26,22.43,12860,8661720,0.148,18861784050,Energy Minerals,NYSE,,true
+G,3.64,42.27,40.78,3738,1768965,0.211,6969803964,Commercial Services,NYSE,,true
+MTDR,3.63,52.20,50.37,604,1477364,0.041,6414181038,Energy Minerals,NYSE,,true
+CMRC,3.62,3.58,3.45,8500,559622,1.519,303263920,Technology Services,NASDAQ,,false
+LEU,3.58,95.89,92.58,20376,817811,2.492,1854462858,Non-Energy Minerals,NYSE,,false
+PACK,3.57,3.48,3.36,150,699489,0.021,283266834,Process Industries,NYSE,,true
+UPBD,3.56,25.00,24.14,18243,1273682,1.432,1448814096,Finance,NASDAQ,,false
+PRVA,3.53,23.19,22.40,200,1207198,0.017,2966626733,Finance,NASDAQ,,true
+GT,3.52,4.71,4.55,86227,8190876,1.053,1370398072,Consumer Durables,NASDAQ,,false
+CAH,3.49,271.08,261.93,715,1685306,0.042,64294764943,Distribution Services,NYSE,,true
+BATRK,3.49,52.50,50.73,5230,518458,1.009,3280842362,Consumer Services,NASDAQ,,false
+SLI,3.47,1.49,1.44,25512,2007477,1.271,349199562,Non-Energy Minerals,AMEX,,false
+GALT,3.46,3.59,3.47,1000,193708,0.516,338854792,Health Technology,NASDAQ,,true
+GRNT,3.46,4.79,4.63,2599,1268680,0.205,642354174,Energy Minerals,NYSE,,true
+DTIL,3.45,8.40,8.12,47168,251208,18.776,275166823,Health Technology,NASDAQ,Positive DSMB safety review for PBGENE-DMD endorsed more dosing; HBV AASLD late-breaker data due Nov 8; but a $125M equity offering priced Nov 4,false
+THM,3.45,1.80,1.74,14447,745508,1.938,371525232,Non-Energy Minerals,AMEX,,false
+CHRD,3.45,136.89,132.33,3333,694974,0.480,7587141952,Energy Minerals,NASDAQ,,true
+PESI,3.43,13.25,12.81,3150,289887,1.087,266078134,Industrial Services,NASDAQ,,false
+STAA,3.42,28.10,27.17,59294,657047,9.024,1390994168,Health Technology,NASDAQ,"Q3 EPS $0.11 vs $0.05 est, revenue $83.4M beat $78.2M; ex-deferred China sales +21% with China +31%; no Q4 guidance given",false
+GSM,3.41,3.03,2.93,11260,1272450,0.885,540961215,Non-Energy Minerals,NASDAQ,,true
+LTH,3.40,49.00,47.39,1338,3063935,0.044,10749523388,Consumer Services,NYSE,,true
+ASPE,3.37,13.19,12.76,100,,,354613532,Health Technology,NASDAQ,,true
+GAU,3.37,2.15,2.08,32073,2400359,1.336,545418845,Non-Energy Minerals,AMEX,,false
+ZUMZ,3.37,16.28,15.75,1777,305218,0.582,241073891,Retail Trade,NASDAQ,,true
+VIR,3.31,12.16,11.77,1382,1800052,0.077,2039052368,Health Technology,NASDAQ,,true
+BLBD,3.26,62.98,60.99,167,541331,0.031,1899005132,Consumer Durables,NASDAQ,,true
+PPTA,3.24,16.88,16.35,3958,1249424,0.317,2087223509,Non-Energy Minerals,NASDAQ,,true
+TREX,3.24,59.00,57.15,2659,1888163,0.141,5983561338,Non-Energy Minerals,NYSE,,true
+MLYS,3.24,17.55,17.00,63695,1638951,3.886,1412741994,Health Technology,NASDAQ,,false
+CSGP,3.22,33.63,32.58,7574,5945439,0.127,12979402375,Technology Services,NASDAQ,,true
+ACTG,3.21,4.50,4.36,200,140187,0.143,396690383,Commercial Services,NASDAQ,,true
+HUBS,3.21,223.59,216.64,130672,1234604,10.584,10208608331,Technology Services,NYSE,"Q3 revenue $947.6M +17%, non-GAAP EPS $3.81 vs $3.30 est; FY26 revenue guide $3.685-3.687B; but 8 straight down days and a Cantor cut to Underweight",false
+SLG,3.20,55.50,53.78,100,953305,0.010,4057821619,Finance,NYSE,,true
+ASM,3.16,4.89,4.74,194013,2903909,6.681,777920163,Non-Energy Minerals,AMEX,Avino Silver & Gold reported Q3 results; precious-metals bid with gold +1.1% on the day,false
+BCRX,3.16,8.50,8.24,4123,5289630,0.078,2034059423,Health Technology,NASDAQ,,true
+DCOM,3.13,45.10,43.73,456,410357,0.111,1945964928,Finance,NYSE,,true
+NG,3.11,6.29,6.10,36083,4425274,0.815,2654836815,Non-Energy Minerals,AMEX,,true
+HLP,3.07,3.02,2.93,239616,236326,101.392,251122194,Producer Manufacturing,NASDAQ,"Hongli Group is negotiating a 20% stake in battery maker Xell Energy; the gap traded 101% of its 30-day ADV, an erratic book",false
+ANIP,3.00,73.80,71.65,12155,331866,3.663,1737936863,Health Technology,NASDAQ,,false

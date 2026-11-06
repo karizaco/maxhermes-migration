@@ -246,6 +246,88 @@ the live session. The spec now carries the same instruction in the Mode B column
 
 ---
 
+## 14. The v2 contract was prose, and the brief never published its asymmetry — HIGH (2026-11-06)
+
+The v2 contract fixed the layout in prose. Prose is exactly what the 2026-11-04 work showed to be
+insufficient: rendering v2 against the real 261-row dataset caught three defects that *reading*
+the prose did not (CSV prices at 4 dp against markdown 2 dp, `RZAI`'s null ADV published as a
+number, `$4937.50B` instead of `$4.94T`) — and the verification was **manual**. A rule nobody
+executes is a rule that decays.
+
+Two changes close the gap. Neither touches the section skeleton, the actionable gate, the
+one-table rule or the CSV column contract.
+
+### 14a. The contract is now a gate: `tools/check_ntrt_artifact.py`
+
+Fourteen named checks, each exiting 1 with a specific failure:
+
+```
+SECTIONS · SECTION_EMPTY · NO_CATALYSTS · ONE_NAME_ONCE · MD_CSV_AGREE · CSV_CONTRACT ·
+PCT_ADV_EMPTY · MKTCAP_FORMAT · NOISE_FLAG · TLDR_BULLETS · TLDR_ADV_CHECK · GATE ·
+FOURCELL · FOURCELL_EX
+```
+
+The skill fetches the checker at RUN time (§9) and runs it **before the push**; the exit code is
+the gate. The reply publishes `contract: 14/14` so a reader can see the artifact was **verified**
+rather than assumed. The fetch demands the capability marker `NTRT_CONTRACT_CHECK_V1`, because an
+older copy of the script is still published on the mirrors and checks fewer rules — a stale file
+must not be able to win the ladder and report a clean artifact it never checked.
+
+`tools/test_ntrt_contract.py` proves the checker bites: a synthetic conforming artifact must
+pass, and **each of the fourteen checks has a fixture that fails it**. A mutation that changes
+nothing is itself reported as a failure, so a no-op mutation cannot silently "pass".
+
+### 14b. The brief now publishes the gap-vs-catalyst split
+
+The screen is not the story; the asymmetry is. `## Worth your attention` ends with a
+`### Gap vs catalyst` subsection — a 2×2 of the actionable gate against catalyst coverage, with
+the four counts and one named example per populated cell:
+
+```
+| | Catalyst sourced | No catalyst |
+|---|---|---|
+| **Passes the actionable gate** | the tradeable set | a gap with no driver — a warning, not a trade |
+| **Fails the gate** | a missed opportunity — there IS a driver, the book is too thin | noise |
+```
+
+The universe is the names the brief **checked** — the actionable set and the wider screen — and
+the caption states it, because a table whose denominator is hidden is a table nobody can read.
+The catalyst axis is the CSV's own `catalyst` column, so the counts are recomputable from the
+artifact itself: the checker derives all four counts from the markdown's tables plus the CSV and
+fails the run when they disagree.
+
+This changes the catalyst lookup rule: the coverage is now **every published name** (actionable
+set and wider screen), not the actionable set alone. The deep-dive cap of 5 is unchanged and does
+not cap the lookups — a lookup is one search, a dossier is an investigation.
+
+### The numbers the four cells actually hold (2026-11-05, the real screen)
+
+89 names checked out of a 481-name screen:
+
+| | Catalyst sourced | No catalyst |
+|---|---|---|
+| **Passes the actionable gate** | **69** — the tradeable set (e.g. MNTN) | **0** — none |
+| **Fails the gate** | **19** — missed opportunities (e.g. ROCK) | **1** — noise (e.g. TXO) |
+
+Read it as: 481 gap names were 69 trades and 412 warnings, and **19 of the warnings had a real
+driver behind them** (four of them a Q3 print the pre-market book could not trade) while exactly
+one — TXO — had neither a driver nor a book. That is the asymmetry the old brief published as a
+bare count of 69.
+
+### Two defects found while writing the checker
+
+- **A published 1 dp number can read the other way of the gate.** RELY (%ADV 4.995) and ROOT
+  (4.990) FAIL the raw gate but their published cells read `5.0` — a reader sees a name that
+  appears to clear the floor sitting in the wider screen. The contract now says to classify on the
+  **raw** CSV values and to flag it when the published number disagrees; the checker accepts
+  either classification only within 0.05 of a threshold.
+- **The market-cap rule contradicted the artifact.** The spec said "trailing zeros stripped"
+  (`$200.97B`), but the 2026-11-05 artifact renders `$701.50B`. The rule is now exact — no
+  decimals under $1B, two decimals from $1B to $1T and above — and the checker enforces that
+  rendering, which is what catches `$4937.50B`.
+
+---
+
 ## Verification performed
 
 - Front matter parses; `name` and `description` keys preserved.
@@ -268,6 +350,23 @@ the live session. The spec now carries the same instruction in the Mode B column
   8-K, or a named wire. Two were resolved by identity rather than by price: **BNC** is BNB
   Standard (a BNB digital-asset treasury company, not Banc of California), and **VITL** is Vital
   Farms.
+- **2026-11-06 (the v3 work):**
+  - `tools/check_ntrt_artifact.py` was run against the **real 2026-11-05 artifact** (481 CSV rows,
+    89 published names): **12 of 14 checks pass**, and the only two failures are the two NEW
+    requirements the artifact predates (no `### Gap vs catalyst` table). The checker is therefore
+    calibrated to the real artifact, not to a synthetic one.
+  - The same artifact **plus** the §8 table and the 19 wider-screen catalyst lookups passes
+    **14/14** — `CONTRACT OK — contract: 14/14 (ntrt-artifact-v3)`. The rendered table and the
+    CSVs are kept as a fixture in `tools/fixtures/ntrt/2026-11-05/`.
+  - `tools/test_ntrt_contract.py`: **17/17** — the conforming fixture passes, the reply's
+    `contract: 14/14` line is accepted, a wrong count is rejected, a missing file exits 2, and
+    **each of the fourteen checks has a fixture that fails it** (two mutations also trip a second
+    check, which the test reports).
+  - The 19 wider-screen catalysts were sourced from the issuer's release or a named wire (SEC
+    EDGAR for ROCK, LZ and ENOV; IR pages for GRAL, ARQT, TPR, RPD; GlobeNewswire for CSV; Yahoo
+    for RELY, ROOT, VERX). **TXO has no catalyst** and its cell is the honest `1 — e.g. TXO`.
+  - The 2026-11-05 artifact in the outputs repo was **not** re-pushed or modified: the §8 render
+    is a derived fixture, and the delivered brief stands as delivered.
 
 ## Revert
 

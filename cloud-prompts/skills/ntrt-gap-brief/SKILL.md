@@ -58,13 +58,18 @@ Generates the weekday pre-market gapper brief. Replaces the paused `ntrt-pre-mar
 
 ---
 
-## ARTIFACT FORMAT CONTRACT (v2 — load-bearing)
+## ARTIFACT FORMAT CONTRACT (v3 — load-bearing)
 
 This section is the reason the fleet's briefs stopped drifting. Earlier revisions left the
 artifact layout to the run, and the last four briefs used **three different section
 skeletons** (2026-10-29, 2026-11-02, 2026-11-03), so a reader had to re-learn the document
 every morning. **Follow the structure below exactly.** Do not add, drop, or reorder sections.
 If a section has nothing in it, say so in one line — do not delete the heading.
+
+**v3 = v2 + §8 (the gap-vs-catalyst split) + §9 (the machine check).** The section skeleton,
+the actionable gate, the one-table rule and the CSV column contract are **unchanged** from
+v2 — they work. What v3 adds is the asymmetry the screen actually contains, and a checker
+that fails the run when the contract is broken instead of trusting the run to have read it.
 
 ### 1. Section skeleton (fixed order)
 
@@ -101,7 +106,7 @@ If a section has nothing in it, say so in one line — do not delete the heading
   so it must not be demoted into a caveat list. If the tape's moves are macro-driven, say so
   here — otherwise the reader will read every name as idiosyncratic when it is not.
 - **`## Worth your attention`** — the actionable set. **Two tables, gap-down then gap-up.**
-  See §2.
+  See §2. It ends with the **`### Gap vs catalyst`** subsection — the asymmetry table, §8.
 - **`## Wider screen`** — **the names not already shown above**, for completeness. Two tables,
   gap-down then gap-up, top 10 each by absolute gap **among the remaining names**. Columns:
   ticker, gap %, % of 30d ADV, sector. **No catalyst column here** — that is what makes this
@@ -129,6 +134,11 @@ five; that is the failure this rule exists to prevent.
   an essay in a table cell — a cell that wraps to four lines destroys the table.
 - **Do not add a separate `## Catalysts` section.** The catalyst is the last column of the
   table above. A second prose pass over the same names is the duplication this rule bans.
+- **Look the catalyst up for EVERY published name — the actionable set AND the wider screen.**
+  A one-line lookup per name, not an investigation: the wider screen's names are what the §8
+  asymmetry table is built from, and a name whose driver is unknown cannot be placed in a cell.
+  The **deep-dive cap of 5 does not cap the catalyst lookups** (see Hard rules) — a deep dive
+  is a dossier, a catalyst lookup is one search.
 - The **full screen** — every name at ≥3% gap, including the sub-5%-ADV ones — lives in the
   **CSV**, not the markdown. The markdown is the triage; the CSV is the data.
 
@@ -149,8 +159,9 @@ keeps extra decimals only on the one computed ratio (`pct_of_adv`); every quoted
 same 2 dp in both files, so a reader can match a row across the markdown and the CSV by eye.
 
 **Scale the market cap to its own unit.** `$4937.50B` is unreadable, and a mega-cap's cap is
-read in trillions. Use `$M` under $1B, `$B` under $1T, `$T` above, with trailing zeros stripped
-(`$458M`, `$200.97B`, `$4.94T`).
+read in trillions. The rule is exact, because the checker enforces it: **no decimals under $1B
+(`$458M`), two decimals from $1B to $1T (`$200.97B`), two decimals above $1T (`$4.94T`)**.
+A value of 4,937,500,000,000 renders as `$4.94T` and never as `$4937.50B`.
 
 ### 4. The CSV companion (column contract)
 
@@ -169,6 +180,8 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
   with no ADV history must not slip through as "real" on an empty value.
 - `catalyst` — one line, quoted. Empty string when no catalyst could be confirmed. **A blank
   cell means "not found", not "there wasn't one"** — say so in the markdown's Flags section.
+  It carries a lookup for **every published name** (the actionable set and the wider screen),
+  because the §8 asymmetry table is computed from this column.
 - `prev_close` — the prior **regular** close, with its date in the column name avoided; the
   date is in the filename and in the markdown front matter. **Derive it, never take it from the
   screener's `close` column**: once the session is open that column is the live intraday price,
@@ -214,6 +227,103 @@ returned an error you did not read.
 re-pull to verify a name, the **first pull wins** for the tables, and the prose must match it.
 If the tape moved between pulls, say so in Flags rather than publishing two different numbers
 for the same ticker. A brief that contradicts itself is worse than a brief with less in it.
+
+### 8. The gap-vs-catalyst split — publish the asymmetry
+
+The screen is not the story. **The story is the asymmetry** between a gap, a driver and a
+tradeable book: a +8% gap on no volume is not the same trade as a +4% gap on 20% of ADV.
+Publish it as a 2×2 at the end of `## Worth your attention`, as the **`### Gap vs catalyst`**
+subsection. The section skeleton does not change — this is a subsection, not a new `##`
+section, and it is not a catalyst listing.
+
+The format is exact:
+
+```
+### Gap vs catalyst
+Universe: the <N> names checked for a catalyst (<A> actionable + <W> wider screen) out of <S> screen names.
+
+| | Catalyst sourced | No catalyst |
+|---|---|---|
+| **Passes the actionable gate** | <count> — e.g. <TICKER> | <count> — e.g. <TICKER> |
+| **Fails the gate** | <count> — e.g. <TICKER> | <count> — e.g. <TICKER> |
+```
+
+- **The universe is the names the brief CHECKED** — every name in `## Worth your attention` and
+  every name in `## Wider screen`. Those are the names the reader can see, and every one of them
+  has been looked up. **State the universe in the caption**: a table whose denominator is hidden
+  is a table nobody can read.
+- **The catalyst axis is the CSV's `catalyst` column** — sourced = non-empty, not sourced =
+  empty ("no catalyst could be confirmed"). The counts are therefore computable from the
+  artifact's own tables plus its CSV, which is exactly what the checker does.
+- **The gate axis is the actionable gate** (§2): passes = in `## Worth your attention`, fails =
+  in `## Wider screen`. **Classify on the RAW CSV values, never on the published 1 dp number** —
+  a name at 4.995% of ADV FAILS the gate even though the published cell reads `5.0`. When a
+  published number reads like it passes while the name sits in the wider screen, say so in Flags.
+- **One example per populated cell**, and the example must really sit in that cell. A cell with
+  a count of 0 says `none`.
+- What each cell means:
+
+  | cell | meaning |
+  |---|---|
+  | passes the gate + catalyst sourced | **the tradeable set** |
+  | passes the gate + no catalyst | **a gap with no driver — a warning, not a trade** |
+  | fails the gate + catalyst sourced | **a missed opportunity** — there IS a driver, the book is too thin to trade it |
+  | fails the gate + no catalyst | **noise** |
+
+- One worked example (2026-11-05): 89 names checked out of a 481-name screen, and the split was
+  **69 tradeable · 0 with no driver · 19 missed opportunities · 1 noise**. Read it as: the
+  screen's 481 names were 69 trades and 412 warnings, and 19 of the warnings had a real driver
+  behind them that the pre-market book could not trade.
+
+### 9. The contract check runs every time — the contract is a gate, not a document
+
+`tools/check_ntrt_artifact.py` asserts the fourteen rules of this contract against the
+artifact you just wrote; `tools/test_ntrt_contract.py` proves that each of the fourteen checks
+actually bites. **Fetch the checker at RUN time and run it BEFORE you push.** A run that fails
+a check does not publish a failing artifact: fix the artifact and re-run.
+
+```bash
+C=/workspace/check_ntrt_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_ntrt_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_ntrt_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_ntrt_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  # The CAPABILITY check is mandatory: an OLDER copy of this script is still published
+  # and it checks fewer rules, so without the marker a stale file can win the ladder
+  # and report a clean artifact it never checked. The CDNs cache `main` independently,
+  # so one of them CAN serve stale bytes - the contents API is not CDN-cached, so it is
+  # tried FIRST.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'NTRT_CONTRACT_CHECK_V1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'NTRT_CONTRACT_CHECK_V1' "$C" 2>/dev/null; then
+  echo "contract-check: UNAVAILABLE - publish the brief, report contract: NOT RUN, errors: 1"
+else
+  python3 "$C" --md "/workspace/ntrt/{date}.md" --csv "/workspace/ntrt/{date}.csv"
+fi
+```
+
+(`{date}` is the fire's **scheduled** date in US/Eastern — the same value you used for the
+`## OUTPUT` path in the cron prompt, not the wall clock.)
+
+- **The checker's exit code is the gate.** Exit 0 → publish. Exit 1 → the artifact breaks the
+  contract: **fix the artifact and re-run**. Never push a failing brief, and never paste the
+  failure into the brief to make it pass.
+- **The reply publishes the count.** One line in `### Files`, after the file list:
+  `contract: 14/14`. A reader must be able to see that the artifact was **verified**, not
+  assumed. (The checker also accepts `--reply <file>` and verifies that published count — use
+  it if you keep the reply text on disk.)
+- **If the checker cannot be fetched**: still deliver the brief, publish
+  `contract: NOT RUN (checker fetch failed)` on that line, and count it in `errors:`. Never
+  claim a check that did not run.
+- The fourteen checks, in one place: `SECTIONS · SECTION_EMPTY · NO_CATALYSTS · ONE_NAME_ONCE ·
+  MD_CSV_AGREE · CSV_CONTRACT · PCT_ADV_EMPTY · MKTCAP_FORMAT · NOISE_FLAG · TLDR_BULLETS ·
+  TLDR_ADV_CHECK · GATE · FOURCELL · FOURCELL_EX`.
 
 ---
 
@@ -305,10 +415,13 @@ before today, and for anything older they are gone. For an older date:
 ### Always
 
 6. Compose the brief against the **ARTIFACT FORMAT CONTRACT** above. Section order, the one-table
-   rule, the numeric conventions and the CSV column contract are all load-bearing.
+   rule, the numeric conventions, the §8 asymmetry table and the CSV column contract are all
+   load-bearing.
 7. Write **both** outputs: the markdown to the `## OUTPUT` path in the cron prompt, and the CSV
    beside it. Never overwrite a prior date's file.
-8. Append audit line: `brief_rendered target=ntrt-premarket:<date> mode=<A|B>`.
+8. **Run the contract checker (§9) on both files.** Exit 0 → publish. Exit 1 → fix the artifact
+   and re-run; a failing brief is not pushed.
+9. Append audit line: `brief_rendered target=ntrt-premarket:<date> mode=<A|B>`.
 
 ## Failure modes
 
@@ -324,6 +437,9 @@ before today, and for anything older they are gone. For an older date:
   the tables. One pull per brief; the first pull wins; note the movement in Flags.
 - **A catalyst asserted but not sourced** → an empty `Why` cell filled with a plausible story is
   fabrication. Leave it blank and flag it.
+- **The checker fails** → the artifact breaks the contract. Fix the ARTIFACT, not the checker,
+  and never weaken a check to make a brief pass. If the checker itself is unavailable, say so
+  (`contract: NOT RUN`) and count it in `errors:`.
 
 ## Hard rules
 
@@ -332,8 +448,10 @@ before today, and for anything older they are gone. For an older date:
 - Do not fan out to other trading agents unless the user explicitly asks.
 - **Hard cap deep dives at 5 per run.** A *deep dive* is a dossier or multi-source investigation
   of one name (`/api/dossier/{ticker}`, `explain_gap`). It is **not** the one-line catalyst
-  lookup that every name in the actionable table needs — that is one search per name and is
-  required by §2. Do not cap the catalyst column at 5; cap the investigations.
+  lookup that every published name needs — that is one search per name and is required by §2.
+  Do not cap the catalyst column at 5; cap the investigations. The catalyst lookups cover
+  **every** published name: the actionable set **and** the wider screen, because §8's table
+  cannot place a name whose driver was never looked up.
 - **Never publish a number you did not pull from a source you can name.** Every gap, price,
   volume and %ADV in the markdown and the CSV comes from the screener pull or a named
   verification source.
