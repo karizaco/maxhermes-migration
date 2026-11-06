@@ -46,6 +46,7 @@ ARTIFACTS = {
  "23-agentic-post-market-brief": ("daily-briefs/{date}-post-market.md", "daily-briefs", "-post-market.md"),
  "25-ntrt-gap-brief-daily": ("ntrt/{date}.md", "ntrt", ".md"),
  "26-agentic-pre-market-brief": ("daily-briefs/{date}-pre-market.md", "daily-briefs", "-pre-market.md"),
+ "26b-agentic-pre-market-brief-refresh-0920": ("daily-briefs/{date}-pre-market-refresh.md", "daily-briefs", "-pre-market-refresh.md"),
  "90-delivery-auditor": ("_audit/status.json (audit/status branch)", "", "status.json"),
 }
 # weekly routines get a longer staleness tolerance
@@ -135,9 +136,20 @@ def main():
     args = ap.parse_args()
 
     raw = json.load(open(args.tasks))
-    tasks = raw["tasks"] if isinstance(raw, dict) and "tasks" in raw else raw
+    # Accept every shape a saved `cron_read view=list` payload comes in:
+    # the raw response envelope, {"response": {"tasks": [...]}}, {"tasks": [...]},
+    # or a bare task list. The raw envelope used to crash this generator with
+    # "TypeError: 'bool' object is not a mapping" - and the raw envelope is
+    # exactly what `cron_read` hands you, so the generator could not consume
+    # the file it tells you to produce.
+    if isinstance(raw, dict):
+        if isinstance(raw.get("response"), dict):
+            raw = raw["response"]
+        if isinstance(raw.get("tasks"), list):
+            raw = raw["tasks"]
+    tasks = raw
     if isinstance(tasks, dict):
-        tasks = [{"cron_name": k, **v} for k, v in tasks.items()]
+        tasks = [{"cron_name": k, **v} for k, v in tasks.items() if isinstance(v, dict)]
 
     files = git_files(args.repo) if args.repo and os.path.isdir(args.repo) else []
     as_of = args.as_of or datetime.datetime.now(ET).strftime("%Y-%m-%d")
@@ -146,6 +158,11 @@ def main():
     for t in tasks:
         name = t.get("cron_name","")
         if name.startswith("@self-reminder"): continue
+        # A fleet routine is a task whose cron_name ends in `.md` - the same
+        # definition the auditor's roster check and cron #91's drift guard use.
+        # A one-off verification task (no `.md`) is not a routine, and listing it
+        # here made the roster report a routine that does not exist.
+        if not name.endswith(".md"): continue
         routine = key_of(name)
         sch = t.get("schedule","")
         parts = sch.split()

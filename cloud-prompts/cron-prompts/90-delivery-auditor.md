@@ -219,7 +219,8 @@ a skip.
 
 **Holiday note:** on a US market holiday the weekday-only routines still fire (the scheduler
 knows nothing about holidays) but may legitimately skip inside their own window check. A missing
-artifact on a holiday is `possible_holiday`, not a failure. The 2026 NYSE closures are in the
+artifact on a holiday is **not a failure** — it is either a `skipped_by_design` (STEP 4d: the
+routine ran, declined, and left a skip marker) or a non-finding. The 2026 NYSE closures are in the
 list below — check it before reporting a gap as a failure.
 
 ```
@@ -253,6 +254,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 08-pre-market-gapper | `30 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
 | 92a-preopen-catalyst-capture | `30 8 * * 1-5` | `preopen-feed/{date}-0830.jsonl` | Mon-Fri |
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
+| 26b-agentic-pre-market-brief-refresh | `20 9 * * 1-5` | `daily-briefs/{date}-pre-market-refresh.md` | Mon-Fri |
 | 07-focus-rvol-09:45 | `45 9 * * 1-5` | `daily-screens/{date}/focus-rvol-snapshot.md` | Mon-Fri |
 | 92b-preopen-catalyst-capture | `50 9 * * 1-5` | `preopen-feed/{date}-0950.jsonl` | Mon-Fri |
 | 17-us-stocks-in-play-open | `50 9 * * 1-5` | `us-stocks-in-play/{date}-open.md` | Mon-Fri |
@@ -408,6 +410,7 @@ for entry in \
   "26-agentic-pre-market-brief|^daily-briefs/[0-9]{4}-[0-9]{2}-[0-9]{2}-pre-market\.md$|5" \
   "08-pre-market-gapper|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/pre-market-gapper\.md$|5" \
   "25-ntrt-gap-brief-daily|^ntrt/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
+  "26b-agentic-pre-market-brief-refresh|^daily-briefs/[0-9]{4}-[0-9]{2}-[0-9]{2}-pre-market-refresh\.md$|5" \
   "07-focus-rvol-09:45|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/focus-rvol-snapshot\.md$|5" \
   "92a-preopen-catalyst-capture|^preopen-feed/[0-9]{4}-[0-9]{2}-[0-9]{2}-0830\.jsonl$|5" \
   "92b-preopen-catalyst-capture|^preopen-feed/[0-9]{4}-[0-9]{2}-[0-9]{2}-0950\.jsonl$|5" \
@@ -516,25 +519,38 @@ truth is the reference:** `tools/schedule-ground-truth.json` in `karizaco/maxher
 rebuilt from `migration-state.json` (the original local cron list).
 
 ```bash
-# --- fetch tools/schedule-ground-truth.json ---
+# --- fetch the auditor's tool set (ground truth + contract + detectors) ---
 # The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
 # independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
 # minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
 # NEVER reach its fallback - the first successful download satisfied the guard, so the
 # second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
 # rejected on its BODY, not on its byte count.
-S=/workspace/schedule-ground-truth.json
-for U in \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/schedule-ground-truth.json?ref=main" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/schedule-ground-truth.json" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/schedule-ground-truth.json" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"'; then
-    mv -f "$S.tmp" "$S"; break
-  fi
-  rm -f "$S.tmp"
+#
+# FOUR files, one loop:
+#   schedule-ground-truth.json  - the schedules of record (STEP 4c-0, STEP 4e)
+#   auditor-contract.json       - THE contract: states, causes, digest templates
+#   auditor_roster_check.py     - the live-vs-ground-truth roster detector (STEP 4e)
+#   check_auditor_contract.py   - the gate on THIS run's own output (STEP 6b)
+# They are fetched at RUN time, so a fix to any of them lands on the next fire with no
+# redeploy and no prompt drift.
+for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.py \
+         check_auditor_contract.py; do
+  D=/workspace/$F
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+    if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"'; then
+      mv -f "$D.tmp" "$D"; break
+    fi
+    rm -f "$D.tmp"
+  done
+  [ -s "$D" ] || echo "fetch FAILED: $F"
 done
+S=/workspace/schedule-ground-truth.json
 ```
 
 Compare each roster row's `Schedule (ET)` column with the ground-truth entry for the same
@@ -563,24 +579,197 @@ Only the third and fourth cases are a bug in the routine itself. A quota death i
 problem, and a routine that never fired is usually a scheduler problem — say which, because the
 fix is different.
 
+### 4c-1 — THE CAUSE VOCABULARY (closed)
+
+Every gap line names a cause from this CLOSED list, as a token:
+
+<!-- AUDITOR-CONTRACT-CAUSES
+platform_500 timeout quota_2067 push_failure delayed_replay not_yet_fired skipped_by_design cron_update_failed never_fired
+-->
+
+<!-- AUDITOR-CONTRACT-STATES
+delivered missing not_yet_fired skipped_by_design written_off not_due
+-->
+
+| Cause | Meaning |
+|---|---|
+| `platform_500` | The platform itself failed the fire (HTTP 500 / `CRON_EXECUTION_FAILED` / no session ever started). |
+| `timeout` | The run exceeded its time budget and was cut off before it could write or push. |
+| `quota_2067` | The Token Plan usage limit was reached — a BILLING wall, not a code bug. |
+| `push_failure` | The run was healthy and the artifact was built, but the push never landed (a lost race, a non-fast-forward, a staging abort). The artifact was NOT delivered. |
+| `delayed_replay` | The fire was dispatched for an earlier date and resumed late; the artifact was rebuilt for the ORIGINAL date. |
+| `not_yet_fired` | The routine's current schedule had not reached its first fire at the audited date. |
+| `skipped_by_design` | The routine ran and correctly wrote nothing (holiday window, fail-closed key, out-of-window). |
+| `cron_update_failed` | A `cron_update` meant to change the routine's schedule or prompt did not land. |
+| `never_fired` | The scheduler never dispatched the routine on a day its own schedule said it should fire. |
+
+**A gap line with an empty reason is a FAILED AUDIT: `errors: 1`, not `errors: 0`.** A
+cause that is not on the list is also a failed audit — extend the list in
+`tools/auditor-contract.json` (and the inline copy above) rather than inventing a token.
+
+The canonical contract — states, causes, the label/cause pairs, the digest templates and
+the status schema — is `tools/auditor-contract.json`, fetched at RUN time above. The
+inline copy in this section is the FALLBACK for a failed fetch; the gate (STEP 6b) fails
+the audit if the two ever disagree.
+
+### 4c-2 — HOW OLD IS THE GAP? (`gap_age_hours`)
+
+A gap that is twenty minutes old and a gap that is three days old need different urgency,
+and the old digest could not tell them apart. Publish the age of every gap in HOURS and
+carry it in the status file:
+
+    gap_age_hours = (the audit run's instant − the routine's MISSED FIRE INSTANT on $AUDIT_DATE) / 3600
+
+The missed fire instant is the routine's own scheduled ET time on the audited date — read it
+from the ground truth, never from the wall clock. Round to one decimal. For a `reconstructed`
+artifact it is the same instant: the original scheduled fire that was lost.
+
+### 4c-3 — HOW MANY FIRES IN A ROW? (`streak`)
+
+One missed fire is noise. Three in a row is a dead routine, and that is the finding the
+operator actually needs.
+
+- `streak` counts **consecutive DUE fires missed**, per routine.
+- Carry it forward from the PREVIOUS status file — the `audit/status` branch is the
+  history: `+1` when the routine is MISSING this cycle, `0` when it is delivered, and
+  **UNCHANGED when the routine was not due on the audited day**. A routine that is not due
+  must never reset its own streak.
+
+```bash
+# the previous audit's streaks, for the carry-forward
+cd /workspace/.audit
+git fetch -q origin audit/status || true
+git show origin/audit/status:_audit/status.json 2>/dev/null \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({k:v.get('streak',0) for k,v in (d.get('routines') or {}).items()}))" \
+  || echo "{}"
+```
+
+**A streak of 3 or more is surfaced on its own line in the digest** — a dead routine must
+never hide inside a count.
+
+## STEP 4d — A RUN THAT CORRECTLY PRODUCED NOTHING (`skipped_by_design`)
+
+A routine can fire, do exactly what it was built to do, and legitimately write no artifact.
+Three shapes of that:
+
+- **A window/holiday skip.** The shared `window_check.sh` declined the fire and pushed a
+  skip marker: `refs/skipped-markers/<date>_SKIPPED_<stem>.md` on `origin/main`. The marker
+  IS the audit trail — its `Reason:` line says why.
+- **A fail-closed precondition.** The routine's own key check found a missing credential
+  and declined to fabricate output (cron #92a/#92b with `XAI_API_KEY` unset write nothing
+  and push nothing — by design).
+- **An out-of-window fire.** The schedule fired outside the routine's own window and the
+  routine declined.
+
+**A skip is NOT a delivery failure.** The 2026-11-03 audit reported #92a and #92b as
+`not_yet_fired` on a day they HAD fired and had correctly written nothing. That is the
+mis-classification this step exists to prevent. A routine in this state is NEVER `missing`,
+NEVER counted in `missing`, and NEVER published as a `gap:` line.
+
+All three of these must hold before a routine is called `skipped_by_design`:
+
+1. **The routine RAN on `$AUDIT_DATE`.** `cron_read view=runs task_id=<id>` shows a run
+   whose `scheduled_at_ms` falls on the audited date. No run ⇒ it is a `never_fired`
+   MISSING, not a skip.
+2. **The session was HEALTHY.** `session_get session_id=<id>` has an empty
+   `status_message`. A quota death carries `2067`; a platform failure carries its own
+   message. Those are MISSING, not skips.
+3. **The run declined ON PURPOSE.** Either a skip marker exists for that date, or the run's
+   own reply says it wrote nothing (read the last assistant message of the session).
+
+Quote the reason from the evidence — the marker's `Reason:` line, or the run's reply.
+**Never invent a reason.** A skip you cannot explain is not a skip: leave it MISSING and
+say why the evidence was insufficient.
+
+Read the markers like this:
+
+```bash
+cd /workspace/.audit
+for m in $(git ls-tree -r --name-only origin/main -- refs/skipped-markers/ | grep "$AUDIT_DATE"); do
+  echo "--- $m"; git show "origin/main:$m" | grep -m1 '^- Reason:'
+done
+# attribute the marker to its routine by COMMIT, exactly like the near-miss triage:
+git log --format="%h %s" origin/main --grep="$AUDIT_DATE" | grep -E "SKIPPED"
+```
+
+A marker whose reason says `out-of-window: US market holiday (2026-11-26)` is a
+`skipped_by_design`, not a failure. The holiday list does not turn a skip into a gap.
+
+## STEP 4e — IS EVERY LIVE ROUTINE MONITORED? (the `roster_gap` check)
+
+The roster table in STEP 4 and `tools/schedule-ground-truth.json` are COPIES of what should
+be running. A routine that is LIVE on the scheduler but absent from both is **unmonitored**:
+this audit never checks its artifact, cron #91's drift guard cannot repair it, and both
+report a clean fleet. That is exactly what happened to #26b
+(`26b-agentic-pre-market-brief-refresh-0920.md`, task 459637559267655, 09:20 ET): it was
+live and firing while the 2026-11-03 audit reported `roster_desync: 0`.
+
+**#26b is in the ground truth now, so the count is 0 — but the CHECK is what matters.**
+Run it on EVERY audit. It is the only thing that makes this class of bug impossible to hide
+again.
+
+```bash
+# 1. the live fleet, saved VERBATIM (never re-typed)
+#    mcp_invoke  tool_name=cron_read  arguments={"view":"list","limit":100}
+#    -> write the raw payload to /workspace/.audit-tasks.json
+
+# 2. the detector (fetched at RUN time above) against the ground truth
+python3 /workspace/auditor_roster_check.py --tasks /workspace/.audit-tasks.json \
+        --ground-truth "$S" --json
+```
+
+Every entry it prints under `roster_gap` becomes a finding, published as:
+
+    roster_gap: <name> (task <id>) is live but not in schedule-ground-truth.json
+
+A `roster_gap` IS a finding even when no artifact is missing: this audit is blind to that
+routine. Fixing it means adding the routine to `tools/schedule-ground-truth.json` AND to
+this auditor's roster table in STEP 4 AND to `tools/deploy_prompts.py` — a routine with no
+row in the deploy harness is a routine the harness cannot byte-verify.
+
+**If the detector cannot run** (fetch failed, parse error), say so once (`errors: 1`) and
+carry on with the roster table. Never report the fleet as clean because a check failed.
+
 ## STEP 5 — CLASSIFY EVERY GAP
 
-For each gap, pick exactly one label:
+Every routine ends in exactly one STATE. The four states that matter for the operator are
+below; the rest are non-findings and are recorded, never published as a gap.
+
+**A routine's STATE:**
+
+| State | Meaning |
+|---|---|
+| `delivered` | The artifact exists on `origin/main` and was byte-verified. |
+| `missing` | The routine was due, produced nothing, and the failure reason is KNOWN. Counted in `missing`. Never used for a routine that skipped by design. |
+| `not_yet_fired` | The routine's current schedule has not reached its first fire date yet (see the SCHEDULE CHANGES block). Expected, not a failure. NOT a gap — record it in the top-level `not_yet_fired` array, never in `gaps`. |
+| `skipped_by_design` | The routine RAN and correctly wrote NO artifact (STEP 4d): a holiday window skip, a fail-closed key check, an out-of-window decline. Requires a reason. NOT counted in `missing`, NOT published as a `gap:` line — it gets its own `skipped:` line. |
+| `written_off` | The operator accepted this gap (see `WRITTEN_OFF`). NOT a finding — record it in the top-level `written_off` array, never in `gaps`. |
+| `not_due` | The schedule does not fire on `$AUDIT_DOW`. Not a gap. |
+
+**A GAP's LABEL** — only for a routine that is genuinely missing something. Every gap
+carries a label AND a cause (STEP 4c-1) AND an age in hours (STEP 4c-2):
 
 | Label | Meaning |
 |---|---|
 | `MISSING` | Due, expected, and the artifact is not on `origin/main`. **This is the important one.** |
-| `possible_holiday` | Due, expected, and `$AUDIT_DATE` is a US market holiday. |
-| `weekend_no_us_session` | Due, expected, and `$AUDIT_DATE` was a weekend. |
-| `not_due` | The schedule does not fire on `$AUDIT_DOW`. Not a gap. |
 | `present_but_empty` | The path exists but carries no data (a stub was pushed). |
 | `stale` | The artifact exists but is from an older date than expected. |
 | `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
-| `not_yet_fired` | The routine's current schedule has not reached its first fire date yet (see the SCHEDULE CHANGES block). Expected, not a failure. NOT a gap — record it in the top-level `not_yet_fired` array, never in `gaps`. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
-| `written_off` | The operator accepted this gap (see `WRITTEN_OFF`). NOT a finding — record it in the top-level `written_off` array, never in `gaps`. |
 | `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
 | `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are the only two. |
+
+**These are NOT findings and are NEVER published as a gap line:** `not_due`,
+`weekend_no_us_session`, `possible_holiday`, `not_yet_fired`, `written_off`,
+`skipped_by_design`. A holiday or a weekend is not a failure — and a gap line without a
+cause is a failed audit, so a non-finding must never become a gap line. Record them in
+their own top-level arrays (`not_yet_fired`, `written_off`, `skipped_by_design`) and move
+on.
+
+**The `roster_gap` check (STEP 4e) is a finding of its own** — it gets its own line, not a
+`gap:` line, because the artifact is not what is missing: the routine is not being watched
+at all. Record it in the top-level `roster_gap` array and publish it as a `roster_gap:`
+line.
 
 ## STEP 6 — WRITE THE STATUS FILE
 
@@ -588,35 +777,99 @@ Write `/workspace/_audit/status.json` (create the dir) — NOT into the outputs 
 local status file; it must not be pushed to `karizaco/minimax-cloud-outputs`, because the
 outputs repo holds artifacts, not audit state.
 
+**Schema v2** — the authoritative shape is `tools/auditor-contract.json` (fetched at RUN time
+above). Every field below is required:
+
 ```json
 {
-  "audit_date_et": "2026-10-27",
-  "audit_run_et": "2026-10-28T07:00:00-04:00",
-  "origin_main_sha": "abc1234",
-  "due": 18,
-  "delivered": 16,
+  "audit_date_et": "2026-11-03",
+  "audit_run_et": "2026-11-04T07:00:00-04:00",
+  "origin_main_sha": "3a8c868",
+  "due": 24,
+  "delivered": 22,
   "missing": 1,
+  "skipped_by_design_count": 1,
   "stale_routines": 0,
   "never_delivered": [],
   "not_yet_fired": [],
   "written_off": [],
-  "gaps": [
-    {"routine": "12-cross-asset-correlation", "path": "cross-asset/2026-10-27.md", "label": "MISSING", "cause": "quota exhausted (2067)"}
+  "skipped_by_design": [
+    {"routine": "92a-preopen-catalyst-capture",
+     "reason": "XAI_API_KEY unset - nothing written",
+     "marker": "refs/skipped-markers/2026-11-03_SKIPPED_preopen_capture_0830.md"}
   ],
-  "audit_status": "ok" | "gaps_found" | "failed_no_repo"
+  "roster_gap": [
+    {"name": "26b-agentic-pre-market-brief-refresh-0920.md", "task_id": "459637559267655"}
+  ],
+  "gaps": [
+    {"routine": "25-ntrt-gap-brief-daily", "path": "ntrt/2026-11-03.md",
+     "label": "MISSING", "cause": "platform_500",
+     "gap_age_hours": 18.4, "streak": 1}
+  ],
+  "routines": {
+    "25-ntrt-gap-brief-daily": {"routine": "25-ntrt-gap-brief-daily",
+                                 "state": "missing", "streak": 1},
+    "92a-preopen-catalyst-capture": {"routine": "92a-preopen-catalyst-capture",
+                                      "state": "skipped_by_design", "streak": 0}
+  },
+  "audit_status": "ok" | "gaps_found" | "failed_no_repo" | "skipped_no_token"
 }
 ```
+
+**`routines` is the per-routine map**: every routine the audit judged carries its `state` and
+its `streak`. It is what makes a dead routine visible tomorrow, because the next run carries
+the streak forward from this file (STEP 4c-3).
+
+**`gaps[]` entries carry the cause, the age and the streak** — `cause` from the closed
+vocabulary (STEP 4c-1), `gap_age_hours` from STEP 4c-2, `streak` from STEP 4c-3.
 
 `not_yet_fired` lists routines whose first fire date has not arrived yet. They are NOT gaps:
 they never appear in `gaps` and never affect `audit_status`.
 `written_off` lists gaps the operator accepted — NOT findings; they never affect `audit_status`.
+`skipped_by_design` lists the routines that ran and correctly wrote nothing — NOT findings:
+they never appear in `gaps`, they are never counted in `missing`, and they never affect
+`audit_status`. Each one carries a `reason`, and the path to its skip marker where the routine
+wrote one.
+`roster_gap` lists the live routines that are not in the ground truth. This IS a finding: it
+means the audit is blind to that routine.
 `roster_desync` IS a finding: it means the roster table is wrong, so report it even when no
 artifact is missing.
 `audit_status` is `gaps_found` when any gap has label `MISSING`, `present_but_empty` or
-`roster_desync`, and `ok` otherwise. A `reconstructed` gap does **not** change `audit_status` — the
-path exists and the date is covered — but it is always reported in `gaps` and named in the reply,
-so a rebuilt file is never mistaken for a clean run. A `MISSING` gap is a genuine, actionable finding — name the routine and the
-exact path so it can be reproduced.
+`roster_desync`, or when `roster_gap` is non-empty, and `ok` otherwise. A `reconstructed` gap
+does **not** change `audit_status` — the path exists and the date is covered — but it is always
+reported in `gaps` and named in the reply, so a rebuilt file is never mistaken for a clean run.
+A `MISSING` gap is a genuine, actionable finding — name the routine and the exact path so it can
+be reproduced.
+
+## STEP 6b — RUN THE CONTRACT GATE (before you push)
+
+This audit's own output is checked by a gate that lives in the repo. Run it before the push: a
+digest that breaks the contract must never be published as if it were clean.
+
+**Write the EXACT text you are going to reply with to `/workspace/digest.txt` FIRST**, then gate
+that file — so the gate checks the very bytes that get published.
+
+```bash
+python3 /workspace/check_auditor_contract.py \
+        --status /workspace/_audit/status.json \
+        --reply  /workspace/digest.txt \
+        --tasks  /workspace/.audit-tasks.json \
+        --ground-truth "$S" \
+        --contract /workspace/auditor-contract.json
+```
+
+It exits 0 when the audit satisfies the contract, and 1 with one `FAIL <id> <message>` line per
+violation.
+
+- **If it fails, FIX the status file and the digest and run it again** (at most twice).
+- **If it still fails, publish anyway** and report `errors: <the number of failures>` — the audit
+  trail is worth more than a clean-looking run. Say which checks failed.
+- **If the gate itself could not be fetched or run**, publish anyway and report `errors: 1`.
+
+The gate checks, among other things: that every gap carries a cause from the vocabulary and an age
+in hours; that a `skipped_by_design` routine is never `missing` and never a gap; that the digest's
+counts agree with the status file; that every live-but-unrostered routine is named; and that a
+routine with a three-fire streak is surfaced on its own line.
 
 ## GIT PUSH (OPTIONAL)
 
@@ -676,21 +929,35 @@ exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY
 
-**This routine is one of the three documented reply-format exceptions** (see
+**This routine is one of the five documented reply-format exceptions** (see
 `cloud-prompts/cron-prompts/README.md`): its output is machine-read, so it does NOT use the
 standard prose-opener / `### Signal` / `### Method & caveats` format. It MUST be:
 
-  - ≤ 8 lines.
-  - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>`
-  - One line per gap: `gap: <routine> <label> <path> — <cause>` (the cause comes from STEP 4c;
-    omit the cause only when it could not be determined)
+  - **≤ 8 lines of FRAMING** — the summary, the push line and the errors line. The per-item
+    lines below are additional, one line each, and are NEVER merged, truncated or dropped: a
+    routine with a gap is worth more than the line budget. The cap that matters is "no prose
+    padding".
+  - One line: `audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>` — **unchanged**. `missing`
+    counts MISSING gaps only: a routine that skipped by design is NOT missing.
+  - One line per gap: `gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>`
+    (the cause comes from STEP 4c-1 and is ALWAYS one of the vocabulary tokens; the age in
+    hours comes from STEP 4c-2. The detail is the evidence — what happened, and what the
+    rebuild changed. Omit the detail only when there is nothing to add.)
+  - One line per deliberate skip: `skipped: <routine> <reason> — <marker path>` (the reason is
+    mandatory; the marker path is there when the routine wrote one).
+  - One line per unmonitored routine: `roster_gap: <name> (task <id>) is live but not in
+    schedule-ground-truth.json`
+  - One line per dead routine (streak ≥ 3): `streak: <routine> <n> consecutive missed fires`
   - One line: `push: ok (verified)` / `push: skipped (token unset)` / `push: FAILED (<reason>)`
-  - One line: `errors: <n>` — count of audit errors. 0 = clean audit.
+  - One line: `errors: <n>` — count of audit errors. 0 = clean audit. **A gap line with no
+    cause is `errors: 1`, not `errors: 0`.**
 
 **If there are no gaps, say so in one line and stop.** Do not pad the reply with counts of
-routines that are `not_due` — those are working as designed, not news.
+routines that are `not_due` — those are working as designed, not news. A routine that skipped
+by design is also not news UNLESS it is one of the failures the operator has been told about
+before; it gets its `skipped:` line, not a paragraph.
 
-No preamble. Tool call → result → write → push → reply.
+No preamble. Tool call → result → write → gate → push → reply.
 
 ## CRITICAL REMINDERS
 1. **This cron is read-only with respect to the artifacts.** It clones, checks, writes a local
@@ -717,6 +984,20 @@ No preamble. Tool call → result → write → push → reply.
 7. **A `MISSING` artifact on a day when the routine ran and reported success means the push
    silently failed** — the old `git add -A` block could stage deletions and abort, or the
    `|| echo` could mask the error. Name it clearly; that is the whole point of this cron.
+8. **A routine that RAN and correctly wrote NOTHING is `skipped_by_design`, never `missing`**
+   (STEP 4d). This is the exact mis-classification this routine exists to prevent: the
+   2026-11-03 audit reported #92a and #92b as `not_yet_fired` on a day they had fired and had
+   correctly produced no artifact. It needs a reason, quoted from the evidence — never invented.
+9. **Run the STEP 4e roster check every time.** A live routine that is missing from
+   `tools/schedule-ground-truth.json` is UNMONITORED: this audit never checks it, cron #91's
+   drift guard cannot repair it, and both report a clean fleet. #26b was in exactly that state
+   on 2026-11-03. The check now exists and must run on every audit, even when it finds
+   nothing.
+10. **A gap line without a cause from the vocabulary is `errors: 1`, not `errors: 0`** (STEP
+    4c-1). "MISSING" alone is not an answer, and a gap with an empty reason is a failed audit.
+11. **Run the STEP 6b gate before the push.** The gate checks the very bytes that get
+    published. Fix what it reports; if it still fails, publish anyway with `errors:` set to
+    the number of failures — a broken audit trail is worse than an imperfect one.
 
 ================================================================
 END OF CRON PROMPT

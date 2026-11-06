@@ -1,6 +1,6 @@
 # Cloud Mavis Cron Prompts — index and operating notes
 
-**25 routines** (23 producers + the #90 auditor + the #91 drift guard), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
+**26 routines** (24 producers + the #90 auditor + the #91 drift guard), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
 all `session.mode=new`. Day-of-week lives in the **scheduler** expression, so weekend fires cost
 nothing — no agent invocation is spent discovering it is a weekend.
 
@@ -32,6 +32,7 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 26 | agentic-pre-market-brief | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market.md` |
 | 92a | preopen-catalyst-capture-0830 | `30 8 * * 1-5` | Mon-Fri | 10645 | — |
 | 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10645 | `ntrt/{date}.md` |
+| 26b | agentic-pre-market-brief-refresh-0920 | `20 9 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market-refresh.md` |
 | 07 | stock-screener-focus-rvol-09:45 | `45 9 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
 | 92b | preopen-catalyst-capture-0950 | `50 9 * * 1-5` | Mon-Fri | 10645 | — |
 | 12 | cross-asset-correlation-snapshot | `0 10 * * 1-5` | Mon-Fri | 10636 | `cross-asset/{date}.md` |
@@ -39,7 +40,6 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 13 | macro-calendar-midweek | `0 14 * * 3` | Wed | 10636 | `macro-calendar/{date}-midweek.md` |
 | 06 | stock-screener-pattern-study-backlog | `0 15 * * 6` | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` |
 | 14 | macro-calendar-week-ahead | `0 15 * * 0` | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` |
-| 17 | us-stocks-in-play | `50 15 * * 1-5` | Mon-Fri | 13832 | `us-stocks-in-play/{date}.md` |
 | 04 | reversal-bullish-3:55 | `55 15 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3:55.md` |
 | 20 | eod-watchlist-csv-snapshot | `0 16 * * 1-5` | Mon-Fri | 10638 | `us-eod/{date}.csv` |
 | 05 | eod-international-daily | `30 16 * * 1-5` | Mon-Fri | 10638 | `international-eod/{date}/` |
@@ -47,6 +47,7 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 22 | weekly-market-recap-preview | `47 17 * * 0` | Sun | 10636 | `weekly/{date}-preview.md` |
 | 09 | stock-screener-daily-sweep-18:30 | `30 18 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/daily-sweep.md` |
 | 23 | agentic-post-market-brief | `30 22 * * 1-5` | Mon-Fri | 10638 | `daily-briefs/{date}-post-market.md` |
+| 17 | us-stocks-in-play | `50 9,15 * * 1-5` | Mon-Fri | 13832 | `us-stocks-in-play/{date}.md` |
 
 ## Common contract (every prompt)
 
