@@ -329,3 +329,184 @@ above — **persist the pre-market tape (volume + per-print sizes) on every run*
 (`premarket-archive/<date>.jsonl`). With that archive the 2026-11-05 replay would have been a
 one-line lookup with a real size behind every gap, instead of a price-only reconstruction with an
 unevidenced size on every row.
+
+---
+
+## RETROSPECTIVE — 2026-11-06: the 08:30 ET fire — the tape ran 15 minutes behind, and a 1-share print decided a flag
+
+**Date:** 2026-11-06 · **Scope:** cron #08 `stock-screener-pre-market-gapper`, the 08:30 ET fire
+(`window_check.sh` → `fire-date: 2026-11-06 · replay: no`, a fresh fire, not a reconstruction).
+**Artifact:** `daily-screens/2026-11-06/pre-market-gapper.md` + `.csv` + `_premarket-pull.json`,
+contract `premarket-artifact-v4`, **25/25 checker checks passed**, flagged 1 / scanned 12,
+`degraded_sources: 2`.
+
+This is a **live** run — the opposite of the 2026-11-05 retrospective above, where the tape was
+gone. That makes it the cleanest measurement yet of what the tape does to a live pre-market, and it
+surfaced four defects. **None of them is a gate change, and none of them is applied here** — per the
+convention already set in this file, the skill spec is shared by cron #04, #07, #08, #09 and #10, so
+the procedure changes need a deliberate decision, not a cron firing.
+
+### Finding 1 — the tape's cache lag was ~15 MINUTES, and the max-newest-timestamp defence cannot close it
+
+The Nasdaq `extended-trading` tape is served from a shared HTTP cache. The defence in §6.5 (pull N
+times, keep the payload with the newest internal clock time) works — it advances the vintage — but
+it can only advance as fast as the cache does. Measured today, across three pull rounds:
+
+| Round | Wall clock | Freshest tape vintage (newest print) | Lag |
+|---|---|---|---|
+| A (4 pulls) | 08:34–08:36 ET | 08:19:17 | ~15 min |
+| B (6 pulls) | 08:38–08:41 ET | 08:22:06 | ~16 min |
+| C (8 pulls) | 08:41–08:42 ET | 08:26:43 | ~15 min |
+| Independent (5 cache-busted pulls) | 08:43–08:46 ET | 08:28:32 | ~15 min |
+| Final (6 cache-busted pulls, second resolution) | 08:47 ET | **08:32:12** | ~15 min |
+
+`cache-hit: 3001/3002` headers came back on most pulls, and a cache-buster (`&u=<ns>`) did **not**
+reliably bypass the stale vintage — but the best-of-N rule still gained ~4 minutes of freshness per
+round. Nasdaq `/info` was live throughout (`lastTradeTimestamp` tracked wall clock to the minute;
+at 08:47 ET it read 08:47).
+
+**What this costs:** the published gap for a name can be 15 minutes stale, and for a fast mover that
+is the difference between the bar and no bar. The artifact now publishes the tape vintage per name
+and the lag in its Method section; the reader can see it. **Recommendation:** have the helper
+publish a `tape_lag_seconds` column (wall clock − newest tape print) for every name, so the
+staleness of each row is a published number rather than prose. Also worth considering: the routine
+could take a *final* pull immediately before it writes, rather than at the start of the pull round —
+today's final round at 08:47 was the most valuable measurement of the run.
+
+### Finding 2 — `premarket_pull.py` cannot order two prints inside the same second, and it picks the OLDEST of the final minute
+
+`_pull_tape` builds `_clock_to_min(t) = HH*60 + MM` — **the seconds are dropped** — and then sorts
+`prints` by that key. Two consequences, both live today:
+
+1. Prints inside the same second cannot be ordered. OUST printed several times per second for most
+   of the pre-market, so its final second (08:32:12) carried two prints: **$31.75 on 512 shares**
+   and **$31.78 on 1 share**.
+2. The Nasdaq table is served **newest-first** (rows[0] = newest). A *stable* sort by a key that
+   collapses seconds leaves each same-minute group in newest-first order, so `prints[-1]` — the
+   "last print" the whole gate depends on — is actually the **OLDEST print of the final minute**,
+   not the newest.
+
+**Measured consequence — the verdict of the run's only flag flipped on the order of two prints in
+one second, across pull rounds of the same session:**
+
+| Round | OUST published gap | exec_shares | helper verdict |
+|---|---|---|---|
+| A (08:34 ET) | +3.211% | 25 | BORDERLINE_TAPE_ONLY |
+| B (08:38 ET) | +4.456% | 162 | **FLAGGED** |
+| C (08:41 ET) | +4.243% | 3 | **BORDERLINE_THIN** |
+| Final (08:47 ET, second resolution) | +4.030% | 512 | **FLAGGED** (published) |
+
+**Fix (pure defect, no policy content):** order at second resolution AND reverse the API's
+newest-first order inside a second. The sort key must be `(seconds, -api_index)`: ascending in
+time, and within one second the *later* API row (smaller index) must come **last** in the list,
+because it is the newer print. With the current key, the helper publishes the wrong print as "the
+last print" for every name that prints more than once a second.
+
+**Note for whoever applies it:** with the ordering fixed, the helper picks the 1-share $31.78
+(+4.128%) as the last print and publishes `BORDERLINE_THIN` — which is the contract's *literal*
+reading and contradicts what today's artifact published. Finding 3 is why.
+
+### Finding 3 — "the print that carries the gap" is undefined when the final print is a rounding artifact — and the two readings disagree on a 122k-share name
+
+This is the substantive one, and it is a **procedure decision for the routine's owner**, not a
+defect.
+
+OUST at the 08:47 ET snapshot:
+
+- last executed print: **$31.78 on 1 share** → +4.128% (above the bar, no size behind it)
+- the print one second earlier: **$31.75 on 512 shares** → +4.030% (above the bar, with size)
+- the live quote at 08:47 ET: **$31.98 (+4.78%)**, **bid $31.76 (+4.06%)** — the *bid* is above the bar
+- pre-market volume: **122,288** (tape counter) / **122,594** (`/info`)
+- and OUST traded above the bar with size all morning: +4.85% on 100 shares (07:51:11), +4.19% on
+  272 shares (07:54:13), +4.46% on 162 shares (08:22:06), +4.03% on 512 shares (08:32:12)
+
+**Reading A (literal, what the helper implements):** the published gap comes from the last executed
+print; that print carried 1 share; the size leg fails; the verdict is `BORDERLINE_THIN` — whose
+definition is "the bar was printed, but **the market behind it is too thin to act on**". For a name
+whose pre-market volume is 122,288 shares and whose bid sits 4.06% above the reference close, that
+definition is **false**. This is the pattern the 25-share bar was built for on 2026-11-03 (CAI
++5.53% on 10 shares, CVI −6.99% on 1 share, MTZ +3.93% on 1-share prints) — but in those cases the
+*real tape* was below the bar and only the trivial print claimed the gap. OUST is the mirror image:
+the real tape supports the gap, and the trivial print is merely last.
+
+**Reading B (purpose):** the gap is carried by the 512-share print; `exec_shares` = 512; the gate
+passes; the verdict is `FLAGGED`. The rule's own words — "**a gap is only real if a print with size
+behind it crossed it**" — are satisfied many times over.
+
+**What was published:** Reading B, with the entire evidence disclosed — the 1-share final print, the
+512-share print one second earlier, the 0.03pp margin on the published print, the 0.78pp margin on
+the quote, the 15-minute tape lag, and the fact that the freshest vintage came from an
+independent hand-ordered pull rather than from the helper. The artifact says plainly that the
+helper's own output for the same state was `BORDERLINE_THIN`.
+
+**Recommendation (a procedure change, for the owner):** make the gate evaluate the last
+**substantive** print — the last print whose size is ≥ `MIN_EXECUTED_SHARES` — and publish the
+*final* print's size and gap as their own columns, so a 1-share rounding print can neither create
+nor destroy a flag. Under that rule:
+
+- OUST → gap +4.03% (512 shares) → `FLAGGED`, with the final 1-share print published beside it;
+- LIVN (every print above the bar was 1 share) → no substantive print exists → the last print is
+  published with its thin size → `BORDERLINE_INTRADAY`, unchanged;
+- HELE (−4.66% on 1 share) and VRDN (−5.43% on 1 share) → unchanged, thin;
+- CRCT (+5.30% on 104 shares, +5.84% on 28 shares, then faded to −0.54%) → the substantive print
+  crossed the bar and the name is not there at the snapshot → `BORDERLINE_INTRADAY`, unchanged;
+- KD (+4.94% on a 5-share print inside a $14.50/$18.43 band, volume 15,266 under the floor) →
+  `BORDERLINE_TAPE_ONLY`, unchanged.
+
+So the proposed rule changes **one** verdict (OUST) and leaves every other name exactly as it is.
+The gate's numbers are untouched — 4.0% / 50,000 / 25 — which is the one thing §6.12 forbids
+changing.
+
+### Finding 4 — `push_artifact.sh --nn` WITHOUT `--msg` silently drops the routine name from the commit subject
+
+Today I called the shared script with `--nn 08` and no `--msg`. The subject came out
+`cron 08 daily-screens 2026-11-06` instead of `cron 08 stock-screener-pre-market-gapper
+2026-11-06`. The cause is in the script: the name table (`NN=08; NM=stock-screener-pre-market-gapper`
+for `daily-screens/*/pre-market-gapper.md`) is consulted **only when `NN` is empty**, and the
+subject is then built as `cron $NN ${NM:-$OUT} $ART_DATE` — so passing `--nn` alone leaves `NM`
+empty and the output directory name becomes the "routine name".
+
+The script's own comment says "a caller should still pass `--nn` explicitly", which contradicts
+its own subject derivation: **the flag that is supposed to make attribution more reliable is the
+one that makes it less.** The deployed cron #08 prompt does not pass `--nn` (it lets the table
+derive both), so this is a trap for whoever adds the flag by hand — as I did.
+
+**Fix (shared script, `_shared/push_artifact.sh`):** look up `NM` by `NN` in the same table when
+`--nn` is given without `--msg`, and fail loudly if `NN` is not in the table. **Until then: pass
+`--msg` explicitly.** The artifact itself was unaffected — only the commit subject — and it was
+corrected with an empty attribution commit (`cron commit --allow-empty`), which is safe: it moves no
+file and stages no deletion. All three delivered files were byte-verified against the remote after
+it.
+
+### Also observed (recorded, no spec change)
+
+- **The denominator held.** `focus.csv` (`today_close`) + TradingView `close` + the Cboe CDN `close`
+  agree to the cent on **12/12**, and the MCP bridge `market-recap` `get_quotes` confirmed **12/12**
+  (`price` = the 2026-11-05 close, `as_of` 2026-11-05T21:00Z). Nasdaq `/info` `secondaryData`
+  **disagreed on 10 of 12** (OUST 30.5850 vs 30.52; KD 16.2750 vs 16.18; ARRY 5.2450 vs 5.30;
+  DUOL 157.3400 vs 157.02; CRCT 9.2550 vs 9.25; ENOV 28.4400 vs 28.62; HELE 37.6700 vs 37.77;
+  LIVN 91.3000 vs 91.14; XNCR 34.0961 vs 34.05; YOU 56.3700 vs 56.50) and was used for nothing.
+- **TradingView was degraded on this run** and it is a NEW degradation, not the known volume
+  undercount: it returned **no pre-market row at all** for 2 of the 12 names (YOU, XNCR), and its
+  OUST `premarket_change` read **+3.87%** against the tape's +4.03% and the live quote's +4.78%.
+  It is still a valid denominator cross-check (12/12) and a valid `premarket_high`/`low` source.
+- **The fleet's 08:30 pre-open feed existed today** (`preopen-feed/2026-11-06-0830.jsonl`, captured
+  08:32:58 ET) — no substitution was needed — but it carried only **2 of these 12 names** (OUST
+  +3.571% at $31.61, CRCT −2.703% at $9.00) and **no catalyst** for either. Cron #15's 08:22 ET
+  artifact independently published CRCT's pre-open gap as −2.70%. **No catalyst was sourced for any
+  of the twelve**, so none is asserted in the artifact.
+- **The pre-open feed's OUST number (+3.571%) is the same TradingView-derived figure the scanner
+  serves** — it is not an independent confirmation of the tape, and a reader should not count it as
+  one.
+
+### The recommendation that still stands, plus the one that is new
+
+The 2026-11-05 retrospective's recommendation stands unchanged: **persist the pre-market tape
+(volume + per-print sizes) on every run** (`premarket-archive/<date>.jsonl`). Today's run is the
+second argument for it — the tape's 15-minute lag (Finding 1) and the same-second ordering defect
+(Finding 2) both stem from re-reading a live, cached endpoint instead of recording it once.
+
+The **new** recommendation is Finding 3's rule change, and it needs a decision from the routine's
+owner before any helper change lands, because the helper's current output contradicts the
+published artifact. Finding 2's ordering fix can be applied independently of it; Finding 3's rule
+cannot.
