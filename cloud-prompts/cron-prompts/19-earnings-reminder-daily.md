@@ -163,7 +163,6 @@ It contains, and you must follow, all of these:
 with the failure. Do NOT improvise the source ladder, the fallback chain or the reply format from
 memory — those are what keep a degraded run honest.
 
-
 ## DATA SOURCE — read this before spending turns on MCPs
 
 There is NO Yahoo MCP and NO shibui MCP in Cloud sessions. `mcode-tools connector tools` returns
@@ -174,7 +173,7 @@ Do not probe for them, do not report their absence as an error, and do not count
 **PRIMARY = `web_search` / `web_fetch`.** That is the intended path, not a degraded fallback.
 Working sources for the daily calendar, in priority order:
 1. `web_fetch` on the Yahoo Finance earnings calendar for the date (JS-rendered; the `?day=YYYY-MM-DD`
-   URL renders the first ~25 rows server-side).
+   URL renders its first ~25 rows server-side).
 2. `web_fetch` on earningswhispers.com/calendar/YYYYMMDD — returns a full before-open/after-close
    ticker list with no JS dependency. Best single source for a complete roster.
 3. `web_fetch`/`web_search` on investing.com earnings calendar, MarketBeat, TradingView, Newsquawk.
