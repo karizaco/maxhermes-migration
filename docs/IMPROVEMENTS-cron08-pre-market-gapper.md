@@ -254,3 +254,78 @@ archive recommendation below matters more than any threshold here.
    the day's outcome every run (`premarket-archive/<date>.jsonl`). Today only one session could be
    measured; with 20–60 sessions stored, thresholds stop being opinions. This is what converts the
    rule set above from a hunch into a measured rule.
+
+---
+
+## RETROSPECTIVE — 2026-11-06: a REPLAYED 08:30 fire — the price path survives, the tape does not
+
+The 2026-11-05 08:30:56 ET fire was resumed by the platform on 2026-11-06 at 05:26 ET, ~21 hours
+later. `window_check.sh --scheduled-at-ms` judged the fire's **scheduled instant** and returned
+`fire-date: 2026-11-05 · replay: yes`, so the artifact was rebuilt for 2026-11-05 and pushed with no
+SKIPPED marker. This section records the recipe, because the next quota stall will produce the same
+situation and the reconstruction is not obvious.
+
+### What died
+
+The routine's source of record is the Nasdaq `extended-trading` tape plus `/info`. **Both serve only
+the LIVE session.** During the replay the live session was 2026-11-06, so the Nov 5 08:30 tape, its
+volume counter and its per-print sizes are gone for good. The contract's gate has three legs
+(`|gap| >= 4.0` AND `pm_volume >= 50,000` AND `exec_shares >= 25`); two of them are unrecoverable,
+so **no name can be FLAGGED** — even though three names printed a gap at or beyond the bar
+(AEHR -6.31%, FN -4.58%, CIFR -4.00%). "0 flagged" on a replay is a statement about missing evidence.
+
+### The recipe (what survived, and where)
+
+1. **The pre-market PRICE PATH survives in Yahoo's chart API.** `interval=1m&includePrePost=true`
+   over the replayed session returns every pre-market print of that day, so the 08:30 snapshot print,
+   the 04:00→08:30 range, the intraday crossings and the 09:30 opening print are all recoverable.
+   **Extended-hours volume is reported as `0` — a non-report, not "no trading"** (the same for 5m).
+   Sizes are therefore unrecoverable; prices are not.
+2. **The denominator survives three ways.** The prior sweep's `focus.csv` `today_close` (the prior
+   session close), Yahoo's `chartPreviousClose` on the replayed day's chart, and the bridge
+   `market-recap` `previous_close` (`market_state: "pre"` serves the prior regular close) agreed to
+   the cent on 12 of 12 names.
+3. **Three IN-FLEET corroborations already exist for a replayed pre-market gap**, all published on
+   the fire's own day — use them before declaring a price unverifiable:
+   - cron #17's 09:50 board (`us-stocks-in-play/<date>-open-candidates.csv`) carries `gap_pct` and
+     `open_gap_pct` per ticker; it matched this reconstruction to four decimals on 10 of 12 names.
+   - cron #15's 08:22 artifact (`earnings/<date>-reactions.md`) carries a "Pre-mkt %" column; its
+     AEHR -6.31% matched the 08:30 reading exactly.
+   - `preopen-feed/<date>-0830.jsonl` carries TradingView's frozen FINAL pre-market print for the
+     names in the scanner set (7 of 12 here) — but **no volume**.
+
+### The traps
+
+- **Leave `pm_volume` EMPTY on every row.** The checker tolerates it and an empty volume makes
+  `row_flag` false, which is exactly what keeps the FLAGGED arithmetic honest. Do not write `0` —
+  `0` reads as "traded, zero shares".
+- **`exec_shares` must still be numeric and non-empty** (the checker rejects a non-numeric cell), so
+  it is `0` with an explicit meaning: **unevidenced, not "no trade"**. Say that in `flag_reason` and
+  in `## Flags`, or the next reader will read "0 shares" as "nothing traded".
+- **Bar coverage is a first-class caveat.** Yahoo's pre-market series is sparse for illiquid names
+  (here: AEIS 1 bar at or before 08:30, EVER 1, ECG 4, BETA 8). Publish `pm_bars_to_0830` and the
+  last print's clock time: a name with one bar has no 08:30 reading at all, and its "no gap"
+  verdict is materially weaker than a 146-bar name's.
+- **Publish no quote leg.** The 08:30 bid/ask and the live quote are not archived anywhere; leave
+  `quote_price` / `quote_gap_pct` empty rather than substituting a bar close.
+- **Never publish a replayed gap from a live scanner.** TradingView's `premarket_*` had already
+  rolled to the 2026-11-06 pre-market session (`premarket_time` = 2026-11-06 04:00 ET) at replay
+  time — pulling it gives TODAY's pre-market, not the replayed session's.
+- Nasdaq's `/info` `secondaryData` drifted again on the 11-05 close (48.91 for AEHR against 49.16
+  from Yahoo, TradingView, the bridge, Nasdaq's own chart endpoint and Cboe). The documented defect,
+  confirmed; the denominator was unaffected because three sources agreed on it.
+
+### What was published
+
+`daily-screens/2026-11-05/pre-market-gapper.md` + `.csv` + `_premarket-pull.json`, contract
+`premarket-artifact-v4`, **29/29 checker checks passed**, flagged 0 / scanned 12,
+`degraded_sources: 2` (Nasdaq's live tape + `/info`, and TradingView's pre-market fields).
+
+### The recommendation that still stands
+
+This run is a **fallback, not a substitute**: the size leg is unrecoverable by construction, so a
+replayed gap can never be actionable. The durable fix is the one in item 8 of "Sources worth adding"
+above — **persist the pre-market tape (volume + per-print sizes) on every run**
+(`premarket-archive/<date>.jsonl`). With that archive the 2026-11-05 replay would have been a
+one-line lookup with a real size behind every gap, instead of a price-only reconstruction with an
+unevidenced size on every row.
