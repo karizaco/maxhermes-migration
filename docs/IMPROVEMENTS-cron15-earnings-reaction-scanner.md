@@ -178,3 +178,62 @@ leading `-`), which is exactly the false "NOT CAUGHT" the mutation test has to c
 mutation that does not change the text must fail the test itself.
 
 **Every check passes: 18 of 18.**
+
+---
+
+## 5. The 2026-11-06 fire: the US headline pass did not apply the hard gate
+
+**Date:** 2026-11-06 · **Fire:** 08:00 ET, `earnings/2026-11-06-reactions.md`
+
+### The finding
+
+The reference close is a HARD GATE, and §2 above says so: a row whose base cannot be
+established from Yahoo must be **dropped and counted**, never published. The EU/UK and AU
+passes filtered their rows on the gate (`eu_keep` / `au_keep`). The **US headline pass did
+not** — it built `us_ref` from the successful gates and then rendered `tagged` **as it came
+out of the screener**, so a row whose Yahoo lookup failed was still rendered, with `—` in
+`Ref close`, `Ref source`, `Ref asof` and `US tradeable`.
+
+On the 2026-11-06 fire, **BRK.A** hit that path: Yahoo did not return a usable daily bar
+(429 or a bad body), the pipeline recorded the degradation honestly
+(`yahoo_chart_api.reference_close_unresolved`) — and then published the row anyway.
+
+The independent checker caught it, exactly as designed:
+
+```
+FAIL: 1 contract violation(s) in earnings/2026-11-06-reactions.md
+  - REFCLOSE: US — Headline table row 181 — ref_close_asof is not a date ('—')
+```
+
+The artifact was **not pushed** in that state. The same failure had already run on
+2026-11-05 (that fire's degraded row was `PNR.AX`, an AU row, so the AU filter caught it
+and the artifact passed) — a defect that only shows up when the *US* pass is the one that
+loses the race with Yahoo.
+
+### The fix
+
+`scripts/earnings_reaction_scanner.py` (`karizaco/minimax-cloud-outputs`), `SCRIPT_VERSION`
+2026-11-05.2 → **2026-11-06.1**: the US headline pass now filters on the same gate as EU
+and AU, and counts what it drops in a **new published counter**,
+`rows_dropped_unresolved_ref` (source health + the audit line). The row is dropped, not
+published with a `—` base.
+
+**Why the fix belongs in the repo, not in the artifact.** Hand-deleting the BRK.A line
+would have made the checker pass while leaving the next fire to publish the same broken row
+and fail again. The pipeline **self-heals**: at startup it compares itself byte-for-byte
+with the shared-repo copy and re-execs a newer one. So the repair was pushed to `main`
+first, then the pipeline was re-run — it self-healed
+(`self-healed at start of run from 2026-11-05.2 to 2026-11-06.1`) and regenerated the
+artifact **from the fixed code**. The artifact was never hand-edited.
+
+**Verification:** `tools/check_reaction_artifact.py` → `OK: … conforms to
+REACTION_ARTIFACT_V2`, `rows_dropped_unresolved_ref: 1` published, `degraded_sources: 1`,
+reply `errors: 1`, delivery verified on `origin/main`.
+
+### The generalisable lesson
+
+**A gate that is applied on one path and not on its siblings is not a gate.** The EU and
+AU filters were written first; the US headline pass was added later and inherited the
+*lookup* but not the *filter*. Any new pass that consumes `cross_check()` must filter on
+it (`if r:` … else drop-and-count), and the contract checker is what proves it — a checker
+that has never been observed failing is a claim, not a check.
