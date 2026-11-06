@@ -16,6 +16,42 @@ description: >-
 - Cron: `30 8 * * 1-5` America/New_York (weekdays, 08:30 ET — 60 min before the US open).
 - Manual: user asks "give me today's pre-market brief" / "run the pre-market brief".
 
+## DELAYED REPLAY — the platform resumed this fire in place
+
+A replay happens when the platform resumes a crashed cron conversation IN PLACE, hours or days
+later. `session.created_at` identifies the ORIGINAL fire, so the brief is rebuilt for the FIRE's
+date — but the live screen has moved on and cannot be re-pulled for that date.
+
+**The rule: a replay NEVER pulls the live scanner for the screen.** The TradingView `premarket_*`
+columns are the replay day's pre-market, and `close`/`change` are the replay day's settled
+session. Pulling them publishes the wrong day's tape under the fire's date. Every source for a
+replay is a DATED fleet artifact:
+
+| Field | Source for a replayed fire |
+|---|---|
+| pre-market last, gap %, name | `preopen-feed/{fire-date}-0830.jsonl` (cron #92a checkpoint) |
+| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.md` (cron #26b — the same pull) |
+| pre-market high/low (PM range) | Yahoo chart bars for the fire date, `includePrePost=true` |
+| prior close, prior session % | `us-eod/{fire-date-1}.csv` (cron #20, settled) |
+| earnings roster | `earnings/{fire-date}-reactions.md` (cron #15) when cron #19's file is absent |
+| overnight levels | Yahoo chart bars for the fire date, last bar ≤ 08:30 ET on the fire date |
+
+Three traps, all measured on 2026-11-05:
+
+- **Yahoo carries ZERO pre-market volume** (every pre/post bar's volume is 0). Yahoo can supply
+  the pre-market RANGE and the last print; `%ADV` and Gate A can only come from the TradingView
+  screen. Yahoo's last print can differ from TV's by a few cents — one source per field, and say
+  which in Source health.
+- **Gate A is only as good as the PUBLISHED volume.** A name whose cap clears Gate B but whose
+  pre-market volume is not published is UNVERIFIABLE, not a pass. Publish it in a labelled block
+  beside the headline table; never promote it and never hide it.
+- **Market cap has a basis.** The screen publishes it on the PRIOR close's basis; `us-eod/{date}.csv`
+  is on that date's close basis. A pre-market brief uses the prior-session file.
+
+A replay also has no StockTwits trending list (the feed publishes no history), may have no
+cron #19 roster for the date, and may find the watchlist file seeded AFTER the fire. Say so once
+in Source health and publish the dated substitute instead of the live one.
+
 ## Tool mapping (Cloud runtime) — read once, do not re-probe
 
 The `mcp__*` tool names below are **provenance from the local Windows Mavis and do not exist in

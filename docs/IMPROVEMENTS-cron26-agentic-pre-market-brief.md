@@ -436,3 +436,77 @@ the section), and still passes on the legacy 2026-11-03 artifact.
 `git revert f4b5ca8` (or `git revert --no-commit f4b5ca8` to keep the prompt), and re-deploy the
 previous prompt blob — the pre-round prompt was SHA-256
 `e681545e9502e5c646b990fb41b9a43c9ebf108038b8225eda82f0550f88786d`, 16,334 B.
+
+## 2026-11-06 — The delayed-replay path: what a replayed fire can and cannot re-pull
+
+**Context.** Cron #26's 2026-11-05 08:30 ET fire failed on the platform (Token Plan quota 2056)
+and published nothing. The platform resumed that conversation IN PLACE on 2026-11-06 05:22 ET —
+21 hours later — so the window check reported `fire-date: 2026-11-05 / replay: yes`. The brief was
+rebuilt for 2026-11-05 and pushed as `daily-briefs/2026-11-05-pre-market.{md,csv}`
+(57,490 B + 94,047 B, commit `73d1c5aa5`, subject `cron 26 agentic-pre-market-brief 2026-11-05`).
+
+**The trap.** A replay's live screen is the REPLAY day's screen. The TradingView scanner's
+`premarket_*` columns are now the 2026-11-06 pre-market; pulling them would have published
+another day's gaps under the fire's date. And `close`/`change` are Nov 5's settled session, which
+is not what a Nov 5 08:30 brief needs either (it needs Nov 4's tape). **A replay must never
+re-pull the live scanner for the screen.**
+
+**What a replay uses instead — every source is a dated fleet artifact:**
+
+| Field | Source for a replayed fire |
+|---|---|
+| pre-market last, gap %, name | `preopen-feed/{fire-date}-0830.jsonl` (cron #92a checkpoint: 700 rows of ts/src/ticker/name/pct/price/cat/why/ref/conf, pull 2026-11-05 10:10:24 ET) |
+| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.md` (cron #26b — the SAME pull, published with its liquidity columns for 86 names) |
+| pre-market high/low (PM range) | Yahoo chart bars for the fire date, `includePrePost=true` |
+| prior close, prior session % | `us-eod/{fire-date-1}.csv` (cron #20, settled) |
+| earnings roster | `earnings/{fire-date}-reactions.md` (cron #15) when cron #19's file is absent |
+| macro | `macro-calendar/{week}-midweek.md` |
+| overnight levels | Yahoo chart bars for the fire date, last bar ≤ 08:30 ET on the fire date |
+
+**Yahoo carries ZERO pre-market volume.** Every pre/post bar's `volume` is 0 for every symbol
+tested (APP, AEHL, LABT on 2026-11-05), so Yahoo can supply the pre-market RANGE and the last
+print but never the pre-market volume: `%ADV` and Gate A can only come from the TradingView screen.
+Yahoo's pre-market last print also differs from TV's by a few cents (APP 349.58 vs 350.00) — pick
+ONE source per field and say which in Source health.
+
+**Gate A is only as good as the PUBLISHED volume.** On 2026-11-05 the fleet published a pre-market
+volume for 86 names. Gate A has two published proofs: TV's own volume, or cron #15's 10,000-share
+pre-market floor combined with a ≥ $200M market cap (the skill's OR-branch). Names that clear the
+cap but have no published volume are UNVERIFIABLE, not pass. The 2026-11-05 brief published them
+in a labelled "cleared the cap, but no published pre-market volume" block rather than promoting
+them into the headline table or hiding them — which is also why the headline table carried 23
+names and not 25: WW +19.46%, ACHC +16.25% and EWTX +14.58% gapped bigger than names in the table
+and are still published, one block above it.
+
+**Market cap has a basis and the two files disagree.** The screen publishes `market_cap_basic` on
+the PRIOR close's basis (it was pulled before the close); `us-eod/{date}.csv` is on that date's
+CLOSE basis. A pre-market brief must use the prior-session file, or the cap column mixes two
+bases. MELI is absent from cron #20's settled file for both Nov 4 and Nov 5, so its cap is
+published as not available rather than guessed.
+
+**Three things a replay cannot have, and what to do instead.**
+1. *The StockTwits trending list* — the feed publishes no history, and the `mcp__stocktwits__*`
+   tools were unreachable in Cloud sessions on Nov 5 (cron #15's own source health says so). The
+   replay published the substitute lead read — the ten names whose catalyst the checkpoint
+   captured — and said the trending list was not recoverable.
+2. *Cron #19's roster* — `earnings/2026-11-05-reminders.md` does not exist (the last file is
+   2026-11-04), so §9 fell back to cron #15's reactions file and published no count it could not
+   source.
+3. *The watchlist* — `refs/watchlist.yaml` was seeded 2026-11-06, AFTER the fire, so the brief said
+   the list did not exist on 2026-11-05 and priced the current list against the Nov 5 tape.
+
+**The yesterday loop still works without levels.** The 2026-11-04 brief published no key level for
+any of its 105 named calls, so the review tested GAP SURVIVAL instead: HELD if the close finished
+on the far side of the prior close, BROKE if it closed back through it, PARTIAL within 0.5%,
+UNJUDGED where cron #20's settled file has no row. That is the vocabulary `check_premarket_brief.py`
+C5 accepts, and it needs no published level to run.
+
+**Files changed**
+
+- `cloud-prompts/skills/agentic-pre-market-brief/SKILL.md` — new `## DELAYED REPLAY` section: the
+  replay path, the "never re-pull the live scanner" rule, and the per-field source table above.
+- `docs/IMPROVEMENTS-cron26-agentic-pre-market-brief.md` — this section.
+
+**Revert**
+
+`git revert <the commit below>`.
