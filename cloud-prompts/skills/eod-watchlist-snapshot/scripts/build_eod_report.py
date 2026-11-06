@@ -312,6 +312,18 @@ def main() -> int:
     A("")
     A("## Method & caveats")
     A("")
+    exd = manifest.get("ex_distribution_detail") or []
+    if exd:
+        worst = sorted(exd, key=lambda x: -(x["prior_published_close"]
+                                           - x["quote_adjusted_prior_close"]))[:10]
+        A(f"- **`change_pct` is the PRICE change** against the prior session's published close "
+          f"(`{manifest.get('prior_session', 'the prior session')}`) — the archive's convention, "
+          f"verifiable from the two published closes. **{len(exd)} rows went ex a distribution "
+          f"between the sessions** and are flagged `EX_DISTRIBUTION`: on those rows the price "
+          f"change is a mechanical artefact, not a market move, and a screen's "
+          f"dividend-adjusted basis shows a different number. Worst by size: "
+          + ", ".join(f"`{w['ticker']}` ({w['prior_published_close']} → "
+                      f"{w['quote_adjusted_prior_close']})" for w in worst) + ".")
     A(f"- **CSV**: `{os.path.basename(args.csv)}` — **{manifest['csv_columns']} columns** "
       f"(the base 14 session columns plus {len(manifest['derived_columns'])} derived/provenance "
       f"columns). A consumer reading by position still gets the same first 14 columns.")

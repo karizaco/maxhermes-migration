@@ -36,6 +36,28 @@ THE DERIVED COLUMNS (definitions are the contract)
   gap_pct            (open - prior_close) / prior_close * 100, using the PUBLISHED open
                      (the same number the `open` column carries)
 
+THE change_pct ANCHOR — the one field this stage now OWNS
+-----------------------------------------------------------
+`change_pct` must be the session's PRICE change against the prior session's SETTLED close.
+The base assembly's own change field is not trusted, because two of its usual sources are
+wrong in a way no error message shows:
+
+  * a quote service's `previous_close` is DIVIDEND-ADJUSTED for distribution payers, so the
+    published "change" silently becomes a total return (measured 2026-11-06: AB published
+    +0.26% while the price change was -2.32% — a $0.90 distribution on a $34.90 close, and
+    the SIGN flipped);
+  * a daily bar whose date was never asserted is a STALE bar, so "the previous bar" can be
+    two sessions back (measured 2026-11-06: 233 of 4,892 rows, median error 0.46pp, max
+    5.2pp).
+
+So the anchor is resolved here, in this order:
+  1. the PRIOR SESSION'S PUBLISHED close (`--prior-csv`) — the fleet's own record;
+  2. the bar series' prior close, ONLY if that bar's date is the prior session's date;
+  3. no anchor -> the change cannot be verified; the row is flagged `NO_PRIOR_CLOSE`.
+A published value that disagrees with the recomputed one by more than 0.05pp is REPLACED
+and the count is published. A value that agrees is left byte-for-byte alone. `gap_pct` uses
+the same anchor, so a gap and a change are never measured against different sessions.
+
 THE MARKET-CAP CARRIER RULE
 ---------------------------
 The cap belongs to the ISSUER, and the vendor stamps it on ONE class row per company.
@@ -88,7 +110,7 @@ DERIVED_COLUMNS = ["rel_volume", "pct_from_52w_high", "pct_from_52w_low",
 OUT_COLUMNS = BASE_COLUMNS + DERIVED_COLUMNS
 
 FLAG_PRECEDENCE = ["NO_CAP", "CAP_CARRIED", "HIGH_LOW_UNAVAILABLE", "RANGE_ADJUSTED",
-                   "NO_HISTORY", "NO_PE", "NO_SECTOR", "OK"]
+                   "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION", "NO_PE", "NO_SECTOR", "OK"]
 
 # The US numeric rule: 4 significant figures with the fractional trailing zeros stripped,
 # except values >= 100000 which keep full precision. A plain "%.4g" renders 830500 as
@@ -219,6 +241,7 @@ def derive_one(bars: list, session: str) -> dict:
                               "sma_20", "sma_50", "sma_200", "pct_vs_sma_50", "pct_vs_sma_200",
                               "atr_14", "atr_pct", "gap_pct", "avg_daily_dollar_volume")}
     out["_prior_close"] = None
+    out["_prior_close_date"] = ""
     out["_session_bar"] = None
     if not bars:
         return out
@@ -272,6 +295,7 @@ def derive_one(bars: list, session: str) -> dict:
     # --- prior-session statistics: the 30 sessions BEFORE the session bar
     if idx >= 1:
         out["_prior_close"] = closes[idx - 1]
+        out["_prior_close_date"] = day_of(bars[idx - 1][0])
     prior = bars[max(0, idx - 30): idx]
     if len(prior) >= 30:
         vols = [b[5] for b in prior if b[5] is not None]
@@ -292,10 +316,27 @@ def main() -> int:
     ap.add_argument("--session", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--manifest", required=True)
+    ap.add_argument("--prior-csv", default="",
+                    help="the PRIOR session's published CSV - the anchor for change_pct/gap_pct")
+    ap.add_argument("--quote-prev", default="",
+                    help="JSON {ticker: quote-service previous_close} - the DIVIDEND-ADJUSTED "
+                         "prior close, used only to flag ex-distribution rows")
     args = ap.parse_args()
 
     with open(args.base, newline="") as fh:
         base = list(csv.DictReader(fh))
+    prior_session_close = {}
+    prior_date = ""
+    if args.prior_csv:
+        with open(args.prior_csv, newline="") as fh:
+            for pr in csv.DictReader(fh):
+                prior_date = pr.get("date", "") or prior_date
+                if (pr.get("close") or "").strip():
+                    prior_session_close[pr.get("ticker", "")] = float(pr["close"])
+    quote_prev = {}
+    if args.quote_prev:
+        qp = json.load(open(args.quote_prev))
+        quote_prev = {k: float(v) for k, v in qp.items() if v is not None}
     hist = load_history(args.history)
     vendor = json.load(open(args.vendor))
     vcaps = vendor.get("vendor_caps", {})
@@ -353,6 +394,10 @@ def main() -> int:
     hist_misses = 0
     range_adjusted = 0
     shares_implausible = 0
+    change_corrected = 0
+    change_filled = 0
+    change_unverified = 0
+    ex_divid_rows = []
 
     for r in base:
         t = r["ticker"]
@@ -360,7 +405,7 @@ def main() -> int:
         d = derive_one(hist.get(t, []), args.session)
 
         close = f(row["close"])
-        prior_close = d["_prior_close"]
+        bar_prior_close = d["_prior_close"]
         sess = d["_session_bar"]
 
         # --- range provenance
@@ -372,6 +417,46 @@ def main() -> int:
             range_flag = "OK" if brackets else "RANGE_ADJUSTED"
         else:
             range_flag = "RANGE_ADJUSTED"
+
+        # --- the anchor: the prior session's SETTLED close
+        anchor = None
+        anchor_date = ""
+        if t in prior_session_close:
+            anchor = prior_session_close[t]
+            anchor_date = prior_date
+        elif d["_prior_close"] is not None and prior_date and \
+                d["_prior_close_date"] == prior_date:
+            anchor = d["_prior_close"]
+            anchor_date = d["_prior_close_date"]
+        elif d["_prior_close"] is not None and not prior_date:
+            anchor = d["_prior_close"]
+            anchor_date = d["_prior_close_date"]
+
+        # --- ex-distribution: the quote service's prior close is dividend-adjusted, so on an
+        # ex-date it differs from the prior session's PUBLISHED close. The published change % is
+        # the PRICE change (the archive's convention, verifiable from the two published closes),
+        # and the row is FLAGGED so a reader knows the move is not a market move.
+        ex_div = False
+        qp = quote_prev.get(t)
+        # A distribution LOWERS the quote service's dividend-adjusted prior close. A prior close
+        # that is HIGHER than the published one is not a distribution - it is a stale quote, and
+        # the correction above already fixes that row's change % without a flag.
+        if qp and anchor and qp < anchor * 0.995:
+            ex_div = True
+            ex_divid_rows.append((t, round(anchor, 4), qp))
+
+        base_change = f(row["change_pct"])
+        recomputed = None
+        if anchor and not math.isnan(close):
+            recomputed = (close - anchor) / anchor * 100.0
+        if recomputed is not None:
+            if math.isnan(base_change):
+                row["change_pct"] = fmt_num(recomputed)
+                change_filled += 1
+            elif abs(recomputed - base_change) > 0.05:
+                row["change_pct"] = fmt_num(recomputed)
+                change_corrected += 1
+        anchor_missing = anchor is None
 
         # --- cap
         carrier = carrier_of.get(t, "")
@@ -392,6 +477,11 @@ def main() -> int:
         if sess is None:
             fl.append("NO_HISTORY")
             hist_misses += 1
+        if anchor_missing and (row["close"] != "" or row["change_pct"] != ""):
+            fl.append("NO_PRIOR_CLOSE")
+            change_unverified += 1
+        if ex_div:
+            fl.append("EX_DISTRIBUTION")
         if row["pe_ratio"] == "":
             fl.append("NO_PE")
         if row["sector"] == "":
@@ -406,10 +496,10 @@ def main() -> int:
             row[col] = fmt_num(d[col]) if d[col] is not None else ""
         row["avg_daily_dollar_volume"] = fmt_int(d["avg_daily_dollar_volume"]) \
             if d["avg_daily_dollar_volume"] is not None else ""
-        if prior_close and not math.isnan(close) and row["open"] != "":
+        if anchor and not math.isnan(close) and row["open"] != "":
             op = f(row["open"])
             if not math.isnan(op):
-                row["gap_pct"] = fmt_num((op - prior_close) / prior_close * 100.0)
+                row["gap_pct"] = fmt_num((op - anchor) / anchor * 100.0)
             else:
                 row["gap_pct"] = ""
         else:
@@ -467,6 +557,20 @@ def main() -> int:
                             if r["cap_source_symbol"] and r["cap_source_symbol"] != r["ticker"]),
         "issuer_groups": len(groups),
         "history_misses": hist_misses,
+        "change_pct_rule": "the session's PRICE change against the prior session's SETTLED close "
+                           "(--prior-csv); a quote service's previous_close is dividend-adjusted "
+                           "and a bar whose date was not asserted is stale - neither is an anchor",
+        "change_pct_corrected": change_corrected,
+        "change_pct_filled": change_filled,
+        "change_pct_unverified": change_unverified,
+        "prior_session": prior_date,
+        "ex_distribution_rows": len(ex_divid_rows),
+        "ex_distribution_detail": [{"ticker": t, "prior_published_close": a,
+                                     "quote_adjusted_prior_close": q} for t, a, q in ex_divid_rows],
+        "change_pct_basis": "the session's PRICE change against the prior session's published "
+                            "close (the archive's convention, verifiable from the two published "
+                            "closes); ex-distribution rows are flagged EX_DISTRIBUTION because "
+                            "the quote service's prior close is dividend-adjusted there",
         "range_adjusted_rows": range_adjusted,
         "implied_shares_implausible": shares_implausible,
         "definitions": {
@@ -488,6 +592,8 @@ def main() -> int:
     print(f"carrier_rows={manifest['carrier_rows']} carried_rows={manifest['carried_rows']} "
           f"issuer_groups={len(groups)} history_misses={hist_misses} "
           f"shares_implausible={shares_implausible}")
+    print(f"change_pct: corrected={change_corrected} filled={change_filled} "
+          f"unverified={change_unverified} (prior session {prior_date or 'n/a'})")
     return 0
 
 

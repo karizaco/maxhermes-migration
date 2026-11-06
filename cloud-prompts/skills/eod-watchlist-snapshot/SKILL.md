@@ -443,24 +443,68 @@ and let the LATER pass win the session bar** (the merge keeps the earlier bars f
 pass). The bar's own close and its synthetic final bar agree once it settles; the vendor's
 `/info` stamp is not the test (see the 2026-11-05 note).
 
-**`change_pct` IS COMPUTED AGAINST THE QUOTE SERVICE'S PREVIOUS CLOSE, NOT THE BAR'S PRIOR
-CLOSE.** The price history is SPLIT-adjusted but **not dividend-adjusted**, so on an
-ex-distribution date the raw bar basis prints a false market move: SITE Centers (SITC) went
-ex a $3.00 special distribution on 2026-11-06 and reads **-81.3%** on the raw bar basis
-(3.57 -> 0.6678) against the official **+17.2%** (0.57 -> 0.6678). The quote service's
-previous close is dividend-adjusted, and it is the basis every reader's screen shows.
-**37 of 4,775 rows have a prior close that differs by more than 2% between the two bases** —
-publish the adjusted basis and name the divergence in `## Method & caveats`. The DERIVED
-columns (`gap_pct`, `pct_from_52w_high/low`, the moving averages) stay on the split-adjusted
-series the contract defines, so on a distribution date they inherit the artefact — the caveat
-must say so, because `change_pct` and `gap_pct` are then on different bases.
-
 **A ROW WITH NO SESSION BAR GETS EMPTY PRICE CELLS — AND "NO BAR" IS NOT ALWAYS "DID NOT
 TRADE".** On 2026-11-06, 117 rows had no session bar: 43 last traded on an earlier session,
 and **70 had a sub-second CTA closing print** (a handful of shares) that the daily-bar feed
 does not publish and that Yahoo's own quote service timestamps to an EARLIER session. For
 those rows the two sources disagree on the price AND on whether a print occurred, so **no
 close is published** — check them against CNBC/CTA and publish the count.
+
+### `change_pct` — the PRICE change, measured against the PRIOR SESSION'S PUBLISHED CLOSE
+
+**`change_pct` is the session's price change against the prior session's settled close**, and
+that is the only basis the archive uses: 2026-11-02 … 2026-11-05 all published the price
+change, and a change % that cannot be verified from the file's own two published closes is not
+a change %.
+
+**The two wrong anchors, both measured on the 2026-11-06 fire (233 of 4,892 rows, median
+error 0.46pp, max 5.2pp):**
+
+- **A quote service's `previous_close` is DIVIDEND-ADJUSTED for distribution payers.** The
+  published "change" silently becomes a total return. AB published **+0.26%** while the price
+  change was **−2.32%** — a $0.90 distribution on a $34.90 close, and the sign flipped. The
+  same failure hit ARLP, BSM, ATHR and BRFH.
+- **A daily bar whose date was never asserted is a STALE bar**, so "the previous bar" can be
+  two sessions back (ARL published +9.10% for a +3.90% session).
+
+So the derive stage OWNS this column and resolves the anchor itself:
+
+1. the **prior session's published close** (`--prior-csv`) — the fleet's own record;
+2. else the bar series' prior close, **only if that bar's date is the prior session's date**;
+3. else no anchor → the change cannot be verified, the row is flagged `NO_PRIOR_CLOSE`, and
+   the count is published.
+
+A published value that disagrees with the recomputed one by more than 0.05pp is **replaced**;
+a value that agrees is left byte-for-byte alone. `gap_pct` uses the same anchor, so a gap and
+a change are never measured against different sessions. The checker asserts the result against
+the prior session's file (`--prior-csv`), so the artifact is gated on it.
+
+### The ex-distribution rows — the price change is not a market move, and the row says so
+
+**On an ex-distribution date the price change is a mechanical artefact, and a reader's screen
+shows a DIFFERENT number.** SITC went ex a $3.00 special distribution on 2026-11-06 and reads
+**−81.3%** on the raw price basis (3.57 → 0.6678) against the screen's **+17.2%**
+(0.57 → 0.6678, the dividend-adjusted basis). **37 of 4,775 rows have a prior close that
+differs by more than 2% between the two bases.**
+
+**So the file publishes the PRICE change (the archive's convention, verifiable from the two
+published closes) and FLAGS the affected rows `EX_DISTRIBUTION`** — the flag is set when the
+quote service's dividend-adjusted prior close sits more than 0.5% below the prior session's
+published close (`--quote-prev`, the batched `v7/finance/quote` response). The count and the
+worst rows are published in the artifact's `## Method & caveats`, so the divergence is named
+rather than silent. A reader who wants the screen's basis can see, per row, that the two
+differ.
+
+**The DERIVED columns (`gap_pct`, `pct_from_52w_high/low`, the moving averages) stay on the
+split-adjusted series the contract defines** — the history is SPLIT-adjusted but **not**
+dividend-adjusted — so on a distribution date they inherit the artefact, and the caveat must
+say so, because `change_pct` and `gap_pct` are then on different bases.
+
+**`rel_volume` is computed from the SAME history pull**, never from a vendor average-volume
+field: the 2026-11-06 fire left `rel_volume` on a vendor average denominator, which mixes
+sources with the session volume and disagrees with the moving averages by up to ~13% on the
+liquid names (AAPL 0.8827 vs 0.9926). **This file's `rel_volume` IS the fleet's definition** —
+a routine that needs a relative volume reads this column, not its own vendor average.
 
 ## 3. `data_quality` — a per-row flag, so a consumer can trust a row
 
@@ -478,6 +522,8 @@ precedence (most severe first):
 | `HIGH_LOW_UNAVAILABLE` | high/low left empty on purpose: no range bracketed the close |
 | `RANGE_ADJUSTED` | high/low came from the vendor's day range, not the daily bar |
 | `NO_HISTORY` | no session bar in the price history, so no derived column exists |
+| `NO_PRIOR_CLOSE` | the prior session's settled close could not be resolved, so the change % could not be verified |
+| `EX_DISTRIBUTION` | the row went ex a distribution between the sessions: the price change is a mechanical artefact, not a market move (the screen's dividend-adjusted basis differs — the count is published) |
 | `NO_PE` | no trailing P/E for the row |
 | `NO_SECTOR` | no GICS sector for the row |
 | `OK` | none of the above — and it appears only alone |
@@ -623,6 +669,28 @@ sits outside its own range; no missing value is written as zero; `market_cap_usd
 the Market read is a table with ≥ 6 numeric rows; the Coverage table reports both
 populated and per-flag counts; and the Method section states the cap currency and the
 conversion direction.
+
+## 7b. The universe assertion — the filter runs on a NULLABLE tag
+
+**The US universe comes from the vendor's `country_iso='US'`, and that tag is NULLABLE.** The
+vendor nulled `country_iso` on three US-listed preferred lines (BFS-P-D, HL-P-B, SPE-P-C)
+between the 2026-11-05 and 2026-11-06 runs, and the 11-06 universe silently shrank from
+4,896 to 4,892 rows because of it — plus one row (CCXI) the vendor deleted outright.
+
+**So the run must assert the universe it published against the universe it pulled:**
+`count(DISTINCT symbol) WHERE country_iso='US'` must equal the number of rows written, and
+the delta must be published in `## Coverage` ("universe: N rows pulled, M written, K lines
+dropped because the vendor's country tag was null or the row was deleted"). A silent delta is
+a universe change nobody can see — and the "do not change the universe" rule means the change
+must be VISIBLE even when the vendor caused it.
+
+## 7c. A failed assertion is REPAIRED, not skipped
+
+The checker is a hard gate, but **a failed assertion must never cost the day's artifact.**
+When an assertion fails, repair the offending cell (empty it and flag the row, or recompute it
+from the source) and push — then report the failure and the repair in the reply. A missing
+word in one cell is not a reason to publish nothing; an unpublished artifact is a gap the
+auditor will flag and a session the trader will not have.
 
 ## 8. What did NOT change (do not re-litigate these)
 

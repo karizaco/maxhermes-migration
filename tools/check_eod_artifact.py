@@ -50,7 +50,7 @@ REQUIRED_COLUMNS = [
 ]
 
 VOCABULARY = {"OK", "RANGE_ADJUSTED", "HIGH_LOW_UNAVAILABLE", "CAP_CARRIED", "NO_SECTOR",
-              "NO_PE", "NO_CAP", "NO_HISTORY"}
+              "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION"}
 
 # independent implementation of the issuer grouping (do not import the builder)
 CLASS_MARKERS = re.compile(r"\s*[-–—]?\s*\b(class|series|ser\.?)\s*\.?\s*[a-z0-9]{1,3}\b\s*$",
@@ -83,6 +83,8 @@ def main() -> int:
     ap.add_argument("--csv", required=True)
     ap.add_argument("--md", default="")
     ap.add_argument("--session", default="")
+    ap.add_argument("--prior-csv", default="",
+                    help="the PRIOR session's published CSV - the anchor change_pct must agree with")
     args = ap.parse_args()
 
     failures: list[str] = []
@@ -176,6 +178,34 @@ def main() -> int:
     (bad if capusd_bad else ok)(f"market_cap_usd == market_cap on every row ({capusd_bad})")
     (bad if shares_bad else ok)(f"the implied share count is plausible on every capped row "
                                 f"({shares_bad})")
+
+    # change_pct must be the PRICE change against the prior session's settled close.
+    # A quote service's previous_close is dividend-adjusted for payers, and a bar whose
+    # date was never asserted is stale - either one publishes a change that is not the
+    # session's price change, with no error anywhere.
+    if args.prior_csv:
+        prior = {r.get("ticker", ""): r for r in csv.DictReader(open(args.prior_csv, newline=""))}
+        bad_change = []
+        for r in rows:
+            pc = f(r.get("change_pct", ""))
+            cl = f(r.get("close", ""))
+            pr = prior.get(r.get("ticker", ""))
+            if pr is None or pc != pc or cl != cl:
+                continue
+            pc0 = f(pr.get("close", ""))
+            if pc0 != pc0 or pc0 == 0:
+                continue
+            implied = (cl / pc0 - 1.0) * 100.0
+            if abs(implied - pc) > max(0.05, abs(pc) * 0.005):
+                bad_change.append((r.get("ticker", ""), round(implied, 3), pc))
+        if bad_change:
+            bad(f"{len(bad_change)} row(s) publish a change_pct that is not the price change "
+                f"against the prior session's close "
+                f"(first: {bad_change[0][0]} implied {bad_change[0][1]} published {bad_change[0][2]})")
+        else:
+            ok("every change_pct is the price change against the prior session's close")
+    else:
+        checks.append("skip change_pct consistency (no --prior-csv given)")
 
     # derived columns present and numeric where populated
     for col in ("rel_volume", "sma_20", "sma_50", "sma_200", "atr_14", "atr_pct",
