@@ -44,10 +44,21 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
 
 ## Steps
 
-1. **Watchlist earnings**: cross-reference `research/watchlist.yaml` against today's earnings calendar.
-   - The watchlist file may not exist in every runtime (it is a local-only file on the Mavis host).
-     If it cannot be read, say so ONCE in the notes and omit the watchlist section. Do not ship an
-     empty "Your watchlist" table every day.
+1. **Watchlist earnings**: cross-reference the **published watchlist** against today's earnings calendar.
+   - The watchlist is a PUBLISHED FILE, fetched at run time (the local `research/watchlist.yaml` on
+     the Mavis host is unreachable from the Cloud runtime — that is why this section was omitted
+     from every artifact until 2026-11-06):
+
+     ```
+     https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/refs/watchlist.yaml?ref=main
+     https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml
+     ```
+
+     Use the contents API first (it is authoritative and not CDN-cached), then the raw URL.
+   - **If it fetches (HTTP 200):** publish the "Your watchlist" section from it. `earnings_flag: true`
+     marks a name to highlight.
+   - **If it cannot be read (HTTP 404):** say so ONCE in the notes and omit the watchlist section.
+     Do not ship an empty "Your watchlist" table every day, and never invent tickers.
 2. **Big S&P 500 names**: fetch today's earnings calendar. On Cloud Mavis the working path is
    `web_search` / `web_fetch` — there is no Yahoo MCP and no shibui MCP in Cloud sessions
    (`mcode-tools connector tools` returns only `connector__matrix__*` and

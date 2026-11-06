@@ -43,11 +43,20 @@ Generates the daily post-market markdown brief using Mavis's financial MCPs. Com
 
 ## Steps
 
-1. **Read the watchlist.** Same as pre-market.
+1. **Read the watchlist.** It is a **PUBLISHED FILE**, fetched at run time (the local
+   `research/watchlist.yaml` on the Mavis host is unreachable from the Cloud runtime — that is why
+   this section was omitted from every brief until 2026-11-06):
 
-> **Cloud adaptation.** `research/watchlist.yaml` does **not** exist in the Cloud runtime — it
-> lives only on the local Mavis host. If the file cannot be read, say so ONCE in the notes and
-> **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
+   ```
+   https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/refs/watchlist.yaml?ref=main
+   https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml
+   ```
+
+   Use the contents API first (it is authoritative and not CDN-cached), then the raw URL.
+
+> **If it fetches (HTTP 200):** publish the watchlist section from it — the watchlist EOD review
+> and any watchlist-relevant news. **If it cannot be read (HTTP 404):** say so ONCE in the notes
+> and **omit the watchlist section**; never ship an empty "Your watchlist" table. Substitute the
 > routine's deployed universe (per its `## OUTPUT` path) and label it as the universe, not as
 > the watchlist.
 2. **Day's tape.** Pull index closes via TradingView MCP `lookup_symbols` (`^GSPC, ^IXIC, ^DJI, ^RUT, ^VIX`) and ETF proxies via Yahoo MCP (`SPY, QQQ, IWM, DIA, GLD, TLT`).

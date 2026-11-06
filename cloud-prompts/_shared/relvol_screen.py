@@ -19,6 +19,12 @@ import argparse, csv, collections, datetime, json, math, os, re, statistics, sub
 from concurrent.futures import ThreadPoolExecutor
 
 RELVOL_SCREEN_V1 = 1
+# ENGINE_REV=2 — adds the universe-labelled front matter, the bias-tag self-check that ABORTS the
+# write on a contradiction, the wide book (legacy method over the relative screen's universe) and
+# the Pass A watchlist leg. The RELVOL_SCREEN_V1 marker is unchanged on purpose: the fetch ladder
+# checks it, so it must stay exactly as it is. ENGINE_REV is the ADDITIONAL token a fetch must
+# demand, so a copy of this file from before rev 2 cannot win the ladder.
+ENGINE_REV = 2
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
@@ -33,6 +39,18 @@ PASS_B = ["IWM", "GLD", "TLT", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"]
 NAMES = {"IWM": "iShares Russell 2000 ETF", "GLD": "SPDR Gold Shares",
          "TLT": "iShares 20+ Year Treasury ETF", "AAPL": "Apple Inc.", "MSFT": "Microsoft Corp.",
          "NVDA": "NVIDIA Corp.", "GOOGL": "Alphabet Inc. (Class A)", "AMZN": "Amazon.com Inc."}
+
+# The user's watchlist is a PUBLISHED FILE, fetched at run time (the local research/watchlist.yaml
+# on the Mavis host is unreachable from the Cloud runtime — that is why Pass A never ran).
+WATCHLIST_URLS = [
+    "https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/refs/watchlist.yaml?ref=main",
+    "https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml",
+    "https://cdn.jsdelivr.net/gh/karizaco/minimax-cloud-outputs@main/refs/watchlist.yaml",
+]
+
+# Bias tag thresholds — FIXED, and never taken from the previous artifact's tag.
+# The tag names the side that DOMINATES the ratio, so a LOW put/call ratio is a CALL tag.
+BIAS_CALL_BELOW, BIAS_PUT_ABOVE = 0.85, 1.20
 
 # filters
 MIN_VOL, MIN_THEO, MIN_VOI, MAX_DTE = 1000, 0.05, 1.0, 60
@@ -64,6 +82,19 @@ def curl(url, headers=None, data=None, timeout=60, retries=1):
 
 def log(msg):
     print(f"[relvol] {msg}", file=sys.stderr, flush=True)
+
+
+def curl_status(url, timeout=30):
+    """HTTP status of a URL, or None. Used to tell "the watchlist is not published" (404) from
+    "the fetch failed" (anything else)."""
+    try:
+        p = subprocess.run(["curl", "-sL", "--max-time", str(timeout), "-o", "/dev/null",
+                            "-w", "%{http_code}", "-H", f"User-Agent: {UA}", url],
+                           capture_output=True)
+        code = p.stdout.decode(errors="replace").strip()
+        return int(code) if code.isdigit() else None
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- universe
@@ -267,15 +298,176 @@ def money(strike, side, spot):
     return ("OTM" if m > 0 else "ITM"), m * 100
 
 
+# ---------------------------------------------------------------- bias tag
+def tag_from_ratio(ratio):
+    """The FIXED bias-tag rule: the tag names the side that DOMINATES the ratio.
+
+    put/call < 0.85 -> CALL, > 1.20 -> PUT, otherwise MIXED.
+    """
+    if ratio is None:
+        return "MIXED"
+    if ratio < BIAS_CALL_BELOW:
+        return "CALL"
+    if ratio > BIAS_PUT_ABOVE:
+        return "PUT"
+    return "MIXED"
+
+
+class BiasTagMismatch(Exception):
+    """A published tag contradicts the ratio it was derived from. Hard error: never publish it."""
+
+
+def audit_bias_tag(rows, label, published_tag, published_ratio):
+    """Re-derive the bias tag from the ROWS and compare it with the published tag.
+
+    This is deliberately a second, independent derivation: `slice_stats` computes the tag
+    from the same ratio it publishes, so comparing those two values could never fail. Here
+    the tag is re-derived from the row set itself, so a bug in the stats path (a ratio
+    computed over the wrong population, a tag copied from another slice) is caught.
+
+    A mismatch is a HARD ERROR: the artifact is NOT written.
+    """
+    c = sum(r["vol"] for r in rows if r["side"] == "C")
+    p = sum(r["vol"] for r in rows if r["side"] == "P")
+    ratio = (p / c) if c else float("inf")
+    expected = tag_from_ratio(ratio)
+    if expected != published_tag or abs(ratio - published_ratio) > 0.005:
+        raise BiasTagMismatch(
+            f"{label}: published tag {published_tag} / ratio {published_ratio:.4f} but the rows "
+            f"re-derive to {expected} / {ratio:.4f} (calls {c:,.0f}, puts {p:,.0f})")
+    return expected
+
+
+# ---------------------------------------------------------------- legacy method
+def legacy_rows(names_map, syms, session):
+    """The legacy (series) method: per-underlying top-N by volume, 4 earliest listed expiries,
+    V/OI >= 1.0, volume >= 200, DTE <= 60. Shared by the series book, the wide book and Pass A so
+    the three differ ONLY in their population."""
+    out = []
+    for s in syms:
+        n = names_map.get(s)
+        if not n:
+            continue
+        wset = set(n["window"])
+        cand = [r for r in n["rows"] if r["expiry"] in wset and r["vol"] >= 100]
+        cand.sort(key=lambda r: -r["vol"])
+        for r in cand[:LEGACY_TOPN]:
+            rr = dict(r)
+            rr["dte"] = (datetime.date.fromisoformat(r["expiry"]) - session).days
+            out.append(rr)
+    out = [r for r in out if r["voi"] is not None and r["voi"] >= LEGACY_MIN_VOI
+           and r["vol"] >= LEGACY_MIN_VOL and r["dte"] <= LEGACY_MAX_DTE]
+    out.sort(key=lambda r: -r["voi"])
+    return out
+
+
+# ---------------------------------------------------------------- watchlist (Pass A)
+def fetch_watchlist():
+    """Fetch the PUBLISHED watchlist. Returns (tickers, status).
+
+    status is one of: 'ok', 'absent' (404 everywhere), 'error'.
+    """
+    for u in WATCHLIST_URLS:
+        raw = curl(u, headers=["Accept: application/vnd.github.raw"], timeout=30)
+        if not raw:
+            continue
+        text = raw.decode("utf-8", "replace")
+        if '"message"' in text[:200] and "ticker" not in text:
+            continue                      # the contents API's 404/error envelope
+        tickers = parse_watchlist(text)
+        if tickers:
+            return tickers, "ok"
+    # did any URL answer 404?
+    for u in WATCHLIST_URLS:
+        code = curl_status(u)
+        if code == 200:
+            return [], "error"
+    return [], "absent"
+
+
+def parse_watchlist(text):
+    """Parse the published watchlist YAML. Supports both shapes the fleet has used:
+    a top-level `tickers:` list of plain symbols, and a `watchlist:` list of maps with a
+    `ticker:` key."""
+    tickers, in_watchlist = [], False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        stripped = line.strip()
+        if re.match(r"^[A-Za-z_][\w-]*:\s*$", stripped):
+            in_watchlist = stripped.split(":")[0].strip() in ("watchlist", "tickers")
+            continue
+        if stripped.startswith("- "):
+            body = stripped[2:].strip()
+            if in_watchlist and re.fullmatch(r"[A-Za-z0-9.\-]+", body):
+                tickers.append(body.upper())
+                continue
+            m = re.match(r"ticker:\s*([A-Za-z0-9.\-]+)", body)
+            if in_watchlist and m:
+                tickers.append(m.group(1).upper())
+            continue
+        if in_watchlist:
+            m = re.match(r"ticker:\s*([A-Za-z0-9.\-]+)", stripped)
+            if m:
+                tickers.append(m.group(1).upper())
+            elif re.fullmatch(r"[A-Za-z0-9.\-]+", stripped):
+                tickers.append(stripped.upper())
+    seen, out = set(), []
+    for t in tickers:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
 # ---------------------------------------------------------------- main
+def self_test():
+    """Prove the bias-tag self-check BITES. A guard that cannot fail is decoration.
+
+    Synthetic rows, no network: a wrong tag must raise, the right tag must pass.
+    """
+    def row(side, vol):
+        return dict(side=side, vol=vol, theo=1.0, oi=10, voi=1.0, dte=1,
+                    expiry="2026-11-10", strike=100.0, iv=30.0, sym="TEST")
+    cases = [
+        ("call-heavy", [row("C", 1000), row("P", 500)], 0.50, "CALL"),     # ratio < 0.85
+        ("put-heavy", [row("C", 500), row("P", 1000)], 2.00, "PUT"),      # ratio > 1.20
+        ("mixed", [row("C", 1000), row("P", 1000)], 1.00, "MIXED"),       # in between
+    ]
+    for label, rows, ratio, tag in cases:
+        c = sum(r["vol"] for r in rows if r["side"] == "C")
+        p = sum(r["vol"] for r in rows if r["side"] == "P")
+        assert abs((p / c) - ratio) < 1e-9, f"{label}: fixture ratio wrong"
+        assert tag_from_ratio(ratio) == tag, f"{label}: tag_from_ratio wrong"
+        # the CORRECT tag passes
+        audit_bias_tag(rows, label, tag, ratio)
+        # the INVERTED tag must raise — this is the 2026-11-02 bug class
+        wrong = {"CALL": "PUT", "PUT": "CALL", "MIXED": "PUT"}[tag]
+        try:
+            audit_bias_tag(rows, label, wrong, ratio)
+        except BiasTagMismatch:
+            pass
+        else:
+            print(f"self-test FAILED: {label} — a wrong tag ({wrong}) was accepted", file=sys.stderr)
+            return 1
+    print(json.dumps({"self_test": "passed", "cases": [c[0] for c in cases],
+                      "engine_rev": ENGINE_REV, "marker": "RELVOL_SCREEN_V1"}, indent=1))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--date", required=True, help="session date YYYY-MM-DD (the fire's scheduled date)")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--date", help="session date YYYY-MM-DD (the fire's scheduled date)")
+    ap.add_argument("--out")
     ap.add_argument("--universe", type=int, default=60)
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--keep-raw", default=None)
+    ap.add_argument("--self-test", action="store_true",
+                    help="run the bias-tag self-check unit test and exit (no network)")
     args = ap.parse_args()
+    if args.self_test:
+        return self_test()
 
     session = datetime.date.fromisoformat(args.date)
     uni = build_universe(args.universe)
@@ -368,38 +560,64 @@ def main():
     by_abs = sorted(elig, key=lambda c: -c["vol"])
     multi = [c for c in by_score if c["dte"] >= 1]
 
-    # ---- legacy series book (continuity): PASS_B, top-N by volume, old filters ----
-    leg = []
-    for s in PASS_B:
-        if s not in names:
-            continue
-        n = names[s]
-        wset = set(n["window"])
-        cand = [r for r in n["rows"] if r["expiry"] in wset and r["vol"] >= 100]
-        cand.sort(key=lambda r: -r["vol"])
-        for r in cand[:LEGACY_TOPN]:
-            r = dict(r)
-            r["dte"] = (datetime.date.fromisoformat(r["expiry"]) - session).days
-            leg.append(r)
-    leg = [r for r in leg if r["voi"] is not None and r["voi"] >= LEGACY_MIN_VOI
-           and r["vol"] >= LEGACY_MIN_VOL and r["dte"] <= LEGACY_MAX_DTE]
-    leg.sort(key=lambda r: -r["voi"])
-
+    # ---- Pass A: the user's PUBLISHED watchlist (fetched at run time) ----
+    # The local research/watchlist.yaml lives on the Mavis host and is unreachable from the Cloud
+    # runtime, so this leg never ran there. The watchlist is now a published file, so Pass A is a
+    # real pass: it is scanned with the legacy method and published with its own ratios.
     def slice_stats(rows):
         c = sum(r["vol"] for r in rows if r["side"] == "C")
         p = sum(r["vol"] for r in rows if r["side"] == "P")
         ratio = (p / c) if c else float("inf")
-        tag = "CALL" if ratio < 0.85 else ("PUT" if ratio > 1.20 else "MIXED")
+        tag = tag_from_ratio(ratio)
         pc = sum(r["vol"] * r["theo"] for r in rows if r["side"] == "C")
         pp = sum(r["vol"] * r["theo"] for r in rows if r["side"] == "P")
         return dict(rows=len(rows), c=int(c), p=int(p), ratio=ratio, tag=tag,
                     pc=pc, pp=pp, pr=(pp / pc if pc else None))
+
+    wl_tickers, wl_status = fetch_watchlist()
+    wl_tickers = [t for t in wl_tickers if t not in EXCLUDE]
+    wl_names = {}
+    pa_missing = []
+    if wl_status == "ok" and wl_tickers:
+        extra = [t for t in wl_tickers if t not in names]
+        log(f"watchlist: {len(wl_tickers)} tickers ({len(extra)} outside the relative universe)")
+        if extra:
+            with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+                for sym, j, err in ex.map(fetch_chain, extra):
+                    if err:
+                        if "no_listed_series" in err:
+                            pa_missing.append(sym)
+                        else:
+                            errors.append(f"watchlist_chain_{sym}:{err.split(':')[0]}")
+                        continue
+                    c = parse_chain(sym, j)
+                    c["window"] = sorted({r["expiry"] for r in c["rows"]})[:N_EXPIRIES]
+                    wl_names[sym] = c
+        for t in wl_tickers:
+            if t in names:
+                wl_names[t] = names[t]
+    pass_a_rows = legacy_rows(wl_names, wl_tickers, session) if wl_tickers else []
+    pass_a_stats = slice_stats(pass_a_rows) if pass_a_rows else None
+    pass_a_econ = slice_stats([r for r in pass_a_rows if r["theo"] >= 0.05]) if pass_a_rows else None
+
+    # ---- legacy series book (continuity): PASS_B, top-N by volume, old filters ----
+    leg = legacy_rows(names, PASS_B, session)
+
+    # ---- wide book: the SAME legacy method over the relative screen's whole universe ----
+    # Two populations, one headline is the failure this fixes: the series book's ratio describes 8
+    # mega-caps, the relative screen describes ~60 names. The wide book is the same method over
+    # the wider population, so the reader can compare like with like. It does NOT replace the
+    # series book (that one carries the published series since 2026-10-16).
+    wide = legacy_rows(names, list(names.keys()), session)
+    wide_stats = slice_stats(wide)
+    wide_econ = slice_stats([r for r in wide if r["theo"] >= 0.05])
 
     leg_stats = slice_stats(leg)
     leg_econ = slice_stats([r for r in leg if r["theo"] >= 0.05])
     leg_oif = slice_stats([r for r in leg if r["oi"] >= 50])
     penny = [r for r in leg if r["theo"] < 0.05]
     penny_share = (sum(r["vol"] for r in penny) / sum(r["vol"] for r in leg)) if leg else 0
+
 
     # ---- name-level tables ----
     nr = []
@@ -420,15 +638,43 @@ def main():
     base_dates = sorted({h["base"] for h in own.values()})
     base_date = base_dates[-1] if base_dates else "n/a"
 
+    leg_pr = leg_stats["pr"]
+    leg_pr_s = f"{leg_pr:.2f}" if leg_pr is not None else "n/a"
     W(f"# Unusual options flow by RELATIVE volume — {args.date} "
       f"({session.strftime('%A')}, US cash session close 16:00 ET)\n")
     W("```")
     W(f"date: {args.date}")
     W("cron: 16-unusual-options-flow-daily")
-    W("method: RELATIVE volume screen (size-normalised) — headline; the absolute series book is secondary")
-    W(f"engine: relvol_screen.py v{RELVOL_SCREEN_V1}")
-    W(f"universe: {len(names)} underlyings with a chain (TV top-{args.universe} by cash volume + the "
-      f"{len(PASS_B)} routine names); {len(uni) - len(names)} without a chain")
+    W("method: RELATIVE volume screen (size-normalised) — HEADLINE; the legacy absolute series book is secondary")
+    W(f"engine: relvol_screen.py v{RELVOL_SCREEN_V1} rev{ENGINE_REV}")
+    W(f"headline_metric: the relative-volume screen (own-history + peer ratio, size-normalised) — "
+      f"NOT a put/call ratio")
+    W(f"relative_screen_universe: top {args.universe} US names by cash volume (TradingView america scanner) "
+      f"+ the {len(PASS_B)} routine names — {len(names)} underlyings with a chain, {len(uni)-len(names)} without")
+    W(f"series_book_universe: the {len(PASS_B)} Pass-B mega-caps ({', '.join(PASS_B)}) — legacy absolute "
+      f"method, continuity with the published put/call series since 2026-10-16")
+    W(f"series_book_bias: {leg_stats['tag']} (put/call {leg_stats['ratio']:.2f}) — contract-count ratio on "
+      f"series_book_universe")
+    W(f"series_book_economic_bias: {leg_econ['tag']} (put/call {leg_econ['ratio']:.2f}) — theo >= $0.05 slice "
+      f"on series_book_universe")
+    W(f"series_book_premium_ratio: {leg_pr_s} — premium-dollar ratio on series_book_universe")
+    W(f"wide_book_universe: the {len(names)}-name relative-screen universe — the SAME legacy absolute method "
+      f"applied to it (population-matched read for the series book)")
+    W(f"wide_book_bias: {wide_stats['tag']} (put/call {wide_stats['ratio']:.2f}) — contract-count ratio on "
+      f"wide_book_universe")
+    W(f"wide_book_economic_bias: {wide_econ['tag']} (put/call {wide_econ['ratio']:.2f}) — theo >= $0.05 slice "
+      f"on wide_book_universe")
+    if pass_a_stats:
+        W(f"pass_a_universe: the published watchlist (refs/watchlist.yaml) — {len(wl_tickers)} tickers "
+          f"({', '.join(wl_tickers)}), scanned with the legacy absolute method")
+        W(f"pass_a_bias: {pass_a_stats['tag']} (put/call {pass_a_stats['ratio']:.2f}) — contract-count ratio "
+          f"on pass_a_universe")
+    else:
+        W(f"pass_a_universe: none — the published watchlist is "
+          f"{'absent (HTTP 404) so Pass A was omitted' if wl_status == 'absent' else 'unavailable'}, "
+          f"so Pass A was omitted rather than faked")
+    W(f"bias_tag_thresholds: put/call < {BIAS_CALL_BELOW} -> CALL, > {BIAS_PUT_ABOVE} -> PUT, else MIXED "
+      f"(the tag names the DOMINATING side)")
     W(f"contracts_in_window: {len(cont):,} (4 earliest listed expiries per name) | eligible: {len(elig):,}")
     W(f"filters: volume >= {MIN_VOL:,}, theo >= ${MIN_THEO}, V/OI >= {MIN_VOI}, DTE <= {MAX_DTE}")
     W("composite: z(peer_ratio) + z(expiry_share) + z(opt_pct_cash) + z(V/OI) + 1.5*z(own_history)")
@@ -436,11 +682,10 @@ def main():
     W("universe_source: TradingView america scanner (top-N by cash volume)")
     W(f"baseline_source: Cboe historical options volume (all_symbols, {len(months)} monthly files) — "
       f"own-history measured on {base_date}")
-    W(f"series_book_bias: {leg_stats['tag']} (put/call {leg_stats['ratio']:.2f}) — legacy absolute method, "
-      f"for continuity with the published series")
     W(f"status: {'ok' if not errors else 'degraded'}"
       + (f" (no listed options series for: {', '.join(sorted(no_series))})" if no_series else ""))
     W("```\n")
+
 
     W("## Headline — relative-volume leaders, multi-day book (DTE ≥ 1)\n")
     W("Ranked by the composite relative score. Same-day expiry flow on an event day is dominated by the "
@@ -513,16 +758,19 @@ def main():
       "the relative screen is a roster of anomaly.\n")
 
     W("## Series book (absolute method) — continuity with the published put/call series\n")
-    W(f"The legacy method, unchanged: the routine's {len(PASS_B)} names, per-underlying top-{LEGACY_TOPN} by "
-      f"volume, 4 earliest listed expiries, V/OI ≥ {LEGACY_MIN_VOI}, volume ≥ {LEGACY_MIN_VOL}, DTE ≤ "
-      f"{LEGACY_MAX_DTE}. **Bias tag: {leg_stats['tag']}** (put/call {leg_stats['ratio']:.2f}).\n")
-    W("| Slice | Rows | Call volume | Put volume | P/C | Tag |")
-    W("|---|---|---|---|---|---|")
-    W(f"| All kept (series method) | {leg_stats['rows']} | {leg_stats['c']:,} | {leg_stats['p']:,} | "
+    W(f"**Universe: the {len(PASS_B)} Pass-B mega-caps ({', '.join(PASS_B)}).** Every ratio in this "
+      f"section describes THOSE {len(PASS_B)} names and nothing else — it is not the relative screen's "
+      f"population. The legacy method, unchanged: per-underlying top-{LEGACY_TOPN} by volume, 4 earliest "
+      f"listed expiries, V/OI ≥ {LEGACY_MIN_VOI}, volume ≥ {LEGACY_MIN_VOL}, DTE ≤ {LEGACY_MAX_DTE}. "
+      f"**Bias tag: {leg_stats['tag']}** (put/call {leg_stats['ratio']:.2f}), thresholds "
+      f"< {BIAS_CALL_BELOW} → CALL, > {BIAS_PUT_ABOVE} → PUT, else MIXED.\n")
+    W("| Slice | Universe | Rows | Call volume | Put volume | P/C | Tag |")
+    W("|---|---|---|---|---|---|---|")
+    W(f"| All kept (series method) | {len(PASS_B)} Pass-B mega-caps | {leg_stats['rows']} | {leg_stats['c']:,} | {leg_stats['p']:,} | "
       f"{leg_stats['ratio']:.2f} | **{leg_stats['tag']}** |")
-    W(f"| Economic flow (theo >= $0.05) | {leg_econ['rows']} | {leg_econ['c']:,} | {leg_econ['p']:,} | "
+    W(f"| Economic flow (theo >= $0.05) | {len(PASS_B)} Pass-B mega-caps | {leg_econ['rows']} | {leg_econ['c']:,} | {leg_econ['p']:,} | "
       f"{leg_econ['ratio']:.2f} | **{leg_econ['tag']}** |")
-    W(f"| Open-interest floor (OI >= 50) | {leg_oif['rows']} | {leg_oif['c']:,} | {leg_oif['p']:,} | "
+    W(f"| Open-interest floor (OI >= 50) | {len(PASS_B)} Pass-B mega-caps | {leg_oif['rows']} | {leg_oif['c']:,} | {leg_oif['p']:,} | "
       f"{leg_oif['ratio']:.2f} | **{leg_oif['tag']}** |")
     W("")
     itm_prem = sum(r["vol"] * r["theo"] for r in leg if (
@@ -549,6 +797,61 @@ def main():
     W("")
     W(f"_Series book: {leg_stats['rows']} rows / {leg_stats['c']+leg_stats['p']:,} contracts._\n")
 
+    W("## Wide book — the same method over the relative screen's universe\n")
+    W(f"**Universe: the {len(names)}-name relative-screen universe** (the top {args.universe} US names by "
+      f"cash volume plus the {len(PASS_B)} routine names). This is the SAME legacy absolute method as "
+      f"the series book above — per-underlying top-{LEGACY_TOPN} by volume, 4 earliest listed expiries, "
+      f"V/OI ≥ {LEGACY_MIN_VOI}, volume ≥ {LEGACY_MIN_VOL}, DTE ≤ {LEGACY_MAX_DTE} — applied to the wide "
+      f"population. Only the POPULATION differs from the series book, so the two rows are comparable: the "
+      f"series book answers \"what did the {len(PASS_B)} mega-caps do\", the wide book answers \"what did "
+      f"the market's most-traded {len(names)} names do\". It does NOT replace the series book, which carries "
+      f"the published put/call series since 2026-10-16.\n")
+    W("| Slice | Universe | Rows | Call volume | Put volume | P/C | Tag |")
+    W("|---|---|---|---|---|---|---|")
+    W(f"| All kept (legacy method, wide universe) | {len(names)} names | {wide_stats['rows']} | "
+      f"{wide_stats['c']:,} | {wide_stats['p']:,} | {wide_stats['ratio']:.2f} | **{wide_stats['tag']}** |")
+    W(f"| Economic flow (theo >= $0.05) | {len(names)} names | {wide_econ['rows']} | {wide_econ['c']:,} | "
+      f"{wide_econ['p']:,} | {wide_econ['ratio']:.2f} | **{wide_econ['tag']}** |")
+    W("")
+    W(f"**Reading the two books together:** series book (the {len(PASS_B)} mega-caps) put/call "
+      f"{leg_stats['ratio']:.2f} → **{leg_stats['tag']}**; wide book (the {len(names)} most-traded names) "
+      f"put/call {wide_stats['ratio']:.2f} → **{wide_stats['tag']}**. A reader who sees only one of these "
+      f"numbers is reading one population and will assume it is the market.\n")
+
+    W("## Pass A — the published watchlist\n")
+    if pass_a_stats:
+        W(f"**Universe: the published watchlist** (`refs/watchlist.yaml` in the outputs repo) — "
+          f"{len(wl_tickers)} tickers: {', '.join(wl_tickers)}. Scanned with the same legacy absolute method "
+          f"(per-underlying top-{LEGACY_TOPN} by volume, 4 earliest listed expiries, V/OI ≥ {LEGACY_MIN_VOI}, "
+          f"volume ≥ {LEGACY_MIN_VOL}, DTE ≤ {LEGACY_MAX_DTE}). This leg used to be omitted entirely, "
+          f"because the watchlist only existed as a local file on the Mavis host; it is now fetched at run "
+          f"time, so Pass A is a real pass.\n")
+        W("| Slice | Universe | Rows | Call volume | Put volume | P/C | Tag |")
+        W("|---|---|---|---|---|---|---|")
+        W(f"| All kept (legacy method) | {len(wl_tickers)} watchlist names | {pass_a_stats['rows']} | "
+          f"{pass_a_stats['c']:,} | {pass_a_stats['p']:,} | {pass_a_stats['ratio']:.2f} | "
+          f"**{pass_a_stats['tag']}** |")
+        if pass_a_econ:
+            W(f"| Economic flow (theo >= $0.05) | {len(wl_tickers)} watchlist names | {pass_a_econ['rows']} | "
+              f"{pass_a_econ['c']:,} | {pass_a_econ['p']:,} | {pass_a_econ['ratio']:.2f} | "
+              f"**{pass_a_econ['tag']}** |")
+        W("")
+        W("**Pass A — top 10 strikes by V/OI:**\n")
+        W("| Ticker | Side | Strike | Expiry | DTE | Volume | Open int | V/OI | IV | Theo |")
+        W("|---|---|---|---|---|---|---|---|---|---|")
+        for r in pass_a_rows[:10]:
+            W(f"| {r['sym']} | {r['side']} | {r['strike']:g} | {r['expiry']} | {r['dte']} | "
+              f"{int(r['vol']):,} | {int(r['oi']):,} | {r['voi']:.1f} | "
+              f"{('n/a' if r['iv'] is None else format(r['iv'],'.1f')+'%')} | {r['theo']:.3f} |")
+        W("")
+        if pa_missing:
+            W(f"_Watchlist names with no listed options series: {', '.join(sorted(pa_missing))}._\n")
+    else:
+        W(f"**Pass A was omitted.** The published watchlist (`refs/watchlist.yaml`) is "
+          f"{'not published (HTTP 404)' if wl_status == 'absent' else 'unavailable'}, so there is no "
+          f"watchlist population to report. Pass A is a real pass or it is absent — it is never faked with "
+          f"an invented list, and no ratio is published for it.\n")
+
     no_pct = [s for s, n in names.items() if n.get("pct") is None]
     if no_pct:
         W(f"**Names with no daily move in the chain (`price_change_percent` null): {', '.join(sorted(no_pct))}.**\n")
@@ -568,6 +871,10 @@ def main():
       "market cap |")
     W("| Yahoo options chain (cross-check) | not fetched by the engine | skipped | the engine's contract layer is "
       "single-tape (Cboe); Yahoo remains the cross-check for a manual verification |")
+    W(f"| Published watchlist (Pass A) | `refs/watchlist.yaml` in `karizaco/minimax-cloud-outputs` | "
+      f"{'ok' if pass_a_stats else ('absent (HTTP 404)' if wl_status == 'absent' else 'unavailable')} | "
+      f"{f'{len(wl_tickers)} tickers: ' + ', '.join(wl_tickers) if wl_tickers else 'Pass A omitted — no watchlist published'}"
+      + (f"; no listed options series: {', '.join(sorted(pa_missing))}" if pa_missing else "") + " |")
     W("")
     if errors:
         W(f"**Source failures ({len(errors)}):** " + "; ".join(errors[:12]) + "\n")
@@ -595,7 +902,44 @@ def main():
       "and a big open interest is the signature.")
     W("8. **The universe is the most-traded names, not the whole market** — a relative screen over a fixed "
       "universe can only find anomalies inside it.")
+    W("9. **Three populations, three named books.** The relative screen covers the "
+      f"{len(names)}-name relative-screen universe, the series book the {len(PASS_B)} Pass-B mega-caps, and "
+      "Pass A the published watchlist. Their ratios describe different populations and are not "
+      "interchangeable — which is why every ratio in this file names its universe.")
     W("")
+
+    # The audit line the spec requires (cron #16's audit line carries the bias tag, so it must
+    # carry the universe too — a tag without its population is the 2026-11-02 failure class).
+    W(f"`unusual-options-flow target=options-flow:{args.date} underlyings={len(names)} "
+      f"strikes_kept={leg_stats['rows']} bias={leg_stats['tag']} method=relative "
+      f"bias_universe=pass-b-{len(PASS_B)}-mega-caps relative_universe=top-{args.universe}-us-by-cash-volume "
+      f"wide_bias={wide_stats['tag']} pass_a_bias={(pass_a_stats['tag'] if pass_a_stats else 'none')}`")
+    W("")
+
+    # ---- THE SELF-CHECK: a tag that contradicts its own ratio is a HARD ERROR ----
+    # Nothing is written until every published tag has been re-derived from its own rows. The 2026-11-02
+    # artifact shipped a tag that contradicted its ratio (0.84 tagged PUT) and the series has been
+    # re-read off that file ever since; a mismatch aborts the write rather than publishing it again.
+    try:
+        audit_bias_tag(leg, "series_book (all kept)", leg_stats["tag"], leg_stats["ratio"])
+        audit_bias_tag([r for r in leg if r["theo"] >= 0.05], "series_book (economic slice)",
+                       leg_econ["tag"], leg_econ["ratio"])
+        audit_bias_tag([r for r in leg if r["oi"] >= 50], "series_book (OI floor)",
+                       leg_oif["tag"], leg_oif["ratio"])
+        audit_bias_tag(wide, "wide_book (all kept)", wide_stats["tag"], wide_stats["ratio"])
+        audit_bias_tag([r for r in wide if r["theo"] >= 0.05], "wide_book (economic slice)",
+                       wide_econ["tag"], wide_econ["ratio"])
+        if pass_a_stats:
+            audit_bias_tag(pass_a_rows, "pass_a (all kept)", pass_a_stats["tag"], pass_a_stats["ratio"])
+            audit_bias_tag([r for r in pass_a_rows if r["theo"] >= 0.05], "pass_a (economic slice)",
+                           pass_a_econ["tag"], pass_a_econ["ratio"])
+    except BiasTagMismatch as e:
+        log(f"BIAS TAG SELF-CHECK FAILED: {e}")
+        print(json.dumps({"ok": False, "error": "bias_tag_mismatch", "detail": str(e),
+                          "out": None, "errors": errors}, indent=1))
+        print("BIAS-TAG SELF-CHECK FAILED — the artifact was NOT written. "
+              "A tag that contradicts its own ratio is never published.", file=sys.stderr)
+        return 3
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     open(args.out, "w").write("\n".join(L))
@@ -616,6 +960,19 @@ def main():
                       "baseline_symbols": len(own),
                       "series_bias": leg_stats["tag"], "series_ratio": round(leg_stats["ratio"], 2),
                       "series_rows": leg_stats["rows"],
+                      "series_universe": "the 8 Pass-B mega-caps (" + ", ".join(PASS_B) + ")",
+                      "series_premium_ratio": (round(leg_stats["pr"], 2) if leg_stats["pr"] is not None else None),
+                      "series_econ_bias": leg_econ["tag"], "series_econ_ratio": round(leg_econ["ratio"], 2),
+                      "wide_bias": wide_stats["tag"], "wide_ratio": round(wide_stats["ratio"], 2),
+                      "wide_rows": wide_stats["rows"],
+                      "wide_universe": f"the {len(names)}-name relative-screen universe",
+                      "wide_econ_bias": wide_econ["tag"], "wide_econ_ratio": round(wide_econ["ratio"], 2),
+                      "pass_a_status": wl_status,
+                      "pass_a_universe": (", ".join(wl_tickers) if wl_tickers else None),
+                      "pass_a_bias": (pass_a_stats["tag"] if pass_a_stats else None),
+                      "pass_a_ratio": (round(pass_a_stats["ratio"], 2) if pass_a_stats else None),
+                      "bias_tag_thresholds": f"<{BIAS_CALL_BELOW}=CALL, >{BIAS_PUT_ABOVE}=PUT, else MIXED",
+                      "bias_tag_selfcheck": "passed",
                       "top_relative": [f"{c['sym']} {c['side']} {c['strike']:g} {c['expiry']}"
                                        for c in multi[:8]],
                       "top_own_history": [f"{r['sym']} {r['ratio']:.2f}x" for r in nr[:8]],

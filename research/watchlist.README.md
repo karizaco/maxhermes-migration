@@ -1,23 +1,31 @@
 # The watchlist — where it lives and how to publish it
 
-**Status (2026-11-03): NOT PUBLISHED.** No watchlist file exists at the published path, so cron
-#26's watchlist section is omitted from the brief and cron #19's watchlist section is omitted
-from the earnings reminder. Both say so once in their `## Source health` / notes and ship no
-empty table.
+**Status (2026-11-06): PUBLISHED.** `refs/watchlist.yaml` now exists in the outputs repo, so the
+watchlist leg is live in the Cloud runtime for the first time. Before that, cron #16's Pass A leg
+had never run there and cron #19 / #23 / #26 shipped no watchlist section at all — every artifact
+carried the same "not published" line.
 
-This directory holds the **schema and the publish instructions**. It deliberately does NOT hold a
-live `watchlist.yaml` — a file with no tickers in it would make the routine publish an empty
-"Watchlist" section every morning, which is exactly the failure mode this replaces.
+**What is in the published file right now is a SEED, not the user's list.** The original
+watchlist lived only on the local Mavis host (`research/watchlist.yaml`, a 12-name list) and was
+never committed, so it could not be recovered from here. The published file therefore starts with
+the names the fleet already tracks for the options series (the routine's 8 Pass-B mega-caps), which
+keeps the published numbers from moving, and it says so in its own header. **Replace it with the
+real list** — edit `refs/watchlist.yaml`, commit it to the outputs repo, and every routine that
+fetches it picks the change up on its next fire. Nothing else has to change.
+
+This directory holds the **schema and the publish instructions**. It does not hold a live
+`watchlist.yaml` — the live file lives in the outputs repo at `refs/watchlist.yaml`, so there is
+exactly ONE copy and it is the one every routine reads.
 
 ## Why it moved out of the sandbox
 
 The skill's original watchlist was `research/watchlist.yaml` on the local Windows Mavis host. That
-path is not reachable from the Cloud runtime, so the watchlist leg has **never** succeeded there:
-every artifact since 2026-10-14 has carried the same "not published" line, and the brief has
-carried a permanent explanatory section. Cron #19's own review reached the same conclusion
+path is not reachable from the Cloud runtime, so the watchlist leg had **never** succeeded there:
+every artifact since 2026-10-14 carried the same "not published" line, and the brief carried a
+permanent explanatory section. Cron #19's own review reached the same conclusion
 (`docs/IMPROVEMENTS-cron19-earnings-reminder.md`, item 4).
 
-The fix is to make the watchlist a **published artifact** that both routines fetch at run time,
+The fix is to make the watchlist a **published artifact** that every routine fetches at run time,
 rather than a local file that only one machine can see.
 
 ## The published path
@@ -34,8 +42,10 @@ Both routines fetch this URL at run time:
 
 | Routine | Fetches it at | Behaviour if present | Behaviour if 404 |
 |---|---|---|---|
+| #16 `unusual-options-flow-daily` | the engine (run-time fetch) | publishes the Pass A book — the watchlist's option chains, legacy method, with its own ratios | omits Pass A, one Source-health line |
 | #26 `agentic-pre-market-brief` | Step 7 | publishes the watchlist section | omits the section, one Source-health line |
 | #19 `earnings-reminder-daily` | Step 1 | publishes "Your watchlist" | omits the section, one note |
+| #23 `agentic-post-market-brief` | Step 1 | publishes the watchlist EOD review | omits the section, one note |
 
 ## How to publish it
 

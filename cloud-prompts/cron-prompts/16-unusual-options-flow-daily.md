@@ -132,7 +132,8 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/relvol_screen.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null; then
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null \
+     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -269,7 +270,9 @@ exists, and why the push script must never be run with `git push … | head -3`.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
 5. This routine ranks by RELATIVE volume. The headline of the artifact AND of the chat reply is the relative screen (the multi-day relative leaders, the name-level own-history table); the legacy absolute book is a secondary continuity section. Never lead the reply with the legacy put/call tag.
-6. The engine's JSON summary is the source of the numbers you quote. If it did not print a figure, that figure is not in the artifact.
+6. **Every ratio you quote names its population, and the reply's FIRST line names the universe behind the headline ratio.** The relative screen covers the top ~60 US names by cash volume, the series book the 8 Pass-B mega-caps, and Pass A the published watchlist — three different populations. "put/call 0.74 → CALL" is unreadable; "put/call 0.74 → CALL **on the 8 Pass-B mega-caps**" is a fact. If you lead with the series book's ratio, say that the headline screen covers the wider population and why.
+7. **Never publish a bias tag that contradicts its own ratio.** Thresholds: put/call < 0.85 → CALL, > 1.20 → PUT, else MIXED (the tag names the DOMINATING side). The engine re-derives every published tag from its own rows and aborts the write (exit 3, no artifact, no push) on a contradiction — if it exits 3, publish nothing and report the contradiction.
+8. The engine's JSON summary is the source of the numbers you quote. If it did not print a figure, that figure is not in the artifact.
 
 ================================================================
 END OF CRON PROMPT

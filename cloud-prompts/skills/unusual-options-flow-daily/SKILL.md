@@ -29,6 +29,37 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Unusual options flow — daily, ranked by RELATIVE volume
 
+## What changed on 2026-11-06, and why
+
+**Three defects were fixed on 2026-11-06, all of them "the number was right, its MEANING was not".**
+
+1. **Every published ratio now names its population.** The routine publishes three books and they
+   describe three different universes: the **relative screen** (top ~60 US names by cash volume),
+   the **series book** (the 8 Pass-B mega-caps) and **Pass A** (the published watchlist). Until now
+   only the first two existed and neither said so in the front matter, so a reader saw "put/call
+   0.74 → CALL" with no way to know it described 8 mega-caps while the headline screen described 60
+   names. **A put/call ratio without its universe is not interpretable.** The front matter now
+   carries one `*_universe:` line per published ratio, and every ratio row names its population.
+
+2. **The bias tag is now self-checked before the file is written.** The 2026-11-02 artifact
+   published `bias: PUT` on a put/call ratio of 0.84, which the fixed thresholds (`< 0.85 → CALL`)
+   make a CALL — a tag that contradicted its own number, published into the series. The engine now
+   re-derives every published tag from its own rows and **aborts the write** on a contradiction
+   (exit 3, no artifact, no push). A tag that contradicts its own ratio is a hard error and is never
+   published.
+
+3. **Pass A is a real pass.** The watchlist was a local file on the Mavis host
+   (`research/watchlist.yaml`), unreachable from the Cloud runtime, so this leg never ran here and
+   every artifact since 2026-10-14 carried the same "not published" line. The watchlist is now a
+   **published file** (`refs/watchlist.yaml` in the outputs repo), fetched at run time, and Pass A
+   is scanned and published with its own ratios.
+
+**A fourth book was added for the population question:** the **wide book** — the *same* legacy
+absolute method as the series book, applied to the relative screen's whole ~60-name universe. The
+series book answers "what did the 8 mega-caps do", the wide book answers "what did the market's
+most-traded names do", and only the population differs between them. The series book is NOT
+replaced: it carries the published put/call series since 2026-10-16.
+
 ## What changed on 2026-11-05, and why
 
 **This routine now ranks by relative volume, not absolute volume.** The old headline ranked
@@ -50,6 +81,22 @@ names by cash volume** from the TradingView america scanner, plus the routine's 
 **The published artifacts change shape.** Every artifact from 2026-11-05 onward leads with the
 relative screen and carries the legacy book as a secondary section. The put/call series numbers
 themselves are unchanged in method, so the series continues.
+
+**The transition day is 2026-11-04, and it stays the transition day.** That artifact is the one
+on which the screen was *introduced* — over the 8-name Pass-B universe, because the wider universe
+and the engine landed together on 11-05 — and it published it as a supplementary section. Its
+section title used to read "supplementary — not the headline metric", which read as a contradiction
+of the rule above; it now says plainly what is true: the screen was introduced on that date, it
+became the headline on 2026-11-05 when the universe widened, and **the reason it had to widen is
+the reason the 8-name screen could not be one** — a relative screen over an 8-name mega-cap
+universe cannot surface a mid-cap, because there are none in it.
+
+**What the reply must say about this, every time.** The headline of the reply is the relative
+screen, never the legacy put/call tag. When the reply quotes ANY ratio, its first line names the
+population behind it: "put/call 0.74 → CALL **on the 8 Pass-B mega-caps**" is readable;
+"put/call 0.74 → CALL" is not, because a trader who does not know the universe widened is reading
+the wrong number. If the reply leads with the series book's ratio, it must also say that the
+headline screen covers a wider population and why.
 
 ## When
 - Cron: `35 16 * * 1-5` America/New_York (weekdays, 16:35 ET — just after the cash close, so the day's volume is settled)
@@ -91,12 +138,23 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/relvol_screen.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   # a 404 body is non-empty JSON, and an OLD copy silently lacks the new sections
-  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null; then
+  # BOTH markers are required: RELVOL_SCREEN_V1 (the engine family) AND ENGINE_REV=2 (the rev
+  # that adds the universe-labelled front matter, the bias-tag self-check, the wide book and
+  # Pass A). The rev marker is what stops a pre-2026-11-06 copy from winning the ladder — the
+  # old copy carries RELVOL_SCREEN_V1 too, so one marker cannot tell them apart.
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null \
+     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
 ```
+
+If the copy you fetched carries `RELVOL_SCREEN_V1` but NOT `ENGINE_REV=2`, you have a pre-2026-11-06
+engine: re-fetch with the ladder above (the contents API is tried first and is authoritative), and
+if it still will not serve rev 2, fall back to the legacy method below and say so in the header.
+**Do not publish an artifact from a pre-rev-2 engine and call it current** — it has no
+universe-labelled front matter and no bias-tag self-check.
 
 **Run it with the FIRE's scheduled date**, not `date` at execution time:
 
@@ -136,6 +194,29 @@ on. Measured 2026-11-04: CHSN, CRIS, DKI, OMH.
 
 **Series book (secondary):** the 8 Pass-B names, unchanged — IWM, GLD, TLT, AAPL, MSFT, NVDA,
 GOOGL, AMZN.
+
+**Wide book (secondary, population-matched):** the **same legacy absolute method** as the series
+book, applied to every name in the relative screen's universe (the ~60 names with a chain). Only
+the population differs, so the two books are directly comparable. It answers "what did the market's
+most-traded names do" next to the series book's "what did the 8 mega-caps do". It does **not**
+replace the series book, which carries the published put/call series since 2026-10-16.
+
+**Pass A — the published watchlist:** the user's watchlist is a **published file**, fetched at run
+time:
+
+```
+https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/refs/watchlist.yaml?ref=main
+https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/refs/watchlist.yaml
+```
+
+- **Present (HTTP 200):** parse the tickers, scan their chains with the legacy method, and publish
+  the Pass A section with its own ratios and its own universe line. A watchlist name outside the
+  relative screen's universe gets its chain fetched separately; it does **not** join the relative
+  screen (that screen's universe is fixed — top ~60 by cash volume — and adding names to it would
+  change what the headline measures).
+- **Absent (HTTP 404 everywhere):** omit Pass A and say so ONCE in `## Source health`. Never ship
+  an empty Pass A section and never invent a watchlist.
+- A watchlist name the Cboe chain refuses is recorded as `no listed options series`, not an error.
 
 **Exclusion list (do NOT scan — see Hard rules)**
 - Broad-index mega-cap ETFs: SPY, QQQ (their chains are dominated by dealer-gamma and 0DTE market-maker hedging; V/OI gets inflated and the daily put/call bias tag becomes "PUT" on every red day for structural reasons, not positioning).
@@ -193,9 +274,32 @@ the published series comparable, and it must not leak into the relative screen.
 5. Name level — options contracts vs cash shares traded.
 6. Contrast — the absolute screen's top 10 next to the relative screen's top 10, and the overlap count.
 7. **Series book (legacy absolute method)** — bias tag, the three slices, the premium-dollar read, the top 10 strikes by V/OI.
-8. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named.
-9. `## Caveats`.
-10. Audit line: `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed> method=relative`.
+8. **Wide book** — the same legacy method over the relative screen's whole universe, next to the series book, so the two populations can be read against each other.
+9. **Pass A — the published watchlist** — its own ratios, its own universe line, or an explicit statement that it was omitted and why.
+10. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named.
+11. `## Caveats`.
+12. Audit line: `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed> method=relative`.
+
+### The front matter names the population of every ratio
+
+The header block must carry one `*_universe:` line for each book, so a reader never has to guess
+which population a number describes:
+
+```
+headline_metric: the relative-volume screen … — NOT a put/call ratio
+relative_screen_universe: top 60 US names by cash volume … — 60 underlyings with a chain, 2 without
+series_book_universe: the 8 Pass-B mega-caps (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN)
+series_book_bias: CALL (put/call 0.74) — contract-count ratio on series_book_universe
+series_book_economic_bias: PUT (put/call 1.44) — theo >= $0.05 slice on series_book_universe
+series_book_premium_ratio: 3.47 — premium-dollar ratio on series_book_universe
+wide_book_universe: the 60-name relative-screen universe — the SAME legacy method applied to it
+wide_book_bias: PUT (put/call 1.02) — contract-count ratio on wide_book_universe
+pass_a_universe: the published watchlist (refs/watchlist.yaml) — 8 tickers …
+bias_tag_thresholds: put/call < 0.85 -> CALL, > 1.20 -> PUT, else MIXED (the tag names the DOMINATING side)
+```
+
+A ratio whose population is not named in the front matter is a defect, not a style issue.
+
 
 ## Hard rules
 - Read-only. Never suggest a trade or sizing.
@@ -203,7 +307,10 @@ the published series comparable, and it must not leak into the relative screen.
 - Never include naked single-stock levered ETFs (same as `us-stocks-in-play` exclusion).
 - **A relative screen over a fixed universe can only find anomalies inside that universe.** Say how many names were screened and how many had no listed options series.
 - The headline of this routine is the **relative** screen. The legacy book is continuity, not the headline — never lead the chat reply with the legacy bias tag.
+- **Every published ratio names its population.** The front matter carries one `*_universe:` line per book, and every ratio row names its universe. A put/call ratio without its universe is not interpretable, and the reply's **first line** names the population behind any ratio it leads with.
+- **A bias tag that contradicts its own ratio is never published.** The engine re-derives every published tag from its own rows and **aborts the write** (exit 3, no artifact, no push) on a contradiction. If you are running the engine by hand, `python3 relvol_screen.py --self-test` proves the guard bites before you trust it.
 - No trade, no sizing, no direction on any name.
+
 
 ## Cloud data conventions
 
@@ -380,6 +487,34 @@ names the side that *dominates* the ratio, so a low ratio is a CALL tag. The 202
 inverted both tags (0.84 tagged `PUT`, 2.69 tagged `CALL`), which contradicted its own prose and the
 10-28/29/30 files; its numbers were fine, only the tag strings read reversed. State the thresholds
 inside every artifact so the tag is auditable without the history.
+
+**That inversion was CORRECTED ON DISK on 2026-11-06.** `options-flow/2026-11-02.md` now reads
+`bias: CALL` (its ratio is 0.84) and its audit line reads `bias=CALL`; every number in the file is
+unchanged, and the file carries a dated correction note. Do not "re-fix" it from a previous run's
+artifact — and do not re-tag it back to PUT. **The self-check above exists so this class cannot
+recur**: the tag is re-derived from the rows and the write is aborted on a contradiction, so a
+future artifact cannot ship a tag that disagrees with its own ratio.
+
+### The wide book (secondary, population-matched)
+
+| Element | Rule |
+|---|---|
+| Method | the series book's legacy method, unchanged — per-underlying top-10 by volume, 4 earliest listed expiries, V/OI ≥ 1.0, volume ≥ 200, DTE ≤ 60 |
+| Universe | every name in the relative screen's universe that has a chain (~60 names) |
+| Purpose | a population-matched read: the series book says what the 8 mega-caps did, the wide book says what the market's most-traded names did, and only the population differs |
+| Not | a replacement for the series book, which carries the published put/call series since 2026-10-16 |
+
+### Pass A (secondary, the user's watchlist)
+
+| Element | Rule |
+|---|---|
+| Source | the PUBLISHED watchlist, `refs/watchlist.yaml` in `karizaco/minimax-cloud-outputs`, fetched at run time (the local `research/watchlist.yaml` on the Mavis host is unreachable from the Cloud runtime) |
+| Method | the legacy method, unchanged — the same method as the series book, so the three books differ only in population |
+| Universe | the watchlist's tickers, named in the front matter and in the section |
+| A name outside the relative universe | its chain is fetched separately; it does NOT join the relative screen (that screen's universe is fixed) |
+| Absent file | Pass A is omitted and `## Source health` says so once — never an empty section, never an invented list |
+| Until the user edits the file | the published watchlist holds the routine's own 8 names, so Pass A's book coincides with the series book — the section says so |
+
 
 **Declare the method in every artifact.** Each file must state, in its header, the primary chain
 source, the cross-check source, the pre-cut rule, the expiry-window rule, and a
