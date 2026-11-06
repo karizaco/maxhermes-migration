@@ -113,6 +113,11 @@
       "timezone": "America/New_York",
       "session_mode": "new"
     },
+    "26b-agentic-pre-market-brief-refresh-0920.md": {
+      "schedule": "20 9 * * 1-5",
+      "timezone": "America/New_York",
+      "session_mode": "new"
+    },
     "90-delivery-auditor.md": {
       "schedule": "0 7 * * *",
       "timezone": "America/New_York",
@@ -132,6 +137,141 @@
       "schedule": "50 9 * * 1-5",
       "timezone": "America/New_York",
       "session_mode": "new"
+    }
+  },
+  "spec_contracts": {
+    "_note": "RUNTIME-FETCHED SPEC CONTRACT (added 2026-11-06). Every routine fetches its PROCEDURE from this repo at RUN time, so a deployed prompt can be byte-identical to the repo while the behaviour comes from a spec that differs from the repo - the exact failure that shipped cron #15's hardcoded UTC-4 offset and cron #09's LIMIT caps. A prompt hash cannot see that. `spec_path` is the file the routine's PROMPT names (the detector derives the path from the DEPLOYED prompt and compares it with this one); `bundle` is the directory searched for the liveness marker; `marker` is a token that MUST still exist in that bundle - the section the routine is supposed to produce. A spec that lost its procedure section is drift a prompt hash will never catch.",
+    "routines": {
+      "01-weekly-mcp-health-check.md": {
+        "spec_path": "cloud-prompts/_shared/mcp_bridge.py",
+        "bundle": "cloud-prompts/_shared",
+        "marker": "--list-packs"
+      },
+      "02-asia-pre-market-reactions.md": {
+        "spec_path": "cloud-prompts/skills/asia-pre-market-reactions/SKILL.md",
+        "bundle": "cloud-prompts/skills/asia-pre-market-reactions",
+        "marker": "Pre-filter: Primary listing exchange whitelist"
+      },
+      "04-reversal-bullish-3:55.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "reversal_bullish"
+      },
+      "06-stock-screener-pattern-study-backlog.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "pattern-study"
+      },
+      "07-stock-screener-focus-rvol-09:45.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "Live intraday RVOL re-rank"
+      },
+      "08-stock-screener-pre-market-gapper.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "Pre-Market Gapper"
+      },
+      "09-stock-screener-daily-sweep-18:30.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "emit_sweep_sql"
+      },
+      "10-stock-screener-breadth-snapshot.md": {
+        "spec_path": "cloud-prompts/skills/stock-screener-suite/SKILL.md",
+        "bundle": "cloud-prompts/skills/stock-screener-suite",
+        "marker": "Breadth snapshot artifact contract"
+      },
+      "05-eod-international-daily.md": {
+        "spec_path": "cloud-prompts/skills/eod-watchlist-snapshot/SKILL.md",
+        "bundle": "cloud-prompts/skills/eod-watchlist-snapshot",
+        "marker": "market-cap carrier contract"
+      },
+      "20-eod-watchlist-csv-snapshot.md": {
+        "spec_path": "cloud-prompts/skills/eod-watchlist-snapshot/SKILL.md",
+        "bundle": "cloud-prompts/skills/eod-watchlist-snapshot",
+        "marker": "EOD_DERIVE_V2"
+      },
+      "12-cross-asset-correlation-snapshot.md": {
+        "spec_path": "cloud-prompts/skills/cross-asset-correlation-snapshot/SKILL.md",
+        "bundle": "cloud-prompts/skills/cross-asset-correlation-snapshot",
+        "marker": "window_end_derived_from_data"
+      },
+      "13-macro-calendar-midweek.md": {
+        "spec_path": "cloud-prompts/skills/macro-calendar-week/SKILL.md",
+        "bundle": "cloud-prompts/skills/macro-calendar-week",
+        "marker": "mid-week file exists"
+      },
+      "14-macro-calendar-week-ahead.md": {
+        "spec_path": "cloud-prompts/skills/macro-calendar-week/SKILL.md",
+        "bundle": "cloud-prompts/skills/macro-calendar-week",
+        "marker": "Compute ISO week boundaries"
+      },
+      "15-earnings-reaction-scanner.md": {
+        "spec_path": "cloud-prompts/skills/earnings-reaction-scanner/SKILL.md",
+        "bundle": "cloud-prompts/skills/earnings-reaction-scanner",
+        "marker": "REACTION_ARTIFACT_V2"
+      },
+      "16-unusual-options-flow-daily.md": {
+        "spec_path": "cloud-prompts/skills/unusual-options-flow-daily/SKILL.md",
+        "bundle": "cloud-prompts/skills/unusual-options-flow-daily",
+        "marker": "Method of record"
+      },
+      "17-us-stocks-in-play.md": {
+        "spec_path": "cloud-prompts/skills/us-stocks-in-play/SKILL.md",
+        "bundle": "cloud-prompts/skills/us-stocks-in-play",
+        "marker": "Gap provenance"
+      },
+      "19-earnings-reminder-daily.md": {
+        "spec_path": "cloud-prompts/skills/earnings-reminder/SKILL.md",
+        "bundle": "cloud-prompts/skills/earnings-reminder",
+        "marker": "EARNINGS_REMINDER_V2"
+      },
+      "22-weekly-market-recap-preview.md": {
+        "spec_path": "cloud-prompts/skills/agentic-weekly-brief/SKILL.md",
+        "bundle": "cloud-prompts/skills/agentic-weekly-brief",
+        "marker": "Forward preview section"
+      },
+      "23-agentic-post-market-brief.md": {
+        "spec_path": "cloud-prompts/skills/agentic-post-market-brief/SKILL.md",
+        "bundle": "cloud-prompts/skills/agentic-post-market-brief",
+        "marker": "postmkt-artifact-v2"
+      },
+      "25-ntrt-gap-brief-daily.md": {
+        "spec_path": "cloud-prompts/skills/ntrt-gap-brief/SKILL.md",
+        "bundle": "cloud-prompts/skills/ntrt-gap-brief",
+        "marker": "ARTIFACT FORMAT CONTRACT (v3"
+      },
+      "26-agentic-pre-market-brief.md": {
+        "spec_path": "cloud-prompts/skills/agentic-pre-market-brief/SKILL.md",
+        "bundle": "cloud-prompts/skills/agentic-pre-market-brief",
+        "marker": "Market-wide pre-market screen"
+      },
+      "26b-agentic-pre-market-brief-refresh-0920.md": {
+        "spec_path": "cloud-prompts/_shared/premarket-refresh.md",
+        "bundle": "cloud-prompts/_shared",
+        "marker": "Pre-market refresh"
+      },
+      "90-delivery-auditor.md": {
+        "spec_path": "tools/schedule-ground-truth.json",
+        "bundle": "tools",
+        "marker": "session_mode_invariant"
+      },
+      "91-schedule-drift-guard.md": {
+        "spec_path": "tools/schedule-drift.py",
+        "bundle": "tools",
+        "marker": "schedule-ground-truth"
+      },
+      "92a-preopen-catalyst-capture-0830.md": {
+        "spec_path": "cloud-prompts/_shared/preopen-capture.md",
+        "bundle": "cloud-prompts/_shared",
+        "marker": "PROCEDURE_VERSION"
+      },
+      "92b-preopen-catalyst-capture-0950.md": {
+        "spec_path": "cloud-prompts/_shared/preopen-capture.md",
+        "bundle": "cloud-prompts/_shared",
+        "marker": "PROCEDURE_VERSION"
+      }
     }
   }
 }

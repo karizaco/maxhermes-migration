@@ -1,0 +1,4 @@
+# The same daily routine, but the reuse happened 35 days earlier: outside its
+# own 3-fire window, so it is HISTORICAL evidence, not a live finding.
+458356248809843 999000333444 1790841900000
+458356248809843 999000333444 1790928300000

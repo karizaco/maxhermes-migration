@@ -75,6 +75,44 @@ EXIT CODES
      DRIFT        schedule/timezone drift -- repairable with cron_update
      SESSION-MODE live session mode != ground truth -- REPORT, never auto-repair
      CONV-REUSE   two runs of one routine share a session_id -- REUSE CONFIRMED
+     ROSTER       the live roster and the ground truth disagree -- REPORT
+     SPEC-DRIFT   the spec the routine would fetch != the repo's spec -- REPORT
+     SPEC-UNREACHABLE  the spec could not be fetched at all -- REPORT
+     SPEC-SECTION-MISSING  the spec lost the section it is supposed to produce
+
+RECENCY, PER ROUTINE (not a flat date filter)
+----------------------------------------------
+A reused conversation is only a LIVE finding when the reuse involves a run inside the
+routine's OWN recent window. The window is measured in FIRES of that routine, derived
+from its schedule, never in flat days:
+
+  daily   (`5 4 * * *`)        1 fire/day    -> window  3 fires (~3 days)
+  weekday (`30 6 * * 1-5`)     5 fires/week -> window  7 fires (~10 days)
+  weekly  (`0 2 * * 0`)       1 fire/week  -> window  3 fires (~21 days)
+
+A flat "within N days" cutoff would drop one of a weekly routine's two fires and mask a
+genuinely live binding, and would fire on a routine whose own cadence is slower. The
+age of the OLDER run decides the LABEL only (LIVE vs HISTORICAL) -- it never decides
+whether the finding exists. Historical reuse is kept as evidence and reported.
+
+ROSTER COMPLETENESS (added 2026-11-06)
+---------------------------------------
+The ground truth used to hold 25 routines while the live scheduler ran 26. A task whose
+name is not in the ground truth is appended to `unknown` and skipped, so it was never
+schedule-checked, never prompt-drift-checked and never conversation-checked -- and every
+count in the report ("25 routines match the ground truth") was true while silently
+omitting a routine that fires every weekday. The number of live routines and the number
+of ground-truth entries are now compared explicitly and printed as
+`roster: <n> live / <m> expected`.
+
+SKILL-SPEC DRIFT (added 2026-11-06)
+-----------------------------------
+Every routine fetches its PROCEDURE from this repo at RUN time, so a deployed prompt can
+be byte-identical to the repo while the behaviour comes from a spec that differs from the
+repo -- the exact failure that shipped cron #15's hardcoded UTC-4 offset and cron #09's
+LIMIT caps. A prompt hash cannot see that. For every routine the spec URL its DEPLOYED
+prompt names is fetched and compared, byte for byte, with the repo's file; and the spec
+must still contain the section the routine is supposed to produce.
 """
 import argparse, glob, json, os, re, subprocess, sys, urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -113,6 +151,21 @@ def load_ground_truth(path=GROUND_TRUTH_PATH):
             "session_mode": v.get("session_mode", default_mode),
         }
     return out
+
+
+def load_spec_contracts(path=GROUND_TRUTH_PATH):
+    """Load {cron_name: {spec_path, bundle, marker}} from the ground-truth file.
+
+    The contracts live in the SAME file as the ground truth on purpose: cron #91
+    already fetches that one file at run time, so the contracts need no second fetch
+    and no prompt change to take effect.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return (doc.get("spec_contracts") or {}).get("routines") or {}
 
 
 def _read_json(path):
@@ -177,17 +230,30 @@ def scan_run_chunks(pattern):
     return runs_by_task, files
 
 
-def parse_runs_file(path):
+def parse_runs_file(path, now_ms=None):
     """Parse the agent-written run table: one run per line.
 
     Format (all three values copied verbatim from `cron_read view=runs`):
         <task_id> <session_id> <scheduled_at_ms>
 
     A line whose session_id or timestamp is not a plausible integer, or whose
-    timestamp is far outside the recent past, is REJECTED with a warning -- a
-    mis-transcribed digit must never turn into a false "reuse" finding.
+    timestamp is IMPOSSIBLE (in the future, or before the platform existed), is
+    REJECTED with a warning -- a mis-transcribed digit must never turn into a false
+    "reuse" finding.
+
+    WHAT IS *NOT* DONE HERE
+    -----------------------
+    An old run is NOT rejected. Age never decides whether a reuse finding exists; it
+    only decides the LABEL (LIVE vs HISTORICAL), and that decision is made per routine
+    in `classify_reuse`, from the routine's own schedule. A flat "within N days"
+    filter here would drop one of a weekly routine's two fires and mask a genuinely
+    live binding.
     """
     runs_by_task, rejected = {}, 0
+    now_ms = now_ms if now_ms is not None else int(datetime.now(_et_tz()).timestamp() * 1000)
+    # An IMPOSSIBLE timestamp is a transcription error, not an old run. The floor is
+    # the platform's own epoch, not a recency window.
+    floor_ms = int(datetime(2020, 1, 1, tzinfo=_et_tz()).timestamp() * 1000)
     with open(path, encoding="utf-8") as fh:
         for raw in fh:
             line = raw.strip()
@@ -201,13 +267,381 @@ def parse_runs_file(path):
             if not (task_id.isdigit() and session_id.isdigit() and sched.isdigit()):
                 rejected += 1
                 continue
+            ts = int(sched)
+            if ts < floor_ms or ts > now_ms + 36 * 3600 * 1000:
+                rejected += 1
+                continue
             runs_by_task.setdefault(task_id, []).append({
                 "task_id": task_id,
                 "session_id": session_id,
-                "scheduled_at_ms": int(sched),
+                "scheduled_at_ms": ts,
                 "run_id": None,
             })
     return runs_by_task, rejected
+
+
+# ---------------------------------------------------------------------------
+# THE RECENCY WINDOW -- derived from each routine's OWN schedule, measured in
+# FIRES of that routine. Never a flat "within N days" filter.
+# ---------------------------------------------------------------------------
+
+def _expand_cron_field(field, lo, hi):
+    """Expand one cron field ("*", "1-5", "9,15", "*/15") into a set of ints."""
+    vals = set()
+    for part in (field or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        step = 1
+        if "/" in part:
+            part, _, st = part.partition("/")
+            part = part.strip()
+            try:
+                step = int(st)
+            except ValueError:
+                continue
+        if part in ("*", ""):
+            a, b = lo, hi
+        elif "-" in part:
+            a_s, _, b_s = part.partition("-")
+            try:
+                a, b = int(a_s), int(b_s)
+            except ValueError:
+                continue
+        else:
+            try:
+                a = b = int(part)
+            except ValueError:
+                continue
+        if step > 1:
+            vals.update(range(a, b + 1, step))
+        else:
+            vals.update(range(a, b + 1))
+    return vals
+
+
+def parse_cron(schedule):
+    """Parse a five-field cron expression into the fields this checker needs."""
+    parts = (schedule or "").strip().split()
+    if len(parts) != 5:
+        return None
+    minute, hour, dom, month, dow = parts
+    spec = {
+        "minutes": sorted(_expand_cron_field(minute, 0, 59)),
+        "hours": sorted(_expand_cron_field(hour, 0, 23)),
+        "doms": sorted(_expand_cron_field(dom, 1, 31)),
+        "months": sorted(_expand_cron_field(month, 1, 12)),
+        "dows": sorted(_expand_cron_field(dow, 0, 7)),
+        "raw": schedule.strip(),
+    }
+    if not spec["minutes"] or not spec["hours"]:
+        return None
+    if 7 in spec["dows"]:                       # cron dow 7 == Sunday
+        spec["dows"].remove(7)
+        spec["dows"].append(0)
+        spec["dows"].sort()
+    return spec
+
+
+def _day_matches(spec, dt):
+    """Standard cron day rule: dom and dow are OR-ed when both are restricted."""
+    if dt.month not in spec["months"]:
+        return False
+    dow = (dt.weekday() + 1) % 7              # python Mon=0 -> cron Sun=0
+    dom_star = spec["doms"] == list(range(1, 32))
+    dow_star = spec["dows"] == list(range(0, 7))
+    dom_ok = dt.day in spec["doms"]
+    dow_ok = dow in spec["dows"]
+    if dom_star and dow_star:
+        return True
+    if dom_star:
+        return dow_ok
+    if dow_star:
+        return dom_ok
+    return dom_ok or dow_ok
+
+
+def cron_fires_between(spec, t0_ms, t1_ms, tz=None):
+    """Count the fire instants of `spec` in the half-open interval (t0_ms, t1_ms]."""
+    if not spec or t1_ms <= t0_ms:
+        return 0
+    tz = tz or _et_tz()
+    start = datetime.fromtimestamp(t0_ms / 1000, tz)
+    end = datetime.fromtimestamp(t1_ms / 1000, tz)
+    day = start.date() - timedelta(days=1)
+    last = end.date() + timedelta(days=1)
+    if (last - day).days > 800:                # a routine idle for years
+        day = last - timedelta(days=800)
+    n = 0
+    while day <= last:
+        if _day_matches(spec, datetime(day.year, day.month, day.day, tzinfo=tz)):
+            for h in spec["hours"]:
+                for mi in spec["minutes"]:
+                    fire = datetime(day.year, day.month, day.day, h, mi, tzinfo=tz)
+                    ms = int(fire.timestamp() * 1000)
+                    if t0_ms < ms <= t1_ms:
+                        n += 1
+        day += timedelta(days=1)
+    return n
+
+
+def routine_window(spec):
+    """Return (cycle_days, window_fires) for a routine's own schedule.
+
+    The window is measured in FIRES of that routine. A weekly routine gets a LONGER
+    window than a daily one, so that its two fires are never compared against a
+    cutoff that would drop one of them.
+    """
+    dows = spec["dows"]
+    per_day = len(spec["hours"]) * len(spec["minutes"])
+    if len(dows) >= 7:                         # every day
+        cycle_days, fires = 1, per_day
+    elif len(dows) == 1:                       # one day a week
+        cycle_days, fires = 7, per_day
+    else:                                      # a set of weekdays
+        cycle_days, fires = 7, per_day * len(dows)
+    return cycle_days, fires + 2               # + two fires of slack
+
+
+def classify_reuse(spec, group_runs, now_ms, tz=None):
+    """Classify one reused-conversation group as LIVE or HISTORICAL.
+
+    The finding EXISTS whenever a session was used by more than one run. Its age only
+    decides the label: LIVE when the reuse involves a run inside the routine's own
+    recent window, HISTORICAL when every run of the group is older than that.
+    """
+    if not spec:
+        return {"classification": "HISTORICAL", "window_fires": None, "fires_since": None,
+                "cycle_days": None, "reason": "no ground-truth schedule for this routine"}
+    cycle_days, window = routine_window(spec)
+    ages = []
+    for r in group_runs:
+        ts = r.get("scheduled_at_ms")
+        if ts:
+            ages.append(cron_fires_between(spec, ts, now_ms, tz))
+    if not ages:
+        return {"classification": "HISTORICAL", "window_fires": window, "fires_since": None,
+                "cycle_days": cycle_days, "reason": "no timestamps in the run table"}
+    since = min(ages)                          # the fewest fires since ANY run of the group
+    return {"classification": "LIVE" if since + 1 <= window else "HISTORICAL",
+            "window_fires": window, "fires_since": since, "cycle_days": cycle_days,
+            "reason": None}
+
+
+# ---------------------------------------------------------------------------
+# ROSTER COMPLETENESS -- the check that would have caught a live routine that
+# was missing from the ground truth (and therefore never checked at all).
+# ---------------------------------------------------------------------------
+
+def check_roster(tasks, EXPECTED):
+    """Compare the LIVE roster with the ground truth, by count and by name."""
+    live = set()
+    for t in tasks:
+        name = urllib.parse.unquote(t.get("cron_name", ""))
+        if name.startswith("@") or not name.endswith(".md"):
+            continue                             # self-reminders and one-offs are not fleet routines
+        live.add(name)
+    expected = set(EXPECTED)
+    return {
+        "live": len(live),
+        "expected": len(expected),
+        "match": live == expected,
+        "in_live_not_expected": sorted(live - expected),
+        "in_expected_not_live": sorted(expected - live),
+    }
+
+
+# ---------------------------------------------------------------------------
+# SKILL-SPEC DRIFT -- the check a prompt hash can never do.
+# ---------------------------------------------------------------------------
+
+REPO_SLUG = "karizaco/maxhermes-migration"
+
+
+def extract_repo_paths(prompt):
+    """Every repo-relative file a prompt names for a run-time fetch."""
+    paths = []
+    pats = [
+        r"contents/([A-Za-z0-9_\-./]+)\?ref=main",
+        r"raw\.githubusercontent\.com/karizaco/maxhermes-migration/main/([A-Za-z0-9_\-./]+)",
+        r"cdn\.jsdelivr\.net/gh/karizaco/maxhermes-migration@main/([A-Za-z0-9_\-./]+)",
+    ]
+    for pat in pats:
+        for m in re.finditer(pat, prompt or ""):
+            p = m.group(1).strip().strip("\"'`,;")
+            if p and p not in paths:
+                paths.append(p)
+    return paths
+
+
+def pick_primary_spec(paths, repo_dir=None):
+    """The procedure spec a routine fetches at run time, from the paths it names."""
+    def exists(p):
+        return bool(repo_dir) and os.path.isfile(os.path.join(repo_dir, p))
+
+    known = [p for p in paths if exists(p)]
+    for p in known:                                     # 1. the skill spec
+        if p.startswith("cloud-prompts/skills/") and p.endswith("/SKILL.md"):
+            return p
+    for p in known:                                     # 2. a shared procedure document
+        if (p.startswith("cloud-prompts/_shared/") and p.endswith(".md")
+                and not p.endswith("PROMPT-BLOCKS.md")):
+            return p
+    for p in known:                                     # 3. a tool the prompt runs
+        if p.startswith("tools/"):
+            return p
+    for p in known:                                     # 4. any shared file
+        if p.startswith("cloud-prompts/_shared/"):
+            return p
+    return None
+
+
+def spec_urls(path):
+    """The ladder a routine uses to fetch a run-time file, most authoritative first."""
+    return [
+        f"https://api.github.com/repos/{REPO_SLUG}/contents/{path}?ref=main",
+        f"https://raw.githubusercontent.com/{REPO_SLUG}/main/{path}",
+        f"https://cdn.jsdelivr.net/gh/{REPO_SLUG}@main/{path}",
+    ]
+
+
+def fetch_spec_bytes(path, timeout=30):
+    """Fetch a run-time spec the way a routine would. Returns (bytes, url, error)."""
+    import urllib.request
+    token = os.environ.get("GITHUB_TOKEN", "")
+    headers = {"User-Agent": "schedule-drift-guard"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    last_err = None
+    for url in spec_urls(path):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            if "api.github.com" in url:
+                req.add_header("Accept", "application/vnd.github.raw")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read()
+            if body and b'"message"' not in body[:200]:
+                return body, url, None
+            last_err = f"{url} -> not a file (API error body)"
+        except Exception as exc:                        # noqa: BLE001
+            last_err = f"{url} -> {type(exc).__name__}: {exc}"
+    return None, None, last_err or "no source reachable"
+
+
+def find_repo_dir(explicit=None):
+    """Locate the repo clone the spec comparison needs."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in (explicit, "/workspace/guard/mig", "/workspace/mig", here,
+                 "/workspace/repo"):
+        if cand and os.path.isdir(os.path.join(cand, "cloud-prompts")):
+            return cand
+    return None
+
+
+def clone_repo(dest="/workspace/guard/mig"):
+    """Clone the repo if it is not on disk. The spec check needs a repo-side copy
+    that came over a DIFFERENT transport than the live fetch, or the comparison
+    would compare the contents API with itself."""
+    if os.path.isdir(os.path.join(dest, "cloud-prompts")):
+        return dest
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    except OSError:
+        pass
+    url = f"https://github.com/{REPO_SLUG}.git"
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if token:
+        url = f"https://karizaco:{token}@github.com/{REPO_SLUG}.git"
+    try:
+        r = subprocess.run(["git", "clone", "-q", "--depth", "1", url, dest],
+                           capture_output=True, text=True, timeout=180)
+        if r.returncode == 0 and os.path.isdir(os.path.join(dest, "cloud-prompts")):
+            return dest
+    except Exception:                                 # noqa: BLE001
+        pass
+    return None
+
+
+def bundle_contains(repo_dir, bundle, marker):
+    """Is the marker still present somewhere in the routine's spec bundle?"""
+    if not repo_dir or not bundle or not marker:
+        return None                                   # unknown -- not a finding
+    root = os.path.join(repo_dir, bundle)
+    if not os.path.isdir(root):
+        return False
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            fp = os.path.join(dirpath, fn)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    if marker in fh.read():
+                        return True
+            except OSError:
+                continue
+    return False
+
+
+def check_spec_drift(tasks, EXPECTED, contracts, repo_dir=None, timeout=30,
+                     fetcher=None):
+    """Compare the spec every routine would fetch with the repo's copy.
+
+    For each routine: the DEPLOYED prompt names the spec URL -- that is the file the
+    routine will fetch at run time. Fetch it, hash it, and compare with the repo's
+    file. Then confirm the spec still contains the section the routine is supposed
+    to produce.
+    """
+    import hashlib
+    fetcher = fetcher or fetch_spec_bytes
+    findings, checked = [], []
+    for t in tasks:
+        name = urllib.parse.unquote(t.get("cron_name", ""))
+        if name.startswith("@") or not name.endswith(".md"):
+            continue
+        prompt = t.get("prompt") or ""
+        paths = extract_repo_paths(prompt)
+        spec_path = pick_primary_spec(paths, repo_dir)
+        contract = contracts.get(name) or {}
+        if not spec_path:
+            findings.append({"kind": "SPEC-UNREACHABLE", "cron_name": name,
+                             "task_id": t.get("task_id"),
+                             "reason": "the deployed prompt names no run-time spec"})
+            continue
+        repo_file = os.path.join(repo_dir, spec_path) if repo_dir else None
+        if repo_dir and not os.path.isfile(repo_file):
+            findings.append({"kind": "SPEC-UNREACHABLE", "cron_name": name,
+                             "task_id": t.get("task_id"), "path": spec_path,
+                             "reason": f"{spec_path} is not in the repo"})
+            continue
+        body, url, err = fetcher(spec_path, timeout)
+        if body is None:
+            findings.append({"kind": "SPEC-UNREACHABLE", "cron_name": name,
+                             "task_id": t.get("task_id"), "path": spec_path,
+                             "reason": err})
+            continue
+        live_hash = hashlib.sha256(body).hexdigest()
+        repo_hash = hashlib.sha256(open(repo_file, "rb").read()).hexdigest() if repo_file else None
+        entry = {"kind": "SPEC-DRIFT" if repo_hash != live_hash else "SPEC-OK",
+                 "cron_name": name, "task_id": t.get("task_id"), "path": spec_path,
+                 "repo_hash": repo_hash, "live_hash": live_hash, "url": url}
+        checked.append(entry)
+        if repo_hash != live_hash:
+            findings.append(entry)
+        # the prompt must still point at the spec the contract expects
+        want = contract.get("spec_path")
+        if want and want != spec_path:
+            findings.append({"kind": "SPEC-PATH-MISMATCH", "cron_name": name,
+                             "task_id": t.get("task_id"), "path": spec_path,
+                             "reason": f"prompt names {spec_path}, contract expects {want}"})
+        # the spec must still CONTAIN the section it is supposed to produce
+        marker = contract.get("marker")
+        if marker:
+            found = bundle_contains(repo_dir, contract.get("bundle"), marker)
+            if found is False:
+                findings.append({"kind": "SPEC-SECTION-MISSING", "cron_name": name,
+                                 "task_id": t.get("task_id"), "path": spec_path,
+                                 "reason": f"{marker!r} is gone from "
+                                           f"{contract.get('bundle')}"})
+    return findings, checked
 
 
 def check_session_modes(tasks, EXPECTED):
@@ -232,8 +666,16 @@ def check_session_modes(tasks, EXPECTED):
     return findings
 
 
-def check_conversation_reuse(tasks, runs_by_task):
-    """L2: two runs of one task sharing a session_id == the conversation was reused."""
+def check_conversation_reuse(tasks, runs_by_task, EXPECTED=None, now_ms=None, tz=None):
+    """L2: two runs of one task sharing a session_id == the conversation was reused.
+
+    Every reuse is reported. Whether it is LIVE or HISTORICAL is decided per routine,
+    from that routine's own schedule (see `classify_reuse`) -- never by a flat date
+    filter, and never by the age of the older run alone.
+    """
+    EXPECTED = EXPECTED or {}
+    if now_ms is None:
+        now_ms = int(datetime.now(tz or _et_tz()).timestamp() * 1000)
     findings, checked = [], []
     for t in tasks:
         name = urllib.parse.unquote(t.get("cron_name", ""))
@@ -252,15 +694,27 @@ def check_conversation_reuse(tasks, runs_by_task):
             "runs": len(runs),
             "distinct_conversations": len(distinct),
         })
+        # The window comes from the GROUND TRUTH's schedule. The live schedule is the
+        # thing that gets corrupted (the GUI collapses `1-5` to `1`), so deriving a
+        # window from it would silently narrow the window of every weekday routine.
+        schedule = (EXPECTED.get(name) or {}).get("schedule") or ""
+        spec = parse_cron(schedule)
         for sid in distinct:
             same = [r for r in runs if r.get("session_id") == sid]
             if len(same) > 1:
+                cls = classify_reuse(spec, same, now_ms, tz)
                 findings.append({
                     "task_id": t.get("task_id"),
                     "cron_name": name,
                     "session_id": sid,
                     "runs": len(runs),
                     "distinct_conversations": len(distinct),
+                    "schedule": schedule,
+                    "classification": cls["classification"],
+                    "window_fires": cls["window_fires"],
+                    "fires_since": cls["fires_since"],
+                    "cycle_days": cls["cycle_days"],
+                    "reason": cls["reason"],
                     "reused_in_runs": [
                         {"scheduled_at_ms": r.get("scheduled_at_ms"),
                          "run_id": r.get("run_id")} for r in same
@@ -355,6 +809,11 @@ def main():
     ap.add_argument("--now", help="epoch seconds for the reference time (testing)")
     ap.add_argument("--ground-truth", default=GROUND_TRUTH_PATH,
                     help="ground-truth JSON (default: tools/schedule-ground-truth.json)")
+    ap.add_argument("--repo", help="repo clone to compare the run-time specs against")
+    ap.add_argument("--no-spec-check", action="store_true",
+                    help="skip the skill-spec drift check (schedule + conversation only)")
+    ap.add_argument("--spec-timeout", type=int, default=30,
+                    help="per-URL timeout for the spec fetch (seconds)")
     args = ap.parse_args()
 
     if not os.path.exists(args.tasks):
@@ -371,6 +830,10 @@ def main():
     except FileNotFoundError:
         print(f"ERROR: ground truth not found: {args.ground_truth}")
         return 2
+    try:
+        CONTRACTS = load_spec_contracts(args.ground_truth)
+    except Exception:                               # noqa: BLE001
+        CONTRACTS = {}
 
     now = datetime.now(_et_tz())
     if args.now:
@@ -418,23 +881,52 @@ def main():
 
     mode_findings = check_session_modes(tasks, EXPECTED)
 
+    roster = check_roster(tasks, EXPECTED)
+
     reuse_findings, conv_checked = [], []
     run_files = 0
     rejected = 0
     runs_by_task = {}
+    now_ms = int(now.timestamp() * 1000)
     if args.runs_file:
         if not os.path.exists(args.runs_file):
             print(f"ERROR: no such file: {args.runs_file}")
             return 2
-        runs_by_task, rejected = parse_runs_file(args.runs_file)
+        runs_by_task, rejected = parse_runs_file(args.runs_file, now_ms=now_ms)
     elif not args.no_run_chunks:
         runs_by_task, run_files = scan_run_chunks(args.run_chunks)
-    reuse_findings, conv_checked = check_conversation_reuse(tasks, runs_by_task)
+    reuse_findings, conv_checked = check_conversation_reuse(tasks, runs_by_task,
+                                                            EXPECTED=EXPECTED, now_ms=now_ms)
+    live_reuse = [r for r in reuse_findings if r.get("classification") == "LIVE"]
+    hist_reuse = [r for r in reuse_findings if r.get("classification") != "LIVE"]
+
+    # --- skill-spec drift -------------------------------------------------------
+    spec_findings, spec_checked = [], []
+    spec_error = None
+    if not args.no_spec_check:
+        repo_dir = find_repo_dir(args.repo)
+        if not repo_dir:
+            repo_dir = clone_repo()
+        if not repo_dir:
+            spec_error = "no repo clone available (clone failed and no --repo was given)"
+        else:
+            try:
+                spec_findings, spec_checked = check_spec_drift(
+                    tasks, EXPECTED, CONTRACTS, repo_dir=repo_dir,
+                    timeout=args.spec_timeout)
+            except Exception as exc:                 # noqa: BLE001
+                spec_error = f"{type(exc).__name__}: {exc}"
 
     report = {"drift": drift, "unknown_routines": unknown, "missing_routines": missing,
+              "roster": roster,
               "session_mode_findings": mode_findings,
               "conversation_reuse_findings": reuse_findings,
+              "conversation_reuse_live": live_reuse,
+              "conversation_reuse_historical": hist_reuse,
               "conversation_checked": conv_checked,
+              "spec_findings": spec_findings,
+              "spec_checked": len(spec_checked),
+              "spec_error": spec_error,
               "run_chunk_files": run_files,
               "checked": len(seen), "repaired": []}
 
@@ -442,13 +934,17 @@ def main():
         report["repaired"] = repair(drift)
 
     lint_problems = lint_shared_scripts()
-    findings = bool(drift or unknown or missing or mode_findings or reuse_findings or lint_problems)
+    findings = bool(drift or unknown or missing or mode_findings or live_reuse
+                     or lint_problems or spec_findings or spec_error
+                     or not roster["match"])
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print(f"checked {len(seen)} routines against the ground truth")
         print(f"linted {len(lint_problems)} problem(s) in the shared scripts")
+        print(f"roster: {roster['live']} live / {roster['expected']} expected"
+              + ("" if roster["match"] else "  -- MISMATCH"))
         if not findings:
             print("OK: no schedule drift")
         for d in drift:
@@ -460,6 +956,13 @@ def main():
             print(f"UNKNOWN  {n}  (not in the ground truth -- add it or ignore)")
         for n in missing:
             print(f"MISSING  {n}  (in the ground truth but not on the scheduler)")
+        if not roster["match"]:
+            print(f"ROSTER  {roster['live']} live / {roster['expected']} expected -- the "
+                  f"two must be equal or a routine is being checked by nothing")
+            for n in roster["in_live_not_expected"]:
+                print(f"         live but not in the ground truth: {n}")
+            for n in roster["in_expected_not_live"]:
+                print(f"         in the ground truth but not live: {n}")
         for r in report["repaired"]:
             print(f"REPAIRED  {r['cron_name']} -> {r['schedule']} (verified)")
         for r in report.get("failed", []):
@@ -478,17 +981,43 @@ def main():
         print(f"CONVERSATIONS  {len(conv_checked)} routines checked, {fires} recent run(s), "
               f"{convos} distinct conversation(s)")
         for r in reuse_findings:
-            print(f"CONV-REUSE  {r['cron_name']}: conversation {r['session_id']} was used by "
+            cls = r.get("classification", "LIVE")
+            print(f"CONV-REUSE {cls}  {r['cron_name']}: conversation {r['session_id']} was used by "
                   f"{len(r['reused_in_runs'])} runs (task_id {r['task_id']})")
+            if r.get("window_fires") is not None:
+                print(f"           window {r['window_fires']} fire(s) of `{r.get('schedule')}`"
+                      f" -- {r.get('fires_since')} fire(s) ago")
+            if r.get("reason"):
+                print(f"           {r['reason']}")
             for rr in r["reused_in_runs"]:
                 when = ""
                 if rr.get("scheduled_at_ms"):
                     when = datetime.fromtimestamp(rr["scheduled_at_ms"] / 1000,
                                                   _et_tz()).strftime("%Y-%m-%d %H:%M ET")
                 print(f"           run_id {rr.get('run_id')} scheduled {when}")
+        print(f"conversation reuse: {len(live_reuse)} live, {len(hist_reuse)} historical")
+        if args.no_spec_check:
+            print("spec drift: NOT CHECKED (--no-spec-check)")
+        elif spec_error:
+            print(f"spec drift: NOT CHECKED -- {spec_error}")
+        else:
+            print(f"spec drift: {len(spec_checked)} routine(s) compared, "
+                  f"{len([s for s in spec_findings if s['kind'] == 'SPEC-DRIFT'])} drifted")
+        for s in spec_findings:
+            if s["kind"] == "SPEC-DRIFT":
+                print(f"SPEC-DRIFT  {s['cron_name']}: repo {s['repo_hash']} vs live {s['live_hash']}")
+                print(f"             {s['path']} (task_id {s['task_id']})")
+            elif s["kind"] == "SPEC-UNREACHABLE":
+                print(f"SPEC-UNREACHABLE  {s['cron_name']}: {s['reason']}")
+            elif s["kind"] == "SPEC-SECTION-MISSING":
+                print(f"SPEC-SECTION-MISSING  {s['cron_name']}: {s['reason']}")
+            elif s["kind"] == "SPEC-PATH-MISMATCH":
+                print(f"SPEC-PATH-MISMATCH  {s['cron_name']}: {s['reason']}")
         print(f"RESULT: schedule_drift={len(drift)} unknown={len(unknown)} "
               f"missing={len(missing)} session_mode={len(mode_findings)} "
-              f"conv_reuse={len(reuse_findings)} routines_with_runs={len(conv_checked)}")
+              f"conv_reuse_live={len(live_reuse)} conv_reuse_historical={len(hist_reuse)} "
+              f"roster={roster['live']}/{roster['expected']} "
+              f"spec_findings={len(spec_findings)} routines_with_runs={len(conv_checked)}")
 
     return 1 if findings else 0
 

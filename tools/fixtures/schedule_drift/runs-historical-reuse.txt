@@ -1,0 +1,5 @@
+# ONLY HISTORICAL reuse: cron #07 reused one session back on 2026-09-01/02, long
+# before the reference time (2026-11-06 12:00 ET). The finding must still be
+# REPORTED -- the age decides the LABEL, never whether the finding exists.
+446509795921995 777000333444 1788270300000
+446509795921995 777000333444 1788356700000

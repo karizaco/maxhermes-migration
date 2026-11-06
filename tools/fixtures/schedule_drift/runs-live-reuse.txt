@@ -1,0 +1,5 @@
+# A GENUINE LIVE reuse: cron #07 (weekday, `45 9 * * 1-5`, task 446509795921995)
+# ran twice inside its own recent window with ONE session_id.
+# now = 2026-11-06 12:00 ET (epoch 1793984400)
+446509795921995 777000111222 1793803500000
+446509795921995 777000111222 1793889900000

@@ -54,6 +54,11 @@ TASKS = {
     "23-agentic-post-market-brief.md":          ("457952877850694", "30 22 * * 1-5"),
     "25-ntrt-gap-brief-daily.md":               ("457578106761360", "0 9 * * 1-5"),
     "26-agentic-pre-market-brief.md":           ("457175063601252", "30 8 * * 1-5"),
+    # Added 2026-11-06: the 09:20 ET pre-market REFRESH slot was live on the scheduler but
+    # missing from this map, so --emit could not reach it and the harness could not deploy or
+    # byte-verify it. A routine with no row here is a routine the deploy harness cannot fix
+    # or prove.
+    "26b-agentic-pre-market-brief-refresh-0920.md": ("459637559267655", "20 9 * * 1-5"),
     "90-delivery-auditor.md":                   ("457957802930526", "0 7 * * *"),
     "91-schedule-drift-guard.md":               ("458356248809843", "5 4 * * *"),
     # Added 2026-11-05: the #92 catalyst-tape slots were MISSING from this map, so --emit

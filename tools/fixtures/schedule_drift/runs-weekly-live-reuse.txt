@@ -1,0 +1,5 @@
+# A weekly routine (cron #01, `0 2 * * 0`, task 459082178638008) whose two fires
+# are 7 days apart. A flat "within N days" cutoff would call this historical and
+# mask a live binding; the per-routine window (3 fires ~ 3 weeks) must not.
+459082178638008 888000111222 1792908000000
+459082178638008 888000111222 1793516400000
