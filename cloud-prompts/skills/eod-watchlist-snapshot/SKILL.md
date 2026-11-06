@@ -421,6 +421,13 @@ of the same response. A second pull is a second chance to disagree with itself.
 **The price history is split-adjusted**, so the averages and the extremes sit on the same
 basis as the session close. A reverse split inside the window is not a data error.
 
+**The index proxies and the sector ETFs are NOT in the equity universe.** The vendor's
+`country_iso='US'` universe carries equities, not ETFs, so `SPY`, `QQQ`, `IWM`, `DIA`, `RSP`
+and the eleven sector ETFs have to be pulled as their own symbol list. Without them the
+Market read loses its index table and the sector table loses its ETF column — which is
+exactly the comparison that tells a reader whether the average move and the cap-weighted
+move disagree.
+
 **Class-share symbol forms are per vendor, and the plain base is never a fallback**
 (`LEN-B` → `LEN` would publish the Class A COMMON line's price under the Class B ticker):
 `ABR-P-E` → Yahoo `ABR-PE`, `USB-P-H` → `USB-PH`, `BRK-A` → `BRK-A`.

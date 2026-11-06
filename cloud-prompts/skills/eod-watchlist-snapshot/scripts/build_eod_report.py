@@ -336,6 +336,9 @@ def main() -> int:
       f"range bracketed the close at all.")
     A("- **A missing value is empty, never zero.** A cap that cannot be resolved is empty and "
       "flagged `NO_CAP`.")
+    A("- **The index and sector-ETF moves are computed from the same daily-bar series** "
+      "(split- and dividend-adjusted closes), so they can differ from an official cash close by "
+      "a few basis points. The ETF moves are a read of the tape, not the official settlement.")
     A("- **The price history is split-adjusted**, so the moving averages, the ATR and the 52-week "
       "extremes are on the same adjusted basis as the session close.")
     A(f"- **Base columns are unchanged from the published session file**: the derive stage adds "
