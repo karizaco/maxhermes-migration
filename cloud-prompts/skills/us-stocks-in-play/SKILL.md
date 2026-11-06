@@ -325,11 +325,12 @@ Two rules make the order matter:
 
 It must be a **table**, not prose, with these columns:
 
-| Ticker | Yesterday | Today | Change | Why |
-|---|---|---|---|---|
+| Ticker | Tier | Yesterday | Today | Change | Why |
+|---|---|---|---|---|---|
 
-The **why** column is not optional: a reader diffing two sessions needs to know *what
-caused* the move, not just that it happened.
+The **Tier** column says what moved *into* the tradeable set, and the **why** column is not
+optional: a reader diffing two sessions needs to know *what caused* the move, not just that it
+happened. The `Change` column may be headed `Change`, `Δ` or a date pair such as `11-04 → 11-05`.
 
 **The open slot's delta is computed against the previous day's OPEN board, and the
 overnight annex is sourced from the previous day's PRE-close board.** These are two
@@ -340,6 +341,11 @@ different files and the open slot reads both. Say which file you read for each, 
 not the newest file in the directory, which is the pre-close board).
 **Annex source:** `us-stocks-in-play/2026-11-05.md` (the previous day's PRE-close board).
 ```
+
+The **pre-close** slot's delta compares a full session against a full session, so it names
+the previous day's **pre-close** board (`us-stocks-in-play/2026-11-05.md`) — not an open
+board. A slot that diffs against the other slot's board compares a 20-minute screen to a
+full session and the numbers are meaningless.
 
 On the **first** fire of the open slot there is no prior open board. Say so plainly
 ("no prior open board — this is the first link in the open-board chain") and publish no
@@ -414,6 +420,21 @@ python3 "$C" --md /workspace/us-stocks-in-play/$ARTIFACT_NAME \
               --csv /workspace/us-stocks-in-play/$CSV_NAME \
               --slot "$SLOT"
 ```
+
+`$ARTIFACT_NAME` and `$SLOT` come from the prompt's `## OUTPUT` block. The candidates CSV is
+written next to the board with the slot suffix applied to the DATE, not to the filename:
+
+| Slot | Board | Candidates CSV |
+|---|---|---|
+| `preclose` | `<date>.md` | `<date>-candidates.csv` |
+| `open` | `<date>-open.md` | `<date>-open-candidates.csv` |
+
+so `$CSV_NAME` is `<date>-candidates.csv` for the preclose slot and `<date>-open-candidates.csv`
+for the open slot — the same suffix rule as the board. If the routine wrote a differently-named
+CSV, point the checker at the file it actually wrote; the check is on the content, not the name.
+**Push the CSV too.** `push_artifact.sh` stages the whole output tree, so the CSV reaches the
+outputs repo with the board — but the delivery check names only the board, so verify the CSV's
+presence on the remote branch yourself.
 
 It asserts the section skeleton and its order, the contract marker, the pace band and the
 pace scale (every pace row must reconcile with `(session_vol / avg_vol_10d) / 0.125`),

@@ -505,6 +505,22 @@ def check_md(path, slot):
                         "open board's delta is computed against the previous day's `-open.md`, "
                         "and the artifact must say which file that was (the newest file in "
                         "the directory is usually the PRE-close board)")
+        else:
+            # The pre-close slot diffs a full session against a full session, so it must
+            # name the previous day's PRE-close board — never an open board. A slot that
+            # diffs against the other slot's board compares a 20-minute screen to a full
+            # session and the numbers are meaningless.
+            dtxt = "\n".join(tb)
+            if re.search(r"\d{4}-\d{2}-\d{2}-open\.md", dtxt):
+                bad("the pre-close board names an OPEN board as its delta source — the "
+                    "pre-close slot diffs a full session against a full session, so it must "
+                    "name the previous day's pre-close board (`<date>.md`)")
+            elif re.search(r"\d{4}-\d{2}-\d{2}\.md", dtxt) or re.search(
+                    r"\d{4}-\d{2}-\d{2}\.md", front):
+                ok("the artifact names the prior PRE-close board file it read")
+            else:
+                bad("the artifact does NOT name the prior pre-close board file it read — "
+                    "say which `<date>.md` the delta was computed against")
 
     # --- 6b. the overnight annex names the prior PRE-CLOSE board ---------------
     if slot == "open":

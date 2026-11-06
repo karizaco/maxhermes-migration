@@ -661,6 +661,21 @@ def mut_annex_names_wrong_board(md, csv_text):
     return m_md, m_csv, lambda a, b: "2026-11-05 pre-close board" not in a
 
 
+def mut_preclose_delta_names_an_open_board(md, csv_text):
+    """The pre-close board must not diff against an OPEN board."""
+    return None
+
+
+def mut_open_delta_wrong_source(md, csv_text):
+    res = mutate(md, csv_text,
+                 r"\*\*Delta source:\*\* `us-stocks-in-play/2026-11-05-open\.md`",
+                 "**Delta source:** `us-stocks-in-play/2026-11-05.md`")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "2026-11-05-open.md" not in a
+
+
 MUTATIONS = [
     ("the open board has no 'What to watch at the open' block", mut_no_watch_block),
     ("the pace regime band is not published", mut_no_band),
@@ -714,7 +729,38 @@ def main():
         print(out)
         return 1
 
-    # --- 2. every mutation MUST be caught -------------------------------------
+    # --- 2b. the pre-close slot's own source-naming rule must bite ------------
+    pmut = [
+        ("the pre-close board names an OPEN board as its delta source",
+         lambda m: m.replace("`us-stocks-in-play/2026-11-05.md`",
+                             "`us-stocks-in-play/2026-11-05-open.md`", 1)),
+        ("the pre-close board names no source file at all",
+         lambda m: re.sub(r"\*\*Delta source:\*\*[^\n]*\n", "", m, count=1)),
+    ]
+    p_md_text = render_preclose_md()
+    puncaught = []
+    for name, fn in pmut:
+        m_md = fn(p_md_text)
+        if m_md == p_md_text:
+            print(f"{FAIL} MUTATION IS A NO-OP: {name}")
+            puncaught.append(name)
+            continue
+        p_md = os.path.join(tmpdir, "pmut.md")
+        with open(p_md, "w", encoding="utf-8") as fh:
+            fh.write(m_md)
+        rc, out = run_checker(p_md, pcsv, slot="preclose")
+        if rc != 0:
+            print(f"{PASS} caught: {name}")
+        else:
+            print(f"{FAIL} NOT CAUGHT: {name}")
+            puncaught.append(name)
+    if puncaught:
+        print(f"{FAIL} {len(puncaught)} pre-close breaches were NOT caught:")
+        for u in puncaught:
+            print(f"  - {u}")
+        return 1
+
+    # --- 3. every mutation MUST be caught -------------------------------------
     uncaught = []
     for name, fn in MUTATIONS:
         res = fn(md_text, csv_text)
