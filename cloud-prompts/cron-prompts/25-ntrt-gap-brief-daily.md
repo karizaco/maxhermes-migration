@@ -6,19 +6,12 @@ Output directory on this sandbox: `/workspace/` (Linux-style paths only; if /wor
 ## CONVERSATION TITLE (do this FIRST, before anything else)
 
 Every scheduled run gets its own conversation — one conversation per fire, never appended to an
-earlier run's conversation. Give this conversation a title that says which day this run belongs
-to, so the conversation list stays scannable.
-
-1. Resolve today's date in US/Eastern: `TZ=America/New_York date +%d-%m` (day-month, no year).
-2. Build the title: `[<DD-MM>] <NN>-<routine name>`. Take `<NN>` and `<routine name>` from the
-   first line of this prompt (`# Cloud Mavis cron: <routine name> (cron #NN)`).
-   Example: `[01-11] 25-ntrt-gap-brief-daily`.
-3. Set it with one call: `mcp_invoke` with tool_name `session_update` and arguments
-   `{"session_id": "me", "title": "<the title>"}`. `me` means THIS conversation.
-   If `mcp_invoke` reports that the tool is unknown, call `tool_search` with the query
-   "session title update", then retry the same `mcp_invoke` call.
-4. If the title cannot be set for any reason, carry on with the routine. This step must never
-   block, delay, or fail the artifact.
+earlier run's conversation. Set the title before anything else: follow the
+`## CONVERSATION TITLE` block in `cloud-prompts/_shared/PROMPT-BLOCKS.md` and the
+`## Scheduled-run conversation title` block in the skill spec (the skill is the backstop if the
+shared fetch fails). In short: resolve the date in US/Eastern, build
+`[<DD-MM>] 25-ntrt-gap-brief-daily`, and set it with ONE `session_update` call on `me`.
+This step must never block, delay, or fail the artifact.
 
 ## SCHEDULE
 - Original local schedule: morning
@@ -40,10 +33,9 @@ Do not inline a holiday list here: a hand-typed copy is how 21 prompts drifted i
 21 different versions of the same check.
 
 **Resolve the fire's scheduled instant FIRST, then judge the gate against it - never against
-the wall clock.** The platform resumes a crashed cron conversation IN PLACE, hours or days
-later, so on a replay "now" names the resume day, not the fire day. Judging by the wall clock
-both skips real briefs (a Friday fire replayed on a Saturday) and publishes briefs for a
-closed market (a holiday fire replayed on a trading day).
+the wall clock.** The platform resumes a crashed cron conversation IN PLACE, so on a replay "now"
+names the resume day, not the fire day: judging by the wall clock both skips real briefs (a
+Friday fire replayed on a Saturday) and publishes briefs for a closed market.
 
 Resolve it with ONE call, no cron_read needed:
 
@@ -51,27 +43,24 @@ Resolve it with ONE call, no cron_read needed:
 mcp_invoke  tool_name=session_get  arguments={"session_id":"me"}
 ```
 
-Take `session.created_at` (epoch milliseconds). That is the instant the platform dispatched
-THIS fire, and a later resume does not change it - so it identifies the original fire even
-when the work happens hours later. Pass it as `--scheduled-at-ms`. The script prints
-`fire-date:` - use THAT for the artifact path in `## OUTPUT`, so the gate and the artifact
+Take `session.created_at` (epoch milliseconds) and pass it as `--scheduled-at-ms`. The script
+prints `fire-date:` - use THAT for the artifact path in `## OUTPUT`, so the gate and the artifact
 can never disagree about which day they belong to.
 
 ```bash
 # --- fetch the ONE shared window check (run-time fetch: fixes land with no redeploy) ---
-# The CAPABILITY check below is mandatory, not decoration. An OLDER copy of this script is
-# still published, and it silently IGNORES unknown flags - so without the check you would
-# run a gate that never fires, and a holiday fire would publish a brief for a closed
-# market. The CDNs also cache independently, so one of them can serve stale bytes for
-# hours. The contents API is authoritative and is not CDN-cached, so it is tried FIRST.
+# The CAPABILITY check is mandatory: an OLDER copy of this script is still published and it
+# silently IGNORES unknown flags - without the check you would run a gate that never fires, and
+# a holiday fire would publish a brief for a closed market. The contents API is authoritative
+# and is not CDN-cached, so it is tried FIRST.
 S=/workspace/window_check.sh
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/window_check.sh?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/window_check.sh" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/window_check.sh" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  # A 404 page is a non-empty body that is NOT a script, and an older script silently
-  # ignores the flags below. Require BOTH: a real script AND the capability marker.
+  # A 404 page is a non-empty body that is NOT a script. Require BOTH: a real script AND the
+  # capability marker.
   if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'WINDOW_CHECK_V2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
@@ -130,22 +119,29 @@ MCP tool `mcp__tradingview_advanced__screen_stocks` is usually not registered he
 ```json
 {"filter":[{"left":"type","operation":"equal","right":"stock"},
            {"left":"exchange","operation":"not_in_range","right":["OTC"]},
-           {"left":"market_cap_basic","operation":"egreater","right":200000000},
            {"left":"premarket_change","operation":"in_range","right":[3,1000]}],
  "options":{"lang":"en"},"markets":["america"],
  "symbols":{"query":{"types":[]},"tickers":[]},
  "columns":["name","close","premarket_close","premarket_change","premarket_volume",
             "market_cap_basic","average_volume_30d_calc","sector","exchange"],
- "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,600]}
+ "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,2000]}
 ```
 
 Run it **twice** — `premarket_change` in `[3,1000]` (desc) and in `[-1000,-3]` (asc) — so both sides
 are carried, then rank by **absolute** `premarket_change`.
 
-Four rules that decide whether this brief is right:
+Six rules that decide whether this brief is right:
 
 - **`type: "stock"` includes REITs.** Do not re-filter to common stock. On 2026-10-30 a universe
   seeded on common stock only hid **ARI (-63.9%)**, the largest mover of the day.
+- **There is NO market-cap filter in the request.** The $200M floor is applied AFTER the scan.
+  A filter on `market_cap_basic` deletes the name outright, and it deleted the day's most violent
+  prints: on 2026-11-04 **PARA −88.6%**, **CRIS +87.7%**, **CENN −57.2%** and **DKI +54.0%** were
+  all excluded by it. The skill publishes them in a `### Below the $200M floor` watchlist
+  (skill §10) instead of losing them.
+- **`range` is a page size, not a filter.** Use `[0,2000]` and CHECK the pull: `totalCount` must
+  equal the number of rows returned, on both sides. A truncated pull is a failed pull — pull the
+  missing slice or report the pull as failed (skill §7).
 - **`premarket_volume` is the importance measure.** Divide by `average_volume_30d_calc` for % of
   ADV and publish it. A ±20% gap on 100 shares is a quote, not a market. **Yahoo has NO pre-market
   volume** (0 on every pre-market bar), so a Yahoo-only route cannot publish this column.
@@ -160,7 +156,10 @@ Four rules that decide whether this brief is right:
 ## SHARED INSTRUCTIONS (fetch once — these rules apply to every routine)
 
 The fleet-wide instructions live in ONE file, not in every prompt. Fetch it in the same first
-step as the skill spec below, then follow it in full:
+step as the skill spec below, then follow it in full — **including its
+`## SHARED HELPER FETCHES` block**, which downloads `push_artifact.sh`, `verify_delivery.sh` and
+`skip_marker.sh`. Run that block in step 1: a helper that is only *called* is not on disk, and
+the DELIVERY step cannot verify a push with a script it never downloaded.
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
@@ -210,38 +209,53 @@ memory — those are what keep a degraded run honest.
 Write the artifact to:
   `/workspace/ntrt/{date}.md`
 
-The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
-at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
-do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
-A replay is normal, not an error.
+The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. **Take it
+from the `fire-date:` line the WINDOW CHECK printed above** — that is the one source of truth for
+this fire's date, it is derived from the same `scheduled_at_ms` the gate judged, and the gate and
+the artifact path can then never disagree. Do NOT take it from `date` at execution time and do NOT
+call `cron_read view=runs` for it: on a replay the wall clock names the resume day, not the fire
+day. If the fire date and the wall-clock date differ, this is a **delayed replay**: rebuild for
+the scheduled date, do NOT write a SKIPPED marker, and say in the artifact that it is a
+reconstruction produced late. A replay is normal, not an error.
 (Literal text "{date}" in this template — replace it with the actual date.)
 
-If the skill produces multiple outputs (e.g. .md + .csv, or per-region files), write all of them in the same `/workspace/ntrt/` subdirectory, with `{date}` as part of each filename.
+This routine ships **TWO** outputs: the markdown above and the **CSV companion** the skill's
+contract mandates, at `/workspace/ntrt/{date}.csv`. Both are part of the deliverable and **both
+are pushed and verified** (see the push block). The skill's contract checker runs on BOTH files
+before the push (skill §9) — a brief without its CSV cannot pass the contract.
 
-## GIT PUSH (OPTIONAL)
+## GIT PUSH (MANDATORY - both files, both verified)
+
+The shared helpers are fetched by the `## SHARED HELPER FETCHES` block in
+`cloud-prompts/_shared/PROMPT-BLOCKS.md` (contents API first, then the two CDNs, with a
+capability marker). Fetch them **in the first step, with the skill spec** — a helper that is
+only *called* is not on disk, and `verify_delivery.sh` is called without being downloaded.
 
 ```bash
-B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
-for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
-  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
-done
-sh /workspace/push_artifact.sh --out ntrt --add ntrt/{date}.md --branch main
-sh /workspace/verify_delivery.sh --path ntrt/{date}.md --branch main
+sh /workspace/push_artifact.sh --out ntrt --add ntrt/{date}.md --add ntrt/{date}.csv \
+   --branch main --nn 25 --msg "cron 25 ntrt-gap-brief-daily {date}"
+sh /workspace/verify_delivery.sh --path ntrt/{date}.md  --branch main
+sh /workspace/verify_delivery.sh --path ntrt/{date}.csv --branch main
 ```
 
-**If the push script cannot be fetched**, use the inline fallback in
-`cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
-`git push … | head -3` (that returns head's exit status and reports a rejected push as success).
+- **`--nn 25` is not decoration.** The routine number travels with the call, so a commit that
+  carries the artifact can be attributed to cron #25 from its subject alone.
+- **Both paths are verified.** The push script verifies its own `--add` path; the CSV is a second
+  `--add` and needs its own `verify_delivery.sh` call. A push that reports ok while the CSV is
+  missing is a half-delivery.
+- **If the push script cannot be fetched**, use the inline fallback in
+  `cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
+  `git push … | head -3` (that returns head's exit status and reports a rejected push as success).
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 
 The push above already verifies its own delivery: `push_artifact.sh` calls `verify_delivery.sh`
-and only reports `push: ok` when the path is present on the remote branch.
-Run it again if you need to re-check:
+and only reports `push: ok` when the path is present on the remote branch. Run it again for the
+CSV path — that one is not covered by the push script's own check:
 
 ```bash
-sh /workspace/verify_delivery.sh --path ntrt/{date}.md --branch main
+sh /workspace/verify_delivery.sh --path ntrt/{date}.md  --branch main
+sh /workspace/verify_delivery.sh --path ntrt/{date}.csv --branch main
 ```
 
 A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's
@@ -256,6 +270,9 @@ exists, and why the push script must never be run with `git push … | head -3`.
    registered in this runtime — and do not invent tool names.
 3. The cron session is fresh each time — there is no shared state. Treat every artifact as ephemeral unless pushed.
 4. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.
+5. **TWO files ship: `{date}.md` and `{date}.csv`.** The contract checker runs on both (skill §9) and both are pushed and verified. A brief without its CSV is not a delivered brief.
+6. **`{date}` comes from the WINDOW CHECK's `fire-date:` line**, not from the wall clock and not from `cron_read view=runs`.
+7. **The screen is scanned WITHOUT the market-cap filter** and the pull must be complete (`totalCount` == rows returned). The $200M floor is applied after the scan, and the names it excludes are published in the skill's below-the-floor watchlist.
 
 ================================================================
 END OF CRON PROMPT

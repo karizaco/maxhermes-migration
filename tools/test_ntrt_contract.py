@@ -6,15 +6,15 @@ Three parts:
 
   A. THE CHECKER ACCEPTS A CONFORMING ARTIFACT
      A synthetic brief that follows the ARTIFACT FORMAT CONTRACT must pass
-     every check and print `contract: 14/14`.
+     every check and print `contract: 16/16`.
 
   B. FAULT INJECTION — THE CHECKER MUST BITE
-     Every one of the fourteen checks has at least one fixture that fails it.
+     Every one of the sixteen checks has at least one fixture that fails it.
      A mutation that does not change the file is itself a FAILURE (a no-op
      mutation silently "passes" and reports a false NOT CAUGHT).
 
   C. THE REPLY LINE
-     The reply must publish `contract: 14/14`; a wrong count is caught.
+     The reply must publish `contract: 16/16`; a wrong count is caught.
 
 Offline and dependency-free: the Cloud sandbox has no PyPI access.
 
@@ -66,22 +66,27 @@ CSV_ROWS = [
     "HHHH,-3.50,4.00,4.14,40000,2000000,2.000,500000000,Energy Minerals,NYSE,,false",
     "ZZZZ,3.90,1.50,1.44,2000,1000000,0.200,80000000,Retail Trade,NYSE,,true",
     "YYYY,-3.60,3.00,3.11,3000,1000000,0.300,250000000,Finance,NYSE,,true",
+    # a name BELOW the $200M universe floor: it gaps hardest of all, and the
+    # brief must publish it in the watchlist rather than let the floor hide it
+    "IIII,-55.00,4.50,10.00,1200000,500000,240.000,2000000,Health Technology,NASDAQ,,false",
+    # a gate-passing name that the actionable table's per-direction cap leaves out
+    "JJJJ,7.00,12.00,11.22,500000,1000000,50.000,900000000,Technology Services,NASDAQ,,false",
 ]
 
 MD = """# NTRT gap brief — Friday, 06 November 2026
 **Mode B — screener fallback.** TradingView public scanner; the ntrt backend was unreachable (`GET /health` -> HTTP 000). Snapshot 08:52 ET, 38 min before the open.
 
 ## TL;DR
-- **The tape is a rotation, not a sell-off:** 10 US stocks printed a >=3% pre-market gap; 4 cleared the actionable gate (|gap| >=3% AND >=5% of 30-day ADV).
-- **The %ADV reality check:** of the 10 gap names, only 4 cleared 5% of 30-day ADV and just 1 cleared 20%; 6 are quotes on essentially no volume. The screen is not 10 tradeable names.
-- **The most consequential name is AAAA +12.5% on 50.0% of ADV** — a Q3 beat and a raised guide.
+- **The tape is a rotation, not a sell-off:** 12 US stocks printed a >=3% pre-market gap; 5 cleared the actionable gate (|gap| >=3% AND >=5% of 30-day ADV AND market cap >= $200M) — 3 down, 2 up.
+- **The %ADV reality check:** of the 12 gap names, only 5 cleared 5% of 30-day ADV and just 2 cleared 20%; 6 are quotes on essentially no volume. The screen is not 12 tradeable names.
+- **The most consequential name is IIII -55.0%** — below the $200M floor, so it is in the watchlist, not the table.
 
 ## Market backdrop
 - **Futures are flat.** ES -0.1%, NQ -0.2% at 08:45 ET; the tape is idiosyncratic, not macro.
 - **No macro release today**; CPI lands tomorrow.
 
 ## Worth your attention
-Actionable set: 4 names (|gap| >=3% AND >=5% of 30-day ADV), sorted by absolute gap within each direction.
+Actionable set: 4 names (|gap| >=3% AND >=5% of 30-day ADV AND market cap >= $200M), sorted by absolute gap within each direction, capped at 20 per direction.
 
 ### Gap down
 | Ticker | Gap % | PM print | Prev close | % of 30d ADV | Mkt cap | Why |
@@ -95,8 +100,12 @@ Actionable set: 4 names (|gap| >=3% AND >=5% of 30-day ADV), sorted by absolute 
 | AAAA | +12.5 | 25.00 | 22.22 | 50.0 | $4.94T | Q3 revenue $412M vs $389M est; FY guide raised |
 | CCCC | +5.1 | 7.50 | 7.14 | 20.0 | $450M | No catalyst confirmed: no company news matched the move |
 
+### Also cleared the gate
+Gate-passing names not in the table above: 1.
+No catalyst was looked up for them — they are listed so that a cap never silently drops a name: JJJJ
+
 ### Gap vs catalyst
-Universe: the 8 names checked for a catalyst (4 actionable + 4 wider screen) out of 10 screen names.
+Universe: the 8 names checked for a catalyst (4 actionable + 4 wider screen) out of 12 screen names.
 
 | | Catalyst sourced | No catalyst |
 |---|---|---|
@@ -118,14 +127,22 @@ The names NOT already listed above — top 2 per direction by absolute gap. Thes
 | EEEE | +9.9 | 0.5 | Consumer Durables |
 | GGGG | +3.2 | — | Health Technology |
 
+### Below the $200M floor
+The names the universe floor EXCLUDED. Watchlist only — no catalyst was looked up, and these rows are not part of the asymmetry table above.
+
+| Ticker | Gap % | % of 30d ADV | Mkt cap | Note |
+|---|---|---|---|---|
+| IIII | -55.0 | 240.0 | $2M | Below the floor; the biggest mover of the day |
+
 ## Flags
 - **AAAA +12.5% on 50.0% of ADV is the one gap-up with a genuinely heavy book**; every other name in the brief traded a fraction of a normal day.
 - **One catalyst could not be confirmed: CCCC +5.1%.** A targeted news search found no company event matching the move, so the Why cell is left unconfirmed rather than filled with a guess.
+- **The $200M floor hid IIII -55.0%**, so the watchlist publishes it; the actionable table's cap left JJJJ out, so it is listed under 'Also cleared the gate'.
 
 ## Method, source health & caveats
-- **Primary screen — TradingView public scanner, HTTP 200.** Two pulls against `POST https://scanner.tradingview.com/america/scan`, `premarket_change` in [3,1000] and [-1000,-3]. 10 unique names at >=3% gap.
+- **Primary screen — TradingView public scanner, HTTP 200.** One scan of `POST https://scanner.tradingview.com/america/scan`, `premarket_change` in [3,1000] and [-1000,-3], with the $200M market-cap floor applied AFTER the scan. 12 unique names at >=3% gap.
 - **ntrt backend — failed.** `GET http://127.0.0.1:8000/health` -> HTTP 000 (connection refused), so this is Mode B (screener fallback).
-- **The CSV carries the full screen (10 rows); the markdown carries the 8 names published above.**
+- **The CSV carries the full screen (12 rows); the markdown carries the 8 names published above, plus the watchlist.**
 brief_rendered target=ntrt-premarket:2026-11-06 mode=B
 """
 
@@ -136,12 +153,12 @@ REPLY = """Pre-market gap brief for 06 Nov is written and pushed.
 - BBBB -8.3% — guidance cut; Q3 EPS $0.21 vs $0.30 est.
 
 ### Method & caveats
-- TradingView public screener (Mode B), snapshot 08:52 ET; 10 names at >=3% gap, 4 clear the gate.
+- TradingView public screener (Mode B), snapshot 08:52 ET; 12 names at >=3% gap, 5 clear the gate.
 
 ### Files
 - /workspace/ntrt/2026-11-06.md
 - /workspace/ntrt/2026-11-06.csv
-contract: 14/14
+contract: 16/16
 
 ### Push / errors
 push: ok (verified)
@@ -193,22 +210,22 @@ def main():
 
         # --- A. the checker accepts a conforming artifact --------------------
         code, out, failed = run_checker(md, csv_path)
-        if code == 0 and not failed and "contract: 14/14" in out:
-            ok("A. a conforming artifact passes every check and prints contract: 14/14")
+        if code == 0 and not failed and "contract: 16/16" in out:
+            ok("A. a conforming artifact passes every check and prints contract: 16/16")
         else:
-            bad("A. a conforming artifact passes every check",
+            bad("A. a conforming artifact passes every check (16/16)",
                 f"exit={code} failing={failed}\n{out}")
 
         # the reply line
         code, out, failed = run_checker(md, csv_path, reply)
-        if code == 0 and "[REPLY] the reply publishes contract: 14/14" in out:
-            ok("C1. a reply publishing contract: 14/14 is accepted")
+        if code == 0 and "[REPLY] the reply publishes contract: 16/16" in out:
+            ok("C1. a reply publishing contract: 16/16 is accepted")
         else:
-            bad("C1. a reply publishing contract: 14/14 is accepted", f"exit={code}\n{out}")
+            bad("C1. a reply publishing contract: 16/16 is accepted", f"exit={code}\n{out}")
 
         wrong = os.path.join(tmp, "wrong.txt")
         with open(wrong, "w", encoding="utf-8") as fh:
-            fh.write(REPLY.replace("contract: 14/14", "contract: 12/12"))
+            fh.write(REPLY.replace("contract: 16/16", "contract: 12/12"))
         code, out, failed = run_checker(md, csv_path, wrong)
         if code != 0 and "[REPLY]" in out:
             ok("C2. a reply publishing the wrong count is rejected")
@@ -260,14 +277,14 @@ def main():
                  "FY guide raised\",true"))),
             ("TLDR_BULLETS", "the TL;DR loses a bullet",
              lambda md, csv: (replace_once(
-                 md, "- **The most consequential name is AAAA +12.5% on 50.0% of ADV** — a Q3 "
-                 "beat and a raised guide.\n", ""), csv)),
+                 md, "- **The most consequential name is IIII -55.0%** — below the $200M floor, "
+                 "so it is in the watchlist, not the table.\n", ""), csv)),
             ("TLDR_ADV_CHECK", "no TL;DR bullet is the %ADV reality check",
              lambda md, csv: (replace_once(
-                 md, "- **The %ADV reality check:** of the 10 gap names, only 4 cleared 5% of "
-                 "30-day ADV and just 1 cleared 20%; 6 are quotes on essentially no volume. The "
-                 "screen is not 10 tradeable names.",
-                 "- **Volume context:** of the 10 gap names, 4 cleared the bar and 1 cleared the "
+                 md, "- **The %ADV reality check:** of the 12 gap names, only 5 cleared 5% of "
+                 "30-day ADV and just 2 cleared 20%; 6 are quotes on essentially no volume. The "
+                 "screen is not 12 tradeable names.",
+                 "- **Volume context:** of the 12 gap names, 5 cleared the bar and 2 cleared the "
                  "top of it; the rest are quotes."), csv)),
             ("GATE", "an actionable name no longer clears the gate",
              lambda md, csv: (replace_once(
@@ -284,6 +301,31 @@ def main():
              lambda md, csv: (replace_once(
                  md, "| **Passes the actionable gate** | 3 — e.g. AAAA |",
                  "| **Passes the actionable gate** | 3 — e.g. ZZZZ |"), csv)),
+            ("SUBFLOOR", "the below-the-floor watchlist publishes a gap the CSV disagrees with",
+             lambda md, csv: (replace_once(
+                 md, "| IIII | -55.0 | 240.0 | $2M |",
+                 "| IIII | -50.0 | 240.0 | $2M |"), csv)),
+            ("SUBFLOOR", "the watchlist is deleted while the floor hides the day's biggest mover",
+             lambda md, csv: (replace_once(
+                 md,
+                 "### Below the $200M floor\n"
+                 "The names the universe floor EXCLUDED. Watchlist only — no catalyst was looked "
+                 "up, and these rows are not part of the asymmetry table above.\n\n"
+                 "| Ticker | Gap % | % of 30d ADV | Mkt cap | Note |\n"
+                 "|---|---|---|---|---|\n"
+                 "| IIII | -55.0 | 240.0 | $2M | Below the floor; the biggest mover of the day |\n\n",
+                 ""), csv)),
+            ("ALSO_CLEARED", "a gate-passing name is silently dropped from the list",
+             lambda md, csv: (replace_once(
+                 md,
+                 "No catalyst was looked up for them — they are listed so that a cap never "
+                 "silently drops a name: JJJJ",
+                 "No catalyst was looked up for them — they are listed so that a cap never "
+                 "silently drops a name."), csv)),
+            ("ALSO_CLEARED", "the list declares a count it does not carry",
+             lambda md, csv: (replace_once(
+                 md, "Gate-passing names not in the table above: 1.",
+                 "Gate-passing names not in the table above: 2."), csv)),
         ]
 
         for name, why, mutate in MUTATIONS:

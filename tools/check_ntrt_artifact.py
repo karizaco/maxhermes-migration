@@ -2,18 +2,18 @@
 """
 check_ntrt_artifact.py — the machine gate for cron #25's NTRT gap brief.
 
-MARKER: NTRT_CONTRACT_CHECK_V1
+MARKER: NTRT_CONTRACT_CHECK_V2
 
 The ARTIFACT FORMAT CONTRACT in `cloud-prompts/skills/ntrt-gap-brief/SKILL.md`
 used to be prose, and prose is what four briefs read three different ways.
 This script turns the contract into a GATE: it reads the published markdown and
-its CSV companion and asserts the fourteen rules the contract states. A run
+its CSV companion and asserts the sixteen rules the contract states. A run
 that breaks the contract FAILS here instead of shipping.
 
 It is deliberately a SEPARATE implementation of the contract — the routine
 renders the artifact, this verifies it, and neither imports the other.
 
-THE FOURTEEN CHECKS
+THE SIXTEEN CHECKS
 
    1 SECTIONS       the section skeleton is present, in order, none missing,
                     with the title line and the mode banner
@@ -38,6 +38,12 @@ THE FOURTEEN CHECKS
                     universe it counts
   14 FOURCELL_EX   every populated cell names an example that really sits in
                     that cell; an empty cell says none
+  15 SUBFLOOR      the `Below the $200M floor` block is real: every name in it
+                    is below the floor, in the CSV, published nowhere else, and
+                    the floor never hides the day's biggest mover
+  16 ALSO_CLEARED  every gate-passing name that is not in the actionable table
+                    is listed under `Also cleared the gate` — a cap may
+                    shorten the table, never silently drop a name
 
 USAGE
     python3 tools/check_ntrt_artifact.py --md ntrt/2026-11-05.md \
@@ -53,18 +59,19 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "ntrt-artifact-v3"
-CONTRACT_CHECKS = 14
+CONTRACT_VERSION = "ntrt-artifact-v4"
+CONTRACT_CHECKS = 16
 
 # The capability marker the run-time fetch demands. An OLDER copy of this script
 # is still published on the mirrors, and it checks fewer rules - so a fetch that
 # does not demand this marker can win a stale file and report a clean artifact
 # it never checked.
-MARKER = "NTRT_CONTRACT_CHECK_V1"
+MARKER = "NTRT_CONTRACT_CHECK_V2"
 
 # ---- the published constants (they live in the skill spec; keep them in sync) ----
 GATE_GAP_PCT = 3.0        # |gap| >= 3%
 GATE_PCT_ADV = 5.0        # AND >= 5% of 30-day ADV
+GATE_MKT_CAP = 200000000  # AND market cap >= $200M (the universe floor)
 NOISE_PCT_ADV = 1.0       # noise when pct_of_adv is empty or < 1
 
 # The section skeleton, in order. Matched by normalised PREFIX so a dated or
@@ -297,6 +304,27 @@ def col(row, headers, key):
     return vals[i]
 
 
+def is_not_listing(subsection):
+    """True for a subsection whose tables are NOT part of the screened universe.
+
+    - `Gap vs catalyst`   the 2x2 summary, not a listing.
+    - `Below the ... floor` the watchlist of names the $200M universe floor
+      EXCLUDED. It is a different universe (checked by SUBFLOOR): folding it
+      into the wider screen would put sub-floor names into the asymmetry
+      table's "fails the gate" cell, where they do not belong - they were
+      never candidates for the gate.
+    - `Also cleared the gate` a prose list, never a table.
+    """
+    s = norm(subsection)
+    if "gapvscatalyst" in s:
+        return True
+    if "alsocleared" in s:
+        return True
+    if "below" in s and "floor" in s:
+        return True
+    return False
+
+
 def data_tables(tables, section_key):
     """The published data tables of a section: first column is `Ticker`.
     The gap-vs-catalyst summary table is NOT a listing and is excluded."""
@@ -306,7 +334,7 @@ def data_tables(tables, section_key):
             continue
         if norm(t["headers"][0]) != "ticker":
             continue
-        if "gapvscatalyst" in t["subsection"]:
+        if is_not_listing(t["subsection"]):
             continue
         out.append(t)
     return out
@@ -570,17 +598,30 @@ def check_tldr(lines, sections):
 
 
 def gate_state(row):
-    """(passes the gate, is a boundary case) for a CSV row, on the RAW values."""
+    """(passes the gate, is a boundary case) for a CSV row, on the RAW values.
+
+    The gate has THREE legs since v4: |gap| >= 3%, %ADV >= 5% and market cap
+    >= $200M. The market-cap leg is what lets the brief publish the names the
+    universe floor EXCLUDED (the `Below the $200M floor` watchlist) without
+    those names counting as gate-passers - they were never candidates.
+
+    A cap the CSV cannot supply is a BOUNDARY case, not a failure: an unknown
+    cap cannot be verified either way. A cap that is KNOWN to be under the
+    floor is a verified failure.
+    """
     g = num(row.get("premarket_change_pct"))
     p = num(row.get("pct_of_adv"))
+    c = num(row.get("mkt_cap_usd"))
     gap_ok = g is not None and abs(g) >= GATE_GAP_PCT
     adv_ok = p is not None and p >= GATE_PCT_ADV
+    cap_ok = c is not None and c >= GATE_MKT_CAP
     boundary = ((g is not None and abs(abs(g) - GATE_GAP_PCT) <= BOUNDARY)
-                or (p is not None and abs(p - GATE_PCT_ADV) <= BOUNDARY))
-    return (gap_ok and adv_ok), boundary
+                or (p is not None and abs(p - GATE_PCT_ADV) <= BOUNDARY)
+                or c is None)
+    return (gap_ok and adv_ok and cap_ok), boundary
 
 
-def check_gate(tables, idx, act_names, wide_names):
+def check_gate(tables, idx, act_names, wide_names, also_names=()):
     problems = []
     for tick in act_names:
         row = idx.get(tick)
@@ -591,9 +632,10 @@ def check_gate(tables, idx, act_names, wide_names):
         if not passes and not boundary:
             g = num(row.get("premarket_change_pct"))
             p = num(row.get("pct_of_adv"))
+            c = num(row.get("mkt_cap_usd"))
             problems.append(f"{tick}: published as ACTIONABLE but |gap|={abs(g):.2f}% / "
-                            f"%ADV={p} does not clear the gate (|gap| >= {GATE_GAP_PCT}% AND "
-                            f"%ADV >= {GATE_PCT_ADV}%)")
+                            f"%ADV={p} / cap={c} does not clear the gate (|gap| >= {GATE_GAP_PCT}% "
+                            f"AND %ADV >= {GATE_PCT_ADV}% AND cap >= {GATE_MKT_CAP})")
     for tick in wide_names:
         row = idx.get(tick)
         if row is None:
@@ -607,15 +649,16 @@ def check_gate(tables, idx, act_names, wide_names):
                             f"(|gap|={abs(g):.2f}%, %ADV={p}) — it belongs in the actionable "
                             f"table")
     csv_gate = {t for t, r in idx.items() if gate_state(r)[0]}
-    for tick in sorted(csv_gate - set(act_names)):
+    for tick in sorted(csv_gate - set(act_names) - set(also_names)):
         row = idx.get(tick)
         if not gate_state(row)[1]:
             problems.append(f"{tick}: clears the gate in the CSV but is missing from the "
                             f"actionable table — a gate-passing name may not be dropped "
                             f"silently")
     record("GATE", problems,
-           f"the actionable table holds exactly the gate-passing names ({len(act_names)}), the "
-           f"wider screen the rest ({len(wide_names)})")
+           f"the actionable table holds only gate-passing names ({len(act_names)}), the "
+           f"wider screen the names that fail it ({len(wide_names)}), and every other "
+           f"gate-passing name is listed under 'Also cleared the gate' ({len(also_names)})")
 
 
 # ------------------------------------------------------------------ four-cell
@@ -765,6 +808,188 @@ def check_fourcell(tables, idx, act_names, wide_names, lines, subsections):
            "every populated cell names an example that really sits in it")
 
 
+# ------------------------------------------------------------------ v4 checks
+SUBFLOOR_MAX_PER_SIDE = 5      # the watchlist holds at most 5 rows per direction
+ALSO_CLEARED_LINE = "Gate-passing names not in the table above:"
+
+
+def find_subfloor_tables(tables):
+    """The `Below the $200M floor` watchlist tables (a Ticker-first table in a
+    subsection whose heading says 'below ... floor')."""
+    out = []
+    for t in tables:
+        s = norm(t["subsection"])
+        if "below" in s and "floor" in s and norm(t["headers"][0]) == "ticker":
+            out.append(t)
+    return out
+
+
+def check_subfloor(tables, idx, act_names, wide_names):
+    """The universe floor must not hide the day's biggest mover.
+
+    The $200M market-cap floor is a LIQUIDITY floor, and it can hide the most
+    violent name of the day (measured 2026-11-04: PARA -88.6% on a $1.8M cap,
+    CRIS +87.7%, DKI +54.0% — none of them in the brief). The brief therefore
+    publishes a watchlist of the names the floor excluded, and this check
+    makes that block honest: every name in it is really below the floor, is in
+    the CSV, is published nowhere else, and the block cannot be empty while the
+    floor hides a bigger mover than the table's own.
+    """
+    problems = []
+    sub_tables = find_subfloor_tables(tables)
+    names = []
+    for t in sub_tables:
+        headers = t["headers"]
+        neg = pos = 0
+        for r in t["rows"]:
+            tick = r.get(headers[0], "").strip()
+            if not tick:
+                continue
+            names.append(tick)
+            row = idx.get(tick)
+            if row is None:
+                problems.append(f"{tick}: published in the below-the-floor watchlist but "
+                                f"absent from the CSV")
+                continue
+            c = num(row.get("mkt_cap_usd"))
+            if c is not None and c >= GATE_MKT_CAP:
+                problems.append(f"{tick}: published in the below-the-floor watchlist but its "
+                                f"market cap is {fmt_mktcap(c)} — that is AT or ABOVE the "
+                                f"$200M floor")
+            g = num(col(r, headers, "gap"))
+            if g is not None:
+                if g < 0:
+                    neg += 1
+                else:
+                    pos += 1
+                cg = num(row.get("premarket_change_pct"))
+                if cg is not None and abs(g - cg) > TOL_1DP:
+                    problems.append(f"{tick}: the watchlist publishes gap {g:g}% but the CSV "
+                                    f"carries {cg:g}%")
+            p_csv = num(row.get("pct_of_adv"))
+            cell = (col(r, headers, "pctofadv") or "").strip()
+            if p_csv is None:
+                if cell not in ("", "-", "—", "n/a"):
+                    problems.append(f"{tick}: the CSV has no ADV history (pct_of_adv empty) "
+                                    f"but the watchlist publishes {cell!r}")
+            else:
+                pv = num(cell)
+                if pv is None or abs(pv - p_csv) > TOL_1DP:
+                    problems.append(f"{tick}: the watchlist publishes %ADV {cell!r} but the CSV "
+                                    f"carries {p_csv:g}")
+        if neg > SUBFLOOR_MAX_PER_SIDE or pos > SUBFLOOR_MAX_PER_SIDE:
+            problems.append(f"the below-the-floor watchlist holds {neg} down and {pos} up "
+                            f"names — the contract caps it at {SUBFLOOR_MAX_PER_SIDE} per "
+                            f"direction")
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        problems.append(f"{len(dupes)} name(s) appear more than once in the below-the-floor "
+                        f"watchlist: {dupes[:10]}")
+    clash = sorted(set(names) & (set(act_names) | set(wide_names)))
+    if clash:
+        problems.append(f"{len(clash)} name(s) are published BOTH in the watchlist and in a "
+                        f"screened table: {clash[:10]} — one name, one table")
+    # the floor must not hide the day's biggest mover
+    below = []
+    for tick, row in idx.items():
+        g = num(row.get("premarket_change_pct"))
+        c = num(row.get("mkt_cap_usd"))
+        if g is None or c is None or c >= GATE_MKT_CAP:
+            continue
+        below.append((abs(g), tick, g))
+    act_gaps = []
+    for tick in act_names:
+        row = idx.get(tick)
+        g = num(row.get("premarket_change_pct")) if row else None
+        if g is not None:
+            act_gaps.append(abs(g))
+    act_max = max(act_gaps) if act_gaps else 0.0
+    if below:
+        worst = max(below)
+        if worst[0] > act_max + 1e-9:
+            published_max = 0.0
+            for tick in names:
+                row = idx.get(tick)
+                g = num(row.get("premarket_change_pct")) if row else None
+                if g is not None:
+                    published_max = max(published_max, abs(g))
+            if published_max + 1e-9 < worst[0]:
+                problems.append(f"the $200M floor hides {worst[1]} ({worst[2]:+.1f}%), a bigger "
+                                f"mover than the actionable table's own biggest "
+                                f"({act_max:.1f}%), but the watchlist does not publish it")
+    record("SUBFLOOR", problems,
+           f"the below-the-floor watchlist publishes {len(names)} name(s), all below the "
+           f"$200M floor, in the CSV and nowhere else")
+    return names
+
+
+def parse_also_cleared(lines, subsections, idx):
+    """(names, declared_count, present) for the `Also cleared the gate` section."""
+    span = None
+    for name, sp in subsections.items():
+        if "alsocleared" in name:
+            span = sp
+            break
+    if not span:
+        return set(), None, False
+    body = [ln for ln in body_of(lines, span) if ln.strip() and not is_table_row(ln)]
+    declared = None
+    for ln in body:
+        s = ln.strip()
+        if s.startswith(ALSO_CLEARED_LINE):
+            m = re.search(r"(\d+)", s)
+            if m:
+                declared = int(m.group(1))
+            break
+    text = "\n".join(body)
+    names = set()
+    for tick in idx:
+        if re.search(r"(?<![A-Za-z0-9\.\-])" + re.escape(tick) + r"(?![A-Za-z0-9\.\-])", text):
+            names.add(tick)
+    return names, declared, True
+
+
+def check_also_cleared(tables, idx, act_names, wide_names, lines, subsections, subfloor_names):
+    """A cap may SHORTEN the actionable table; it may never silently drop a name.
+
+    The actionable table is capped per direction (a tape can put 40 names on
+    one side). Everything the cap left out is listed by name under
+    `Also cleared the gate`, with the count, so the reader can see that the
+    table is a triage and not the whole tradeable set.
+    """
+    problems = []
+    names, declared, present = parse_also_cleared(lines, subsections, idx)
+    gate_pass = {t for t, r in idx.items() if gate_state(r)[0]}
+    expected = gate_pass - set(act_names)
+    missing = sorted(expected - names)
+    if missing:
+        problems.append(f"{len(missing)} gate-passing name(s) are neither in the actionable "
+                        f"table nor listed under 'Also cleared the gate': {missing[:10]} — a "
+                        f"cap may shorten the table, never silently drop a name")
+    extra = sorted(names - expected)
+    if extra:
+        problems.append(f"'Also cleared the gate' lists {len(extra)} name(s) that do not "
+                        f"belong there (they do not clear the gate, or they are already "
+                        f"published): {extra[:10]}")
+    if present:
+        if declared is None:
+            problems.append("'Also cleared the gate' does not state its count — the section "
+                            f"must carry a line reading '{ALSO_CLEARED_LINE} <N>'")
+        elif declared != len(names):
+            problems.append(f"'Also cleared the gate' declares {declared} names but lists "
+                            f"{len(names)}")
+    elif expected:
+        problems.append(f"{len(expected)} gate-passing name(s) are outside the actionable table "
+                        f"but there is no 'Also cleared the gate' section")
+    clash = sorted(set(names) & (set(act_names) | set(wide_names) | set(subfloor_names)))
+    if clash:
+        problems.append(f"{len(clash)} name(s) are listed under 'Also cleared the gate' and "
+                        f"also published in a table: {clash[:10]}")
+    record("ALSO_CLEARED", problems,
+           f"every gate-passing name outside the actionable table is listed by name "
+           f"({len(names)} listed, {len(expected)} expected)")
+
+
 def check_reply(path, total):
     with open(path, encoding="utf-8", errors="replace") as fh:
         raw = fh.read()
@@ -812,7 +1037,10 @@ def main():
     check_mktcap(tables, idx)
     check_noise_flag(args.csv)
     check_tldr(lines, sections)
-    check_gate(tables, idx, act_names, wide_names)
+    subfloor_names = check_subfloor(tables, idx, act_names, wide_names)
+    also_names, _declared, _present = parse_also_cleared(lines, subsections, idx)
+    check_gate(tables, idx, act_names, wide_names, also_names)
+    check_also_cleared(tables, idx, act_names, wide_names, lines, subsections, subfloor_names)
     check_fourcell(tables, idx, act_names, wide_names, lines, subsections)
 
     print()

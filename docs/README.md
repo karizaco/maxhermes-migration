@@ -12,6 +12,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`CROSSCHECK-cron19-earnings-reminder.md`](CROSSCHECK-cron19-earnings-reminder.md) | Cross-check — cron #19 earnings-reminder-daily — Reviewed 2026-11-01 against the deployed task and the artifacts it actually produced during the |
 | [`IMPROVEMENTS-2026-11-03-holiday-guard-and-auditor-roster.md`](IMPROVEMENTS-2026-11-03-holiday-guard-and-auditor-roster.md) | Improvements — 2026-11-03: the holiday guard, and the auditor's missing routines — Two defects found while reviewing the international EOD series, plus the systemic fix that |
 | [`IMPROVEMENTS-2026-11-04-fetch-ladder-and-memory-routing.md`](IMPROVEMENTS-2026-11-04-fetch-ladder-and-memory-routing.md) | Improvements — 2026-11-04: the dead fetch fallback, and where a finding goes — **Date:** 2026-11-04 · **Scope:** the fleet's fetch idiom and the routing of routine findings |
+| [`IMPROVEMENTS-2026-11-06-auditor-contract-and-26b-roster.md`](IMPROVEMENTS-2026-11-06-auditor-contract-and-26b-roster.md) | Improvements — 2026-11-06: the auditor's contract, and #26b's roster — Cron #90 (delivery-auditor) is the fleet's external observer. It decides which routines |
 | [`IMPROVEMENTS-cron05-eod-international.md`](IMPROVEMENTS-cron05-eod-international.md) | Improvements — cron #05 `eod-international-daily` — Date: 2026-11-03. Scope: the reply format for the whole fleet (via the shared block), cron #05's |
 | [`IMPROVEMENTS-cron08-pre-market-gapper.md`](IMPROVEMENTS-cron08-pre-market-gapper.md) | Improvements — cron #08 `stock-screener-pre-market-gapper` — - **Audited:** 2026-11-04 (the 08:30 ET fire, `2026-11-04`) |
 | [`IMPROVEMENTS-cron09-stock-screener-suite.md`](IMPROVEMENTS-cron09-stock-screener-suite.md) | Cron #09 `stock-screener-daily-sweep-18:30` — General Improvement Audit — **Audited:** 2026-11-03. Scope: the routine as a *system* — the skill spec, its SQL, its data |
@@ -24,6 +25,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-cron23-post-market-brief.md`](IMPROVEMENTS-cron23-post-market-brief.md) | Improvements — cron #23 (agentic-post-market-brief): the brief is named POST-MARKET, so tomorrow's setup is the product — Four reader-hostile defects in the post-market brief, fixed in the routine's **skill spec** |
 | [`IMPROVEMENTS-cron25-ntrt-gap-brief.md`](IMPROVEMENTS-cron25-ntrt-gap-brief.md) | Improvements — cron #25 ntrt-gap-brief-daily — Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03; section 13 added |
 | [`IMPROVEMENTS-cron26-agentic-pre-market-brief.md`](IMPROVEMENTS-cron26-agentic-pre-market-brief.md) | Improvements — cron #26 agentic-pre-market-brief — Reviewed 2026-11-03, after the routine's own 08:30 ET fire on 2026-11-03. Evidence base: the |
+| [`IMPROVEMENTS-cron92-preopen-capture.md`](IMPROVEMENTS-cron92-preopen-capture.md) | Improvements — 2026-11-06: cron #92's pre-open capture gets a recipe, a digest, and an audit trail — Three defects in the pre-open catalyst capture (`cron #92`, checkpoints 08:30 and 09:50 ET), |
 
 ## Convention
 

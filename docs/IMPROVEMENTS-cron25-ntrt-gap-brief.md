@@ -12,11 +12,18 @@ most recent briefs on the outputs repo (`ntrt/2026-10-29.md`, `ntrt/2026-10-30.m
 Base for every revert: commit `d2562b1d64cf1ae0742fabf8a1807f3dafa6e76a`, tag
 `pre-ntrt-format-v2-2026-11-04`.
 
-**What changed:** `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` only. The deployed cron prompt
-is **not** touched — it already points at the skill spec URL and re-fetches it at run time, so the
-new layout takes effect on the next fire with no prompt deployment and no drift risk. The
-outputs repo is not touched either; `ntrt/2026-11-03.md` and `ntrt/2026-11-03.csv` remain as
-delivered.
+**What changed in the v2/v3 work:** `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` only. The
+deployed cron prompt was **not** touched — it already points at the skill spec URL and re-fetches
+it at run time, so the new layout takes effect on the next fire with no prompt deployment and no
+drift risk. The outputs repo is not touched either; `ntrt/2026-11-03.md` and
+`ntrt/2026-11-03.csv` remain as delivered.
+
+**What changed in the v4 work (sections 15–19, 2026-11-06):** the skill spec again, **plus the
+deployed cron prompt**, plus the checker and its test. This is the first change to #25 that
+touches the prompt, because the push block and the screener request live there (§15, §18) and a
+rule that lives only in a run-time-fetched spec is a rule the run can miss. The prompt is
+re-deployed **byte-exactly** and verified by SHA-256 against the repo blob. The outputs repo is
+not touched: no published brief is rewritten by this work.
 
 ---
 
@@ -368,14 +375,223 @@ bare count of 69.
   - The 2026-11-05 artifact in the outputs repo was **not** re-pushed or modified: the §8 render
     is a derived fixture, and the delivered brief stands as delivered.
 
+## 15. The $200M universe floor was DELETING the day's most violent prints — HIGH
+
+Found 2026-11-04, on the routine's own 09:00 ET fire, by re-pulling the screener **without** the
+market-cap filter and comparing the two universes.
+
+The screener request filtered on `market_cap_basic >= 200000000`, **inside the query**. A filter
+in the query does not demote a name, it **deletes** it — and the column can be null, which
+deletes a name the floor would have kept. Measured on the 2026-11-04 tape:
+
+| name | gap | pre-market volume | % of ADV | market cap | in the brief? |
+|---|---|---|---|---|---|
+| PARA | **−88.6%** | 16,221,305 | 330.8 | $1.8M | **no** |
+| CRIS | **+87.7%** | 83,959,887 | 1313.5 | $7.7M | **no** |
+| CENN | −57.2% | 15,028,537 | 394.0 | $5.2M | **no** |
+| DKI | +54.0% | 22,004,946 | 949.0 | $1.8M | **no** |
+| FTCI | +44.8% | 31,232,906 | 985.8 | $29.2M | **no** |
+| HPAI | +27.1% | 73,000,287 | 1401.2 | $11.8M | **no** |
+
+The unfiltered universe carried **543 names** the brief never saw, and the single largest mover of
+the day (−88.6%) was one of them. The brief's own TL;DR named **DOX −35.6%** as the headline. It
+was not the headline. This is the same class of defect as the REITs (§2 of the contract): a
+universe filter that silently removes the most consequential name.
+
+**Fix (skill §10 + the prompt's screener block).**
+
+- The request no longer filters on `market_cap_basic`. The $200M floor is applied **after** the
+  scan, in post-processing, so no name is deleted by a filter on a nullable column.
+- The floor becomes the **third leg of the gate** (|gap| ≥ 3% AND %ADV ≥ 5% AND cap ≥ $200M), so
+  the excluded names are not gate-passers and can be published without corrupting the §8
+  asymmetry table.
+- `## Wider screen` ends with a **`### Below the $200M floor`** watchlist: the top 5 per
+  direction among the names the floor excluded, columns `Ticker | Gap % | % of 30d ADV | Mkt cap |
+  Note`. No catalyst lookup (it is a watchlist, not a triage), and its CSV rows carry
+  `watchlist (not checked)` in the `catalyst` column so a consumer can tell "not found" from
+  "not looked up".
+- **The watchlist is MANDATORY when the floor hides the biggest mover**: if the largest |gap|
+  among the below-floor names exceeds the largest |gap| in the actionable table, the watchlist
+  must be published. The new `SUBFLOOR` check enforces it, so a run cannot pass by staying quiet.
+
+### 15a. `range` is a page size, and the pull was one name away from being half a screen
+
+The same re-pull exposed a second defect in the same request: `"range":[0,600]`. The
+unfiltered gainers side returned **exactly 600** names on 2026-11-04 — the range limit, to the
+name. That day `totalCount` also read 600, so nothing was lost; the API reports the TRUE total
+(verified: `range [0,10]` against the 5,711-name US universe returns `totalCount 5711` with 10
+rows), so the pull was complete by one name's luck. One more gainer and the pull would have
+silently dropped it.
+
+**Fix:** `range` is now `[0,2000]`, and §7 makes the pull's completeness a check: `totalCount`
+must equal the rows returned on **both** sides; if they differ, the pull is truncated, the
+missing slice is pulled, and a truncated pull is a failed pull that gets reported rather than
+published.
+
+---
+
+## 16. The brief looked for catalysts with a dozen searches when a SOURCED tape already existed — HIGH
+
+Cron #92 (`preopen-catalyst-capture`) publishes a catalyst tape for the same session:
+`preopen-feed/{date}-{HHMM}.jsonl` in `karizaco/minimax-cloud-outputs`, one file per checkpoint.
+**The 08:30 ET checkpoint is on disk before this brief is written** (09:00 ET).
+
+Measured on the 2026-11-04 tape: **678 rows covering 63 of the 66 actionable names**, each with
+the pre-market print, a one-line `why`, a `cat`, a `conf` and — the part that matters — a
+**`ref` URL**. The 12 sourced catalysts included DOX (guidance-cut), NRIX (Sanofi), ALIT
+(beat-and-raise), DUOL, DDOG, HELE (acquisition), RIOT and FSLR. And it covers **PARA, CRIS and
+DKI** — the names the $200M floor hides (§15).
+
+The 2026-11-04 brief spent roughly ten `web_search` calls re-deriving by hand what the tape
+already carried with a URL attached, and still ended with **33 of 66 actionable rows carrying no
+confirmed catalyst**.
+
+**Fix (skill §11).** The tape is fetched first, and a tape row is used as the catalyst only
+when it carries a `ref` and its `conf` is not `low`; `conf: unverified` rows are verified with
+one fetch of the URL or left blank. The tape is optional and **fails closed** — cron #92 writes
+nothing when its key is unusable — so an absent tape is `pre-open tape: absent` in the
+source-health section and a `web_search` fallback, never an error and never an invented tape.
+The tape's prices are a second opinion, not the price of record.
+
+---
+
+## 17. The actionable table had no cap, and a tape can put 40 names on one side — MEDIUM
+
+The v2/v3 gate is `|gap| ≥ 3% AND %ADV ≥ 5%`, uncapped. On a normal day that is ~25 names; on the
+2026-11-04 election tape it was **66** — a 66-row table, and 33 of those rows had no confirmable
+catalyst because the run was chasing drivers for names that were never going to be read.
+
+The contract's instinct was right: §8's asymmetry table wants every published name looked up, so
+the fix is not "look up fewer names" but **publish fewer names and account for the rest**.
+
+**Fix (skill §2).**
+
+- The actionable table is **capped at 20 names per direction**, sorted by absolute gap.
+- Everything the cap left out is published, not dropped: the `### Also cleared the gate`
+  subsection lists every remaining gate-passing name and states the count, in a format the
+  checker parses (`Gate-passing names not in the table above: <N>.`).
+- Those names carry **no catalyst lookup** and are **not part of the §8 asymmetry universe**; the
+  §8 caption states the checked universe and names both exclusions so the denominator is never
+  hidden.
+- The new `ALSO_CLEARED` check enforces it: a gate-passing name may not be missing from both the
+  actionable table and the list. The sibling `GATE` check was relaxed the same way — a cap may
+  shorten the table, never silently drop a name.
+
+---
+
+## 18. The prompt's push block never fetched `verify_delivery.sh` and never pushed the CSV — HIGH
+
+The deployed prompt (14,976 chars, byte-identical to the repo file at that time) carried the old
+push block:
+
+```bash
+for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/.../push_artifact.sh"; do
+  [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
+done
+sh /workspace/push_artifact.sh --out ntrt --add ntrt/{date}.md --branch main
+sh /workspace/verify_delivery.sh --path ntrt/{date}.md --branch main
+```
+
+Three defects in six lines:
+
+1. **The `[ -s file ] || curl` loop is dead** — the first successful download satisfies the guard,
+   so the fallback URL is never reached, and a file already on disk is never refreshed. The CDNs
+   cache `main` independently (measured 2026-11-04: raw.githubusercontent served a stale blob for
+   >17 minutes after a push), and this loop tries the raw CDN FIRST and never the contents API.
+   `PROMPT-BLOCKS.md` already carries the corrected three-URL ladder.
+2. **`verify_delivery.sh` is called but never downloaded.** A helper that is only *called* is not
+   on disk — the DELIVERY step silently had no verifier.
+3. **The CSV companion was never pushed.** The skill's contract has mandated the CSV since v2,
+   and the prompt's push block only ever added `{date}.md`. The 2026-11-04 run had to push and
+   verify the CSV by hand, twice.
+
+**Fix (the prompt's GIT PUSH block).** The helpers are fetched by PROMPT-BLOCKS'
+`## SHARED HELPER FETCHES` block in step 1 (contents API first, capability marker); the push
+carries both files and the routine number, and both paths are verified:
+
+```bash
+sh /workspace/push_artifact.sh --out ntrt --add ntrt/{date}.md --add ntrt/{date}.csv \
+   --branch main --nn 25 --msg "cron 25 ntrt-gap-brief-daily {date}"
+sh /workspace/verify_delivery.sh --path ntrt/{date}.md  --branch main
+sh /workspace/verify_delivery.sh --path ntrt/{date}.csv --branch main
+```
+
+`--nn 25` is not decoration: the routine number travels with the call, so a commit carrying the
+artifact can be attributed to cron #25 from its subject alone.
+
+---
+
+## 19. Two sources for one date, and the prompt's duplicated blocks — MEDIUM
+
+The prompt resolved `{date}` in the OUTPUT section from `cron_read view:runs` →
+`run.scheduled_at_ms`, while the WINDOW CHECK resolved it from `session.created_at` and the
+script's printed `fire-date:`. **Two paths to the same fact**, and the prompt's own window-check
+block argued for one: the gate and the artifact path must never disagree about which day they
+belong to.
+
+**Fix.** `{date}` comes from the window check's `fire-date:` line, and the prompt says so in the
+OUTPUT section, in CRITICAL REMINDERS, and in the pushed commit message. `cron_read view=runs` is
+no longer called for the date at all.
+
+**The prompt was also slimmed.** The duplicated CONVERSATION TITLE block (~1.2 KB, verbatim from
+PROMPT-BLOCKS) is now a pointer to PROMPT-BLOCKS with the skill spec as the backstop — the skill
+also carries the title block, so a failed shared fetch still titles the conversation. The
+window-check rationale was compressed without touching a single command line or marker check.
+Net: the prompt went **15,037 → 16,862 bytes** — smaller than it would have been, but not
+smaller than before, because two new data-path rules (no market-cap filter, pull completeness)
+have to be stated in the prompt as well as the skill: a rule that lives only in a run-time-fetched
+spec is a rule the run can miss at 09:00 with a truncated pull.
+
+---
+
+## What v4 changed, in one place
+
+| File | Change | Effect |
+|---|---|---|
+| `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` | contract v3 → **v4**: §10 the universe floor, §11 the pre-open tape, §12 the delta pull; §2 the gate's third leg + the per-direction cap; §4 the CSV carries the below-floor rows; §7 the pull must be complete; §9 the checker marker `NTRT_CONTRACT_CHECK_V2` | next fire, no redeploy |
+| `tools/check_ntrt_artifact.py` | **16 checks** (was 14): `SUBFLOOR` + `ALSO_CLEARED`; the gate is cap-aware; the below-floor watchlist is excluded from the asymmetry universe | the contract is now a gate for the new rules too |
+| `tools/test_ntrt_contract.py` | the conforming fixture now carries a below-floor watchlist and an also-cleared list; **4 new fault-injection cases** | the new checks are proven to bite |
+| `cloud-prompts/cron-prompts/25-ntrt-gap-brief-daily.md` | the screener request loses the market-cap filter and gains `range [0,2000]`; the push block fetches the helpers properly, pushes and verifies BOTH files, and passes `--nn 25`; one date source; the duplicated title block becomes a pointer | **deployed byte-exactly** — this file IS the deployed prompt |
+| `docs/IMPROVEMENTS-cron25-ntrt-gap-brief.md` | this section | the durable record |
+
+## Verification performed (2026-11-06)
+
+- `python3 tools/check_ntrt_artifact.py` against the **real 2026-11-05 artifact** (481 CSV rows,
+  89 published names): **16/16 — `CONTRACT OK — contract: 16/16 (ntrt-artifact-v4)`**. The
+  cap-aware gate does not reclassify a single one of its 69 actionable names (the 2026-11-05
+  scan carried no name below the floor).
+- `python3 tools/test_ntrt_contract.py`: **22/22** — the conforming v4 fixture passes, the reply's
+  `contract: 16/16` line is accepted, a wrong count is rejected, a missing file exits 2, and
+  **each of the sixteen checks has a fixture that fails it**. Two of the new mutations trip a
+  second check as well, which the test reports (`ALSO_CLEARED` also trips `GATE`).
+- The scanner's pagination semantics were **measured, not assumed**: `range [0,10]` against the
+  5,711-name US universe returns `totalCount 5711` with 10 rows, so `totalCount` is the true
+  total and the completeness rule detects truncation.
+- The pre-open tape's coverage was measured against the 2026-11-04 screen (678 rows, 63 of 66
+  actionable names covered, 12 sourced catalysts).
+- The deployed prompt was verified **byte-exactly**: SHA-256 of the deployed `prompt` compared
+  with the repo blob after a fresh `cron_read view=list`, with schedule, timezone, enabled,
+  session mode, model, project_id and created_at unchanged.
+
 ## Revert
 
 ```bash
-git revert <commit-sha>                    # the SKILL.md change, as its own commit
+git revert <commit-sha>                    # the v4 change, as its own commit
 # or, to restore the pre-change spec exactly:
 git checkout pre-ntrt-format-v2-2026-11-04 -- cloud-prompts/skills/ntrt-gap-brief/SKILL.md
 ```
 
-No cron redeployment is involved, so a revert takes effect on the next fire with no scheduler
-change and no prompt drift to undo. The tag `pre-ntrt-format-v2-2026-11-04` points at the
-pre-change commit `d2562b1d64cf1ae0742fabf8a1807f3dafa6e76a`.
+**The v4 revert is NOT prompt-free.** `git revert` restores the repo, but the DEPLOYED prompt
+carries the v4 text until it is re-deployed. To roll the prompt back:
+
+```bash
+git show <pre-v4-commit>:cloud-prompts/cron-prompts/25-ntrt-gap-brief-daily.md > /tmp/p25.md
+# then re-deploy /tmp/p25.md byte-exactly through cron_update and verify by SHA-256
+```
+
+Reverting the SKILL alone is enough for the contract changes (§10–§12, the cap, the tape): they
+are re-fetched at RUN time, so they take effect on the next fire with no scheduler change. The
+revert of the PROMPT (the screener request and the push block) needs the redeployment above.
+
+The tag `pre-ntrt-format-v2-2026-11-04` points at the pre-change commit
+`d2562b1d64cf1ae0742fabf8a1807f3dafa6e76a`.
