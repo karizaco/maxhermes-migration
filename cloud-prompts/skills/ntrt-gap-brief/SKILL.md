@@ -196,6 +196,11 @@ same 2 dp in both files, so a reader can match a row across the markdown and the
 read in trillions. The rule is exact, because the checker enforces it: **no decimals under $1B
 (`$458M`), two decimals from $1B to $1T (`$200.97B`), two decimals above $1T (`$4.94T`)**.
 A value of 4,937,500,000,000 renders as `$4.94T` and never as `$4937.50B`.
+**A cap under $1M — only reachable in the §10 below-the-floor watchlist — renders as
+`<$1M`, never `$0M`.** Measured on the 2026-11-06 fire: DBGI ($438,749) published `$0M`, which
+reads like a zero-cap company rather than a sub-$1M one. The delivered 2026-11-06 brief keeps
+`$0M` (it is the artifact of record and is not rewritten), so this rule applies from the next
+fire.
 
 ### 4. The CSV companion (column contract)
 
@@ -373,6 +378,11 @@ fi
 - **The checker's exit code is the gate.** Exit 0 → publish. Exit 1 → the artifact breaks the
   contract: **fix the artifact and re-run**. Never push a failing brief, and never paste the
   failure into the brief to make it pass.
+- **An AMENDMENT AFTER A PUSH must be re-checked.** If you edit the artifact after pushing it —
+  the 2026-11-06 fire added its `degraded_sources: 3` line in a second commit, 85 seconds after
+  the first push — **re-run the checker against the amended file and re-push**. A byte that was
+  never checked is not a checked byte, and the checker is the only thing standing between the
+  artifact and the reader.
 - **The reply publishes the count.** One line in `### Files`, after the file list:
   `contract: 16/16`. A reader must be able to see that the artifact was **verified**, not
   assumed. (The checker also accepts `--reply <file>` and verifies that published count — use

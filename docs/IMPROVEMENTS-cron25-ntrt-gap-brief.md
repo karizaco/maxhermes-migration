@@ -595,6 +595,50 @@ verification snippet. The blast radius of the deployment was measured: only `pro
 (MiniMax-M3.1-Flash, thinking, effort medium), `project_id` (10645), `created_at` and `next_run`
 were all unchanged.
 
+### 19b. The first v4 fire (2026-11-06 09:00 ET) — what the contract actually did
+
+The first fire under contract v4 published at **09:57 ET** (run `460475636830373`, session
+`460475757445333`), 58 minutes after the 09:00:48 ET start. **The delivered artifact passes the
+v4 checker 16/16 on its remote bytes**, and every v4 rule is visible in the result:
+
+| rule | what the 2026-11-06 brief shows |
+|---|---|
+| §10 the universe floor | the scan carried **834 names** (vs 427 with the old cap-filtered request); the watchlist published **VIVK +95.2%** and **SITC −82.6%** — the day's two biggest movers — plus RCT +65.3%, CIIT +60.0%, DBGI +59.6%, GAUZ +39.4%, FEAM −41.8%, BDMD −32.1%, AEHL −29.8%, SXTP −29.2% |
+| the floor's third gate leg | 29 gate-passers on `gap ≥ 3% AND %ADV ≥ 5% AND cap ≥ $200M`; **76 names cleared the %ADV test but sat under the floor** and were kept out of the actionable table |
+| §2 the per-direction cap | 21 gate-passing gainers, table capped at 20, **LAES +3.9%** listed under `### Also cleared the gate` with its count |
+| §11 the pre-open tape | the 08:30 checkpoint (849 rows) supplied **8 sourced catalysts**; the run used only the Grok rows carrying a `ref` and `conf != low`, exactly as the rule says, and rejected the 841 scanner rows |
+| §12 the delta pull | a second pull at **09:26 ET** used for movement flags only — it caught **EFXT −36.4% on 387 shares** leaving the ≥3% screen by 09:26 and quoting +1.06% at 09:44 |
+| §4 the CSV | 834 rows including **384 below the $200M floor**; 3 rows with no ADV history carry an empty `pct_of_adv` (never 0); 459 rows flagged `noise` |
+| §8 the asymmetry table | 48 names checked (28 actionable + 20 wider) out of 834, published as **21 tradeable · 7 no driver · 17 missed · 3 noise**, with the caption stating both the universe and the two exclusions (1 unchecked, 10 below the floor) |
+| the prompt's push block | **both files pushed and verified** — `push: ok (verified — both files present on origin/main, sha256 matches local)`, subject `cron 25 ntrt-gap-brief-daily 2026-11-06` |
+
+**Two defects this fire exposed, both in MY v4 text, both now fixed in the skill (no prompt
+change, so no redeploy):**
+
+1. **The §11 tape-size band was stale.** I wrote "≈600–750 rows" from the old ±3% snapshot;
+   #92's movers-sorted ±2.5% checkpoint wrote **849**. The rule that matters (a ~120-row tape is
+   the regression signature) was unaffected, but the stale number would have made the next run
+   second-guess a healthy tape. The size band now belongs to #92's procedure, not to this skill.
+2. **The §3 market-cap rendering cannot express a sub-$1M cap.** DBGI ($438,749) published
+   **`$0M`** in the watchlist — a company with a $438,749 market cap rendered as zero. A cap under
+   $1M now renders as `<$1M`. The delivered 2026-11-06 brief keeps `$0M` (it is the artifact of
+   record and is not rewritten); the rule applies from the next fire.
+
+**And one hole the run's own behaviour exposed:** the 2026-11-06 fire pushed the artifact, then
+amended it **85 seconds later** (a second commit adding the `degraded_sources: 3` line). The
+amendment was good work, and the run did re-run the checker afterwards — but the contract never
+said to, and a byte that was never checked is not a checked byte. §9 now says it in one line.
+
+**The long pole is the per-name catalyst lookup.** The run was doing ~40 lookups for the 48
+published names when I looked at it at 09:22 ET; the artifact landed at 09:57 ET. That is the
+cost of §8's "every published name gets a lookup" rule, and it is the first thing to revisit if
+the brief keeps landing after the open.
+
+**A rate-limit false alarm caught by the run itself (worth keeping):** an unauthenticated
+contents-API fetch returned a 429 JSON body that hashed as a *different file* and looked exactly
+like a clobbered push. The file was intact. The rule — always send the bearer token, and check
+the fetched bytes' SIZE before believing a hash mismatch — is now in the agent's delivery memory.
+
 ## Revert
 
 ```bash
