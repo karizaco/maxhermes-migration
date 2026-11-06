@@ -47,14 +47,17 @@ before researching anything.**
    largest waste of a slot, and it crowds out the names that actually changed.
 4. **Publish the delta.** The digest must carry a "what changed since the <prior slot> digest"
    section: the `changed_since` list with the move at each pull, and the names that were new.
-   This section is usually more useful to a reader than the full board.
+   This section is usually more useful to a reader than the full board. It is a **table**
+   (ticker, tier, yesterday, today, the change, and why) — see the artifact contract below —
+   and it must **name the file it was read from**. Naming the file is the proof the right
+   board was read: the newest file in the directory is usually the *other* slot's board.
 
 5. **The `open` slot also carries an Overnight → open annex.** Load the previous day's
    `preclose` board's `overnight_carry` — the watch list it named *before* that evening's prints
    — and report which of those names are in play **this morning**, with this morning's own tape
    and verdict. **Do not re-tell last night's earnings reactions**: the fleet's post-market brief
    (#23, 22:30 ET) owns those. The open board's job is to hand the watch list forward into the
-   live tape, not to duplicate the brief.
+   live tape, not to duplicate the brief. Name the pre-close board file this annex was read from.
 
 ## TradingView-advanced MCP rate-limit
 
@@ -270,7 +273,160 @@ Routine admin; empty IR calendar; chat/Stocktwits as sole source; near-offer buy
 
 Never promote solely because a buyout was announced.
 
-### Ranking and sort
+## Artifact contract (required, both slots)
+
+The digest is the deliverable. A board that is mechanically correct and reader-hostile is
+still a failed run, so the acceptance criteria below are **machine-checked** — run the
+checker before you push, and fix the artifact if it fails.
+
+#### The contract marker
+
+Both boards carry a marker line near the top:
+
+```
+- **Contract:** `in-play-artifact-v1` · slot `open` · fire 2026-11-06 09:50 ET
+```
+
+The marker tells the checker (and the next run) which contract the artifact was built
+against. A missing or stale marker means an older copy of this spec produced it — re-read
+the skill and rebuild.
+
+#### Section order
+
+The two boards are read every session, so the shape must be predictable. Sections are
+matched by their normalized heading, so the exact wording is yours.
+
+**Open slot (`{date}-open.md`):**
+
+`The headline` → `What changed since the … open digest` → `Market context` →
+`Overnight → open` → **`What to watch at the open`** → `Tier A` → `Soft-A` →
+`Gap annex` → `TECH_WATCH` → `Tier B` → `Tier C` → `Source health` →
+`Method and caveats` → `Files`
+
+**Pre-close slot (`{date}.md`):**
+
+`The headline` → `What changed since the … pre-close digest` → `Market context` →
+`Tier A` → `Soft-A` → `Gap annex` → `TECH_WATCH` → `Tier B` → `Tier C` →
+`Overnight → pre-close` → `Overnight carry` → `Source health` →
+`Method and caveats` → `Files`
+
+Two rules make the order matter:
+
+- **The tradeable tiers come first, and the gap annex is the centrepiece.** The gap
+  annex is the part that says *which gaps held*; burying it under a 610-name TECH_WATCH
+  table hides the board's actual finding. Tier A → Soft-A → gap annex → TECH_WATCH →
+  Tier B → Tier C.
+- **`TECH_WATCH` is capped at 30 published rows and `Tier B` at 25**, but the heading
+  must still state the **full** tier count (`610 names; the top 30 by turnover are
+  published`). The count is what makes the tradeable-vs-technical imbalance visible —
+  a 610-vs-14 imbalance that only exists in a heading nobody reads is invisible.
+
+#### The "what changed" section is a table
+
+It must be a **table**, not prose, with these columns:
+
+| Ticker | Yesterday | Today | Change | Why |
+|---|---|---|---|---|
+
+The **why** column is not optional: a reader diffing two sessions needs to know *what
+caused* the move, not just that it happened.
+
+**The open slot's delta is computed against the previous day's OPEN board, and the
+overnight annex is sourced from the previous day's PRE-close board.** These are two
+different files and the open slot reads both. Say which file you read for each, by name:
+
+```
+**Delta source:** `us-stocks-in-play/2026-11-05-open.md` (the previous day's OPEN board —
+not the newest file in the directory, which is the pre-close board).
+**Annex source:** `us-stocks-in-play/2026-11-05.md` (the previous day's PRE-close board).
+```
+
+On the **first** fire of the open slot there is no prior open board. Say so plainly
+("no prior open board — this is the first link in the open-board chain") and publish no
+delta table. Do not silently omit the section.
+
+#### The open slot's payoff block
+
+The pre-close board has an overnight carry; **the open board has the payoff**. Add a
+`## What to watch at the open` section with **three names**, drawn from the overnight →
+open annex, each with:
+
+| Name | Prior close | Current price | Invalidation |
+|---|---|---|---|
+| **ABC** | $41.20 | $43.90 | below $41.20 |
+
+The **invalidation level** is the point: a name without one is a story, not a trade. The
+open board's job is to hand the watch list forward into the live tape, not to duplicate
+cron #23's after-close reactions.
+
+#### The pace measure publishes its own uncertainty
+
+The `0.125` opening-share constant is **measured, not exact** — the ten daily medians span
+**10.77% – 16.49%**. So a published pace of 1.9× is really 1.8×–2.3× depending on the
+session's regime. **Publish the band with the pace numbers**, not only in the Method
+section where a reader will not look:
+
+> pace 1.9× — measured against the 0.125 constant; the daily median spans 10.77%–16.49%,
+> so treat this as a screen, not a measurement.
+
+**`pace` and the pre-close slot's `RVol` are never comparable.** They are different
+quantities on different denominators. The open board labels its volume column `pace` and
+never `RVol`; the pre-close board labels its column `RVol` and never `pace`. The CSV must
+not carry the other slot's column.
+
+#### Catalyst provenance: every published row carries two fields
+
+| Field | Meaning |
+|---|---|
+| `has_catalyst_timestamp` | `yes` / `no` — did the catalyst carry a verified timestamp? |
+| `reason_without_timestamp` | the catalyst REASON, present even when there is no timestamp |
+
+**The missing tape costs the timestamp, not the reason.** The pre-open feed's catalyst
+column is often unusable ("no catalyst captured at this checkpoint"), but the routine
+researches catalysts itself via `web_search` against issuer IR and EDGAR filings — so a
+row with `has_catalyst_timestamp = no` still owes the reader the reason. A blank reason
+is a silent failure: it reads like "nothing happened" when in fact the reason exists and
+was simply never timestamped.
+
+#### No halt counts, ever
+
+The TradingView scanner's `halted` column is **null on every row**, so the halt state is
+**not measurable**. Publish that — "the halt state is not measurable this session" — and
+never a number. The strings `halted: 0`, `0 halts` and `no halts` must appear nowhere in
+the artifact or the reply.
+
+#### Run the checker before you push
+
+```bash
+C=/workspace/tools/check_in_play_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_in_play_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_in_play_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_in_play_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && grep -q 'in-play-artifact-v1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+python3 "$C" --md /workspace/us-stocks-in-play/$ARTIFACT_NAME \
+              --csv /workspace/us-stocks-in-play/$CSV_NAME \
+              --slot "$SLOT"
+```
+
+It asserts the section skeleton and its order, the contract marker, the pace band and the
+pace scale (every pace row must reconcile with `(session_vol / avg_vol_10d) / 0.125`),
+the slot's own measure label, the tier counts and caps, the delta table and the two
+source files it names, the watch block's three names and their levels, the two
+catalyst-provenance fields on every row, and the absence of any halt count. It exits 1
+and prints each failure.
+
+**If it fails, fix the artifact and run it again — do not report a clean run over a
+failing check.** Do not eyeball these things; the 2026-11-05 open board looked fine and
+failed six of them.
+
+## Ranking and sort
 
 1. Tier A → Soft-A → TECH_WATCH → B → C.
 2. Within tier: USD session $ volume descending.
