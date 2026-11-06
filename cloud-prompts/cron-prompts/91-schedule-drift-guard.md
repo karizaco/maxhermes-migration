@@ -47,6 +47,16 @@ depend on and makes the sidebar unreadable. Nothing else in the fleet checks thi
 a web-GUI save can flip the session binding the same way it collapses a day-of-week
 field.
 
+It has a THIRD job, added 2026-11-06: **the roster must be complete, and the spec each
+routine fetches at run time must still be the repo's.** A routine that is live but
+missing from the ground truth is skipped by EVERY check — never schedule-checked,
+never prompt-drift-checked, never conversation-checked — while the report still reads
+"all routines match". Measured 2026-11-06: the ground truth held 25 routines and the
+scheduler ran 26, so cron #26b (09:20 ET) was checked by nothing at all. And a
+deployed prompt can be byte-identical to the repo while the behaviour comes from a
+SPEC that differs from the repo — the failure that shipped cron #15's hardcoded UTC-4
+offset and cron #09's LIMIT caps. A prompt hash cannot see that.
+
 ## FETCH FALLBACK (certificate / TLS)
 
 Every `curl` in this routine goes to raw.githubusercontent.com or cdn.jsdelivr.net. If curl fails
@@ -276,6 +286,39 @@ Report every `PROMPT-DRIFT` line. A drift is NOT repaired here — the repo is t
 so the fix is to deploy the repo file, byte-exactly, and re-verify. Say which routines are
 affected.
 
+## STEP 2d — SKILL-SPEC DRIFT (the repo vs the spec the routine will actually fetch)
+
+Every routine fetches its PROCEDURE from this repo at RUN time. A deployed prompt can be
+byte-identical to the repo file while the behaviour comes from a spec that differs from the
+repo — measured 2026-11-03 on cron #15 (a hardcoded UTC-4 offset) and cron #09 (a LIMIT
+cap): both shipped wrong while the prompt hash reported "0 drift". The detector does this
+check. Run it AFTER STEP 2c, when the clone is on disk:
+
+```bash
+cd /workspace/guard
+python3 schedule-drift.py --tasks "$CHUNK" --repo /workspace/guard/mig ; echo "exit=$?"
+```
+
+The detector prints these, and the reply must carry them:
+
+- `roster: <n> live / <m> expected` — the two numbers MUST be equal. They were not on
+  2026-11-06: the ground truth held 25 routines and the scheduler ran 26. A difference is a
+  `ROSTER` finding, and it means a live routine is being checked by nothing.
+- `SPEC-DRIFT <routine>: repo <hash> vs live <hash>` — the spec the routine would fetch is
+  not the repo's file.
+- `SPEC-UNREACHABLE <routine>: <reason>` — the spec could not be fetched, or the prompt
+  names a file the repo no longer has.
+- `SPEC-SECTION-MISSING <routine>` — the spec still exists but lost the section it is
+  supposed to produce.
+- `SPEC-PATH-MISMATCH <routine>` — the prompt names a different spec than the contract
+  expects.
+
+The spec check needs the repo clone and the network. If the clone failed, the detector
+prints `spec drift: NOT CHECKED -- <reason>`: say exactly that in the reply — never claim
+the specs are clean when they were not checked.
+
+The detector ends with a `REPLY BLOCK` — copy those lines into your reply verbatim.
+
 ## STEP 3 — REPAIR ANY DRIFT
 
 For each routine the detector reports as DRIFT, call:
@@ -313,14 +356,17 @@ The reply is delivered to the user's chat. **Stay silent-ish when there is nothi
 a daily "everything is fine" message trains the user to ignore this routine, which is exactly
 how the #14 gap stayed invisible for a cycle.
 
-- **No drift and nothing else happened:** reply with exactly three lines:
+- **No drift and nothing else happened:** reply with exactly four lines:
   ```
   schedule guard: OK — <n> routines match the ground truth
+  roster: <n> live / <m> expected
   drift: 0
   conversation guard: OK — <routines checked> routines, <fires> recent runs, all created a new conversation
   ```
   `<n>` is the count the detector printed (`checked N routines against the ground truth`) — never a
   hardcoded fleet size, which goes stale whenever a routine is added, removed or recreated.
+  The roster line comes from the detector's `roster: ...` line, and its two numbers MUST be
+  equal — if they are not, this is not a clean run: report the `ROSTER` block instead.
   The conversation line comes from the detector's `CONVERSATIONS ...` line. If the
   conversation check could not run (no run table, the fetch failed), say
   `conversation guard: NOT CHECKED — <reason>` instead of claiming OK.
@@ -333,6 +379,21 @@ how the #14 gap stayed invisible for a cycle.
   ```
   Name the routine, the task_id, and the session_id. Say what it means in one clause:
   every run of that routine lands in the same thread instead of a fresh one.
+  **Only a `CONV-REUSE LIVE` line is a finding.** A `CONV-REUSE HISTORICAL` line is a
+  past reuse that the routine's own recent window no longer covers — report it as history
+  in one line, and do NOT accuse the routine of a live fault. Confirm a LIVE finding with
+  a fresh `view=runs` call first (rule 10).
+- **Roster or spec findings (schedule is fine):** report every line the detector printed:
+  ```
+  roster: <n> live / <m> expected
+  ROSTER MISMATCH: <n> live / <m> expected — <the routine names that differ>
+  SPEC-DRIFT <routine>: repo <hash> vs live <hash>
+  SPEC-UNREACHABLE <routine>: <reason>
+  ```
+  A `SPEC-DRIFT` means the routine is running a spec that is not the repo's, so its output
+  is not what the repo says it should be. A `SPEC-UNREACHABLE` means the routine may be
+  running a stale or missing spec. Name the routine and say which of the two it is.
+  If the spec check could not run, say `spec drift: NOT CHECKED — <reason>`.
 - **Drift found and repaired:** report it properly, because it is a real finding:
   ```
   schedule guard: DRIFT REPAIRED — <n> routine(s) had a corrupted day-of-week field
@@ -392,6 +453,13 @@ note: web-GUI saves corrupt the day-of-week field of weekday routines — change
     The run table is copied by hand. A typo must not become a false accusation.
 11. **Never invent a run-table line.** If a `view=runs` call fails, the routine simply has
     no evidence in this cycle — that is not a finding.
+12. **The roster must balance.** `roster: <n> live / <m> expected` — the two numbers must
+    be equal. A routine that is live but not in the ground truth is checked by NOTHING:
+    not the schedule, not the prompt drift, not the conversation guard. Report the gap; do
+    not paper over it.
+13. **Report the spec lines.** A prompt hash cannot see a stale spec. If the detector printed
+    `SPEC-DRIFT`, `SPEC-UNREACHABLE`, `SPEC-SECTION-MISSING` or `SPEC-PATH-MISMATCH`, report
+    it — a silent spec drift is exactly how cron #15 shipped a hardcoded UTC-4 offset.
 
 ================================================================
 END OF CRON PROMPT

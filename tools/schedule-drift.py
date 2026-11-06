@@ -1019,6 +1019,32 @@ def main():
               f"roster={roster['live']}/{roster['expected']} "
               f"spec_findings={len(spec_findings)} routines_with_runs={len(conv_checked)}")
 
+        # A REPLY BLOCK, so the lines the reply must carry are not left to the
+        # agent's initiative. Copy them verbatim.
+        print("--- REPLY BLOCK (copy these lines into the reply verbatim) ---")
+        print(f"roster: {roster['live']} live / {roster['expected']} expected")
+        if not roster["match"]:
+            print(f"ROSTER MISMATCH: {roster['live']} live / {roster['expected']} expected")
+            for n in roster["in_live_not_expected"]:
+                print(f"  live but not in the ground truth: {n}")
+            for n in roster["in_expected_not_live"]:
+                print(f"  in the ground truth but not live: {n}")
+        for s in spec_findings:
+            if s["kind"] == "SPEC-DRIFT":
+                print(f"SPEC-DRIFT {s['cron_name']}: repo {s['repo_hash']} vs live {s['live_hash']}")
+            elif s["kind"] == "SPEC-UNREACHABLE":
+                print(f"SPEC-UNREACHABLE {s['cron_name']}: {s['reason']}")
+            elif s["kind"] == "SPEC-SECTION-MISSING":
+                print(f"SPEC-SECTION-MISSING {s['cron_name']}: {s['reason']}")
+            elif s["kind"] == "SPEC-PATH-MISMATCH":
+                print(f"SPEC-PATH-MISMATCH {s['cron_name']}: {s['reason']}")
+        if spec_error:
+            print(f"spec drift: NOT CHECKED -- {spec_error}")
+        for r in live_reuse:
+            print(f"CONV-REUSE LIVE {r['cron_name']}: conversation {r['session_id']} was used by "
+                  f"{len(r['reused_in_runs'])} runs (task_id {r['task_id']})")
+        print("--- END REPLY BLOCK ---")
+
     return 1 if findings else 0
 
 
