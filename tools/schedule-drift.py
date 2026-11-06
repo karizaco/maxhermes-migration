@@ -114,7 +114,7 @@ LIMIT caps. A prompt hash cannot see that. For every routine the spec URL its DE
 prompt names is fetched and compared, byte for byte, with the repo's file; and the spec
 must still contain the section the routine is supposed to produce.
 """
-import argparse, glob, json, os, re, subprocess, sys, urllib.parse
+import argparse, base64, glob, json, os, re, subprocess, sys, urllib.parse
 from datetime import datetime, timedelta, timezone
 
 # ---------------------------------------------------------------------------
@@ -541,20 +541,26 @@ def find_repo_dir(explicit=None):
 def clone_repo(dest="/workspace/guard/mig"):
     """Clone the repo if it is not on disk. The spec check needs a repo-side copy
     that came over a DIFFERENT transport than the live fetch, or the comparison
-    would compare the contents API with itself."""
+    would compare the contents API with itself.
+
+    The token is NEVER put in the remote URL: `git clone` persists the URL into
+    `.git/config`, so an embedded token would leave the secret on disk. Use the
+    Basic extraheader instead (Bearer is rejected by git-over-HTTPS).
+    """
     if os.path.isdir(os.path.join(dest, "cloud-prompts")):
         return dest
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
     except OSError:
         pass
-    url = f"https://github.com/{REPO_SLUG}.git"
+    cmd = ["git", "clone", "-q", "--depth", "1",
+           f"https://github.com/{REPO_SLUG}.git", dest]
     token = os.environ.get("GITHUB_TOKEN", "")
     if token:
-        url = f"https://karizaco:{token}@github.com/{REPO_SLUG}.git"
+        b64 = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        cmd = ["git", "-c", f"http.extraheader=Authorization: Basic {b64}"] + cmd
     try:
-        r = subprocess.run(["git", "clone", "-q", "--depth", "1", url, dest],
-                           capture_output=True, text=True, timeout=180)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if r.returncode == 0 and os.path.isdir(os.path.join(dest, "cloud-prompts")):
             return dest
     except Exception:                                 # noqa: BLE001
