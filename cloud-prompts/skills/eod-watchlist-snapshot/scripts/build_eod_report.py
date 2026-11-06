@@ -165,8 +165,12 @@ def main() -> int:
     sector_rows.sort(key=lambda x: x[1])
 
     # ---- movers (volume >= 100k)
+    # A row flagged EX_DISTRIBUTION is not a MOVE: its price change is the mechanical effect of
+    # a distribution (SITC: -81.29% on a $3.00 special distribution). It must not be published
+    # as a mover, and it must not be the headline - the count is published in the caveats.
     liq = [r for r in rows if r["close"] and f(r["volume"]) >= 100000
-           and f(r["change_pct"]) == f(r["change_pct"])]
+           and f(r["change_pct"]) == f(r["change_pct"])
+           and "EX_DISTRIBUTION" not in (r.get("data_quality") or "")]
     gainers = sorted(liq, key=lambda r: -f(r["change_pct"]))[:10]
     losers = sorted(liq, key=lambda r: f(r["change_pct"]))[:10]
 
@@ -292,7 +296,7 @@ def main() -> int:
         A("The two columns are expected to disagree: the average is over every listed name "
           "(mostly micro-caps), the ETF is cap-weighted. This is an unweighted sector read.")
         A("")
-    A("## Top movers (volume ≥ 100,000)")
+    A("## Top movers (volume ≥ 100,000, ex-distribution rows excluded)")
     A("")
     for title, block in (("Gainers", gainers), ("Losers", losers)):
         A(f"### {title}")
@@ -365,6 +369,12 @@ def main() -> int:
       "a few basis points. The ETF moves are a read of the tape, not the official settlement.")
     A("- **The price history is split-adjusted**, so the moving averages, the ATR and the 52-week "
       "extremes are on the same adjusted basis as the session close.")
+    nd = manifest.get("ex_distribution_rows", 0)
+    if nd:
+        A(f"- **{nd} rows are flagged `EX_DISTRIBUTION` and are EXCLUDED from the movers table "
+          f"and from the headline**: their price change is the mechanical effect of a "
+          f"distribution, not a market move. Their change % is still published in the row, and "
+          f"the count is here so the exclusion is visible.")
     A(f"- **Base columns are unchanged from the published session file**: the derive stage adds "
       f"columns and the carrier rule; it does not restate a single price, volume, P/E, sector or "
       f"name. The only base value that changes is `market_cap` on a row that now carries its "
