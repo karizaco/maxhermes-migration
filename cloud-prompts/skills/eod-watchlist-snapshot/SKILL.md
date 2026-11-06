@@ -450,42 +450,50 @@ does not publish and that Yahoo's own quote service timestamps to an EARLIER ses
 those rows the two sources disagree on the price AND on whether a print occurred, so **no
 close is published** — check them against CNBC/CTA and publish the count.
 
-### `change_pct` — the PRICE change, measured against the PRIOR SESSION'S PUBLISHED CLOSE
+### `change_pct` — the PRICE change, on ONE consistent basis
 
-**`change_pct` is the session's price change against the prior session's settled close**, and
-that is the only basis the archive uses: 2026-11-02 … 2026-11-05 all published the price
-change, and a change % that cannot be verified from the file's own two published closes is not
-a change %.
+**`change_pct` is the session's price change against the prior session's close, and the price
+change is the archive's convention** — 2026-11-02 … 2026-11-05 all published it. A change %
+that cannot be reconciled with the ARCHIVE'S OWN record — the prior session's published close —
+is not a change %, because a consumer joining two files would compute a different number.
 
-**The two wrong anchors, both measured on the 2026-11-06 fire (233 of 4,892 rows, median
-error 0.46pp, max 5.2pp):**
+Three candidates for the anchor, and two things break the obvious one. Measured on the
+2026-11-06 fire: **233 of 4,892 rows** published a change that was not the session's price
+change (median error 0.46pp, max **5.2pp**).
 
-- **A quote service's `previous_close` is DIVIDEND-ADJUSTED for distribution payers.** The
-  published "change" silently becomes a total return. AB published **+0.26%** while the price
-  change was **−2.32%** — a $0.90 distribution on a $34.90 close, and the sign flipped. The
-  same failure hit ARLP, BSM, ATHR and BRFH.
-- **A daily bar whose date was never asserted is a STALE bar**, so "the previous bar" can be
-  two sessions back (ARL published +9.10% for a +3.90% session).
+| candidate | what it is | when it is wrong |
+|---|---|---|
+| **the prior session's published close** | the archive's own record — the default anchor | it is the RAW print, so it is not comparable across a reverse split (CDT: 0.0423 → 1.31 reads **+2997%** for a session that moved +54.85%) |
+| the quote service's `previous_close` | split- **and** dividend-adjusted | on an ex-distribution date it sits BELOW the price basis (AB: 34.02 against 34.90, which published a −2.32% session as **+0.26%**) |
+| the bar series' prior close | split-adjusted, from the same history pull | its feed may not have processed a split yet (CDT's prior bar is the raw 0.0423), and a bar whose DATE was never asserted is a STALE bar — "the previous bar" can be two sessions back, which is how ARL published +9.10% for a +3.90% session |
 
-So the derive stage OWNS this column and resolves the anchor itself:
+**So the anchor is resolved in this order, and the row is told which case it is:**
 
-1. the **prior session's published close** (`--prior-csv`) — the fleet's own record;
-2. else the bar series' prior close, **only if that bar's date is the prior session's date**;
-3. else no anchor → the change cannot be verified, the row is flagged `NO_PRIOR_CLOSE`, and
-   the count is published.
+1. **the prior session's published close**;
+2. a quote prior close **more than 5% above** it → a **reverse split** intervened: the
+   published prior close is a raw pre-split print, so the quote's split-adjusted prior close
+   becomes the anchor and the row is flagged **`SPLIT_ADJUSTED`**;
+3. a quote prior close **more than 0.5% below** it → an **ex-distribution**: the quote is
+   dividend-adjusted, so **the PRICE change stands** on the published basis and the row is
+   flagged **`EX_DISTRIBUTION`**;
+4. no published prior close → the bar series' prior close, **with its date asserted**;
+5. no anchor at all → `NO_PRIOR_CLOSE`.
 
-A published value that disagrees with the recomputed one by more than 0.05pp is **replaced**;
-a value that agrees is left byte-for-byte alone. `gap_pct` uses the same anchor, so a gap and
-a change are never measured against different sessions. The checker asserts the result against
-the prior session's file (`--prior-csv`), so the artifact is gated on it.
+`gap_pct` uses the same anchor, so a gap and a change are never measured against different
+sessions. The checker asserts the result against the prior session's file (`--prior-csv`), so
+the artifact is gated on it. A value that disagrees with the recomputed one by more than
+0.05pp is **replaced**; a value that agrees is left byte-for-byte alone. **`--quote-prev` is
+required**: without the quote service's prior close, a split cannot be told from a move.
 
 ### The ex-distribution rows — the price change is not a market move, and the row says so
 
 **On an ex-distribution date the price change is a mechanical artefact, and a reader's screen
-shows a DIFFERENT number.** SITC went ex a $3.00 special distribution on 2026-11-06 and reads
-**−81.3%** on the raw price basis (3.57 → 0.6678) against the screen's **+17.2%**
-(0.57 → 0.6678, the dividend-adjusted basis). **37 of 4,775 rows have a prior close that
-differs by more than 2% between the two bases.**
+shows a DIFFERENT number.** SITC went ex a $3.00 special distribution on 2026-11-06: the price
+change is **−81.29%** (3.57 → 0.6678) and the screen's dividend-adjusted basis reads
+**+17.2%** (0.57 → 0.6678). **37 of 4,775 rows have a prior close that differs by more than 2%
+between the two bases.** The file publishes the PRICE change — the archive's convention, and
+the one a reader can reconcile against the published closes — and the row is flagged
+`EX_DISTRIBUTION` so the divergence is visible.
 
 **So the file publishes the PRICE change (the archive's convention, verifiable from the two
 published closes) and FLAGS the affected rows `EX_DISTRIBUTION`** — the flag is set when the
@@ -524,6 +532,7 @@ precedence (most severe first):
 | `NO_HISTORY` | no session bar in the price history, so no derived column exists |
 | `NO_PRIOR_CLOSE` | the prior session's settled close could not be resolved, so the change % could not be verified |
 | `EX_DISTRIBUTION` | the row went ex a distribution between the sessions: the price change is a mechanical artefact, not a market move (the screen's dividend-adjusted basis differs — the count is published) |
+| `SPLIT_ADJUSTED` | a split happened between the sessions: the change % is measured on the split-adjusted basis, so the two RAW published closes are not comparable (CDT, JSPR, ONCO) |
 | `NO_PE` | no trailing P/E for the row |
 | `NO_SECTOR` | no GICS sector for the row |
 | `OK` | none of the above — and it appears only alone |

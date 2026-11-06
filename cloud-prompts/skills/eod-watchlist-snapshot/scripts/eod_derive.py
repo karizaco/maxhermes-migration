@@ -110,7 +110,8 @@ DERIVED_COLUMNS = ["rel_volume", "pct_from_52w_high", "pct_from_52w_low",
 OUT_COLUMNS = BASE_COLUMNS + DERIVED_COLUMNS
 
 FLAG_PRECEDENCE = ["NO_CAP", "CAP_CARRIED", "HIGH_LOW_UNAVAILABLE", "RANGE_ADJUSTED",
-                   "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION", "NO_PE", "NO_SECTOR", "OK"]
+                   "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION", "SPLIT_ADJUSTED",
+                   "NO_PE", "NO_SECTOR", "OK"]
 
 # The US numeric rule: 4 significant figures with the fractional trailing zeros stripped,
 # except values >= 100000 which keep full precision. A plain "%.4g" renders 830500 as
@@ -398,6 +399,7 @@ def main() -> int:
     change_filled = 0
     change_unverified = 0
     ex_divid_rows = []
+    split_rows = []
 
     for r in base:
         t = r["ticker"]
@@ -419,31 +421,65 @@ def main() -> int:
             range_flag = "RANGE_ADJUSTED"
 
         # --- the anchor: the prior session's SETTLED close
+        # THE ANCHOR — the prior session's close, on ONE consistent basis.
+        #
+        # The published change % must be reconcilable with the ARCHIVE'S OWN record: the
+        # prior session's published close. That is what a consumer joining two files gets.
+        # Two things break it, and both are visible in the candidates:
+        #
+        #   * a REVERSE SPLIT between the sessions: the published prior close is the RAW
+        #     pre-split print, so it is not comparable with the session's post-split close
+        #     (CDT: 0.0423 -> 1.31 reads +2997% for a session that moved +54.85%). The quote
+        #     service's prior close IS split-adjusted, so it becomes the anchor and the row is
+        #     flagged SPLIT_ADJUSTED.
+        #   * an EX-DISTRIBUTION: the quote service's prior close is dividend-adjusted and
+        #     sits BELOW the published basis (AB: 34.02 against 34.90, which published a
+        #     -2.32% session as +0.26%). Here the PRICE change stands on the published basis
+        #     and the row is flagged EX_DISTRIBUTION - the divergence is named, not hidden.
+        #
+        # The bar series' prior close is the third candidate: split-adjusted, but its feed may
+        # not have processed a split yet (CDT's bar prior bar is the raw 0.0423), and a bar
+        # whose DATE was never asserted is a stale bar - "the previous bar" can be two
+        # sessions back, which is how ARL published +9.10% for a +3.90% session.
         anchor = None
         anchor_date = ""
-        if t in prior_session_close:
-            anchor = prior_session_close[t]
-            anchor_date = prior_date
-        elif d["_prior_close"] is not None and prior_date and \
-                d["_prior_close_date"] == prior_date:
-            anchor = d["_prior_close"]
-            anchor_date = d["_prior_close_date"]
-        elif d["_prior_close"] is not None and not prior_date:
-            anchor = d["_prior_close"]
-            anchor_date = d["_prior_close_date"]
-
-        # --- ex-distribution: the quote service's prior close is dividend-adjusted, so on an
-        # ex-date it differs from the prior session's PUBLISHED close. The published change % is
-        # the PRICE change (the archive's convention, verifiable from the two published closes),
-        # and the row is FLAGGED so a reader knows the move is not a market move.
-        ex_div = False
+        anchor_source = ""
+        published_prior = prior_session_close.get(t)
         qp = quote_prev.get(t)
-        # A distribution LOWERS the quote service's dividend-adjusted prior close. A prior close
-        # that is HIGHER than the published one is not a distribution - it is a stale quote, and
-        # the correction above already fixes that row's change % without a flag.
-        if qp and anchor and qp < anchor * 0.995:
-            ex_div = True
-            ex_divid_rows.append((t, round(anchor, 4), qp))
+        bar_prior = d["_prior_close"]
+        bar_asserted = bool(prior_date) and d["_prior_close_date"] == prior_date
+        ex_div = False
+        split_row = False
+
+        if published_prior is not None:
+            anchor, anchor_date, anchor_source = published_prior, prior_date, "prior_published"
+        elif bar_prior is not None and bar_asserted:
+            anchor, anchor_date, anchor_source = bar_prior, d["_prior_close_date"], "bar"
+        elif bar_prior is not None:
+            anchor, anchor_date, anchor_source = bar_prior, d["_prior_close_date"], "bar_unasserted"
+
+        if qp and published_prior is not None:
+            if qp > published_prior * 1.05:
+                # a reverse split: the published prior close is a raw pre-split print
+                anchor, anchor_source = qp, "quote_split_adjusted"
+                split_row = True
+                split_rows.append((t, round(published_prior, 4), qp))
+            elif qp < published_prior * 0.995:
+                # an ex-distribution: the price change stands on the published basis. The
+                # threshold is 0.5%, because a distribution can be a few percent (AB: 2.6%)
+                # and the screen's number then differs from the price change by that much.
+                ex_div = True
+                ex_divid_rows.append((t, round(published_prior, 4), qp))
+        elif qp and anchor and anchor_source.startswith("bar") and qp > anchor * 1.05:
+            anchor, anchor_source = qp, "quote_split_adjusted"
+            split_row = True
+            split_rows.append((t, round(anchor, 4), qp))
+
+        if bar_prior and published_prior and \
+                abs(bar_prior - published_prior) / published_prior > 0.05:
+            # the bar and the published prior close disagree by more than 5%: a split intervened
+            split_row = True
+            split_rows.append((t, round(published_prior, 4), round(bar_prior, 4)))
 
         base_change = f(row["change_pct"])
         recomputed = None
@@ -482,6 +518,8 @@ def main() -> int:
             change_unverified += 1
         if ex_div:
             fl.append("EX_DISTRIBUTION")
+        if split_row:
+            fl.append("SPLIT_ADJUSTED")
         if row["pe_ratio"] == "":
             fl.append("NO_PE")
         if row["sector"] == "":
@@ -565,6 +603,9 @@ def main() -> int:
         "change_pct_unverified": change_unverified,
         "prior_session": prior_date,
         "ex_distribution_rows": len(ex_divid_rows),
+        "split_adjusted_rows": len(split_rows),
+        "split_adjusted_detail": [{"ticker": t, "anchor_before": a,
+                                    "split_adjusted_prior_close": b} for t, a, b in split_rows],
         "ex_distribution_detail": [{"ticker": t, "prior_published_close": a,
                                      "quote_adjusted_prior_close": q} for t, a, q in ex_divid_rows],
         "change_pct_basis": "the session's PRICE change against the prior session's published "

@@ -259,6 +259,12 @@ def main() -> int:
         "HIGH_LOW_UNAVAILABLE": "high/low left empty on purpose — no range that brackets the close",
         "RANGE_ADJUSTED": "high/low came from the vendor's day range, not the daily bar",
         "NO_HISTORY": "no session bar in the price history, so no derived column exists",
+        "NO_PRIOR_CLOSE": "the prior session's settled close could not be resolved, so the "
+                          "change % could not be verified",
+        "EX_DISTRIBUTION": "the row went ex a distribution between the sessions: the price "
+                           "change is a mechanical artefact, not a market move",
+        "SPLIT_ADJUSTED": "a split happened between the sessions: the change % is on the "
+                          "split-adjusted basis, so the two raw closes are not comparable",
         "NO_PE": "no trailing P/E for the row",
         "NO_SECTOR": "no GICS sector for the row",
         "OK": "none of the above",

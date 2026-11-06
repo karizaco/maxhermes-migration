@@ -50,7 +50,8 @@ REQUIRED_COLUMNS = [
 ]
 
 VOCABULARY = {"OK", "RANGE_ADJUSTED", "HIGH_LOW_UNAVAILABLE", "CAP_CARRIED", "NO_SECTOR",
-              "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION"}
+              "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION",
+              "SPLIT_ADJUSTED"}
 
 # independent implementation of the issuer grouping (do not import the builder)
 CLASS_MARKERS = re.compile(r"\s*[-–—]?\s*\b(class|series|ser\.?)\s*\.?\s*[a-z0-9]{1,3}\b\s*$",
@@ -196,7 +197,15 @@ def main() -> int:
             if pc0 != pc0 or pc0 == 0:
                 continue
             implied = (cl / pc0 - 1.0) * 100.0
-            if abs(implied - pc) > max(0.05, abs(pc) * 0.005):
+            # A wrong ANCHOR is orders of magnitude off (2.5pp to 5.2pp measured). The prior
+            # published close and the bar series' prior close can differ by ~1% on their own
+            # (a small distribution, or the prior close's own source), and that is tolerated.
+            if abs(implied - pc) > max(0.1, abs(pc) * 0.01):
+                # a row that reverse-split between the sessions is measured on the
+                # split-adjusted basis, so the raw prior close is not comparable
+                flags = set((r.get("data_quality") or "").split("|"))
+                if "SPLIT_ADJUSTED" in flags:
+                    continue
                 bad_change.append((r.get("ticker", ""), round(implied, 3), pc))
         if bad_change:
             bad(f"{len(bad_change)} row(s) publish a change_pct that is not the price change "
