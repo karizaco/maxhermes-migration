@@ -428,7 +428,7 @@ def evaluate(setups, brief_date, bars_by_sym, closes_by_sym):
                 last_close = d.get("close")
                 last_move = d.get("daily_return_pct")
         if last_close is None and bars:
-            last_close = bars[last_session].get("c")
+            last_close = bars.get(last_session, {}).get("c")
         if last_move is None and bars:
             # the bridge did not carry this name (or this session): derive the move
             # from the chart's own closes so the row is never blank.
@@ -444,19 +444,19 @@ def evaluate(setups, brief_date, bars_by_sym, closes_by_sym):
                     last_close = bars[last_session].get("c")
 
         level, direction = level_and_direction(s.get("invalidation") or "")
+        side_assumed = False
         if direction == "auto" and level is not None:
-            # No side in the wording: the gap's sign decides. A gap-up setup is a long
-            # (it breaks if price falls back), a gap-down setup is a short (it breaks if
-            # price recovers). Either way the ADVERSE direction is the one the gap did
-            # NOT point in.
+            # The cell carries a LEVEL but no side (a brief published before the side was
+            # required). The side is then ASSUMED from the gap's sign, and the row says so.
+            # The assumption is not a guess dressed up as knowledge: post-fix briefs publish
+            # the side, so this path only runs for legacy briefs — and the legacy briefs
+            # were built with the convention the assumption encodes.
             try:
                 gap = float(s.get("gap_pct"))
             except (TypeError, ValueError):
                 gap = None
-            if gap is None:
-                direction = "down"
-            else:
-                direction = "down" if gap >= 0 else "up"
+            direction = "down" if gap is None or gap >= 0 else "up"
+            side_assumed = True
 
         covered = sessions_between(bars, brief_date, last_session) if bars else []
         if not covered and days:
@@ -506,6 +506,9 @@ def evaluate(setups, brief_date, bars_by_sym, closes_by_sym):
         out.append({**s, "last_session": last_session, "last_close": last_close,
                     "last_move": last_move, "verdict": verdict, "reason": reason,
                     "covered": covered, "level": level})
+        if side_assumed:
+            out[-1]["reason"] += (" — the reviewed brief published the level without its "
+                                  "side, so the side was assumed from the gap's sign")
         if s.get("level_derived"):
             out[-1]["reason"] += (" — level derived from the reviewed brief's own "
                                   "published prior close (that brief predates the "
@@ -568,6 +571,15 @@ def main() -> int:
                 c = d.get("close")
                 if c is not None:
                     bars_by_sym[sym][d["date"]] = {"c": float(c)}
+
+    # DROP THE IN-PROGRESS SESSION. The review runs pre-market on day D, so the last
+    # COMPLETED regular session is the last one before D. A feed that has already
+    # published a bar for D (a partial, still-trading session) must not be treated as a
+    # settled close — it was the cause of a KeyError here, and a settled close it is not.
+    for sym, bars in list(bars_by_sym.items()):
+        bars_by_sym[sym] = {d: b for d, b in bars.items() if d < today.isoformat()}
+    for sym, days in list(closes_by_sym.items()):
+        closes_by_sym[sym] = [d for d in days if d.get("date", "") < today.isoformat()]
 
     rows, last_session = evaluate(setups, brief_date, bars_by_sym, closes_by_sym)
     if not last_session:

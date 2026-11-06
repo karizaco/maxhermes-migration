@@ -428,22 +428,33 @@ carries these columns. A setup without a level is an opinion.
 
 **`Key level` — deterministic ladder, first match wins:**
 
-1. A level published by the **sourced catalyst** (an all-stock deal's implied value for the other
-   leg, an offering price, a 52-week high) → that level, with the source named in the cell.
-2. Otherwise → the **prior close** — the gap-fill level. The question a gap raises is "does it
-   hold", and the prior close is the level that answers it.
+1. The **prior close** — the gap-fill level. The question a gap raises is "does it hold", and the
+   prior close is the level that answers it.
+2. A level published by the **sourced catalyst** (an all-stock deal's implied value for the other
+   leg, an offering price, a 52-week high) replaces the above — with the source named in the cell.
 
-**`Invalidation` — deterministic ladder, first match wins:**
+**`Invalidation` — the level that kills the setup, always a DOWNSIDE trigger:**
 
-1. The **event** that kills it, when the catalyst publishes one ("if the guide comes in below
-   $1.95 adj EPS", "if the 16:00 ET call is cancelled").
-2. Otherwise the **price**:
-   - gap-up (`Gap %` > 0): a trade back **to or below the prior close** — the gap filled, the
-     thesis is dead.
-   - gap-down (`Gap %` < 0): a trade **below the pre-market low** — the pre-market seller won.
+- gap-up: **back to or below the prior close** — the gap filled, the move failed.
+- gap-down: **below the pre-market low** — the pre-market seller won.
+- where the catalyst publishes a number that decides it instead ("if the 16:00 ET guide is below
+  $1.95"), that number and its side.
 
-Every `Invalidation` cell MUST contain a digit and must not be a placeholder. A vague cell
-("if momentum fades") is a broken cell, not a soft one.
+The setup the brief publishes is a LONG in both cases — buy the gap, or buy the flush — so the
+invalidation is always the downside level that says the long is wrong. That is the convention the
+2026-11-06 artifact shipped, and it is the one this contract pins.
+
+> **Write the side into the cell, not just the number.** `back to/below prior close 404.40`,
+> `below PM low 29.14` — not `404.40`. The next morning's review is a mechanical test on this
+> cell, and a bare number does not say which side of the level breaks the thesis: the reviewer has
+> to infer it, and an inference that is right for one convention is silently wrong for another.
+> The 2026-11-05 brief published `478.69` with no side and the 2026-11-06 brief published
+> `back to/below prior close 404.40` — two briefs, two readings, and the review can only be
+> correct for one of them. Carry the side and the loop stops guessing.
+>
+> Every `Invalidation` cell MUST contain a digit **and** a side word (`above`, `below`, `under`,
+> `over`, `back to`) and must not be a placeholder. A vague cell ("if momentum fades") is a broken
+> cell, not a soft one.
 
 The pre-market range is published, not just the last price: a reader needs to know whether the gap
 is holding or already half-filled, and the last price alone cannot say.
@@ -462,7 +473,9 @@ ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prio
 - `prior_close` = the last completed regular session's close. `gap_pct` = the pre-market move
   vs it. `prior_session_change_pct` = that session's own % move (the "yesterday's tape" number).
 - `key_level` and `invalidation` carry the §C2 values for every name, so the next morning's
-  review (§C5) can test them mechanically.
+  review (§C5) can test them mechanically. **`invalidation` carries the SIDE as well as the
+  level** (`back to/below prior close 404.40`, `below PM low 29.14`) — the review is a mechanical
+  test on that cell, and a bare number leaves the direction to be inferred.
 - `setup_published` = `yes` for every name published as a setup in §2 (the theme clusters) and
   `no` otherwise. **This column is what makes the next run's review possible.**
 - `setup_theme` = the cluster label for that name (empty for names not in a cluster).
@@ -496,6 +509,13 @@ PY
 ```
 
 A non-zero exit means **do not push** — fix the CSV, then push.
+
+> **A wording slip must not cost the day's brief.** The common failure is the invalidation
+> column published as a bare level (`478.69`) instead of a level with its side
+> (`below PM low 29.14`). The checker names the offending row and the expected form, and the CSV
+> is one edit away: repair the cell per §C2's ladder, then re-run the checker. Repair the cell and
+> push; do not abandon the artifact over a missing word. But do not publish a cell that leaves the
+> next morning's review guessing which side of the level breaks the thesis.
 
 The same gate covers the commit subject: the push subject must carry the routine number, i.e.
 the string `cron 26` must appear in the subject of the commit that last touched the artifact.
@@ -544,6 +564,12 @@ It appears in EVERY run, directly under `## Bottom line`, and carries exactly th
    MCP bridge (`market-recap price_history`) and the Yahoo chart API for the intraday extremes,
    and prints the table plus a JSON sidecar. It prints the legend line too — paste it above the
    table.
+
+   **The trigger side comes from the reviewed brief's own cell.** `invalidation` reads
+   `below PM low 29.14` / `back to/below prior close 404.40`, so the direction is stated rather
+   than inferred; a brief published before the side existed falls back to the gap's sign, and the
+   row says the side was assumed. Either way the verdict is a mechanical test on the level the
+   brief published.
 4. **The legend defines the columns, in one line**, because "yesterday" is ambiguous when a
    session was missed:
    - `Yesterday's close` = the close of the **last completed regular session** at the time of

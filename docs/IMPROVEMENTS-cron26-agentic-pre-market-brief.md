@@ -510,3 +510,97 @@ C5 accepts, and it needs no published level to run.
 **Revert**
 
 `git revert <the commit below>`.
+
+---
+
+# Round 3 — 2026-11-06, 14:30 UTC: the audit of the first v2 artifact, and the side it found
+
+The 2026-11-06 08:30 ET fire was the first to run under ARTIFACT FORMAT CONTRACT v2. This round
+audits that artifact and fixes the one real weakness it exposed.
+
+## 14. The audit result — the contract holds
+
+`daily-briefs/2026-11-06-pre-market.md` (50,273 B) + `.csv` (117,111 B, 696 rows) published at
+13:45:02 UTC with the subject **`cron 26 agentic-pre-market-brief 2026-11-06`** — the routine
+number is in the subject, as the contract requires.
+
+Both gates, run against the REMOTE bytes (fetched through the contents API, not raw):
+
+- `tools/check_premarket_brief.py` → **CONTRACT OK, 6/6 clauses** (C0 marker, C1 Bottom line,
+  C2 levels on 90 published names, C3 the 21-column header + every row, C5 the yesterday section).
+- `tools/check_brief_consistency.py` → **consistent** (113 table rows, 25 prose ticks, 696 CSV
+  names).
+
+The four promises, present in the published artifact: `## Bottom line` at line 15 with exactly
+three lines (NVDA 189.55 / invalidation 181.60; the payrolls risk; IREN 20.89), `## Yesterday's
+brief` at line 21, `## 1. TL;DR` at line 140; the level columns on every theme/gaps/losers row;
+the CSV header exactly the 21 pinned columns; and a `Thesis held?` column with 112 scored rows
+(67 HELD, 41 BROKE, 2 PARTIAL, 2 UNJUDGED).
+
+The section's numbers were checked against a FRESH pull of the MCP bridge, not against the
+artifact's own numbers: AMD 404.40 / −17.26%, ALNT 75.48 / −5.13%, ADMA 13.21 / +26.05%, NVDA
+181.60 / −9.26% — all four agree to the cent.
+
+## 15. The two briefs used DIFFERENT ladders — and the invalidation cell carried no side — HIGH
+
+The 2026-11-05 brief (published 10:52 UTC today — the delayed replay of that day's fire, rebuilt
+under v2) published, for AMD, `key_level = 450.1` (the pre-market low) and `invalidation = 478.69`
+(the pre-market high) — **a bare number**. The 2026-11-06 brief published, for ASTS,
+`key_level = 30.20` (the prior close) and `invalidation = below PM low 29.14` — **a phrase with
+its side**.
+
+Two briefs, two ladders, and in the Nov 5 brief the invalidation's SIDE is not stated anywhere in
+the CSV: a bare `478.69` does not say which side of the level breaks the thesis. The review is a
+mechanical test on that cell, so it has to infer the side — and an inference is right for one
+convention and silently wrong for the other. Auditing the 113 classifiable rows of the Nov 5
+brief: 62 took the pre-market HIGH as the invalidation on a gap-down name, 47 the pre-market LOW
+on a gap-up name, 1 neither.
+
+**Fix (three parts):**
+
+1. **The spec pins ONE ladder** — the one the live routine actually shipped on 2026-11-06:
+   `key_level` = the prior close (the gap-fill level); `invalidation` = always a DOWNSIDE trigger
+   (`back to/below prior close X` for a gap-up, `below PM low Y` for a gap-down), because the setup
+   the brief publishes is a long in both cases — buy the gap, or buy the flush.
+2. **The invalidation cell must carry its side** — `back to/below prior close 404.40`, not
+   `404.40`. The checker now fails a setup row whose invalidation has a level but no side word
+   (`above`/`below`/`under`/`over`, or an `event`/`if` clause), and the contract test grew a 17th
+   mutation for it. The 2026-11-06 artifact already passes this clause; the 2026-11-05 brief
+   (bare numbers, published before the requirement) fails it, which is the correct outcome for a
+   gate that is forward-looking.
+3. **A wording slip must not cost the day's brief.** The checker is a hard gate before the push,
+   so a missing side word would otherwise mean NO artifact. §C4 now says: repair the cell
+   (`below`/`above` per the ladder), re-run the checker, push — do not abandon the artifact over a
+   missing word.
+
+The helper's legacy path (a reviewed brief whose cell has no side) keeps the gap-sign inference
+that produced the 2026-11-06 artifact, and now says so in the row: *"the reviewed brief published
+the level without its side, so the side was assumed from the gap's sign."* Re-running the helper
+against the 2026-11-05 brief now reproduces **111 of 112** of the published verdicts; the one
+difference (NWGL) is the run's own override, where it marked the name UNJUDGED because the
+reviewed level did not reconcile with the scanner's price — the run being more careful than the
+helper.
+
+## 16. A partial, still-trading session bar leaked into the review — HIGH
+
+The helper crashed with `KeyError: '2026-11-06'` on the 2026-11-06 run. Cause: Yahoo's chart had
+already published a bar for the CURRENT session, and the helper took "the most recent bar
+anywhere" as the last completed session — but the review runs pre-market, so the current session
+is not a settled close. The helper now drops every bar dated on or after the review's own date
+(the last COMPLETED regular session is the last one before it) and looks up the session bar
+defensively.
+
+## Files changed (round 3)
+
+- `cloud-prompts/skills/agentic-pre-market-brief/SKILL.md` — §C2 pins the ladder and requires the
+  side in the cell; §C3 says the CSV's invalidation carries the side; §C4 adds the repair path; §C5
+  says where the trigger side comes from.
+- `tools/check_premarket_brief.py` — a setup row's invalidation must carry a side word (or an
+  event clause) as well as a level.
+- `tools/yesterday_review.py` — the in-progress session bar is dropped; the legacy side inference
+  says it is assumed.
+- `tools/test_premarket_brief_contract.py` — the synthetic artifact follows the shipped ladder and
+  carries the sides; a 17th mutation (a level with no side).
+
+The contract is fetched at RUN time, so these land on the next fire (Monday 2026-11-09 08:30 ET)
+with **no `cron_update`** and no prompt drift.

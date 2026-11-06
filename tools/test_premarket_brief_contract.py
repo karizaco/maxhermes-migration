@@ -49,12 +49,12 @@ ROWS = [
     # key_level, invalidation, theme, published
     ["AMD", "Advanced Micro Devices", 452.02, 477.77, 450.10, 404.40, 11.78,
      -17.26, 1282734, 23659987, 5.42, 660172878478, "Technology", "NASDAQ",
-     "pass", "pass", "yes", "404.40",
-     "a trade back to or below 404.40 - the gap filled", "C1 Semis", "yes"],
+     "pass", "pass", "yes", "477.77",
+     "below 450.10 - the gap filled", "C1 Semis", "yes"],
     ["MRVL", "Marvell Technology", 151.32, 156.70, 150.00, 133.55, 13.31,
      -16.43, 1005470, 25582543, 3.93, 117110000496, "Technology", "NASDAQ",
-     "pass", "pass", "yes", "133.55",
-     "a trade back to or below 133.55 - the gap filled", "C1 Semis", "yes"],
+     "pass", "pass", "yes", "156.70",
+     "below 150.00 - the gap filled", "C1 Semis", "yes"],
     ["INTC", "Intel", 62.20, 63.10, 61.40, 59.97, 3.72, -8.81, 990000,
      25582543, 3.87, 317008000000, "Technology", "NASDAQ", "pass", "pass", "no",
      "59.97", "a trade back to or below 59.97 - the gap filled", "", "no"],
@@ -84,7 +84,7 @@ down_3pct: 1
 
 ## Bottom line
 
-1. **The one setup** — AMD above 452.02 pre-market, invalidated by a trade back to or below 404.40.
+1. **The one setup** — AMD above 452.02 pre-market, invalidated by a trade back below 450.10.
 2. **The one risk** — the 08:30 ET print is the last one before the 09:30 ET cash open, so a gap that fades costs the fill.
 3. **The one thing to watch** — 404.40, the prior close: AMD holds above it and the gap is real.
 
@@ -96,8 +96,8 @@ prior close.
 
 | Name | Setup (yesterday) | Yesterday's close | Today's move | Thesis held? |
 |---|---|---|---|---|
-| NVDA | C5 AI complex | 181.60 | -9.26% | BROKE (the 206.69 invalidation was traded through on 2026-11-05) |
-| MRVL | C1 Semis | 133.55 | -16.43% | HELD (the 133.55 invalidation held) |
+| NVDA | C5 AI complex | 181.60 | -9.26% | BROKE (the level 206.69 was traded through on 2026-11-05) |
+| MRVL | C1 Semis | 133.55 | -16.43% | HELD (the level 133.55 held) |
 
 ## 1. TL;DR — one theme, clustered
 
@@ -109,20 +109,20 @@ prior close.
 
 | Ticker | Prior close | Pre-market last | Gap % | PM range | Key level | Invalidation |
 |---|---|---|---|---|---|---|
-| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 404.40 | a trade back to or below 404.40 - the gap filled |
-| MRVL | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 133.55 | a trade back to or below 133.55 - the gap filled |
+| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 477.77 | below 450.10 - the gap filled |
+| MRVL | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 156.70 | below 150.00 - the gap filled |
 
 ## 3. Pre-market gaps — top 25 market-wide
 
 | Ticker | Name | Prior close | Pre-market last | Gap % | PM range | Key level | Invalidation | Pm vol | %ADV | Mkt cap |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **MRVL** | Marvell Technology | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 133.55 | a trade back to or below 133.55 - the gap filled | 1,005,470 | 3.9% | 117,110M |
+| **MRVL** | Marvell Technology | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 156.70 | below 150.00 - the gap filled | 1,005,470 | 3.9% | 117,110M |
 
 ## 4. Top losers — top 10 market-wide
 
 | Ticker | Name | Prior close | Pre-market last | Gap % | PM range | Key level | Invalidation | Pm vol | %ADV | Mkt cap |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **INTC** | Intel | 59.97 | 62.20 | +3.72% | 61.40 - 63.10 | 59.97 | a trade back to or below 59.97 - the gap filled | 990,000 | 3.9% | 317,008M |
+| **INTC** | Intel | 59.97 | 62.20 | +3.72% | 61.40 - 63.10 | 63.10 | below 61.40 - the gap filled | 990,000 | 3.9% | 317,008M |
 
 ## 5. StockTwits lead read
 
@@ -240,7 +240,7 @@ def m4(t, c):
 @mutation("the setup line carries no level and no invalidation")
 def m5(t, c):
     return t.replace("1. **The one setup** — AMD above 452.02 pre-market, invalidated by a "
-                      "trade back to or below 404.40.",
+                      "trade back below 450.10.",
                       "1. **The one setup** — AMD is the referee tonight."), c
 
 
@@ -254,9 +254,9 @@ def m6(t, c):
 
 @mutation("a published name has an empty invalidation")
 def m7(t, c):
-    return t.replace("| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 404.40 | a trade "
-                      "back to or below 404.40 - the gap filled |",
-                      "| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 404.40 |  |"), c
+    return t.replace("| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 477.77 | below "
+                      "450.10 - the gap filled |",
+                      "| AMD | 404.40 | 452.02 | +11.78% | 450.10 - 477.77 | 477.77 |  |"), c
 
 
 @mutation("a published gap disagrees with the CSV")
@@ -267,10 +267,10 @@ def m8(t, c):
 
 @mutation("a published name is not in the CSV")
 def m9(t, c):
-    return t.replace("| MRVL | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 133.55 | a trade "
-                      "back to or below 133.55 - the gap filled |",
-                      "| ZZZZ | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 133.55 | a trade "
-                      "back to or below 133.55 - the gap filled |"), c
+    return t.replace("| MRVL | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 156.70 | below "
+                      "150.00 - the gap filled |",
+                      "| ZZZZ | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 156.70 | below "
+                      "150.00 - the gap filled |"), c
 
 
 @mutation("the CSV header is missing a promised column")
@@ -325,7 +325,19 @@ def m14(t, c):
 
 @mutation("a yesterday verdict is outside the vocabulary")
 def m15(t, c):
-    return t.replace("| HELD (the 133.55 invalidation held) |", "| PROBABLY |"), c
+    return t.replace("| HELD (the level 133.55 held) |", "| PROBABLY |"), c
+
+
+@mutation("a published invalidation carries a level but no side")
+def m17(t, c):
+    lines = c.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("AMD,"):
+            cells = ln.split(",")
+            cells[CSV_COLUMNS.index("invalidation")] = "450.10"
+            lines[i] = ",".join(cells)
+            break
+    return t, "\n".join(lines)
 
 
 @mutation("the contract marker is missing")

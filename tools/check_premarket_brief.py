@@ -94,6 +94,14 @@ DATE_COLUMN_RE = re.compile(
     r"|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[_-]?\d{1,2}(?![0-9])"
 )
 
+# The SIDE of an invalidation. Without it the next run's review has to infer the direction
+# from the gap's sign — right for one convention, silently wrong for another.
+SIDE_WORD_RE = re.compile(r"\b(above|below|under|over|beneath|through)\b", re.I)
+
+# An EVENT invalidation ("if the 16:00 ET guide is below $1.95") has no price side to
+# publish — the event IS the trigger — so it is allowed to name one instead.
+EVENT_RE = re.compile(r"\b(event|if)\b", re.I)
+
 PROBLEMS: list[str] = []
 CHECKS = 0
 
@@ -369,6 +377,15 @@ def check_csv_rows(rows):
                 if not (r.get(c) or "").strip():
                     problems.append(f"CSV row {n} ({t}) is published as a setup but its "
                                     f"`{c}` is empty — the next run's review tests that level")
+            inv = (r.get("invalidation") or "").strip()
+            if inv and not (SIDE_WORD_RE.search(inv) or EVENT_RE.search(inv)):
+                problems.append(f"CSV row {n} ({t}) has an invalidation with no SIDE "
+                                f"({inv!r}) — it must read `above 478.69` / `below 11.87`, "
+                                f"not a bare number: the next run's review is a mechanical test "
+                                f"on that cell and a bare number leaves the direction to be "
+                                f"inferred")
+            if inv and not re.search(r"\d", inv):
+                problems.append(f"CSV row {n} ({t}) has an invalidation with no level: {inv!r}")
         for c in ("prior_close", "premarket_last"):
             if not (r.get(c) or "").strip():
                 problems.append(f"CSV row {n} ({t}) has an empty `{c}`")
