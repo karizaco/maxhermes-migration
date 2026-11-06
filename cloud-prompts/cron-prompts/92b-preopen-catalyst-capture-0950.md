@@ -95,18 +95,34 @@ to, so the conversation list stays scannable.
   fire's **scheduled ET SLOT** and `{date}` is the fire's date — NEVER the wall clock at write
   time. Derive both from `session.created_at` (the procedure's step 2 calls it `FIRE_MS`): the
   platform can stall a fire by hours, so a late run must still be named for the slot it was
-  dispatched for. Measured 2026-11-05: the 08:30 slot first executed at 10:09 ET and named its
-  file `1010` — a phantom slot that sorts AFTER the 0950 checkpoint, so a consumer merging the
-  checkpoints oldest-first replays the 08:30 tape LAST. Each checkpoint still writes its own
-  file, so two captures can never clobber each other.
-- **The key check comes first.** If `${XAI_API_KEY}` is unset, write nothing and reply
-  `preopen capture: XAI_API_KEY unset — nothing written`. Never fabricate a tape.
-- **Order of attack:** Grok (narrative) → TradingView scanner (ground-truth prices) → merge →
-  append → push. Prices always come from the scanner; Grok only explains.
+  dispatched for. Measured 2026-11-05: the 08:30 slot's work began at 10:09 ET after a
+  platform stall, and a wall-clock slot would have named its file `1010` — a phantom slot that
+  sorts AFTER the 0950 checkpoint, so a consumer merging the checkpoints oldest-first replays
+  the 08:30 tape LAST. Each checkpoint still writes its own file, so two captures can never
+  clobber each other. The procedure now ASSERTS the slot is one of `0830` / `0920` / `0950` and
+  snaps a late dispatch onto the slot it belongs to, because cron #17 merges the checkpoints by
+  slot name and a `0835` file is invisible to it.
+- **Two files, one fire.** Every successful checkpoint writes the tape
+  (`preopen-feed/{date}-{HHMM}.jsonl`) AND a companion **digest** at `preopen-feed/{date}-{HHMM}.md`
+  — the top 15 movers with their catalyst, their `conf` token, the record count, the Grok-vs-scanner
+  split and the measured Grok cost. The 08:30 checkpoint is the one a trader can act on before
+  the open.
+- **The key check comes first.** If `${XAI_API_KEY}` is unset, write NO tape and write
+  `preopen-feed/{date}-{HHMM}.SKIPPED.md` naming the reason, then push that marker. The
+  procedure does it; do not improvise it. Never fabricate a tape, and never leave a checkpoint
+  with no trace at all.
+- **Order of attack:** Grok (narrative) → ONE TradingView scanner snapshot, movers-sorted in
+  BOTH directions → merge (the shared script) → tape + digest → push. Prices always come from
+  the scanner; Grok only explains. **Do not hand-build the tape:** the rules that matter (one
+  snapshot per record, no price from Grok, one row per ticker) are enforced in the merge
+  script, and a hand-built tape breaks them silently.
 - **Push** with the shared helper `cloud-prompts/_shared/push_artifact.sh`, staging only
   `preopen-feed/`. Never `git add -A`.
 
 ## REPLY
 
-Under 6 lines: the checkpoint, the number of records written, how many names the scanner flagged
-`halted`, one line for push status, one line for `errors: <n>`.
+Under 6 lines: the checkpoint slot, the number of records written, the scanner's halt state
+(`not measurable` — the column is null on every row, never `0`), one line for push status, one
+line for `errors: <n>`. Name the digest file. If the tape came out at ~120 rows, say
+`tape_size_deviation` — that is the scanner sort regressing to `premarket_volume`, not a quiet
+market.
