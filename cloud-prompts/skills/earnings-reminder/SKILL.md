@@ -71,6 +71,10 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    - Show any watchlist ticker that reports today.
    - Show any S&P 500 / mega-cap name (>$50B mcap) reporting today.
    - Skip everything else (no mid/small-cap noise).
+   - **One row per ISSUER.** Two rows that are different share classes of the same company are one
+     name: publish the class the S&P 500 list carries (or, absent that, the more liquid one) and
+     note the other in the notes. Measured 2026-11-05: Berkshire's Class A and Class B both carry
+     a ~$1.22T cap and the same reaction history, and publishing both is noise.
 4. **Verify S&P 500 membership against a live constituent list — never from memory.**
    Fetch the MediaWiki API wikitext:
    `https://en.wikipedia.org/w/api.php?action=parse&page=List_of_S%26P_500_companies&prop=wikitext&format=json`
@@ -117,7 +121,7 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    · Amsterdam `.AS` · Milan `.MI` · Madrid `.MC` · Lisbon `.LS` · Brussels `.BR` · Copenhagen `.CO`
    · Stockholm `.ST` · Oslo `.OL` · Helsinki `.HE` · Toronto `.TO` · Vancouver `.V` · Sao Paulo `.SA`
    · Mexico `.MX` · Hong Kong `.HK` · Taipei `.TW` · Seoul `.KS` · Singapore `.SI` · Bombay `.BO`
-   · Johannesburg `.JO`.
+   · Johannesburg `.JO` · ASX `.AX` · Taiwan `.TW` · Korea `.KS` (KOSDAQ `.KQ`).
 8. **Non-US issuers — a different ladder, and the issuer's own IR calendar wins.**
    US-centric calendars (Yahoo, Nasdaq, EarningsWhispers) are organised around the US session, so
    for a European, Japanese or Canadian issuer they carry the WRONG release time and sometimes the
@@ -246,8 +250,15 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
 
     - **Band:** market cap in `[$40B, $50B)` — the names the floor excluded. `band_low_usd` in the
       front-matter carries the exact number used.
-    - **Candidates:** every name on TODAY's calendar in that band that is NOT an S&P 500 member
-      (an S&P 500 member is already in the roster, whatever its cap).
+    - **Candidates:** the largest COMMON shares in that band that are NOT S&P 500 members (an S&P
+      500 member is already in the roster, whatever its cap). **Filter out every non-common line**:
+      preferreds, notes, depositary receipts, warrants, rights and units. The TradingView scanner
+      types several of them as `stock` and gives them plain symbols, so the filter is on the
+      DESCRIPTION, not on the symbol: exclude any name whose description contains
+      `Preferred`, `Notes`, `Subordinated`, `Depositary`, `Warrant`, `Right` or `Unit`. Measured
+      2026-11-05: Prudential's "5.625% Junior Subordinated Notes due 2058" and four sibling
+      preferred lines all carry a ~$43.7B cap and would otherwise fill the whole band table with
+      four rows of the same company.
     - **Columns:** `Ticker | Company | Mkt cap | Reports today` — the last column answers the
       question the reader actually has ("does this one matter today?"). Sort by market cap
       descending. Publish 5-10 rows; if fewer exist in the band, publish what exists and say so.
@@ -264,6 +275,95 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
     `reaction_degraded: <n>`.
 13. **Append audit line** (local Mavis only — skip on Cloud):
    `earnings_reminder target=earnings:{date} watchlist_hits={n} bigcap_hits={n}`
+
+## Pass B candidate universe — the STANDING list (measured 2026-11-05/06, re-verify before relying on it)
+
+This is the candidate list for step 10. It is **standing**, not per-day: every candidate is checked
+every day against its own IR calendar, so an issuer that reports is never missed because no US
+calendar carried it. Add to it when a large non-US issuer becomes US-market-relevant; remove a row
+only when the issuer is delisted.
+
+Every `ticker_primary` below was resolved live on 2026-11-05 and **re-fetched on Yahoo's chart API
+to prove it resolves** (venue + local currency + name). `us_peer` is the US-listed line, and
+`us_tradeable` says what kind of line it is — TradingView's `type` column separates a genuine ADR
+(`dr`) from an ordinary share (`stock`) and is the source for that field.
+
+| issuer | ticker_primary | venue_primary | us_peer | us_tradeable |
+|---|---|---|---|---|
+| ASML Holding | `ASML.AS` | Euronext Amsterdam | ASML (Nasdaq) | ADR (US-listed) |
+| TSMC | `2330.TW` | Taiwan Stock Exchange | TSM (NYSE) | ADR (US-listed) |
+| Samsung Electronics | `005930.KS` | Korea Exchange | SSNLF (OTC) | ADR (OTC) |
+| SK hynix | `000660.KS` | Korea Exchange | SKHY (Nasdaq) | ADR (US-listed) |
+| Toyota Motor | `7203.T` | Tokyo Stock Exchange | TM (NYSE) | ADR (US-listed) |
+| Sony Group | `6758.T` | Tokyo Stock Exchange | SONY (NYSE) | ADR (US-listed) |
+| Hitachi | `6501.T` | Tokyo Stock Exchange | HTHIF (OTC) | ADR (OTC) |
+| Fujitsu | `6702.T` | Tokyo Stock Exchange | FJTSY (OTC) | ADR (OTC) |
+| Nissan Motor | `7201.T` | Tokyo Stock Exchange | NSANY (OTC) | ADR (OTC) |
+| Mitsubishi UFJ | `8306.T` | Tokyo Stock Exchange | MUFG (NYSE) | ADR (US-listed) |
+| Mitsubishi Electric | `6503.T` | Tokyo Stock Exchange | MIELF (OTC) | ADR (OTC) |
+| Mitsubishi Heavy Industries | `7011.T` | Tokyo Stock Exchange | MHVYF (OTC) | ADR (OTC) |
+| Nintendo | `7974.T` | Tokyo Stock Exchange | NTDOY (OTC) | ADR (OTC) |
+| Takeda Pharmaceutical | `4502.T` | Tokyo Stock Exchange | TAK (NYSE) | ADR (US-listed) |
+| Nomura Holdings | `8604.T` | Tokyo Stock Exchange | NMR (NYSE) | ADR (US-listed) |
+| Daiichi Sankyo | `4568.T` | Tokyo Stock Exchange | DSNKY (OTC) | ADR (OTC) |
+| KDDI | `9433.T` | Tokyo Stock Exchange | KDDIY (OTC) | ADR (OTC) |
+| Tokyo Electron | `8035.T` | Tokyo Stock Exchange | TOELY (OTC) | ADR (OTC) |
+| Advantest | `6857.T` | Tokyo Stock Exchange | ATEYY (OTC) | ADR (OTC) |
+| Nestle | `NESN.SW` | SIX Swiss Exchange | NSRGY (OTC) | ADR (OTC) |
+| Roche | `ROG.SW` | SIX Swiss Exchange | RHHBY (OTC) | ADR (OTC) |
+| Novartis | `NOVN.SW` | SIX Swiss Exchange | NVS (NYSE) | ADR (US-listed) |
+| Novo Nordisk | `NOVO-B.CO` | Nasdaq Copenhagen | NVO (NYSE) | ADR (US-listed) |
+| Unilever | `ULVR.L` | London Stock Exchange | UL (NYSE) | ADR (US-listed) |
+| Shell | `SHEL.L` | London Stock Exchange | SHEL (NYSE) | ADR (US-listed) |
+| HSBC | `HSBA.L` | London Stock Exchange | HSBC (NYSE) | ADR (US-listed) |
+| BP | `BP.L` | London Stock Exchange | BP (NYSE) | ADR (US-listed) |
+| Rio Tinto | `RIO.L` | London Stock Exchange | RIO (NYSE) | ADR (US-listed) |
+| Airbus | `AIR.PA` | Euronext Paris | EADSY (OTC) | ADR (OTC) |
+| TotalEnergies | `TTE.PA` | Euronext Paris | TTE (NYSE) | US-listed |
+| LVMH | `MC.PA` | Euronext Paris | LVMUY (OTC) | ADR (OTC) |
+| Siemens | `SIE.DE` | XETRA | SIEGY (OTC) | ADR (OTC) |
+| SAP | `SAP.DE` | XETRA | SAP (NYSE) | ADR (US-listed) |
+| Bayer | `BAYN.DE` | XETRA | BAYRY (OTC) | ADR (OTC) |
+| Banco Santander | `SAN.MC` | Bolsa de Madrid | SAN (NYSE) | ADR (US-listed) |
+| Alibaba Group | `9988.HK` | Hong Kong | BABA (NYSE) | ADR (US-listed) |
+| Tencent | `0700.HK` | Hong Kong | TCEHY (OTC) | ADR (OTC) |
+| BHP | `BHP.AX` | ASX | BHP (NYSE) | ADR (US-listed) |
+| Commonwealth Bank of Australia | `CBA.AX` | ASX | CBAUF (OTC) | ADR (OTC) |
+| Vale | `VALE3.SA` | B3 (Brazil) | VALE (NYSE) | ADR (US-listed) |
+| Petrobras | `PETR4.SA` | B3 (Brazil) | PBR (NYSE) | ADR (US-listed) |
+
+### ADR-ticker traps — every one of these cost a wrong row
+
+The US line of a non-US issuer is NOT guessable from the company name. Measured 2026-11-05:
+
+- **`AIRYY` is Air China, NOT Airbus.** Airbus' OTC line is `EADSY` (Yahoo also serves `EADSF`;
+  TradingView serves both). A name-to-ticker guess publishes the wrong company.
+- **`HTHTF`, `MEELY`, `TELLY`, `SSNNF` and `ROG.SW` do not resolve on Yahoo** — the working symbols
+  are `HTHIF`, `MIELF`, `TOELY`, `SSNLF` and (`RO.SW` / `ROP.SW`). Always prove the US line with one
+  chart call (`https://query1.finance.yahoo.com/v8/finance/chart/<SYM>?interval=1d&range=5d`)
+  and read `meta.shortName` + `meta.exchangeName` before it goes in the table.
+- **Roche's SIX bearer line is `ROG.SW`** (Yahoo carries `RO.SW` for it and `ROP.SW` for the
+  participation certificate) — note it so the reader is not stuck.
+- **`TTE` is an ordinary-share line, not an ADR** — TradingView types it `stock`, so
+  `us_tradeable` is `US-listed`, not `ADR (US-listed)`.
+
+### Which day does a non-US print belong to?
+
+The issuer announces on ITS OWN local schedule, so the ET day is often not the local calendar day:
+
+- A **Japanese** issuer that publishes at 15:00-16:00 JST on Nov 6 lands at **01:00-02:00 ET on
+  Nov 6** — already published when a 06:00 ET reader opens the brief (`Status: reported`).
+- A **Japanese** issuer that publishes at 07:00 JST on Nov 6 lands at **17:00 ET on Nov 5** —
+  the previous ET day.
+- A **European** issuer that publishes at 07:00 CET on Nov 6 lands at **01:00 ET on Nov 6**.
+- Convert with `zoneinfo`, never a hardcoded offset, and compare with the FIRE's instant.
+
+Measured on this universe for 2026-11-05/06: the IR-confirmed dates near the window are **KDDI
+Nov 6, 2026** (issuer IR calendar + issuer newsroom: results announced Nov 6, webcast 16:00 JST =
+02:00 ET), **Siemens Nov 12** (issuer press page: 07:00 CET = 01:00 ET), **Mitsubishi UFJ Nov 13**
+(issuer page), **Tencent Nov 18** (issuer page: 20:00 ET). **TSMC, Samsung, Toyota and Alibaba had
+NO date published on their own IR pages** — an aggregator estimate is not a publishable date, so
+those candidates stay unpublished until the issuer posts one.
 
 ## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)
 
