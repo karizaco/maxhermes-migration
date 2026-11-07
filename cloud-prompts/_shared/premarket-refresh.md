@@ -107,6 +107,118 @@ errors: 0
 
 4. **A one-line verdict** — is the tape more or less directional than it was at 08:30 ET?
 
+Two more blocks are published, both unnumbered so that NO existing section number changes.
+They sit directly under the front matter, because this file is read twenty minutes before the
+open and the reader needs the decision first.
+
+### `## Bottom line` — exactly three lines, the decision
+
+```
+## Bottom line
+
+1. **The one setup** — <TICKER> — <level> is the trigger; invalidated by <side> <level>.
+2. **The one risk** — <TICKER or group> — <what breaks it> — <level>.
+3. **The one thing to watch at the open** — <TICKER> — <condition>.
+```
+
+- **EXACTLY three lines.** Not two, not four.
+- The three labels are literal, capitalised, and in this order: `The one setup`, `The one risk`,
+  `The one thing to watch at the open`.
+- Line 1 MUST carry a digit **and** the word `invalidat*`. "ALIT is running" is not a setup.
+  "ALIT above 8.04, invalidated by a trade back to/below prior close 5.97" is.
+- Line 1 MUST name a name whose **Driver is anchored** — `CASH-OUT`, `CASH-IN`,
+  `LIABILITY-RESOLVED`, `ASSET-VALUE` or `EARNINGS-RAISE`, carrying the `+ANCHORED` suffix.
+  Those are the classes with measured evidence: on 2026-11-04 every name whose gap ran carried a
+  hard number in its catalyst (a $37.00 offer, a $0.70 special dividend, a $7.35B settlement,
+  $409.5M of loans resolved) and every name whose gap faded did not. If nothing carries an
+  anchored catalyst, say so honestly — "no name carries an anchored catalyst this morning — the
+  setup is cash" — rather than promoting a name that does not.
+- Line 1's trigger level is the name's **PM high** (the level that must break for the gap to
+  extend) and its invalidation is the name's prior close, written with its side.
+- The pm %ADV band is NOT part of this gate. It is a descriptor of the print, not a predictor —
+  see §`Gap quality`.
+
+### `## What to watch at the open` — three names, their levels, and the two rules
+
+A short table of the three names the bottom line refers to, then the rules that turn this file
+into a plan rather than a list:
+
+| Name | Prior close | PM last | PM low | PM high | Trigger | Invalidation |
+|---|---|---|---|---|---|---|
+
+- **Rule 1 — the open is the verdict on the gap.** An open BELOW the last pre-market print means
+  the gap is being sold, not bought. Measured 2026-11-04: every name that gave back its gap
+  opened below its last pre-market print (FTCI −0.48%, BRKR −1.67%, FTK −1.57%), and every name
+  that ran opened at or above it. **This refresh fires at 09:20, so it cannot apply Rule 1 — it
+  publishes the last pre-market print and the PM low so the reader can apply it at 09:31.**
+- **Rule 2 — the 30-minute candle is the breakout test.** If, thirty minutes after the open, the
+  session high is STILL the opening-range high, the gap is a fade, not a breakout; the levels in
+  this file are then exit levels, not entry levels. A name that breaks its opening range and
+  holds above it is a breakout. This is a 10:00 check, not a 09:45 one.
+
+### `## Gap quality — can this gap hold?`
+
+The ranking that justifies the bottom line. One row per headline name (the top 15 gainers and
+the top 10 decliners), all from the SAME single pull:
+
+| Ticker | Name | Gap % | PM range | Hold % | pm %ADV | Print | Driver | Key level | Invalidation |
+|---|---|---|---|---|---|---|---|---|---|
+
+- **PM range** = `premarket_low` – `premarket_high` (the scanner publishes both; a gap that has
+  already been half-filled shows up here and nowhere else).
+- **Hold %** = `(premarket_close - premarket_low) / (premarket_high - premarket_low) × 100`,
+  rounded to 0 dp. 100 = the last print is AT the top of its pre-market range (the gap is
+  holding); 0 = it is at the bottom (the gap is gone). `n/a` if the range is zero.
+- **pm %ADV** = `premarket_volume / average_volume_30d_calc × 100`.
+- **Print** — two independent DESCRIPTORS of the tape, joined with `+`. **They are not filters.
+  Do not rank on them and do not gate the bottom line on them.** Measured counter-evidence, both
+  days:
+  - the auction flag, on pm %ADV: **`AUCTION`** if 2 ≤ pm %ADV ≤ 30; **`QUOTE`** if pm %ADV < 2
+    (a print on almost no volume — it can gap further, or vanish, for free); **`CHURN`** if
+    pm %ADV > 30 (the float is turning over; that is churn, not sponsorship).
+  - the holding flag, on Hold %: **`holding`** if ≥ 80; **`half-filled`** if < 50; **`mid`**
+    otherwise.
+  - **Why they are not filters.** On 2026-11-04 CRCT (+49.8%) and MMM (+9.0%) both printed on
+    `QUOTE`-thin volume and both ran, while FSLR and BRKR printed on `AUCTION` volume and both
+    faded. On 2026-11-06 **zero of the 25 headline names** cleared `AUCTION+holding`, so gating
+    on it would have published an empty bottom line on a day when the tape was fine. Read these
+    two columns to understand HOW the gap was made and whether it is still holding — the
+    **Driver** column is what ranks.
+- **Driver** — the catalyst class, from the fixed vocabulary below.
+- **Key level** — the **prior close**, the gap-fill level. (A level published by a sourced
+  catalyst replaces it, with the source named in the cell.)
+- **Invalidation** — always a DOWNSIDE trigger, always with its side:
+  gap-up → `back to/below prior close <close>`; gap-down → `below PM low <premarket_low>`.
+
+**The Driver vocabulary — fixed, and applied to the morning brief's OWN sourced catalyst:**
+
+The refresh does **not** search for news and does **not** invent a reason. It reads the
+catalyst the 08:30 brief already sourced (the morning brief's §2 theme clusters and their news
+URLs) and classifies it. One vocabulary, applied the same way every day:
+
+| Driver | Meaning |
+|---|---|
+| `CASH-OUT` | cash comes TO the holder — a dividend (incl. a special one), a buyback, a redemption |
+| `CASH-IN` | an acquirer puts cash IN — a takeover offer, a merger at a price |
+| `LIABILITY-RESOLVED` | a contingent liability is capped or settled — a litigation settlement, a provision taken |
+| `ASSET-VALUE` | previously-impaired value is crystallised — loan resolutions, a NAV/discount-to-NAV event |
+| `EARNINGS-RAISE` | a beat AND a guidance raise |
+| `EARNINGS-RECONFIRM` | a beat with guidance unchanged |
+| `EARNINGS-CUT` | a miss, a loss, or a guidance cut |
+| `SECTOR-BETA` | a group move — policy, macro or a sector theme; no company-specific news |
+| `NONE` | no sourced catalyst for this name |
+
+- **`ANCHORED` suffix.** Append `+ANCHORED` when the catalyst carries a **hard number** — a
+  price, a per-share amount, a settlement figure, a balance-sheet total. Measured 2026-11-04:
+  every name whose gap ran carried one (a $37.00 offer, a $0.70 dividend, a $7.35B settlement,
+  $409.5M of loans resolved) and every name whose gap faded did not (revenue doubled, "path to
+  profitability", a policy hope). A narrative gap has to be built entirely by trading, and it is
+  fragile.
+- If the morning brief is missing, every Driver is `unclassified` and Source health says so once.
+- If a name is in no theme cluster and `has_news = no` in the morning CSV, its Driver is `NONE`.
+  **That is a finding, not a blank**: a gap with no sourced catalyst is the profile that faded.
+
+
 ## Inputs
 
 | What | Where |
@@ -115,6 +227,16 @@ errors: 0
 | the morning screen (CSV) | `https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/daily-briefs/{date}-pre-market.csv` |
 | the live screen | `POST https://scanner.tradingview.com/america/scan` — see the skill spec for the exact body |
 | the morning brief's spec | `https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/agentic-pre-market-brief/SKILL.md` |
+
+**The pull MUST carry `premarket_high` and `premarket_low`.** The skill spec's Step 2 column list
+includes them; a pull without them cannot compute the PM range, the Hold % or the `half-filled`
+flag, and the gap-quality table would be silently blank. If either column comes back missing or
+null for every row, the gap-quality table is published as `n/a` with that stated once in Source
+health — it is never quietly omitted.
+
+**The morning brief's MD is read for the Driver column**, because the catalyst the refresh
+classifies is the one the 08:30 brief already sourced (its §2 theme clusters and their news
+URLs). That is a read of a published file, not a news search.
 
 The morning brief's CSV is the reference: same rows, same screen, one pull earlier. If the live
 screen and the CSV disagree on a name by more than 0.2 percentage points, the market moved —
@@ -127,8 +249,16 @@ that is the point of this file.
   two sections; do not repeat that.
 - **Never invent a number.** Every price and percentage comes from the screen or from the
   morning CSV.
-- **No catalysts.** This file reports moves, not reasons. If a name needs explaining, it belongs
-  in the next brief, not here.
+- **No catalyst SEARCH.** This file does not look for news and does not write a reason. It
+  **carries** the catalyst the 08:30 brief already sourced and labels it with the fixed Driver
+  vocabulary. A name with no sourced catalyst is `NONE`, and `NONE` is a finding.
+- **The Driver is never a guess.** If the morning brief does not source a catalyst for a name,
+  the Driver is `NONE` (or `unclassified` when the brief itself is missing) — never inferred
+  from the price action. A gap that rose 40% because it rose 40% is not a driver.
+- **Anchors are counted, not adjectives.** `+ANCHORED` requires a hard number in the sourced
+  catalyst. "A record quarter" is not an anchor; "$0.70 special dividend" is.
+- **If no name carries an anchored catalyst, publish that.** An empty bottom line is a
+  legitimate result on a bad tape. Do not promote an unanchored name to fill the slot.
 - **If the morning brief is missing** (the 08:30 fire failed), say so in one line and publish
   the refreshed screen alone, with no "changed since" section.
 - **A thin tape is a valid result.** If the screen returns fewer names than expected, publish
@@ -160,5 +290,8 @@ overwrite the first and wipe the routine number out of the commit subject.
 
 ## Reply
 
-Under 10 lines: the snapshot time, how many names moved since the morning brief, the three
-biggest changes, one line for push status, one line for `errors: <n>`.
+Under 12 lines: the snapshot time; the one setup and its invalidation; how many names cleared
+how many headline names carry an anchored catalyst; how many names moved since the morning
+brief; the
+three biggest changes; the name to watch at the open and the level; one line for push status;
+one line for `errors: <n>`.
