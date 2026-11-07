@@ -510,3 +510,86 @@ The **new** recommendation is Finding 3's rule change, and it needs a decision f
 owner before any helper change lands, because the helper's current output contradicts the
 published artifact. Finding 2's ordering fix can be applied independently of it; Finding 3's rule
 cannot.
+
+---
+
+# v5 — 2026-11-07: the universe-date assertion, and a correction about AZO and MELI
+
+Reviewed after the 2026-11-06 fire. Two things: a defect in how the routine resolves its
+**universe**, and a **correction** to the 2026-11-04 retrospective in this document.
+
+## 1. THE CORRECTION — AZO and MELI DID gap pre-market on 2026-11-04
+
+The retrospective above said AZO and MELI were "**not a gapper** — no pre-market gap". **That was
+wrong.** Both gapped:
+
+| name | 11-03 close | pre-market range | gap | what the retrospective said |
+|---|---:|---|---:|---|
+| AZO | 3200.90 | 3219.74 – 3283.00 (a broker feed shows 3200 → 3297) | **+0.6% … +2.6%** (≈ +3.0% on the wider range) | "not a gapper" |
+| MELI | 1662.06 | 1655.00 – 1710.00 (the user's feed: 1662 → 1713) | **−0.4% … +2.9%** (≈ +3.1% on the wider range) | "not a gapper" |
+
+What was actually true is narrower: their gaps were **below the 4% flag bar** and their
+pre-market **volume** was negligible (694 and 4,013 shares — 0.3% and 0.7% of their own 30-day
+average). The gap was real; the market behind it was not. **A flag-only artifact had no way to say
+that**, which is a presentation defect, not a data defect. It is now a published rung: §6.13's
+ladder publishes the 2–4% near-miss band with its volume ratio and range, instead of silence.
+
+**MELI also carried a forward catalyst that no routine was looking for.** MercadoLibre's IR
+calendar carried *"Q3'27 Results — provisional date November 4th"*; the print actually landed
+**Thursday 2026-11-05 pre-market** — EPS **$8.83 vs $9.41 consensus (a miss)** — and the stock
+fell **−13.9% pre-bell**. At 08:30 on Wednesday 11-04, a gapper that publishes **"reports tonight
+/ before tomorrow's open"** would have flagged a +3.1% pre-market gain INTO a print. That is the
+single most valuable addition in §6.13, and it is now specified (the scanner's
+`earnings_release_date` decodes to the exact release time: DUOL 2026-11-03 18:07 ET, LMB 2026-11-03
+16:30 ET, KD 2026-11-04 07:00 ET, YOU 2026-11-04 06:03 ET).
+
+AZO's gap had news flow the artifact never captured (a CFO resignation effective 25 Nov; BofA
+dropping the name from its "Value 10" list at 14:01 ET). No cause is asserted here — the point is
+that a 3% gap is invisible to a 4%-only artifact whether or not a cause exists.
+
+## 2. THE DEFECT — the universe was never asserted to be for the RIGHT session
+
+The universe is "the Focus list of the most recent completed 18:30 ET sweep". Nothing asserted
+**which session** that Focus list belongs to, and three defects sat behind it:
+
+1. **TWO close columns.** Since 2026-11-04 the sweep's CSV carries `screen_close_resolved` (the
+   screen's **T+1 data date** — the PREVIOUS session, because shibui is a day behind) and
+   `today_close` (the sweep's **own** session). Choosing by name instead of by date is a gap error
+   of up to 10%: the 2026-11-06 sweep carries APP at `screen_close_resolved` 356.10 and
+   `today_close` 391.22 — **9.9pp** apart.
+2. **The shipped helper could not read the current schema at all.** `premarket_pull.py` looked for
+   `close_<YYYY-MM-DD>` columns and for `prior_close` / `close` / `last_close` — **none of which
+   exist** in the current CSV — so it resolved **no reference close** for any name and fell
+   through to a drifting source, while the artifact still claimed a `focus.csv` denominator.
+3. **A stale sweep is silent.** If the prior session's sweep never published, "the latest
+   focus.csv" is an OLDER session's names, and the gaps are measured against the wrong close.
+   Nothing failed.
+
+The 2026-11-05 fire shows how real the consequence is: that run was a **late reconstruction** whose
+tape was unrecoverable, and its `exec_shares` had to be published as `0 = unevidenced` for every
+name — a whole artifact of gaps whose evidence did not exist.
+
+## 3. WHAT WAS IMPLEMENTED (contract v5)
+
+| file | what it does |
+|---|---|
+| `cloud-prompts/skills/stock-screener-suite/scripts/premarket_universe.py` (new, marker `premarket-universe-v1`) | resolves the expected prior session **from data**, fetches the Focus list for it, picks the close column **by date**, rejects `screen_close_resolved`, cross-checks every reference close (session-exact Nasdaq history when the live sources have rolled forward), and writes `_universe.json`. **Exit 3 on a hard failure.** |
+| `cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py` (v4 → v5) | `--universe-manifest` is authoritative and **a FAIL manifest aborts the run**; the close column is chosen by date; the CSV carries `universe_date`, `ref_close_date`, `universe_source` on every row |
+| `cloud-prompts/skills/stock-screener-suite/SKILL.md` §6.3a / §6.7 / §6.13 | the universe-date assertion, contract v5, and the five presentation additions |
+| `tools/check_premarket_artifact.py` (v5) | asserts the artifact names ONE universe session and ONE denominator session and that they agree — and is **version-aware**, so a v4 artifact is not failed by a v5 checker |
+| `tools/test_premarket_universe.py` (new) | the regression test: **20 pinned checks**, including that a WRONG-session universe and a MISSING sweep both **exit 3**. The guard is observed failing, which is the only way a gate is a gate |
+
+Hard assertions: **H1** the prior session is resolved from data · **H2** a published sweep exists ·
+**H3** the universe's session == the expected prior session · **H4** every name has a reference
+close for that session · **H5** every reference close is confirmed by an independent source.
+
+Measured on the real repo: for the **2026-11-06** fire the resolver picks the **2026-11-05**
+sweep (not the 11-06 one, which did not exist yet at 08:30), resolves the denominator from
+`today_close` = 2026-11-05, records `screen_close_resolved` (data_date 2026-11-04) as **rejected**,
+and confirms all 12 reference closes against the session-exact Nasdaq history.
+
+## 4. A NOTE ON THE FIRE LOG
+
+There was **no missing fire** on 2026-11-07: that was a **Saturday**, and the routine is
+`30 8 * * 1-5`. The last fire was Friday 2026-11-06. (The Nasdaq `market-info` endpoint settles
+this question in one call — it returns `preMarketOpeningTime` for the NEXT session.)

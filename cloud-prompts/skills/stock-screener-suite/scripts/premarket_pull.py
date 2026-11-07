@@ -91,7 +91,7 @@ TAPE_ROW_CAP = 100        # Nasdaq caps tradeDetailTable at 100 rows
 MIN_REAL_PRINT = 25       # a print of >= 25 shares is a market; 1-2 lots are quotes
 
 # ---- THE PUBLISHED CONTRACT (kept in sync with the skill spec §6) -------------
-CONTRACT_VERSION = "premarket-artifact-v4"
+CONTRACT_VERSION = "premarket-artifact-v5"
 GAP_TRIGGER_PCT = 4.0        # unchanged since the routine was written
 MIN_PM_VOLUME_SHARES = 50_000  # unchanged
 MIN_EXECUTED_SHARES = 25     # NEW: the print that carries the gap must have size behind it
@@ -106,6 +106,10 @@ VERDICTS = (
 )
 
 CSV_COLUMNS = [
+    # v5: the universe's own date and the denominator's session are published
+    # per row, so a consumer can never read a gap without knowing which session
+    # it is measured against.
+    "universe_date", "ref_close_date", "universe_source",
     "ticker", "ref_close", "ref_close_source", "pm_price", "pm_gap_pct",
     "exec_shares", "exec_notional", "pm_volume", "pm_volume_source",
     "quote_price", "quote_gap_pct", "bid", "ask",
@@ -369,7 +373,8 @@ def _load_symbols(args) -> list[str]:
     return out
 
 
-def _load_focus(csv_path: str) -> dict[str, dict]:
+def _load_focus(csv_path: str, session: str | None = None,
+                sweep_date: str | None = None) -> dict[str, dict]:
     """Read the prior sweep's own focus.csv.
 
     Three things come from it, and all three matter:
@@ -402,16 +407,36 @@ def _load_focus(csv_path: str) -> dict[str, dict]:
                 if not sym:
                     continue
                 close, close_col = None, None
-                for key in ("prior_close", "close", "last_close", "close_1030"):
-                    if row.get(key) and _num(row[key]):
-                        close, close_col = _num(row[key]), key
-                        break
+                # 1. the dated column whose DATE is the denominator session
+                if dated:
+                    for f in dated:
+                        m = re.search(r"(\d{4}-\d{2}-\d{2})", f)
+                        if m and m.group(1) == session:
+                            close, close_col = _num(row.get(f)), f
+                            break
+                # 2. the current schema's `today_close` - valid ONLY when the
+                #    sweep's own session IS the denominator session
+                if close is None and today_col and session == sweep_date:
+                    close, close_col = _num(row.get(today_col)), today_col
+                # 3. legacy undated keys
+                if close is None:
+                    for key in ("prior_close", "close", "last_close", "close_1030"):
+                        if row.get(key) and _num(row[key]):
+                            close, close_col = _num(row[key]), key
+                            break
+                # 4. last resort: the newest dated column (flagged as such)
                 if close is None and dated:
-                    close_col = dated[-1]          # the newest dated close column
+                    close_col = dated[-1]
                     close = _num(row.get(close_col))
                 out[sym] = {
                     "close": close,
                     "close_col": close_col,
+                    "universe_date": sweep_date,
+                    "ref_close_date": session if close_col else None,
+                    "universe_source": (f"focus.csv:{close_col}"
+                                        if close_col and close_col in (today_col, *dated)
+                                        else "focus.csv (legacy key)"),
+                    "screen_col_rejected": screen_col,
                     "stylists": (row.get("stylists") or "").strip(),
                     "origins": (row.get("origins") or "").strip(),
                     "flags": (row.get("flags") or "").strip(),
@@ -512,12 +537,16 @@ def _one(sym: str, args, focus: dict | None = None,
     # ---- the reference close, and WHICH sources agreed on it ----
     # Priority: the sweep's own focus.csv > TradingView close > Cboe close >
     # Nasdaq secondaryData (the drifting one - last, and only on its own).
-    candidates = [
-        ("focus.csv", focus.get("close")),
-        ("tradingview", tv.get("close")),
-        ("cboe", (cboe or {}).get("close")),
-        ("nasdaq-secondaryData", rec.get("secondary_close")),
-    ]
+    # When the universe manifest says the live sources have already rolled
+    # forward to a LATER session than the denominator, their `close` is NOT a
+    # contradiction - it is a different session. It is then excluded from both
+    # the candidates and the conflict list.
+    live_ok = focus.get("live_sources_session_valid", True)
+    candidates = [("focus.csv", focus.get("close"))]
+    if live_ok:
+        candidates += [("tradingview", tv.get("close")),
+                       ("cboe", (cboe or {}).get("close"))]
+    candidates += [("nasdaq-secondaryData", rec.get("secondary_close"))]
     primary_name, primary = None, None
     for name, val in candidates:
         if val:
@@ -664,8 +693,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-cboe", dest="cboe", action="store_false")
     p.add_argument("--no-tv", dest="tv", action="store_false", default=True,
                    help="cross-check with the TradingView america scanner (default on)")
+    p.add_argument("--universe-manifest", default=None,
+                   help="the _universe.json written by premarket_universe.py. It is "
+                        "AUTHORITATIVE: the universe's date, the denominator session and "
+                        "the reference close all come from it. A manifest whose status "
+                        "is FAIL aborts the run.")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
+
+    manifest = None
+    if args.universe_manifest:
+        try:
+            with open(args.universe_manifest, encoding="utf-8") as fh:
+                manifest = json.load(fh)
+        except Exception as e:
+            print("premarket_pull: the universe manifest could not be read (%s) - the "
+                  "universe is not proven, so there is no run" % type(e).__name__,
+                  file=sys.stderr)
+            return 3
+        if str(manifest.get("status", "")).startswith("FAIL"):
+            print("premarket_pull: the universe manifest reports FAIL (%s) - refusing to "
+                  "scan an unproven universe" % "; ".join(manifest.get("failures", [])),
+                  file=sys.stderr)
+            return 3
 
     if args.pulls < 4:
         print("warning: --pulls < 4 weakens the max-timestamp defence against the stale cache",
@@ -679,7 +729,22 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    focus_rows = _load_focus(args.from_csv) if args.from_csv else {}
+    session = (manifest or {}).get("expected_prior_session")
+    sweep_date = (manifest or {}).get("universe_date")
+    focus_rows = (_load_focus(args.from_csv, session, sweep_date)
+                  if args.from_csv else {})
+    if manifest:
+        live_valid = manifest.get("tv_cboe_session_valid", True)
+        # the manifest's reference closes are authoritative
+        for sym, mrec in (manifest.get("reference_closes") or {}).items():
+            row = focus_rows.setdefault(sym, {})
+            if mrec.get("ref_close") is not None:
+                row["close"] = mrec["ref_close"]
+                row["close_col"] = mrec.get("ref_close_source")
+                row["universe_date"] = sweep_date
+                row["ref_close_date"] = session
+                row["universe_source"] = mrec.get("ref_close_source")
+                row["live_sources_session_valid"] = live_valid
     tv_rows = _fetch_tv(syms) if args.tv else {}
 
     records: dict[str, dict] = {}
@@ -724,6 +789,9 @@ def main(argv: list[str] | None = None) -> int:
             w.writerow({
                 "ticker": sym,
                 "ref_close": _fmt(r.get("base_close"), 4),
+                "universe_date": (focus_rows.get(sym, {}) or {}).get("universe_date") or "",
+                "ref_close_date": (focus_rows.get(sym, {}) or {}).get("ref_close_date") or "",
+                "universe_source": (focus_rows.get(sym, {}) or {}).get("universe_source") or "",
                 "ref_close_source": r.get("base_close_source") or "",
                 "pm_price": _fmt(r.get("pm_price"), 4),
                 "pm_gap_pct": _fmt(r.get("pm_gap_pct"), 3),

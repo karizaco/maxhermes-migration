@@ -30,7 +30,7 @@ GAP_TRIGGER_PCT = 4.0
 MIN_PM_VOLUME_SHARES = 50_000
 MIN_EXECUTED_SHARES = 25
 
-CONTRACT_VERSION = "premarket-artifact-v4"
+CONTRACT_VERSION = "premarket-artifact-v5"
 
 VERDICTS = {
     "FLAGGED",              # clears on the tape AND size
@@ -55,11 +55,15 @@ REQUIRED_SECTIONS = [
 REQUIRED_CSV_COLS = [
     "ticker", "ref_close", "ref_close_source", "pm_gap_pct", "pm_volume",
     "exec_shares", "exec_notional", "verdict",
+    # v5: the universe's own date and the denominator's session are published
+    # per row - a gap without its session is an unanchored number.
+    "universe_date", "ref_close_date", "universe_source",
 ]
 # columns that must carry a value on EVERY row. `pm_gap_pct` and `pm_volume` are
 # deliberately NOT here: a name with no executed print (NO_PRINT) has no gap and no
 # volume, and inventing one would be a worse lie than an empty cell.
-REQUIRED_CSV_VALUES = ["ticker", "ref_close", "ref_close_source", "exec_shares", "verdict"]
+REQUIRED_CSV_VALUES = ["ticker", "ref_close", "ref_close_source", "exec_shares", "verdict",
+                       "universe_date", "ref_close_date", "universe_source"]
 
 FAILURES = []
 CHECKS = 0
@@ -207,6 +211,11 @@ def check_md(path):
         ver, flagged, scanned = parse_marker(ml)
         if ver == CONTRACT_VERSION:
             ok(f"the artifact carries the current contract marker ({ver})")
+        elif ver and ver < CONTRACT_VERSION:
+            # A HISTORICAL artifact built under an older contract is not a defect.
+            # The v5 clauses (the universe/date assertion) are not applied to it.
+            ok(f"the artifact carries the older contract marker ({ver}) — the v5 universe "
+               f"clauses are not applied to a pre-v5 artifact")
         else:
             bad(f"the artifact carries contract '{ver}', expected '{CONTRACT_VERSION}' — it was "
                 f"produced by an older copy of the script or the spec. Re-read the skill spec "
@@ -241,13 +250,16 @@ def check_md(path):
     return lines, secs, rows, ver, flagged, scanned
 
 
-def check_csv(path, md_rows, md_verdict_flagged, md_scanned):
+def check_csv(path, md_rows, md_verdict_flagged, md_scanned, version=CONTRACT_VERSION):
     print(f"[csv] {path}")
     with open(path, newline="", encoding="utf-8") as fh:
         rdr = csv.DictReader(fh)
         cols = rdr.fieldnames or []
         rows = list(rdr)
-    missing = [c for c in REQUIRED_CSV_COLS if c not in cols]
+    req = list(REQUIRED_CSV_COLS)
+    if version != CONTRACT_VERSION:
+        req = [c for c in req if c not in ("universe_date", "ref_close_date", "universe_source")]
+    missing = [c for c in req if c not in cols]
     if missing:
         bad(f"the CSV header is missing required columns: {missing}")
     else:
@@ -256,9 +268,13 @@ def check_csv(path, md_rows, md_verdict_flagged, md_scanned):
         bad("the CSV has no data rows")
         return rows
 
+    req_vals = list(REQUIRED_CSV_VALUES)
+    if version != CONTRACT_VERSION:
+        req_vals = [c for c in req_vals
+                    if c not in ("universe_date", "ref_close_date", "universe_source")]
     for n, r in enumerate(rows, 1):
         tick = str(r.get("ticker", "")).strip()
-        empties = [c for c in REQUIRED_CSV_VALUES if not str(r.get(c, "")).strip()]
+        empties = [c for c in req_vals if not str(r.get(c, "")).strip()]
         if empties:
             bad(f"CSV row {n} ({tick}) has empty required cells: {empties}")
         v = str(r.get("verdict", "")).strip().upper()
@@ -463,6 +479,39 @@ def check_reply(path, rows):
             bad(f"FLAGGED name {tick} is not named in the reply's Signal section")
 
 
+def check_universe(rows, version=CONTRACT_VERSION):
+    """v5: the artifact must name the universe's session and the denominator's
+    session, and they must be ONE date each for the whole artifact.
+
+    A gap computed against a different session than the universe belongs to is
+    the wrong-number bug this contract exists to stop, so it is a hard failure.
+    """
+    if version != CONTRACT_VERSION:
+        print("[universe] skipped (the artifact predates the universe contract)")
+        return
+    print("[universe] the universe date and the denominator session")
+    if not rows:
+        bad("the CSV has no rows, so the universe cannot be proven")
+        return
+    udates = {str(r.get("universe_date", "")).strip() for r in rows}
+    rdates = {str(r.get("ref_close_date", "")).strip() for r in rows}
+    if len(udates) != 1 or "" in udates:
+        bad(f"every row must carry the SAME universe_date, found {sorted(udates)}")
+    else:
+        ok(f"every row carries the same universe_date ({udates.pop()})")
+    if len(rdates) != 1 or "" in rdates:
+        bad(f"every row must carry the SAME ref_close_date, found {sorted(rdates)}")
+    else:
+        ok(f"every row carries the same ref_close_date ({rdates.pop()})")
+    if len(udates) == 1 and len(rdates) == 1:
+        u = next(iter(udates)); r = next(iter(rdates))
+        if u != r:
+            bad(f"the universe session ({u}) and the denominator session ({r}) differ - "
+                f"the gaps are measured against a session the universe does not belong to")
+        else:
+            ok(f"the universe session and the denominator session agree ({u})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--md", required=True)
@@ -476,7 +525,9 @@ def main():
             sys.exit(1)
 
     lines, secs, md_rows, ver, flagged, scanned = check_md(args.md)
-    rows = check_csv(args.csv, md_rows, flagged, scanned)
+    version = ver or CONTRACT_VERSION
+    rows = check_csv(args.csv, md_rows, flagged, scanned, version)
+    check_universe(rows, version)
     check_nonqualifying(lines, secs, rows)
     check_flags(lines, secs, rows)
     if args.reply and os.path.exists(args.reply):

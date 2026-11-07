@@ -1182,9 +1182,25 @@ NO_PRINT  >  FLAGGED  >  BORDERLINE_THIN  >  BORDERLINE_TAPE_ONLY  >  BORDERLINE
 #### 6.3 THE DENOMINATOR RULE — and the `ref_close_source` column
 
 **The gap denominator is the SETTLED prior regular-session close.** Take it from the prior
-sweep's own `focus.csv` — the **latest dated `close_<YYYY-MM-DD>` column** (that is the sweep's
-session close) — and cross-check it against **two other independent sources**. Two agreeing
-sources beat one drifting one.
+sweep's own `focus.csv` — **the close column whose DATE is the denominator session** — and
+cross-check it against **two other independent sources**. Two agreeing sources beat one drifting
+one.
+
+> **The close column is chosen BY DATE, never by name.** The sweep's CSV has carried TWO close
+> columns since 2026-11-04:
+>
+> | column | what it is | valid denominator? |
+> |---|---|---|
+> | `today_close` | the sweep's OWN session close | **yes**, when the sweep's session IS the denominator session |
+> | `close_<YYYY-MM-DD>` | that exact session (the pre-2026-11-04 schema) | **yes**, when the date matches |
+> | `screen_close_resolved` | the screen's **T+1 data date** — the PREVIOUS session (shibui is a day behind) | **NEVER** |
+>
+> Picking `screen_close_resolved` shifts the gap by up to 10%: on the 2026-11-06 sweep APP carried
+> `screen_close_resolved` 356.10 and `today_close` 391.22 — a 9.9pp error on one name. The
+> pre-2026-11-04 helper looked only for `close_<date>` columns and for `prior_close` / `close` /
+> `last_close`, **none of which exist in the current schema** — so it silently resolved NO
+> reference close at all and fell through to a drifting source. `scripts/premarket_universe.py`
+> (6.3a) is what makes that impossible.
 
 | source | role |
 |---|---|
@@ -1198,6 +1214,89 @@ sources beat one drifting one.
 source disagrees, say so in the same cell (`focus.csv+tradingview (CONFLICT: nasdaq-secondaryData
 206.0000 vs 207.6000)`) and in `## Flags`. Never publish a gap computed against a price that was
 not an executed print.
+
+#### 6.3a THE UNIVERSE DATE ASSERTION — the universe is never allowed to be for the wrong session
+
+The universe is "the Focus list of the most recent completed 18:30 ET sweep". That sentence does
+not say **which session** the Focus list belongs to, and every failure below produces an artifact
+that looks completely normal:
+
+1. **The sweep for the prior session never published** — it crashed, the platform stalled it, or
+   it was skipped. A routine that fetches "the latest focus.csv" then silently scans an OLDER
+   session's names and measures every gap against the wrong close.
+2. **Two close columns** (6.3) — `screen_close_resolved` is the previous session's close and
+   `today_close` is the sweep's own session. Choosing by name instead of by date is a gap error
+   of up to 10% on a single name.
+3. **The schema moved.** The pre-2026-11-04 CSV had `close_<YYYY-MM-DD>` columns; the current one
+   does not. A helper that looks for the old names resolves nothing and falls back silently.
+
+**THE RULE: resolve and prove the universe FIRST, with `scripts/premarket_universe.py`, before any
+tape is pulled.** It resolves the expected prior session **FROM DATA** (the market's own session
+history — never a hand-typed date, never a hardcoded calendar), fetches the Focus list for it,
+picks the close column **by date**, cross-checks every reference close, and writes
+`daily-screens/<date>/_universe.json`.
+
+```bash
+# --- fetch the resolver (run-time fetch: the fix lands with no prompt edit) ---
+U=/workspace/tools/premarket_universe.py
+for URL in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/scripts/premarket_universe.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_universe.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_universe.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$U.tmp" "$URL" 2>/dev/null
+  if [ -s "$U.tmp" ] && grep -q 'premarket-universe-v1' "$U.tmp" 2>/dev/null; then
+    mv -f "$U.tmp" "$U"; break
+  fi
+  rm -f "$U.tmp"
+done
+if [ ! -s "$U" ] || ! grep -q 'premarket-universe-v1' "$U"; then
+  echo "premarket_universe.py: UNAVAILABLE - the universe cannot be proven, so there is no artifact"
+  exit 1
+fi
+
+python3 "$U" --fire-date <the fire's scheduled date, YYYY-MM-DD> \
+    --out-dir /workspace/daily-screens/<date>
+```
+
+**A manifest whose `status` is `FAIL` means THERE IS NO ARTIFACT.** The resolver exits **3** and
+prints the failed assertion. The hard assertions:
+
+| # | assertion | what it stops |
+|---|---|---|
+| H1 | the expected prior session is resolved FROM DATA | a hand-typed or stale calendar |
+| H2 | a published Focus list exists for a session <= the expected prior session | a scan of a universe that was never published |
+| H3 | the universe's own session == the expected prior session | **the wrong day's names** (a stale sweep) |
+| H4 | every name has a reference close for the denominator session | a gap with no denominator |
+| H5 | every reference close is confirmed by an independent source | a gap measured against a price nobody else saw |
+
+**A stale universe is a FAIL, not a warning.** `--allow-stale-universe` downgrades H3 to a flag —
+and then the reference close **must** come from the independent sources, because the stale CSV's
+close belongs to the wrong session. Either way the artifact publishes the fact:
+`universe_stale: the Focus list is from <date> but the denominator session is <date>`.
+
+**The reference close is confirmed session-exactly.** TradingView's and Cboe's `close` are always
+the LATEST session's close, so they can only confirm the denominator while the denominator IS the
+latest session. On a replay (or when the live sources have rolled forward) the confirmation comes
+from **Nasdaq's per-symbol history**, which is exact to the session. The resolver decides which is
+valid and records it in the manifest's `flags`.
+
+**The manifest is AUTHORITATIVE for the helper.** Pass it in:
+
+```
+python3 "$S" --from-csv <the focus.csv the resolver used> \
+    --universe-manifest /workspace/daily-screens/<date>/_universe.json \
+    --out-dir /workspace/daily-screens/<date> --pulls 4 \
+    --gap-trigger 4 --volume-floor 50000 --min-exec 25
+```
+
+The helper **refuses to run** on a manifest whose status is `FAIL`. Every CSV row then carries
+`universe_date`, `ref_close_date` and `universe_source`, and the checker asserts that the whole
+artifact names ONE universe session and ONE denominator session, and that they agree.
+
+**The regression test proves the guard bites:** `tools/test_premarket_universe.py` runs the
+resolver offline against fixtures and pins 20 checks, including that a WRONG-session universe and
+a MISSING sweep both exit 3. A gate that has never been observed failing is a claim.
 
 #### 6.4 KNOWN NASDAQ FIELD DEFECTS — CHECK THESE FIRST (found 2026-11-03)
 
@@ -1271,18 +1370,21 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-artifact-v4' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'premarket-artifact-v5' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
-if [ ! -s "$S" ] || ! grep -q 'premarket-artifact-v4' "$S"; then
+if [ ! -s "$S" ] || ! grep -q 'premarket-artifact-v5' "$S"; then
   echo "premarket_pull.py: UNAVAILABLE (no copy carrying the current contract)"
   echo "no artifact; no push"
   exit 1
 fi
 
-python3 "$S" --from-csv /workspace/<prior-sweep>/focus.csv \
+# the universe is resolved and PROVEN first (6.3a) - the manifest is authoritative
+python3 "$U" --fire-date <the fire's scheduled date> --out-dir /workspace/daily-screens/{date>
+python3 "$S" --from-csv <the focus.csv the resolver used> \
+    --universe-manifest /workspace/daily-screens/{date>/_universe.json} \
     --out-dir /workspace/daily-screens/{date} --pulls 4 \
     --gap-trigger 4 --volume-floor 50000 --min-exec 25
 ```
@@ -1300,7 +1402,7 @@ stylists" instead of dropping a high-quality setup that went nowhere. Fetch it f
 If you re-implement the logic inline instead of running the helper, the artifact must carry
 exactly the same fields — the checker verifies the artifact, not the route you took.
 
-#### 6.7 ARTIFACT FORMAT CONTRACT v4
+#### 6.7 ARTIFACT FORMAT CONTRACT v5
 
 Two files, same directory: `daily-screens/<date>/pre-market-gapper.md` and
 `daily-screens/<date>/pre-market-gapper.csv`. Never let a row exist in one and not the other.
@@ -1308,7 +1410,7 @@ Two files, same directory: `daily-screens/<date>/pre-market-gapper.md` and
 **The marker line** — the first line of the markdown, or within the first 10:
 
 ```
-_contract: premarket-artifact-v4 · flagged: N · scanned: M · gate: |gap|>=4.0% and pm_volume>=50,000 and exec_shares>=25 · reference close: <source>_
+_contract: premarket-artifact-v5 · flagged: N · scanned: M · gate: |gap|>=4.0% and pm_volume>=50,000 and exec_shares>=25 · reference close: <source> · universe: <session> · denominator session: <session>_
 ```
 
 `flagged` and `scanned` MUST match the CSV. The checker asserts both.
@@ -1344,10 +1446,15 @@ _contract: premarket-artifact-v4 · flagged: N · scanned: M · gate: |gap|>=4.0
 **The CSV columns** (the contract set — keep these names):
 
 ```
+universe_date, ref_close_date, universe_source,
 ticker, ref_close, ref_close_source, pm_price, pm_gap_pct, exec_shares, exec_notional,
 pm_volume, pm_volume_source, quote_price, quote_gap_pct, bid, ask, pm_high, pm_low,
 pm_high_gap_pct, pm_low_gap_pct, tv_pm_pct, tv_pm_volume, stylists, origins, verdict, flag_reason
 ```
+
+`universe_date` is the session the Focus list belongs to; `ref_close_date` is the session the gap
+is measured against. **They are the same date in a healthy run** — when they are not, the artifact
+says so in `## Flags` and the checker FAILS it.
 
 Every row carries a **non-empty** `verdict`, `exec_shares` and `ref_close_source`. `verdict` is
 one of the six values in 6.2. `exec_shares` is the size of the print that carried the published
@@ -1473,6 +1580,60 @@ Do not eyeball these things; the 2026-11-03 artifact looked fine and failed them
   including ARI (−63.9%), the largest mover of that day.
 - **Do not drop a name because it did not qualify.** The names that did not move are the
   feedback; they go in `## Focus names that did not qualify` and two of them go in the reply.
+
+#### 6.13 PUBLISHING MORE THAN THE FLAG — the five additions (v5)
+
+The 4% / 50,000 / 25-share gate in 6.1 is the **FLAG** gate and it does not change. These five
+additions change what the artifact **shows** around it, so a reader sees the near-misses, the
+catalyst ahead, and the market outside the Focus list. Each one is measured on the 2026-11-04
+pre-market universe (600 names, 459 of them ≥4%), where the Focus list contained **0** of the 459
+and the biggest gappers of the day (DUOL +25.8%, KD +17.1%, HELE +18.1%, LMB +16.3%, YOU +7.6%)
+were all **post-sweep catalysts** — earnings released at 16:30 and 18:07 ET on 11-03, earnings at
+06:00 and 07:00 ET on 11-04, and an acquisition proposal.
+
+**1 — A LADDER, not a single bar.** Keep the 4% gate as the flag. Publish the names below it as
+their own ranked ladder, because a 3% gap on a real market is information and a 3% gap on a quote
+is not:
+
+| rung | what it means | published with |
+|---|---|---|
+| `≥8%` | exceptional — the day's real gappers | the full row |
+| `4–8%` | at the bar | the full row |
+| `2–4%` | **the near-miss band** — AZO printed 3200 → 3297 (+3.0%) and MELI 1662 → 1713 (+3.1%) on 2026-11-04 and BOTH are invisible under a 4% gate | gap, pm volume, volume as a % of the name's 30-day average, the pre-market range, and whether the gap was sustained |
+| `<2%` | noise | nothing beyond the scan table |
+
+**2 — "REPORTS TONIGHT" — the forward calendar.** A trader needs to know which names in the
+universe print **after today's close** or before tomorrow's open: that is a position to hold INTO
+the catalyst, and it is invisible in a pre-market price scan. Source it from the TradingView
+scanner's `earnings_release_date` (it decodes to the exact release time: DUOL 2026-11-03 18:07 ET,
+LMB 2026-11-03 16:30 ET, KD 2026-11-04 07:00 ET, YOU 2026-11-04 06:03 ET) and confirm it against
+the issuer's IR press release. Publish it as a `## Catalyst ahead` block: ticker, the release time
+in ET, whether it is before or after today's close, and the names' pre-market gap. **MELI on
+2026-11-04 was exactly this case** — a +3.1% pre-market gap into a Q3 print that landed that
+evening, and the flag-only artifact said nothing about it.
+
+**3 — VOLUME AS A RATIO, with the absolute floor kept.** The 50,000-share floor is scale-blind:
+LMB's 9,120 shares (4.3% of its own 30-day average) was a real market on a +16% gap and the floor
+rejected it, while 694 shares is a quote on a $53B retailer. Publish `pm_volume_pct_30d` on every
+row and use the ratio for the LIQUIDITY RANKING. The flag gate keeps the absolute floor (6.1); the
+ratio tells the reader which flagged name is tradeable and which near-miss deserves a look.
+
+**4 — THE MARKET'S EVENT BOOK, beside the Focus book.** The Focus universe is a momentum screen
+built on the previous session's data, so it structurally cannot contain a name whose move has not
+happened yet. Publish a second table: the market's pre-market gap leaders **with their catalysts**,
+joined from the earnings calendar, SEC EDGAR's overnight 8-K/425 filings, cron #92's pre-open tape,
+and the wire. Measured 2026-11-04: the pre-market gainers ≥4% had a median day change of +5.08%
+and 80.8% closed green — the gap itself is a tradable prior; the names where cron #92's tape
+actually identified the catalyst averaged **+32%**.
+
+**5 — THE PRE-MARKET RANGE AND WHETHER THE GAP WAS SUSTAINED.** The contract already publishes
+`pm_high` / `pm_low`; publish the **sustained** fact too — did the pre-market low stay above the
+prior close? Measured 2026-11-04: sustained names closed +6.14% median and 90.1% green, faded
+names +3.69% and 69.9% green. It costs nothing, it needs no new source, and it is the single
+cheapest quality filter in the scan.
+
+**Do not let the additions change the flag.** The ladder, the catalyst-ahead block, the volume
+ratio, the event book and the sustained flag are CONTEXT. A name is `FLAGGED` only by 6.1.
 
 ### 7. Live intraday RVOL re-rank (Sun)
 
