@@ -1672,6 +1672,42 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
   the theme-of-the-week (top-3 sector ETFs × tickers that appeared in daily Focus),
   the peoplewish 1000%-in-10-years backlog enrichment (run the `pattern-study` script).
 
+### 8b. Cron #06 — the weekly refresh screens (IPO / high short float / pattern-study backlog)
+
+Cron #06 (`06-stock-screener-pattern-study-backlog`) fires Saturday 15:00 ET and publishes
+**three** files in `daily-screens/<fire-date>/` plus one durable ledger. The file names are
+the DEPLOYED ones — do not write the suite's `ipo.md` / `high-short-float.md` names:
+
+| File | Content |
+|---|---|
+| `daily-screens/<fire-date>/weekly-ipo.md` | filter N — recent US common-stock IPOs, mcap > $1B |
+| `daily-screens/<fire-date>/weekly-high-short-float.md` | filter O — common stock with `short_percent_float > 20%` |
+| `daily-screens/<fire-date>/peoplewish-backlog.md` | the 1000%-in-10-years backlog ledger |
+| `daily-screens/<fire-date>/peoplewish-backlog-run-full.json` | the machine-readable full scan |
+| `pattern-study/peoplewish-1000pct-backlog.md` (outputs repo) | **the durable ledger** — read it FIRST, push it back every run |
+
+**Every branch is PAGED, not capped.** shibui's ceiling is 200 rows PER QUERY, so a query that
+returns exactly 200 rows has been truncated — it is not a complete set. Page with
+`LIMIT 200 OFFSET <n>` until the collected rows equal `rows_passing`, and publish both counts
+(`rows_kept == rows_passing`). This applies to the 10-year pattern-study scan, the short-float
+screen and the IPO screen alike.
+
+**The IPO week-over-week note needs the PRIOR universe, not the prior published table.** The
+2026-10-31 run published only its top 50 of a larger passing set, so diffing this week's list
+against that table produces a false "entered/left" story. Re-run the SAME query with the
+previous resolved date, diff the two universes, and publish both passing counts.
+
+**Short float: separate "left the top 30" from "left the universe".** `ownership_stats` is a
+current snapshot with no `date` column, so names lose their row between runs. A name that falls
+out of the top 30 but is still above the gate is a re-stamp; a name with no row at all has left
+the universe. Say which.
+
+**The backlog is a discovery ledger, not a quote sheet.** Newly-tagged names carry this run's
+live values; the carried-forward rows stay FROZEN at the values they carried when first tagged,
+with their `First Tagged` date. Read the prior ledger from the outputs repo
+(`pattern-study/peoplewish-1000pct-backlog.md`), append the newly tagged names, and push the
+ledger back — otherwise the next fire re-derives an empty backlog.
+
 ## Data sources — what actually lives where
 
 **Two runtimes, two different tool sets.** The MCP tool names in the original spec are
