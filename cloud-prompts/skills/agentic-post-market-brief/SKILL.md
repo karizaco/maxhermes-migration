@@ -86,6 +86,15 @@ ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not chan
 3. **Sector rotation.** Rank the top 3 / bottom 3 sectors from the universe's `sector` column
    (cap-weighted % change and the median), and cross-check 1–2 representative tickers per
    sector against the bridge `get_quotes`.
+   - **De-duplicate share classes before you weight.** Compute the cap-weighted return on one
+     row per `cap_source_symbol` (Alphabet A+C, Berkshire A+B and the JPMorgan preferred lines
+     each carry a full parent cap), and drop rows flagged `EX_DISTRIBUTION` — cron #20's rule.
+   - **Cross-check each sector row against its ETF, and publish the gap.** When the cap-weighted
+     return and the sector ETF disagree by more than ~0.5pp, the gap is a constituent effect and
+     not a rotation: on 2026-11-06 SpaceX ($1.82T cap, +8.6%) was +1.82pp of Industrials' +2.38%
+     while XLI printed +0.12% and the sector ex-SpaceX was +0.71%. Name the constituent, publish
+     the sector with and without it, and record in `## Source health` that the cap-weighted column
+     inherits that concentration.
 4. **Watchlist EOD review.** For each watchlist ticker: price, day change, day range, volume vs
    average, and the after-hours print.
 5. **After-hours earnings reactions.** `web_search` `<TICKER> after hours <today>` for any
@@ -97,6 +106,14 @@ ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not chan
 7. **Tomorrow's setup.**
    - Futures via the bridge `get_quotes` (ES=F, NQ=F, YM=F, RTY=F, ZN=F) — note Asia opens
      ~18:00 ET Sun–Thu, and the overnight move is the setup, not the cash close.
+   - **Assert the futures timestamp before you call anything an overnight setup.** The bridge's
+     futures rows can carry `as_of` at the 16:59:59 ET settlement for hours after the cash close
+     (measured 2026-11-06: every futures row still read 16:59:59 ET at the 22:30 fire, five and a
+     half hours stale). Read `as_of` on every futures row; if it is more than ~30 minutes older
+     than the fire, the quote is the prior session's settlement and NOT the overnight. Publish it
+     as such, say explicitly that the post-18:00 ET Globex/Asia move is not in the data, and count
+     it in `degraded_sources:`. A stale settlement presented as the overnight setup is a
+     fabricated setup, not a caveat.
    - Tomorrow's earnings: `web_search` `earnings calendar tomorrow <day>` against the watchlist
      and the top movers.
    - Tomorrow's economic releases: `web_search` `economic calendar <tomorrow-iso-date>` (payrolls,
@@ -108,6 +125,10 @@ ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not chan
 8. **Breadth & volatility.** VIX, VXN, the participation metrics (§5.5), and the put/call ratio
    from the CBOE daily statistics page. **Publish the total put/call as sourced; never invent a
    component split the sources disagree on.**
+   - The CBOE daily statistics page's embedded data carries **no session date stamp** (measured
+     2026-11-06). Publish the total as read, say that the session it describes cannot be dated
+     with certainty, and count it in `degraded_sources:` rather than asserting a session you did
+     not read.
 9. **Write the brief** following §5.3's spine exactly, with the level columns and the
    participation metrics.
 10. **Run the checker** (§5.9) on the artifact and on the saved reply, and fix whatever it
@@ -297,6 +318,13 @@ Run it **twice** — `postmarket_change` descending for the gainers and ascendin
 so both sides are carried, then rank by **absolute** `postmarket_change`. Cap the published table
 at 10 names (5 gainers, 5 losers).
 
+**The screen has a floor, and the floor hides the session.** The screen keeps names above $1B of
+market cap, so the biggest after-hours moves of the night are usually *below* the table: on
+2026-11-06 the screen's top gainer printed +9.77% while the session's actual leader printed
++110%. Pull the same screen once without the market-cap floor (or read one small-cap leaderboard)
+and publish those names in `## Source health` with their percentages, so the table is never
+mistaken for the whole after-hours tape. The table itself stays on the contract's screen.
+
 **The `gap_fill_level` rule (deterministic — pick one, every time):**
 
 - if `ah_low ≤ prior_close ≤ ah_high` → the 16:00 close traded through in the after-hours
@@ -327,7 +355,11 @@ rules below. The checker asserts all four.
    first bullet. The emitted string contains `### Signal\n\n`. (This defect was real in the
    2026-11-03 reply — `### Signal- **AEHR +26.50%**` — and is fixed; do not reintroduce it.)
 2. **One ticker per bullet.** A bullet may carry one ticker or none; it may never carry two.
-   The 2026-11-03 reply crammed three tickers onto one line.
+   The 2026-11-03 reply crammed three tickers onto one line. The rule is mechanical, so it also
+   fires on words that merely LOOK like tickers: "FCC" is not on the checker's non-ticker list,
+   so a bullet naming GOGO and the FCC is a two-ticker bullet and the run fails. On 2026-11-06
+   that was the only check the contract caught. When a second capitalised token appears, name the
+   organisation in words ("the spectrum regulator"), not in caps.
 3. **A `### Tomorrow's three things to watch` section** with exactly three bullets, each naming
    one ticker and its level and catalyst (§5.4). This is the section the reply was missing.
 4. **The top item of the open research queue is carried into the reply** — as the first bullet

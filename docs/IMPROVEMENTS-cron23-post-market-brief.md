@@ -161,3 +161,104 @@ marker `postmkt-artifact-v2`, the spine, the six named participation metrics, th
 cap-weight history and the after-hours level columns — and its reply must carry
 `### Signal\n\n`, one ticker per bullet, three things to watch with levels, and the top research
 question. The checker is the gate.
+
+---
+
+## 4. The 2026-11-06 fire under the new contract — what it caught, and what the data path hid
+
+The 2026-11-06 22:30 ET fire was the first run under `postmkt-artifact-v2`. It shipped
+(`daily-briefs/2026-11-06-post-market.md`, byte-verified on `origin/main`) and the checker
+passed after one fix. Four findings below are new; three of them changed the routine's **skill
+spec**, so the next fire inherits them with no `cron_update`.
+
+### 4.1 The contract caught exactly one thing, and it was a word
+
+The checker failed with a single finding: a `### Signal` bullet naming GOGO and the FCC
+carried **two** tickers. The checker's `NON_TICKERS` list is two-letter exchange/short-word
+vocabulary plus a handful of three-letter abbreviations (`AMC`, `EPS`, `CPI`, `ETF`, `VIX`…) —
+`FCC` is not on it, so the rule fired on an ordinary word. Rewritten as "the spectrum regulator",
+the artifact and the reply passed: `CONTRACT postmkt-artifact-v2: ok`.
+
+The lesson is mechanical and worth stating plainly: **the one-ticker rule is lexical, not
+semantic.** Any second capitalised token in a bullet is a failure, including a regulator, an
+agency or an acronym the writer never thought of as a ticker. The skill spec's §5.8 rule 2 now
+says so and gives the workaround (name the organisation in words).
+
+### 4.2 The futures quotes were frozen at the 16:59:59 ET settlement — the "overnight" was not published
+
+Every futures row the bridge returned (ES=F, NQ=F, YM=F, RTY=F, ZN=F, and CL=F, GC=F, DX-Y.NYB)
+carried `as_of` **16:59:59 ET** when read at the 22:30 ET fire — five and a half hours stale, and
+the exact timestamp of the cash-close settlement. `market_state` still read `open`, so nothing in
+the payload says "stale"; only the timestamp does.
+
+At a 22:30 ET fire the contract's step 7 asks for "the overnight move … the setup, not the cash
+close" — and the source of record cannot supply it. Publishing that table as *the overnight*
+would have been a fabricated setup. The 2026-11-06 artifact publishes it as **Friday's
+settlement**, says the post-18:00 ET Globex/Asia move is absent, and counts it in
+`degraded_sources:` (2, alongside the CBOE page).
+
+**Skill-spec change:** step 7 now requires reading `as_of` on every futures row and, if it is
+more than ~30 minutes older than the fire, relabelling the table as the prior session's
+settlement with the overnight explicitly declared unpublished.
+
+### 4.3 The $1B screen floor hid the session's biggest after-hours movers
+
+The contract's extended-hours screen keeps names above $1B of market cap. On 2026-11-06 the
+screen's top gainer printed **+9.77%** (MCHPP); the session's actual after-hours leader printed
+**+110%** (OMH, 420x relative volume), then TGE +71% (a 6-K at 17:14 ET transferring four hotel
+assets for 198,630,381 newly issued shares, after which AMTD Group held 96.7% of the voting
+power), PARA +18%, FTH +10% — and on the other side SDA −19% (566M shares) and VIVK −16%. A
+reader who saw only the table would have believed the biggest movers of the night were +9.8% and
+−7.0%.
+
+**Skill-spec change:** §5.7 now requires one extra pull of the same screen *without* the
+market-cap floor, published in `## Source health`, so the table is never mistaken for the whole
+after-hours tape. The published table itself stays on the contract's screen.
+
+### 4.4 The CBOE daily statistics page carries no session date stamp
+
+The put/call page's embedded payload (`optionsData.ratios`) gives TOTAL 1.06, INDEX 1.07, ETP
+1.25, EQUITY 0.89, VIX 0.70 and the volume split (11,225,416 puts / 10,589,764 calls,
+21,815,180 contracts) — and no date anywhere in the data. The value was published as read, with
+the session declared undatable, and counted as the second degraded source.
+
+**Skill-spec change:** step 8 now says to publish the total as read, say the session cannot be
+dated with certainty, and count it in `degraded_sources:` rather than asserting a session.
+
+### 4.5 The cap-weighted sector column gave a non-index member index-like weight
+
+The universe's cap-weighted Industrials return printed **+2.38%** while XLI printed **+0.12%**.
+The gap is SpaceX: a $1.82T cap on a +8.6% day, which is **+1.82pp** of the sector number
+(ex-SpaceX the sector is +0.71%, in line with its +0.84% median). Every other sector row
+reconciled with its ETF within a few tenths.
+
+The generalisable lesson is not about SpaceX: **a cap-weighted sector return computed over the
+whole listed universe silently assigns index-like weight to a company that is not in the index**,
+and the `cap_weight_penalty_bp` metric the TL;DR leans on inherits exactly the same
+concentration. The artifact therefore names the constituent, publishes the sector with and
+without it, and makes it the first item of the open research queue — which the reply carries, as
+the contract requires.
+
+**Skill-spec change:** step 3 now requires (a) de-duplicating share classes by
+`cap_source_symbol` and dropping `EX_DISTRIBUTION` rows before weighting (cron #20's rule),
+and (b) cross-checking each sector row against its ETF and publishing any >0.5pp gap.
+
+### 4.6 What the participation read looked like, for the next run's baseline
+
+| metric | 2026-11-06 |
+|---|---|
+| `advancers` / `decliners` / `unchanged` | 2,667 / 2,030 / 28 (4,725 usable names) |
+| `median_name_move_pct` | +0.236% |
+| `cap_weight_penalty_bp` | **+69** |
+| `liquid_adv_dec_ratio` (cap > $2B, n = 1,785) | 868 : 910 = **0.954** |
+
+The `cap_weight_penalty_bp` series continues across runs: −124, **+63**, −20, −152, **+69** for
+2026-11-02 → 2026-11-06, with the +63 reproducing the published 2026-11-03 figure from the same
+source and method.
+
+### 4.7 The next fire
+
+Fetch the spec; the 2026-11-06 rules (futures `as_of` assertion, the no-floor disclosure pull,
+the CBOE date caveat, the sector de-duplication and ETF cross-check, the one-ticker wording
+trap) are already in it. The checker is still the gate — and on 2026-11-06 it caught a single
+word, which is the argument for keeping it.
