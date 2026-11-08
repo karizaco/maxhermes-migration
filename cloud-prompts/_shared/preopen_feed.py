@@ -63,14 +63,6 @@ FEED_RAW = ("https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/ma
 FEED_LOCAL = "/workspace/preopen-feed/{date}-{cp}.jsonl"
 FEED_CHECKPOINTS = ("0830", "0920", "0950")
 
-# A checkpoint that declined on purpose leaves a SKIP MARKER beside the slot it would have
-# written. The marker names the reason, so the cause of a missing checkpoint is READ rather
-# than INFERRED. Before this existed, a fail-closed capture (no `XAI_API_KEY`) left nothing
-# at all and the consumer had to reconstruct the cause from its own provenance table.
-MARKER_RAW = ("https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/"
-              "preopen-feed/{date}-{cp}.SKIPPED.md")
-MARKER_LOCAL = "/workspace/preopen-feed/{date}-{cp}.SKIPPED.md"
-
 CAT_VOCAB = {"acquisition", "merger", "earnings", "guidance", "fda", "trial", "offering",
              "halt", "downgrade", "guidance-cut", "spin", "dividend", "other"}
 
@@ -87,12 +79,6 @@ def _et():
 
 
 def _get(url, timeout=30):
-    """Fetch a URL — or read a local path. The local branch is explicit because
-    `urlopen` cannot open a bare filesystem path; without it the local paths below were
-    silently dead code and every lookup paid for the network round-trip."""
-    if url.startswith("/"):
-        with open(url, "rb") as fh:
-            return fh.read()
     req = urllib.request.Request(url, headers=UA)
     return urllib.request.urlopen(req, timeout=timeout).read()
 
@@ -197,50 +183,29 @@ def verdict(open_pct, now_pct):
     return "held"
 
 
-def _marker_reason(text):
-    """Pull the `Reason:` line out of a skip marker. Returns None when there is none."""
-    for line in (text or "").splitlines():
-        low = line.strip().lower()
-        if low.startswith("- **reason:") or low.startswith("- reason:"):
-            val = line.split(":", 1)[1].strip()
-            return val.strip("*").strip() or None
-    return None
-
-
 def load_feed(date_str):
     """Read + validate the catalyst feed. Never raises; absence is a state, not an error.
 
     Reads every checkpoint file for the date (0830/0920/0950 ET) and merges them in
     timestamp order. Missing checkpoints are normal and are not an error.
     """
-    out = {"status": "feed_absent", "rows": [], "reason": None, "checkpoints": [],
-           "skipped": []}
+    out = {"status": "feed_absent", "rows": [], "reason": None, "checkpoints": []}
     good, bad, found_any = [], 0, False
     for cp in FEED_CHECKPOINTS:
         raw = None
-        for path in (FEED_LOCAL.format(date=date_str, cp=cp),
-                     FEED_RAW.format(date=date_str, cp=cp)):
+        # The local checkpoint is a plain path, NOT a URL — urlopen needs a file:// URL.
+        local = FEED_LOCAL.format(date=date_str, cp=cp)
+        try:
+            with open(local, encoding="utf-8", errors="ignore") as fh:
+                raw = fh.read()
+        except Exception:
+            raw = None
+        if raw is None:
             try:
-                raw = _get(path, timeout=20).decode("utf-8", "ignore")
-                break
+                raw = _get(FEED_RAW.format(date=date_str, cp=cp), timeout=20).decode("utf-8", "ignore")
             except Exception:
                 raw = None
         if raw is None:
-            # No tape for this slot. A skip marker means the fire DECLINED, and it says why.
-            marker = None
-            for path in (MARKER_LOCAL.format(date=date_str, cp=cp),
-                         MARKER_RAW.format(date=date_str, cp=cp)):
-                try:
-                    marker = _get(path, timeout=20).decode("utf-8", "ignore")
-                    break
-                except Exception:
-                    marker = None
-            if marker:
-                reason = _marker_reason(marker) or "skipped by design (no reason recorded)"
-                out["skipped"].append({"cp": cp, "reason": reason})
-                out["checkpoints"].append({"cp": cp, "records": 0,
-                                           "status": "skipped_by_design",
-                                           "reason": reason})
             continue
         found_any = True
         n_cp = 0
@@ -262,13 +227,8 @@ def load_feed(date_str):
             n_cp += 1
         out["checkpoints"].append({"cp": cp, "records": n_cp})
     if not found_any:
-        if out["skipped"]:
-            out["status"] = "skipped_by_design"
-            out["reason"] = ("every checkpoint for this date declined on purpose: "
-                             + "; ".join(f"{k['cp']} — {k['reason']}" for k in out["skipped"]))
-        else:
-            out["reason"] = ("no feed file for this date (expected preopen-feed/%s-{0830,0920,0950}.jsonl)"
-                             % date_str)
+        out["reason"] = ("no feed file for this date (expected preopen-feed/%s-{0830,0920,0950}.jsonl)"
+                         % date_str)
         return out
     good.sort(key=lambda r: r.get("ts") or "")
     out["status"] = "feed_ok" if good else "feed_empty"
@@ -346,7 +306,6 @@ def build(symbols, date_str, want_feed=True):
         "path from 5-minute bars is historical and valid"),
         "feed_status": feed["status"], "feed_reason": feed.get("reason"),
             "feed_rows": len(feed["rows"]), "feed_malformed": feed.get("malformed", 0),
-        "feed_skipped": feed.get("skipped", []),
             "scanner_error": scan_err, "rows": rows}
 
 
@@ -358,8 +317,6 @@ def render(res):
     else:
         lines.append(f"pre-open feed: {res['feed_status']} — {res.get('feed_reason')}. "
                      f"Path/verdict still computed from intraday bars.")
-    for k in (res.get("skipped") or []):
-        lines.append(f"  checkpoint {k['cp']}: SKIPPED BY DESIGN — {k['reason']}")
     if res.get("scanner_error"):
         lines.append(f"  scanner: {res['scanner_error']}")
     if res.get("premarket_note"):
@@ -429,8 +386,6 @@ def main():
             print(f"feed_status: {res['status']}")
             if res.get("reason"):
                 print(f"reason: {res['reason']}")
-            for k in (res.get("skipped") or []):
-                print(f"  checkpoint {k['cp']}: SKIPPED BY DESIGN — {k['reason']}")
             print(f"records: {len(res['rows'])}  malformed: {res.get('malformed', 0)}")
             for rec in res["rows"][:40]:
                 print(f"  {rec.get('ts')}  {rec.get('ticker'):<7} {str(rec.get('pct')):>8}  "
