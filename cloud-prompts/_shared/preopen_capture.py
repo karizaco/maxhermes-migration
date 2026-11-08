@@ -49,9 +49,27 @@ import urllib.request
 GATEWAY = "https://gateway.pipeworx.io"
 PACK_MARKET = "market-recap"
 PACK_STOCKTWITS = "stocktwits"
+CAT_PATTERNS = [
+    ("acquisition", r"\bacquir|acquisition|merger|to buy|takeover|buyout|definitive agreement"),
+    ("fda", r"\bfda|approval|approved|cleared by the fda|priority review|breakthrough therapy"),
+    ("trial", r"\bphase\s*[123]|clinical trial|trial results|pivotal|data readout"),
+    ("earnings", r"\bearnings|q[1-4]\b|beat|missed|results|revenue|eps"),
+    ("guidance", r"\bguidance|outlook|forecast|raises? (its )?full|lowers? (its )?full"),
+    ("guidance-cut", r"\bcut(?:s)? (its )?(guidance|outlook)|withdraws? guidance"),
+    ("offering", r"\boffering|at-the-market|atm\b|shelf|raise[s]? capital|\bupload\b"),
+    ("halt", r"\bhalt|luld|trading halt|resum"),
+    ("downgrade", r"\bdowngrade|lowers? (its )?price target|cuts? (its )?price target"),
+    ("dividend", r"\bdividend|buyback|repurchase"),
+    ("spin", r"\bspin-?off|spinout|stake sale"),
+]
 CAT_VOCAB = {"acquisition", "merger", "earnings", "guidance", "fda", "trial", "offering",
              "halt", "downgrade", "guidance-cut", "spin", "dividend", "other"}
 DISAGREE_PP = 2.0
+# Liquidity floor, mirroring the skill's own open-slot floor. Without it the movers scan
+# returns 600+ rows dominated by sub-$1 shells that genuinely moved hundreds of percent
+# (measured 2026-11-06: NEXR +742% at $2.01, RCT +68% at $0.0505, SITC -83% at $0.61).
+MIN_PRICE = 1.0
+MIN_DOLLAR_VOL = 1_000_000
 UA = {"User-Agent": "MaxHermes-Cron/1.0"}
 
 
@@ -190,6 +208,16 @@ def call_grounded(ticker, name=None):
             "tool_used": r.get("tool_used"), "second_source": r.get("second_source")}
 
 
+def infer_cat(text):
+    if not text:
+        return "other"
+    t = text.lower()
+    for cat, pat in CAT_PATTERNS:
+        if re.search(pat, t):
+            return cat
+    return "other"
+
+
 def build(date_str, checkpoint, top_n=8):
     tr = call_trending()
     tm = call_top_movers()
@@ -199,10 +227,17 @@ def build(date_str, checkpoint, top_n=8):
     movers = tm.get("movers") or {}
 
     # Names the tape should carry: trending names that also moved, plus the top movers.
+    def liquid(m):
+        if not m:
+            return False
+        px = m.get("price")
+        dv = (px or 0) * (m.get("volume") or 0)
+        return (px or 0) >= MIN_PRICE and dv >= MIN_DOLLAR_VOL
+
     candidates = []
     seen = set()
     for tk, m in sorted(movers.items(), key=lambda kv: -(kv[1].get("change_pct") or 0)):
-        if tk in seen:
+        if tk in seen or not liquid(m):
             continue
         seen.add(tk)
         candidates.append(tk)
@@ -225,7 +260,7 @@ def build(date_str, checkpoint, top_n=8):
             "name": (mv or {}).get("name") or (trr or {}).get("name"),
             "pct": (mv or {}).get("change_pct"),
             "price": (mv or {}).get("price"),
-            "cat": "other",
+            "cat": infer_cat((trr or {}).get("why")),
             "why": (trr or {}).get("why"),
             "ref": None,
             "conf": "high" if trr and trr.get("why") else "low",
@@ -240,6 +275,7 @@ def build(date_str, checkpoint, top_n=8):
             g = call_grounded(tk, rec["name"])
             if g.get("answer") and not g.get("refusal"):
                 rec["why"] = g["answer"]
+                rec["cat"] = infer_cat(g["answer"])
                 rec["ref"] = g.get("evidence")
                 rec["conf"] = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
                 rec["src"] = "grok" if False else "pipeworx"
