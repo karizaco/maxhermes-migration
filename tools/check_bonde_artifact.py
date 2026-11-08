@@ -10,8 +10,8 @@ acceptance criteria into machine assertions, so a run that breaks the contract F
 instead of shipping.
 
 USAGE
-    python3 check_bonde_artifact.py --md daily-screens/<date>/reversal-bullish-3:55.md \
-                                    --csv daily-screens/<date>/reversal-bullish-3:55.csv \
+    python3 check_bonde_artifact.py --md daily-screens/<date>/reversal-bullish-3_55.md \
+                                    --csv daily-screens/<date>/reversal-bullish-3_55.csv \
                                     [--reply <reply.txt>]
 
 Exit codes: 0 = contract satisfied; 1 = at least one FAIL (each is printed).
@@ -45,6 +45,20 @@ MD_HEADER_ALIASES = {
 }
 
 FAILURES = []
+
+def resolve_bonde_path(path):
+    """Prefer the Windows-safe 3_55 name; fall back to historical 3:55."""
+    if path and os.path.exists(path):
+        return path
+    if not path:
+        return path
+    alt = path.replace("reversal-bullish-3_55", "reversal-bullish-3:55")
+    if alt != path and os.path.exists(alt):
+        return alt
+    alt2 = path.replace("reversal-bullish-3:55", "reversal-bullish-3_55")
+    if alt2 != path and os.path.exists(alt2):
+        return alt2
+    return path
 CHECKS = 0
 
 
@@ -318,6 +332,8 @@ def main():
     ap.add_argument("--csv", required=True)
     ap.add_argument("--reply", default=None)
     args = ap.parse_args()
+    args.md = resolve_bonde_path(args.md)
+    args.csv = resolve_bonde_path(args.csv)
 
     for p in (args.md, args.csv):
         if not os.path.exists(p):

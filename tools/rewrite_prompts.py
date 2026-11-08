@@ -22,7 +22,7 @@ CRON = "cloud-prompts/cron-prompts"
 # routine -> (output dir, artifact path template, skip marker stem)
 META = {
  "02": ("asia-pre-market",   "asia-pre-market/{date}.md",                      "asia_pre_market_reactions"),
- "04": ("daily-screens",    "daily-screens/{date}/reversal-bullish-3:55.md",   "reversal_bullish_3_55"),
+ "04": ("daily-screens",    "daily-screens/{date}/reversal-bullish-3_55.md",   "reversal_bullish_3_55"),
  "05": ("international-eod","international-eod/{date}/",                        "eod_international_daily"),
  "06": ("daily-screens",    "daily-screens/{date}/weekly-ipo.md",              "stock_screener_pattern_study_backlog"),
  "07": ("daily-screens",    "daily-screens/{date}/focus-rvol-snapshot.md",     "stock_screener_focus_rvol_09_45"),

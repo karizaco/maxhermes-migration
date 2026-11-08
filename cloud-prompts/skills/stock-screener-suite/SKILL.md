@@ -726,7 +726,9 @@ one is the worst outcome available.
 
 ### 5. 3:55 PM ET Reversal Bullish (Bonde)
 
-Only run on weekdays between 15:30 and 16:00 ET. Output: `daily-screens/<cron_date>/reversal-bullish-3:55.{md,csv}` with the candidates that pass **all** of Pradeep Bonde's published criteria.
+**Windows-safe basename:** artifact files are `reversal-bullish-3_55.{md,csv}` (underscore, never `:`). Historical outputs may still use `3:55`; readers and auditors accept both during transition. `push_artifact.sh` rewrites any illegal basename before commit.
+
+Only run on weekdays between 15:30 and 16:00 ET. Output: `daily-screens/<cron_date>/reversal-bullish-3_55.{md,csv}` with the candidates that pass **all** of Pradeep Bonde's published criteria.
 
 **Pradeep Bonde / Stockbee criteria** — the gate values are Bonde's **published** ones, from
 `stockbee.blogspot.com` (2019-11-26, "Reversal Bullish Scan I use":
@@ -876,7 +878,7 @@ python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date 
 ```
 
 It fetches the universe, runs the day-alignment assertion, applies every gate above, writes
-`reversal-bullish-3:55.{md,csv}` into the dated directory and prints a JSON report. **Read that
+`reversal-bullish-3_55.{md,csv}` into the dated directory and prints a JSON report. **Read that
 report**: `mode` is `LIVE`, `NO_SESSION`, `DEGRADED` or `SETTLED_REPLAY`; `passing` is the
 candidate count; `history_source` says whether history came from shibui or the Nasdaq fallback.
 Exit code 3 means "no US session today" — a clean outcome, not a failure. Passing a date other
@@ -1087,8 +1089,8 @@ for U in \
   rm -f "$C.tmp"
 done
 python3 "$C" \
-  --md /workspace/daily-screens/{date}/reversal-bullish-3:55.md \
-  --csv /workspace/daily-screens/{date}/reversal-bullish-3:55.csv
+  --md /workspace/daily-screens/{date}/reversal-bullish-3_55.md \
+  --csv /workspace/daily-screens/{date}/reversal-bullish-3_55.csv
 ```
 
 It asserts the skeleton, the 3-bullet TL;DR, the verdict in the first 15 lines, the

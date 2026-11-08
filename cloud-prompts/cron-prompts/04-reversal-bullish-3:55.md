@@ -237,9 +237,9 @@ memory — those are what keep a degraded run honest.
 
 
 ## OUTPUT
-Write the artifact to:
-  `/workspace/daily-screens/{date}/reversal-bullish-3:55.md`
-  `/workspace/daily-screens/{date}/reversal-bullish-3:55.csv`
+Write the artifact to (Windows-safe basename — underscore, never colon):
+  `/workspace/daily-screens/{date}/reversal-bullish-3_55.md`
+  `/workspace/daily-screens/{date}/reversal-bullish-3_55.csv`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
 from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
@@ -257,8 +257,8 @@ B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prom
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/reversal-bullish-3:55.md --branch main
-sh /workspace/verify_delivery.sh --path daily-screens/{date}/reversal-bullish-3:55.md --branch main
+sh /workspace/push_artifact.sh --out daily-screens --add daily-screens/{date}/reversal-bullish-3_55.md --branch main
+sh /workspace/verify_delivery.sh --path daily-screens/{date}/reversal-bullish-3_55.md --branch main
 ```
 
 **If the push script cannot be fetched**, use the inline fallback in
@@ -272,7 +272,7 @@ and only reports `push: ok` when the path is present on the remote branch.
 Run it again if you need to re-check:
 
 ```bash
-sh /workspace/verify_delivery.sh --path daily-screens/{date}/reversal-bullish-3:55.md --branch main
+sh /workspace/verify_delivery.sh --path daily-screens/{date}/reversal-bullish-3_55.md --branch main
 ```
 
 A `git push` that exits 0 is **not** proof of delivery — a push piped into `head` returns head's

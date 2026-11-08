@@ -1,5 +1,5 @@
 #!/bin/sh
-# PUSH_ARTIFACT_VERSION: 2026-11-04.2
+# PUSH_ARTIFACT_VERSION: 2026-11-08.1
 # POSIX sh (dash-compatible) - runs identically under `sh` or `bash`.
 # push_artifact.sh — the ONE push implementation for the cron fleet.
 #
@@ -135,6 +135,113 @@ case "$OUT" in
     exit 3 ;;
 esac
 
+# --- Windows-safe path sanitization (2026-11-08) ----------------------------
+# WHY: the outputs repo is checked out on Windows. A basename containing
+# Windows-illegal characters (notably ':') cannot be checked out there — 76
+# historical files already break a plain clone. Generators must not write those
+# names, but the LLM has also *improvised* colon filenames
+# (reversal-bullish-3:55-near-misses.csv, …-CORRECTION.md). This block is the
+# chokepoint: every routine delivers through this script, so illegal names are
+# normalized here even when a prompt, skill, or agent still uses the old form.
+#
+# Convention matches skip_marker.sh: replace ':' (and other illegal basename
+# chars) with '_'. Prose times ("15:55 ET") and scheduler cron_names are
+# unaffected — only filesystem paths that pass through --add / the staged tree.
+win_safe_component() {
+  # Replace Windows-illegal filename characters; strip trailing dots/spaces.
+  _c=$(printf '%s' "$1" | sed 's/[<>:"\\|?*]/_/g' | sed 's/[. ]*$//')
+  [ -n "$_c" ] || _c="_"
+  printf '%s' "$_c"
+}
+
+win_safe_path() {
+  # Keep '/' as the separator; sanitize every other component.
+  _in=$1
+  _out=""
+  _first=1
+  # IFS=/ walk without requiring bash arrays
+  old_ifs=$IFS
+  IFS=/
+  # leading ./ or empty components from // are skipped
+  for _part in $_in; do
+    IFS=$old_ifs
+    if [ -z "$_part" ]; then
+      continue
+    fi
+    _safe=$(win_safe_component "$_part")
+    if [ "$_first" -eq 1 ]; then
+      _out="$_safe"
+      _first=0
+    else
+      _out="$_out/$_safe"
+    fi
+    IFS=/
+  done
+  IFS=$old_ifs
+  # preserve a leading "./" only if input was exactly that — not needed here
+  printf '%s' "$_out"
+}
+
+sanitize_tree() {
+  # Rename any file/dir basename under $1 that is Windows-illegal.
+  # Depth-first so children move before parents.
+  _root=$1
+  [ -d "$_root" ] || return 0
+  # Prefer find -depth; fall back to a simple pass if find is missing.
+  if command -v find >/dev/null 2>&1; then
+    _list=$(find "$_root" -depth 2>/dev/null)
+  else
+    _list=$(ls -1 "$_root" 2>/dev/null)
+  fi
+  printf '%s\n' "$_list" | while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    [ "$_p" = "$_root" ] && continue
+    _base=$(basename "$_p")
+    _dir=$(dirname "$_p")
+    _safe=$(win_safe_component "$_base")
+    if [ "$_base" = "$_safe" ]; then
+      continue
+    fi
+    _dest="$_dir/$_safe"
+    if [ -e "$_dest" ]; then
+      echo "push: windows-sanitize: drop '$_base' (safe name '$_safe' already exists)"
+      rm -rf "$_p"
+    else
+      mv -f "$_p" "$_dest"
+      echo "push: windows-sanitize: '$_base' -> '$_safe'"
+    fi
+  done
+}
+
+# Normalize --add paths BEFORE identity derivation and delivery checks, so a
+# caller that still passes …/reversal-bullish-3:55.md is rewritten to …3_55.md
+# and matches the files the generators now write.
+_ADD_NEW=""
+_ADD_LAST=""
+for _addp in $ADD_ALL; do
+  _s=$(win_safe_path "$_addp")
+  if [ "$_addp" != "$_s" ]; then
+    echo "push: windows-sanitize: --add '$_addp' -> '$_s'"
+  fi
+  _ADD_NEW="$_ADD_NEW $_s"
+  _ADD_LAST="$_s"
+done
+ADD_ALL=$(printf '%s' "$_ADD_NEW" | sed 's/^ *//')
+# ADD is the last --add (historical behaviour); keep that after sanitizing.
+if [ -n "$_ADD_LAST" ]; then
+  ADD="$_ADD_LAST"
+fi
+case "$ADD" in
+  *':'*|*'<'*|*'>'*|*'|'*|*'?'*|'*'*|*"'"*|*'\\'*)
+    echo "push: ABORTED ( --add still unsafe after sanitize: '$ADD')" >&2
+    exit 3 ;;
+esac
+
+# Sanitize the sandbox source tree so the copy into the worktree (and the
+# connector fallback's LOCAL_FILE lookup) already uses safe basenames.
+SRC_DIR="${SRC_DIR_ARG:-/workspace/$OUT}"
+sanitize_tree "$SRC_DIR"
+
 # --- routine identity -------------------------------------------------------
 # The commit subject must carry the routine NUMBER: cron #90's near-miss triage greps commits
 # for "cron (#)?NN " to attribute a push to a routine. Without the number a routine's push is
@@ -165,7 +272,8 @@ if [ -z "$NN" ]; then
     daily-screens/*/pre-market-gapper.md)   NN=08; NM=stock-screener-pre-market-gapper ;;
     daily-screens/*/focus-rvol-snapshot.md) NN=07; NM=stock-screener-focus-rvol-09:45 ;;
     daily-screens/*/breadth-snapshot.md)    NN=10; NM=stock-screener-breadth-snapshot ;;
-    daily-screens/*/reversal-bullish-3:55.md) NN=04; NM=reversal-bullish-3:55 ;;
+    daily-screens/*/reversal-bullish-3_55.md) NN=04; NM=reversal-bullish-3_55 ;;
+    daily-screens/*/reversal-bullish-3_55.csv) NN=04; NM=reversal-bullish-3_55 ;;
     daily-screens/*/weekly-ipo.md)      NN=06; NM=stock-screener-pattern-study-backlog ;;
     daily-screens/*/daily-sweep.md)     NN=09; NM=stock-screener-daily-sweep-18:30 ;;
     cross-asset/*)                      NN=12; NM=cross-asset-correlation-snapshot ;;
@@ -375,6 +483,8 @@ for attempt in 1 2 3; do
   if [ -d "$SRC_DIR" ]; then
     mkdir -p "$WT/$OUT"
     cp -r "$SRC_DIR/." "$WT/$OUT/" 2>/dev/null || true
+    # Second pass: rewrite any illegal basename before git add.
+    sanitize_tree "$WT/$OUT"
   fi
 
   cd "$WT" || { rm -rf "$WT"; continue; }

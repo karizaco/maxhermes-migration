@@ -61,6 +61,27 @@ repo cannot tell you.
 
 ---
 
+
+---
+
+## WINDOWS-SAFE FILENAMES (never write `:` into a path)
+
+Artifact paths must be valid on **Windows NTFS** as well as Linux. A basename containing
+`:` (or `<>"|?*`) cannot be checked out on Windows — this already broke 76 files in
+`minimax-cloud-outputs`.
+
+**Rules**
+1. **Never put a clock time in a filename.** Write `reversal-bullish-3_55.md`, not
+   `reversal-bullish-3:55.md`. Put the wall-clock time in the **body** or the title
+   (`15:55 ET`), not in the path.
+2. Prefer letters, digits, `.`, `-`, `_`. If you invent a companion file
+   (`…-near-misses.csv`, `…-CORRECTION.md`), keep the **same safe stem**.
+3. `push_artifact.sh` rewrites illegal basenames before staging. That is a safety net,
+   not permission to generate bad names. Generators and prompts must already emit the
+   safe form.
+4. Historical `…3:55…` files in the outputs repo stay until a separate cleanup. Readers
+   and auditors accept `3[:_]55` during the transition.
+
 ## SHARED HELPER FETCHES (run these in step 1, with the skill spec)
 
 The shared helpers are downloaded from the repo at run time. **Fetch them with the ladder below** —
