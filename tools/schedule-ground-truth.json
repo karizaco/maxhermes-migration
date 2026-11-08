@@ -240,7 +240,7 @@
       "25-ntrt-gap-brief-daily.md": {
         "spec_path": "cloud-prompts/skills/ntrt-gap-brief/SKILL.md",
         "bundle": "cloud-prompts/skills/ntrt-gap-brief",
-        "marker": "ARTIFACT FORMAT CONTRACT (v3"
+        "marker": "ARTIFACT FORMAT CONTRACT (v"
       },
       "26-agentic-pre-market-brief.md": {
         "spec_path": "cloud-prompts/skills/agentic-pre-market-brief/SKILL.md",
