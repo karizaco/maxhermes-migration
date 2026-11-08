@@ -11,6 +11,7 @@ cloud-prompts/_shared/PROMPT-BLOCKS.md      the rules that are identical across 
 cloud-prompts/_shared/RUNTIME-CONTRACT.md   the measured state of every data source
 docs/                          one file per review: IMPROVEMENTS- / CROSSCHECK- / BUGREPORT-
 tools/                         the deterministic helpers (see below)
+archive/                       frozen 2026-09-25 local Mavis snapshot (NOT live — see archive/README.md)
 ```
 
 ## 1. Where a finding goes
