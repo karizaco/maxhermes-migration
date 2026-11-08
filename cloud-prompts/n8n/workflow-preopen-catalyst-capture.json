@@ -1,118 +1,139 @@
 {
-  "name": "Pre-open catalyst capture",
+  "name": "Pre-open catalyst capture (Pipeworx)",
   "nodes": [
     {
       "parameters": {
         "rule": {
           "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "30 8,9,14,15 * * 1-5",
-              "times": []
-            }
+            { "field": "cronExpression", "expression": "30 8,9 * * 1-5", "times": [] }
           ]
         }
       },
-      "id": "a1000000-0000-4000-8000-000000000001",
-      "name": "Schedule (08:30, 09:20, 09:50 ET)",
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Schedule",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [-560, 0]
     },
     {
       "parameters": {
-        "url": "https://api.x.ai/v1/chat/completions",
+        "url": "https://gateway.pipeworx.io/stocktwits/mcp",
         "method": "POST",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Authorization", "value": "=Bearer {{$env.XAI_API_KEY}}" },
-            { "name": "Content-Type", "value": "application/json" }
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Accept", "value": "application/json, text/event-stream" },
+            { "name": "Authorization", "value": "=Bearer {{$env.PIPEWORX_API_KEY}}" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'grok-4', temperature: 0.1, search_parameters: {}, messages: [{ role: 'user', content: 'You are a US equity market catalyst feed. RIGHT NOW, list US-listed stocks (NYSE/NASDAQ/AMEX, ticker under 6 chars) that are moving materially pre-market or at the open. For each, return JSON ONLY, one object per line, no prose: {\"ticker\":\"\",\"name\":\"\",\"pct\":0.0,\"price\":0.0,\"cat\":\"acquisition|merger|earnings|guidance|fda|trial|offering|halt|downgrade|guidance-cut|spin|dividend|other\",\"why\":\"one clause, <=140 chars, stating the specific catalyst\",\"ref\":\"source URL\",\"conf\":\"high|medium|low\"}. Only include names with a move beyond roughly 3% pre-market or a genuinely material corporate catalyst. If there is no US pre-market session (weekend/holiday), return nothing. Do NOT include your own commentary.' }] }) }}",
-        "options": { "timeout": 90000 }
+        "jsonBody": "={{ JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'trending_symbols', arguments: {} } }) }}",
+        "options": { "timeout": 60000 }
       },
-      "id": "a1000000-0000-4000-8000-000000000002",
-      "name": "Grok (narrative)",
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "trending_symbols (narrative)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-320, -120],
+      "position": [-300, -120],
       "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 5000
+      "waitBetweenTries": 4000
     },
     {
       "parameters": {
-        "url": "https://scanner.tradingview.com/america/scan",
+        "url": "https://gateway.pipeworx.io/market-recap/mcp",
         "method": "POST",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" }
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Accept", "value": "application/json, text/event-stream" },
+            { "name": "Authorization", "value": "=Bearer {{$env.PIPEWORX_API_KEY}}" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ filter: [ { left: 'type', operation: 'equal', right: 'stock' }, { left: 'exchange', operation: 'in_range', right: ['NASDAQ','NYSE','AMEX'] }, { left: 'volume', operation: 'egreater', right: 50000 } ], columns: ['name','description','close','change','volume','relative_volume_10d_calc','market_cap_basic','premarket_change','premarket_volume','premarket_close','halted','exchange'], sort: { sortBy: 'premarket_volume', sortOrder: 'desc' }, range: [0, 120] }) }}",
-        "options": { "timeout": 30000 }
+        "jsonBody": "={{ JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'top_movers', arguments: { category: 'gainers', limit: 40 } } }) }}",
+        "options": { "timeout": 60000 }
       },
-      "id": "a1000000-0000-4000-8000-000000000003",
-      "name": "TradingView scanner (ground truth)",
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "top_movers (ground truth)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [-320, 140],
+      "position": [-300, 140],
       "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 5000
+      "waitBetweenTries": 4000
     },
     {
       "parameters": {
-        "jsCode": "// Merge Grok (narrative) with the TradingView scanner (ground truth prices).\n// Output: JSONL lines, one per name. Prices ALWAYS come from the scanner.\nconst out = [];\nconst CAT = new Set(['acquisition','merger','earnings','guidance','fda','trial','offering','halt','downgrade','guidance-cut','spin','dividend','other']);\n\nconst ts = $now.setZone('America/New_York').toFormat(\"yyyy-MM-dd'T'HH:mm:ssxxx\");\nconst date = ts.slice(0, 10);\n\n// ---- scanner rows -> map by ticker\nconst tvRows = [];\ntry {\n  const j = $input.all().find(n => n.json && Array.isArray(n.json.data));\n  const d = j ? j.json.data : [];\n  for (const r of d) {\n    const s = r.d;\n    tvRows.push({ ticker: String(s[0]||'').toUpperCase(), name: s[1], close: s[2], change: s[3],\n      volume: s[4], rvol10: s[5], market_cap: s[6], premkt_chg: s[7], premkt_vol: s[8],\n      premkt_px: s[9], halted: s[10], exchange: s[11] });\n  }\n} catch (e) {}\nconst tv = Object.fromEntries(tvRows.map(r => [r.ticker, r]));\n\n// ---- grok lines -> records\nconst grok = [];\ntry {\n  const g = $input.all().find(n => n.json && n.json.choices);\n  const text = g ? (g.json.choices[0].message.content || '') : '';\n  for (const line of text.split('\\n')) {\n    const m = line.match(/\\{[^{}]*\\}/);\n    if (!m) continue;\n    try {\n      const r = JSON.parse(m[0]);\n      if (!r.ticker) continue;\n      grok.push(r);\n    } catch (e) {}\n  }\n} catch (e) {}\n\nconst seen = new Set();\nfor (const g of grok) {\n  const t = String(g.ticker).toUpperCase();\n  if (seen.has(t)) continue;\n  seen.add(t);\n  const s = tv[t];\n  let pct = g.pct, conf = g.conf || 'medium';\n  if (s && typeof s.premkt_chg === 'number') {\n    if (typeof pct === 'number' && Math.abs(pct - s.premkt_chg) > 2) conf = 'unverified';\n    pct = s.premkt_chg;\n  } else { conf = 'unverified'; }\n  out.push({ ts, src: 'grok', ticker: t, name: g.name || (s && s.name) || null,\n    pct: pct === null || pct === undefined ? null : Number(pct),\n    price: (s && s.premkt_px) || g.price || null,\n    cat: CAT.has(g.cat) ? g.cat : 'other',\n    why: String(g.why || '').slice(0, 200), ref: g.ref || null, conf });\n}\n\n// scanner-only rows: a big premarket move with no reason yet is itself information\nfor (const s of tvRows) {\n  if (seen.has(s.ticker)) continue;\n  if (typeof s.premkt_chg === 'number' && Math.abs(s.premkt_chg) >= 3 && (s.premkt_vol || 0) > 0) {\n    out.push({ ts, src: 'tv', ticker: s.ticker, name: s.name, pct: s.premkt_chg,\n      price: s.premkt_px, cat: 'other', why: null, ref: null, conf: 'low',\n      halted: s.halted === true });\n  }\n}\n\nreturn out.map(o => ({ json: o }));"
+        "jsCode": "// Merge the two Pipeworx calls into the tape schema.\n// The MCP response is SSE-framed: the payload sits on a 'data: ' line, and the tool's own\n// text block may itself be a JSON string containing JSON — decode twice.\nconst CAT = new Set(['acquisition','merger','earnings','guidance','fda','trial','offering','halt','downgrade','guidance-cut','spin','dividend','other']);\n\nfunction docsOf(node) {\n  const raw = node?.json?.raw ?? node?.json?.data ?? node?.json;\n  let text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});\n  const out = [];\n  for (const m of text.matchAll(/data: (.+)/g)) {\n    let b = m[1];\n    for (let i = 0; i < 3; i++) { try { b = JSON.parse(b); } catch { break; } }\n    if (b && typeof b === 'object') {\n      const inner = b.result?.content?.[0]?.text ?? b.content?.[0]?.text;\n      if (typeof inner === 'string') { try { out.push(JSON.parse(inner)); } catch {} }\n      else if (inner && typeof inner === 'object') out.push(inner);\n    }\n  }\n  return out;\n}\n\nconst trending = {}, movers = {};\nfor (const item of $input.all()) {\n  for (const d of docsOf(item)) {\n    if (Array.isArray(d.symbols)) {\n      for (const s of d.symbols) {\n        const t = s.trends || {};\n        trending[(s.symbol || '').toUpperCase()] = {\n          name: s.title, why: (t.summary || '').trim() || null,\n          ts: t.summary_at || null, score: s.trending_score ?? null };\n      }\n    }\n    if (Array.isArray(d.movers)) {\n      for (const m of d.movers) movers[(m.symbol || '').toUpperCase()] = m;\n    }\n  }\n}\n\nconst now = $now.setZone('America/New_York').toFormat(\"yyyy-MM-dd'T'HH:mm:ssxxx\");\nconst rows = [], seen = new Set();\nfor (const tk of Object.keys(movers)) {\n  if (seen.has(tk)) continue; seen.add(tk);\n  const m = movers[tk], t = trending[tk];\n  rows.push({ ts: now, src: 'tv', ticker: tk, name: m.name || (t && t.name) || null,\n    pct: m.change_pct ?? null, price: m.price ?? null, cat: 'other',\n    why: (t && t.why) || null, ref: null,\n    conf: (t && t.why) ? 'high' : 'low',\n    trending_ts: (t && t.ts) || null, trending_score: (t && t.score) ?? null,\n    volume: m.volume ?? null, exchange: m.exchange ?? null });\n}\nfor (const tk of Object.keys(trending)) {\n  if (seen.has(tk)) continue; seen.add(tk);\n  const t = trending[tk];\n  rows.push({ ts: now, src: 'grok', ticker: tk, name: t.name || null, pct: null, price: null,\n    cat: 'other', why: t.why, ref: null, conf: t.why ? 'high' : 'low',\n    trending_ts: t.ts || null, trending_score: t.score ?? null, volume: null, exchange: null });\n}\nreturn rows.map(o => ({ json: o }));"
       },
-      "id": "a1000000-0000-4000-8000-000000000004",
-      "name": "Merge + validate",
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Merge into tape rows",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-40, 0]
+      "position": [-20, 0]
     },
     {
       "parameters": {
-        "resource": "file",
-        "operation": "upload",
-        "fileName": "={{ $now.setZone('America/New_York').toFormat('yyyy-MM-dd') }}.jsonl",
-        "fileContent": "={{ $json.ts }}\n",
-        "additionalProperties": {}
+        "url": "=https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/preopen-feed/{{ $now.setZone('America/New_York').toFormat('yyyy-MM-dd') }}-{{ $now.setZone('America/New_York').toFormat('HHmm') }}.jsonl",
+        "method": "GET",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.GITHUB_TOKEN}}" },
+            { "name": "Accept", "value": "application/vnd.github+json" }
+          ]
+        },
+        "options": { "timeout": 30000, "response": { "response": { "neverError": true } } }
       },
-      "id": "a1000000-0000-4000-8000-000000000005",
-      "name": "Append to feed (placeholder)",
-      "type": "n8n-nodes-base.convertToFile",
-      "typeVersion": 1.1,
-      "position": [200, 0],
-      "notes": "Wiring placeholder — see README.md 'Building the append' for the working implementation"
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Read existing tape (for append)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/preopen-feed/{{ $now.setZone('America/New_York').toFormat('yyyy-MM-dd') }}-{{ $now.setZone('America/New_York').toFormat('HHmm') }}.jsonl",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.GITHUB_TOKEN}}" },
+            { "name": "Accept", "value": "application/vnd.github+json" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: 'preopen capture ' + $now.setZone('America/New_York').toFormat('yyyy-MM-dd HHmm') + ' ET', content: Buffer.from(($input.all().map(i => JSON.stringify(i.json)).join('\\n') + '\\n'), 'utf8').toString('base64'), branch: 'main', sha: (() => { const r = $('Read existing tape (for append)').first().json; return (r && r.sha) ? r.sha : undefined; })() }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "b1000000-0000-4000-8000-000000000006",
+      "name": "Append tape to GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 0],
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
-    "Schedule (08:30, 09:20, 09:50 ET)": {
-      "main": [[{ "node": "Grok (narrative)", "type": "main", "index": 0 }]]
-    },
-    "Grok (narrative)": {
-      "main": [[{ "node": "TradingView scanner (ground truth)", "type": "main", "index": 0 }]]
-    },
-    "TradingView scanner (ground truth)": {
-      "main": [[{ "node": "Merge + validate", "type": "main", "index": 0 }]]
-    },
-    "Merge + validate": {
-      "main": [[{ "node": "Append to feed (placeholder)", "type": "main", "index": 0 }]]
-    }
+    "Schedule": { "main": [[{ "node": "trending_symbols (narrative)", "type": "main", "index": 0 }]] },
+    "trending_symbols (narrative)": { "main": [[{ "node": "top_movers (ground truth)", "type": "main", "index": 0 }]] },
+    "top_movers (ground truth)": { "main": [[{ "node": "Merge into tape rows", "type": "main", "index": 0 }]] },
+    "Merge into tape rows": { "main": [[{ "node": "Read existing tape (for append)", "type": "main", "index": 0 }]] },
+    "Read existing tape (for append)": { "main": [[{ "node": "Append tape to GitHub", "type": "main", "index": 0 }]] }
   },
   "settings": { "executionOrder": "v1" },
   "active": false,
-  "versionId": "1.0.0",
-  "meta": { "instanceId": "preopen-capture-template" },
+  "versionId": "2.0.0",
+  "meta": { "instanceId": "preopen-capture-pipeworx" },
   "tags": []
 }
