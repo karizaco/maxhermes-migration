@@ -27,7 +27,7 @@ ET = zoneinfo.ZoneInfo("America/New_York")
 ARTIFACTS = {
  "01-weekly-mcp-health-check": ("mcp-health/YYYY-Wnn.md", "mcp-health", ".md"),
  "02-asia-pre-market-reactions": ("asia-pre-market/{date}.md", "asia-pre-market", ".md"),
- "04-reversal-bullish-3:55": ("daily-screens/{date}/reversal-bullish-3:55.md", "daily-screens", "reversal-bullish-3:55.md"),
+ "04-reversal-bullish-3:55": ("daily-screens/{date}/reversal-bullish-3_55.md", "daily-screens", ("reversal-bullish-3_55.md", "reversal-bullish-3:55.md")),
  "05-eod-international-daily": ("international-eod/{date}/", "international-eod", ".csv"),
  "06-stock-screener-pattern-study-backlog": ("daily-screens/{date}/weekly-ipo.md", "daily-screens", "weekly-ipo.md"),
  "07-stock-screener-focus-rvol-09:45": ("daily-screens/{date}/focus-rvol-snapshot.md", "daily-screens", "focus-rvol-snapshot.md"),
@@ -111,13 +111,14 @@ def last_delivered(files, routine, name_re=None):
     spec = ARTIFACTS.get(routine)
     if not spec: return None
     dirname, suffix = spec[1], spec[2]
+    suffixes = (suffix,) if isinstance(suffix, str) else tuple(suffix)
     best = None
     for f in files:
         if not f.startswith(dirname + "/"): continue
         base = f.rsplit("/", 1)[-1]
         if name_re:
             if not re.match(name_re, base): continue
-        elif not base.endswith(suffix): continue
+        elif not any(base.endswith(s) for s in suffixes): continue
         for d in DATE_RE.findall(f):
             if best is None or d > best: best = d
         m = WEEK_RE.search(f)

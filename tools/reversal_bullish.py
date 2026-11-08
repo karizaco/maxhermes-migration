@@ -63,14 +63,28 @@ were previously buried in prose:
 """
 
 import argparse
+
 import csv
+
 import json
+
 import os
+
 import subprocess
+
 import sys
+
 import urllib.request
+
 from datetime import datetime, timedelta
+
 from zoneinfo import ZoneInfo
+
+# Windows-safe artifact basename. Never use ":" — invalid on Windows NTFS.
+# Historical outputs used reversal-bullish-3:55.*; new writes use 3_55.
+ARTIFACT_STEM = "reversal-bullish-3_55"
+
+
 
 ET = ZoneInfo("America/New_York")
 TV_ENDPOINT = "https://scanner.tradingview.com/america/scan"
@@ -138,6 +152,7 @@ def tv_scan(filters, sort, rng, cols=None, retries=3):
             last = exc
             if attempt < retries - 1:
                 import time
+
                 time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"TradingView scanner failed: {last}")
 
@@ -262,6 +277,7 @@ def fetch_history(tickers, date_str, bridge, sessions=30, prefer_shibui=True):
         hist, missing = {}, list(tickers)
     if missing:
         from concurrent.futures import ThreadPoolExecutor
+
         with ThreadPoolExecutor(max_workers=8) as pool:
             for t, bars in pool.map(
                     lambda tk: (tk, nasdaq_history(tk, date_str, sessions)), missing):
@@ -530,6 +546,7 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
     tickers = [r["name"] for r in rows]
 
     from concurrent.futures import ThreadPoolExecutor
+
     with ThreadPoolExecutor(max_workers=12) as pool:
         H = dict(pool.map(lambda t: (t, nasdaq_history(t, date_str, G["hist_sessions"] + 2,
                                                        include=True)), tickers))
@@ -578,8 +595,8 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
     results.sort(key=lambda x: (-x["m"]["dcr"], -x["h"]["adr"]))
     if not dry_run:
         os.makedirs(out_dir, exist_ok=True)
-        write_csv(os.path.join(out_dir, "reversal-bullish-3:55.csv"), results, report)
-        write_md(os.path.join(out_dir, "reversal-bullish-3:55.md"), results, report, bridge)
+        write_csv(os.path.join(out_dir, ARTIFACT_STEM + ".csv"), results, report)
+        write_md(os.path.join(out_dir, ARTIFACT_STEM + ".md"), results, report, bridge)
     print(json.dumps(report, indent=2))
     return 0, report
 
@@ -645,7 +662,7 @@ def run(date_str, bridge, out_dir, dry_run=False):
         print(f"no US session on {date_str}: the scanner is describing the session that "
               f"shibui already has ({report['shibui_latest_sessions'][:1]}). Nothing to scan.")
         os.makedirs(out_dir, exist_ok=True)
-        with open(os.path.join(out_dir, "reversal-bullish-3:55.md"), "w") as fh:
+        with open(os.path.join(out_dir, ARTIFACT_STEM + ".md"), "w") as fh:
             fh.write("\n".join([
                 f"# Bonde Reversal Bullish — {title_date(date_str)}",
                 "",
@@ -763,8 +780,8 @@ def run(date_str, bridge, out_dir, dry_run=False):
         return 0, report
 
     os.makedirs(out_dir, exist_ok=True)
-    write_csv(os.path.join(out_dir, "reversal-bullish-3:55.csv"), results, report)
-    write_md(os.path.join(out_dir, "reversal-bullish-3:55.md"), results, report, bridge)
+    write_csv(os.path.join(out_dir, ARTIFACT_STEM + ".csv"), results, report)
+    write_md(os.path.join(out_dir, ARTIFACT_STEM + ".md"), results, report, bridge)
     print(json.dumps(report, indent=2))
     return 0, report
 

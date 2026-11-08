@@ -76,7 +76,7 @@ Steps:
 5. For each candidate (cap 10), send ONE chat line of the form:
    "REVERSAL-BULLISH 3:55: <symbol> entry ~<entry_price> stop <next_day_stop> funds held <proxy>"
    Only emit chat lines if `_source=mcp` (i.e., the MCP path actually returned rows). For Finviz fallbacks, skip chat alerts — the Finviz URL does not encode the 3-candle shape, so a chat alert would be misleading.
-6. Write reversal-bullish-3:55.md and reversal-bullish-3:55.csv to today's daily-screens directory. Set _source=mcp or _source=finviz_fallback per row.
+6. Write reversal-bullish-3_55.md and reversal-bullish-3_55.csv to today's daily-screens directory. Set _source=mcp or _source=finviz_fallback per row.
 7. Append audit line: stock-screener-reversal-355 target=daily-screens:<date>:reversal_355 alerts=<n> source=<mcp|finviz_fallback>.
 8. Return ≤5-line summary. Quiet if zero candidates.
 

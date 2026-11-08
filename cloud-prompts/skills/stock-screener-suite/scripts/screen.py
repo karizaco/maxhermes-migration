@@ -181,7 +181,7 @@ def read_regime(path: Path) -> dict:
 #     <stylist>.md (5 files)      — written by daily-sweep ONLY (Stockbee / Qullamaggie / Sun / Hernandez / peoplewish)
 #     short-candidates.csv        — written by daily-sweep ONLY
 #     long-reversal-candidates.csv — written by daily-sweep ONLY
-#     reversal-bullish-3:55.{md,csv} — written by reversal-bullish cron ONLY
+#     reversal-bullish-3_55.{md,csv} — written by reversal-bullish cron ONLY
 #     premarket-gappers.md        — written by premarket-gapper cron ONLY
 #     focus-rvol-snapshot.md      — written by focus-rvol-rerank cron ONLY (every 1-2h intraday)
 #     weekly-ipo.md, weekly-high-short-float.md — written by pattern-study cron ONLY (Sat)
@@ -2047,7 +2047,7 @@ def cmd_consume(args: argparse.Namespace) -> int:
 
     # Reversal-bullish (Bonde 3:55 PM)
     if reversal_rows:
-        write_csv(out_dir / "reversal-bullish-3:55.csv", reversal_rows)
+        write_csv(out_dir / "reversal-bullish-3_55.csv", reversal_rows)
 
     # Regime payload — FLAT shape with a schema version, validated before it
     # is written. A payload that nests the regime under a `regime` key (the

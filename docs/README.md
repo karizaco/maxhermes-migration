@@ -9,6 +9,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | Document | What it is |
 |---|---|
 | [`BUGREPORT-gui-schedule-corruption.md`](BUGREPORT-gui-schedule-corruption.md) | Bug report — web GUI save silently corrupts a scheduled task's day-of-week field — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
+| [`BUGREPORT-windows-invalid-filenames.md`](BUGREPORT-windows-invalid-filenames.md) | BUGREPORT — Windows-invalid filenames in the outputs repo — **Date:** 2026-11-08 |
 | [`CROSSCHECK-cron19-earnings-reminder.md`](CROSSCHECK-cron19-earnings-reminder.md) | Cross-check — cron #19 earnings-reminder-daily — Reviewed 2026-11-01 against the deployed task and the artifacts it actually produced during the |
 | [`IMPROVEMENTS-2026-11-03-holiday-guard-and-auditor-roster.md`](IMPROVEMENTS-2026-11-03-holiday-guard-and-auditor-roster.md) | Improvements — 2026-11-03: the holiday guard, and the auditor's missing routines — Two defects found while reviewing the international EOD series, plus the systemic fix that |
 | [`IMPROVEMENTS-2026-11-04-fetch-ladder-and-memory-routing.md`](IMPROVEMENTS-2026-11-04-fetch-ladder-and-memory-routing.md) | Improvements — 2026-11-04: the dead fetch fallback, and where a finding goes — **Date:** 2026-11-04 · **Scope:** the fleet's fetch idiom and the routing of routine findings |
