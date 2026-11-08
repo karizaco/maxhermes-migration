@@ -261,7 +261,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 14-macro-calendar-week-ahead | `0 15 * * 0` | `macro-calendar/{date}-week-ahead.md` | Sun |
 | 06-pattern-study-backlog | `0 15 * * 6` | `daily-screens/{date}/weekly-ipo.md` | Sat |
 | 17-us-stocks-in-play | `50 15 * * 1-5` | `us-stocks-in-play/{date}.md` | Mon-Fri |
-| 04-reversal-bullish-3:55 | `55 15 * * 1-5` | `daily-screens/{date}/reversal-bullish-3:55.md` | Mon-Fri |
+| 04-reversal-bullish-3:55 | `55 15 * * 1-5` | `daily-screens/{date}/reversal-bullish-3_55.md` (also historical `…3:55.md`) | Mon-Fri |
 | 20-eod-watchlist-csv | `0 16 * * 1-5` | `us-eod/{date}.csv` | Mon-Fri |
 | 05-eod-international-daily | `30 16 * * 1-5` | `international-eod/{date}` | Mon-Fri |
 | 16-unusual-options-flow | `35 16 * * 1-5` | `options-flow/{date}.md` | Mon-Fri |
@@ -418,7 +418,7 @@ for entry in \
   "06-pattern-study-backlog|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/weekly-ipo\.md$|7" \
   "17-us-stocks-in-play|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
   "17-us-stocks-in-play-open|^us-stocks-in-play/[0-9]{4}-[0-9]{2}-[0-9]{2}-open\.md$|5" \
-  "04-reversal-bullish-3:55|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/reversal-bullish-3:55\.md$|5" \
+  "04-reversal-bullish-3:55|^daily-screens/[0-9]{4}-[0-9]{2}-[0-9]{2}/reversal-bullish-3[:_]55\.md$|5" \
   "20-eod-watchlist-csv|^us-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv$|5" \
   "05-eod-international-daily|^international-eod/[0-9]{4}-[0-9]{2}-[0-9]{2}/[a-z]{2}(-[a-z]{2})?\.csv$|5" \
   "16-unusual-options-flow|^options-flow/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \

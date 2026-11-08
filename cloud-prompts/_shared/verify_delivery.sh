@@ -49,10 +49,41 @@ if [ -z "$PATH_" ]; then
   exit 3
 fi
 
+# Windows-safe path: same convention as push_artifact.sh (illegal basename chars -> '_').
+win_safe_path() {
+  _in=$1
+  _out=""
+  _first=1
+  old_ifs=$IFS
+  IFS=/
+  for _part in $_in; do
+    IFS=$old_ifs
+    [ -z "$_part" ] && { IFS=/; continue; }
+    _c=$(printf '%s' "$_part" | sed 's/[<>:"\\|?*]/_/g' | sed 's/[. ]*$//')
+    [ -n "$_c" ] || _c="_"
+    if [ "$_first" -eq 1 ]; then _out="$_c"; _first=0; else _out="$_out/$_c"; fi
+    IFS=/
+  done
+  IFS=$old_ifs
+  printf '%s' "$_out"
+}
+
+PATH_ORIG="$PATH_"
+PATH_=$(win_safe_path "$PATH_")
+if [ "$PATH_ORIG" != "$PATH_" ]; then
+  echo "verify_delivery: windows-sanitize: '$PATH_ORIG' -> '$PATH_'"
+fi
+
 cd "${REPO_DIR:-/workspace}" 2>/dev/null || { echo "DELIVERY: FAILED (no repo dir)"; exit 1; }
 git fetch -q origin "$BRANCH" 2>/dev/null || true
 
-if ! git cat-file -e "origin/$BRANCH:$PATH_" 2>/dev/null; then
+# Prefer the sanitized path; if absent, try the pre-sanitize form (historical colon names).
+if git cat-file -e "origin/$BRANCH:$PATH_" 2>/dev/null; then
+  :
+elif [ "$PATH_ORIG" != "$PATH_" ] && git cat-file -e "origin/$BRANCH:$PATH_ORIG" 2>/dev/null; then
+  PATH_="$PATH_ORIG"
+  echo "verify_delivery: found historical path origin/$BRANCH:$PATH_"
+else
   echo "DELIVERY: FAILED (origin/$BRANCH:$PATH_ NOT found)"
   exit 1
 fi
