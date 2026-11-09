@@ -287,6 +287,7 @@ if [ -z "$NN" ]; then
     weekly/*-preview.md)                NN=22; NM=weekly-market-recap-preview ;;
     preopen-feed/*)                     NN=92; NM=preopen-catalyst-capture ;;
     _audit/status.json)                 NN=90; NM=delivery-auditor ;;
+    swst-new-companies/*)               NN=grok-swst; NM=simply-wall-st-new-companies ;;
     *)                                  NN="";  NM="" ;;
   esac
   [ -n "$NN" ] && break

@@ -79,6 +79,16 @@ Generates a weekly recap + forward-looking preview. Companion to the pre/post-ma
 - If week is short (holiday), note "shortened week, X trading sessions" at the top.
 - Always cite sources (URL or file path) for factual claims.
 
+## Optional input — Simply Wall St new companies
+
+This is an optional cross-check for the week-ahead / themes section.
+
+- Read `swst-new-companies/latest.json` from `karizaco/minimax-cloud-outputs` using the contents API or a checkout. The file must use schema `swst-new-companies-v1`.
+- Intersect `companies[].tv_symbol` (and/or a bare `ticker`) with tickers from `refs/watchlist.yaml`.
+- Prefer names marked `on_watchlist: true` when that field is present, but still compute the intersection because the producer's watchlist may differ from the published seed YAML.
+- If the file is missing, say so once and omit this section; never invent names.
+- Contract: `refs/swst-new-companies-contract.md`.
+
 ## Out of scope
 
 - Tax-loss harvesting / position-sizing advice — read-only recap.
