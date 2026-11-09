@@ -190,6 +190,38 @@ Origin: https://www.tradingview.com
 >
 > **`type` must be `in_range ["stock","dr"]`.** `type=stock` silently drops ADRs; `type=fund` drops
 > REITs. ADRs and REITs are US-listed securities and belong in the universe.
+>
+> **The `close` column can be WRONG while `premarket_*` is right — RECONCILE, DO NOT TRUST.**
+> Measured 2026-11-09: for **VISN** the scanner served `close` = 3.995 against a pre-market print of
+> 4.14 (range 4.11–4.43, entirely ABOVE that close) and `premarket_change` = -24.66%. Those three
+> cannot all be true. An independent quote from the bridge put the real prior close at **5.495**
+> (+1.67% on the day) — and ONLY with 5.495 do the scanner's own print and gap reconcile. **The
+> defect was in `close`, not in the gap.** So the routine MUST sweep every row it publishes:
+>
+> ```python
+> bad = [r for r in rows if r["close"] and r["premarket_close"] is not None
+>        and abs((r["premarket_close"] - r["close"]) / r["close"] * 100 - r["premarket_change"]) > 0.25]
+> ```
+>
+> A sweep of 598 screened rows on 2026-11-09 flagged **exactly one** (VISN), and the bridge agreed
+> with the scanner on all 14 other cross-checked names. When the sweep flags a row, pull that ONE
+> name's quote from the bridge (`market-recap get_quotes`), publish the bridge's prior close with
+> the scanner's pre-market print and gap, and say so in `## Source health`. Publishing the
+> scanner's `close` unchallenged would have put a prior close of 4.00 next to a pre-market print of
+> 4.14 in the same row — a contradiction a reader can SEE, and a wrong number in the CSV.
+>
+> **The ±3% band is LIVE: re-pull it ONCE and publish THAT pull's counts.** Measured 2026-11-09: a
+> band pulled at 08:37 ET held 382 gainers / 199 decliners; the same band at 08:44 ET held 392 / 206,
+> because names that were absent at 08:37 had grown their pre-market volume past the filter and
+> crossed INTO the band. A count drawn from one pull and a table drawn from another disagree by
+> construction. Pull the band once, at the END of the data work, and take BOTH the counts and the
+> tables from that pull; earlier pulls are context only.
+>
+> **A row with no pre-market print is NOT a row with a blank price.** `premarket_close`,
+> `premarket_high`, `premarket_low` and `premarket_volume` are all null for a name with no
+> pre-market print (e.g. **MLTX** on 2026-11-09, a StockTwits-trending name). Exclude those rows
+> from the CSV — `check_premarket_brief.py` asserts a non-empty `prior_close` and `premarket_last`
+> on EVERY row — and publish the name in prose WITHOUT a price instead.
 
 ### Step 2b — The screen (pinned — do not reinvent this each run)
 
