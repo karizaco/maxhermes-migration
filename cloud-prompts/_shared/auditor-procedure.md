@@ -248,7 +248,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 90-delivery-auditor | `0 7 * * *` | (no artifact — this cron) | every day |
 | 15-earnings-reaction-scanner | `0 8 * * 1-5` | `earnings/{date}-reactions.md` | Mon-Fri |
 | 26-agentic-pre-market-brief | `30 8 * * 1-5` | `daily-briefs/{date}-pre-market.md` | Mon-Fri |
-| 08-pre-market-gapper | `30 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
+| 08-pre-market-gapper | `34 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
 | 92a-preopen-catalyst-capture | `30 8 * * 1-5` | `preopen-feed/{date}-0830.jsonl` | Mon-Fri |
 | 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
 | 26b-agentic-pre-market-brief-refresh | `20 9 * * 1-5` | `daily-briefs/{date}-pre-market-refresh.md` | Mon-Fri |
@@ -930,6 +930,12 @@ The gate checks, among other things: that every gap carries a cause from the voc
 in hours; that a `skipped_by_design` routine is never `missing` and never a gap; that the digest's
 counts agree with the status file; that every live-but-unrostered routine is named; and that a
 routine with a three-fire streak is surfaced on its own line.
+
+**The digest's own push line carries THIS audit's delivery latency**, for the same reason the
+audit reports the fleet's: the run record measures the dispatch, not the work. Append
+` — delivered <HH:MM> ET, <n> min after the 07:00 fire` to the `push:` line. If this audit was
+itself stalled (`stall_min` over 5), say so in the same line — a delayed audit is itself a
+finding about the fleet.
 
 ## GIT PUSH (OPTIONAL)
 

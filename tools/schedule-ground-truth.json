@@ -39,7 +39,7 @@
       "session_mode": "new"
     },
     "08-stock-screener-pre-market-gapper.md": {
-      "schedule": "30 8 * * 1-5",
+      "schedule": "34 8 * * 1-5",
       "timezone": "America/New_York",
       "session_mode": "new"
     },
