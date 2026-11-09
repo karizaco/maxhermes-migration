@@ -155,10 +155,31 @@ Origin: https://www.tradingview.com
             "premarket_close","premarket_change","premarket_high","premarket_low",
             "premarket_volume","market_cap_basic","sector",
             "exchange","type","halted","premarket_time","earnings_release_next_date"],
- "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,400]}
+ "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,1000]}
 ```
 
 **Losers screen:** identical but `"premarket_change" in_range [-1000,-3]`, `sortOrder:"asc"`.
+
+> **The screen has a ROW CAP, and a truncated screen publishes FLOORS, not counts.**
+> The range is `[0,1000]`, and the ±3% band is routinely larger than a single page:
+> on 2026-11-05 the band held 379 gainers and **547** decliners, and the old
+> `range:[0,400]` returned **400 of the 547 decliners** — silently, with HTTP 200 and
+> no warning, because the scanner simply honours the range. The 147 omitted rows were
+> the LEAST negative decliners, so the headline table was complete but `down_3pct`
+> read as a COUNT when it was a FLOOR.
+>
+> **Pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on BOTH screens.**
+> The scanner returns `totalCount` next to `data`, so the assert costs nothing:
+>
+> ```python
+> assert len(rows) == totalCount, (name, len(rows), totalCount)
+> ```
+>
+> **If the assert fails**, the band is larger than the cap: publish the rows you have,
+> set `screen_complete: false` in the front matter, and say in §Source health that the
+> published counts are FLOORS, not exact counts. Never publish a truncated count as if
+> it were the whole band. A count that is known to be a floor is fine; a count that
+> LOOKS exact and is not is the defect.
 
 > **Filter-operator traps.** `in` is NOT a valid operator — it returns HTTP 400 and looks like a
 > source outage. Use `equal`, `in_range`, `greater`, `less`. And `in_range` on the **string** column
@@ -317,6 +338,8 @@ status: ok
 themes: <n>
 up_3pct: <n>
 down_3pct: <n>
+screen_complete: <true|false>   # false => the ±3% band exceeded the screen's row cap and
+                                 # the two counts above are FLOORS, not exact counts
 ---
 ```
 
@@ -381,6 +404,13 @@ not ready to push.
 ---
 
 ## ARTIFACT FORMAT CONTRACT v2 — `premarket-brief-artifact-v2`
+
+**Revision note (2026-11-09).** The front matter gained one key, `screen_complete`, and the
+contract gained one clause, **C6** (`tools/check_premarket_brief.py`): the ±3% counts must be
+published together with whether the screen returned EVERY row. The marker stays `v2` because the
+deployed cron #26 prompt names it, and a marker change would need a prompt redeployment for one
+word — the addition is additive and does not alter the meaning of any existing clause. C1–C5 are
+unchanged.
 
 This section IS the contract. It is fetched at RUN time, so an edit here changes the next fire
 with no prompt edit and no prompt drift. `tools/check_premarket_brief.py` asserts every clause
@@ -605,6 +635,7 @@ numbers.
 | **A 44 KB brief with no decision in it** | The TL;DR was a *map* of the brief (six themes) rather than a call. The trader had to do the synthesis. | §C1: `## Bottom line`, exactly three lines, above the theme TL;DR. |
 | **Setups with no prices** | The 2026-11-03 brief named "AMD is the referee tonight", Oracle's $20B capex and the Marvell/Lumentum spread — and published no level for any of them. A trader cannot act on a name without a number. | §C2: `Prior close`, `Pre-market last`, `Gap %`, `PM range`, `Key level`, `Invalidation` on every published name. |
 | **The CSV contradicted the spec** | The spec promised columns the CSV did not have, and the CSV carried date-named columns (`nov_2_2026_close`) that silently went stale. | §C3: a pinned, date-independent header; §C4: assert the header before the push. |
+| **The ±3% band was silently truncated** | The screen pinned `range:[0,400]` and the scanner honours a range SILENTLY — HTTP 200, no warning. On 2026-11-05 that returned 379 of 379 gainers but only **400 of 547** decliners, and `down_3pct` was published as a count when it was a floor. | §2: pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on both screens; publish `screen_complete: false` and say "floor" when the assert fails. |
 | **The brief had no follow-up** | Nothing recorded what happened to yesterday's calls, so the routine could not learn. | §C5: `## Yesterday's brief — what happened`, every run, with a `Thesis held?` column. |
 | **A stale shared helper** | `push_artifact.sh` was fetched with `[ -s file ] || curl`, so an old local copy kept using the old path→number table, and raw.githubusercontent served a stale blob for >17 min after a push. | Fetch-ladder rule below: contents API first, then raw, then jsDelivr, reject a 404 body, **refresh every run**. |
 
