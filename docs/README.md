@@ -9,6 +9,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | Document | What it is |
 |---|---|
 | [`BUGREPORT-gui-schedule-corruption.md`](BUGREPORT-gui-schedule-corruption.md) | Bug report — web GUI save silently corrupts a scheduled task's day-of-week field — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
+| [`BUGREPORT-minimax-2056-reset-time-dropped.md`](BUGREPORT-minimax-2056-reset-time-dropped.md) | Bug report — the Token Plan 2056 error drops the window's reset time, so a blocked fire cannot say when it recovers — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
 | [`BUGREPORT-windows-invalid-filenames.md`](BUGREPORT-windows-invalid-filenames.md) | BUGREPORT — Windows-invalid filenames in the outputs repo — **Date:** 2026-11-08 |
 | [`CROSSCHECK-cron19-earnings-reminder.md`](CROSSCHECK-cron19-earnings-reminder.md) | Cross-check — cron #19 earnings-reminder-daily — Reviewed 2026-11-01 against the deployed task and the artifacts it actually produced during the |
 | [`DEPLOY-HANDOFF-windows-safe-filenames.md`](DEPLOY-HANDOFF-windows-safe-filenames.md) | Deploy handoff — after Windows-safe filename merge (2026-11-08) — `maxhermes-migration` `main` now includes: |

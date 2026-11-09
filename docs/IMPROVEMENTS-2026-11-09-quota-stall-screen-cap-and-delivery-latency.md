@@ -118,3 +118,127 @@ git revert <commit-sha>            # each change is its own commit
 
 No cron redeployment is involved in either change: the pre-market screen spec and the auditor's
 procedure, contract and gate are all fetched at RUN time.
+
+---
+
+# Part 2 — the follow-through (2026-11-09, later the same day)
+
+The two fixes above close the gaps that the 2026-11-05 morning exposed. Five more changes make
+the fleet resilient to the next one, and they were approved as a set.
+
+## 3. A routine's reply now carries its own delivery latency, and a platform stall counts in `errors:`
+
+**The gap.** My own reply that night said `push: ok` and `errors: 0` — while the fire had been
+blocked for 49 minutes and the upstream baseline was missing. The platform's run record says
+"ok" in ~1 s either way, so nothing in the routine's own accounting could have told me. The
+operator saw a clean run.
+
+**The fix.**
+
+- `cloud-prompts/_shared/window_check.sh` now prints `stall_min:` — the platform's delay between
+  the fire's dispatch and the turn actually starting. The window check is a routine's first
+  action, so every routine that runs it gets the number for free.
+- The shared `## DELIVERY` block in `PROMPT-BLOCKS.md` (fetched at RUN time, so every routine
+  that downloads it gets it with no redeploy): the push line carries
+  `delivered_at … latency N min`, and **`stall_min` over 5 counts ONE error** with a `stalled:`
+  line naming the cause. The cause is read from the routine's OWN previous turn via
+  `session_messages`, so it is quoted, not guessed.
+- The five routines that do NOT download `PROMPT-BLOCKS.md` carry the same rule where they
+  already fetch something: `#26b` in `_shared/premarket-refresh.md`, `#92a`/`#92b` in
+  `_shared/preopen-capture.md`, `#90` in `_shared/auditor-procedure.md`, and `#01` in its own
+  prompt (deployed with this change).
+
+**The rule that keeps it honest.** If the artifact publishes a `degraded_sources:` count, the
+reply's `errors:` must equal it exactly — so a stall must be INCLUDED in the artifact's count.
+The artifact and the reply cannot disagree about how many things went wrong.
+
+## 4. The advisory quota probe — and why it cannot prevent the stall
+
+`cloud-prompts/_shared/quota_check.sh` (new) asks the documented Token Plan endpoint
+(`GET /v1/token_plan/remains`) how much of the 5-hour window is left and when it frees. It is
+ADVISORY and it FAILS OPEN: no key, an unreachable endpoint or an unparseable body prints one
+line and exits 0, because a missing key must never be counted as an error and must never stop a
+routine.
+
+**It cannot prevent the stall, and the file says so.** A routine cannot probe its way out of a
+block: the model call that runs the probe is the very call that gets rejected. What it buys is
+(a) a running routine knows to TRIM — fetch the skill once, pull the screen once, skip the
+optional sections — and (b) the operator learns, through the routine's reply, that the window is
+nearly gone. `#01`, the weekly check, now runs it first, because a weekly check is the natural
+place to see headroom BEFORE the next morning.
+
+**It needs a key.** With `MINIMAX_API_KEY` unset the probe says so and everything else behaves
+exactly as before.
+
+## 5. Cron #26b now publishes its screen as a CSV
+
+**The gap.** On 2026-11-05 cron #26 was rebuilt 21.4 hours after its fire and had to recover its
+screen by PARSING `#26b`'s MARKDOWN TABLES — which is how it ended up with 702 of the 779 names
+it should have had. The `#26` spec even named the refresh's `.md` as a source for
+"pre-market volume, %ADV, market cap, sector", which is a markdown table being used as a data
+source.
+
+**The fix.** `_shared/premarket-refresh.md` now writes
+`daily-briefs/{date}-pre-market-refresh.csv` beside the markdown, with a pinned header:
+
+```
+ticker,name,premarket_close,premarket_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,prior_close,prior_session_change_pct,live_close,live_change_pct,live_volume,market_cap,sector,exchange,screen_complete
+```
+
+`prior_close` is DERIVED (`premarket_close / (1 + premarket_change_pct / 100)`), never taken from
+the screener's `close` column, which is the LIVE intraday price once the session is open. The
+`live_*` columns are named so nobody can mistake them for pre-market. The push stages the whole
+output tree, so the CSV rides along in the same commit with one `--add`.
+
+The `#26` skill spec now reads the CSV and falls back to the markdown only if the CSV is absent.
+
+## 6. The 08:30 slot no longer fires three routines in one minute
+
+**The gap.** The 08:30 ET slot fired `#26`, `#08` and `#92a` simultaneously, each carrying a
+~300–520k-token context. That collision is what exhausted the 5-hour window and cost the fleet
+every fire from 08:30 to 09:50.
+
+**The fix.** `#08` moves to **08:34 ET**. Its artifact path
+(`daily-screens/{date}/pre-market-gapper.md`) carries no slot in its name, so it moved without
+touching a single path, and a gapper screen loses nothing to four minutes.
+
+**`#92a` stays at 08:30, deliberately.** Its slot name `preopen-feed/{date}-0830.jsonl` is
+load-bearing in five places: the checkpoint path itself, the feed's slot list
+(`FEED_CHECKPOINTS`), the procedure's slot assertion, the auditor's stale-check regex, and the
+skip-marker name. Moving it is a bigger change than the collision is worth, and the residual
+two-way collision at 08:30 is accepted. The real lever is context size and credits, not the
+minute.
+
+The ground truth (`tools/schedule-ground-truth.json`) and the auditor's roster table moved with
+the schedule, and `#08`'s deployed prompt was updated so nothing in it lies about its own slot.
+
+## 7. The "no baseline" vocabulary — three kinds of missing, not one
+
+**The gap.** My refresh said cron #26's morning brief "failed". The truth was that the 08:30 fire
+was **quota-killed and later resumed in place**, and it published the 11-05 brief 21.4 hours
+later. A refresh that writes "failed" is wrong by the next morning.
+
+**The fix.** `_shared/premarket-refresh.md` now distinguishes three cases, each with a
+recognised signature and its own consequence:
+
+| Case | Signature | What to publish |
+|---|---|---|
+| never ran | no run for the fire, or the session's last message is a platform error | the refresh alone; name the cause |
+| **quota-killed, may still be resumed** | the session's last message is `42212: Token Plan usage limit reached … (2056)` | the refresh alone, marked **provisional**, saying the upstream may be resumed in place and what a resumed upstream would change |
+| genuinely dead | a run exists, no quota error, no platform error, no artifact | the refresh alone; name the upstream as dead |
+
+## 8. The platform request — a legible 2056
+
+`docs/BUGREPORT-minimax-2056-reset-time-dropped.md` asks the platform to preserve the reset
+timestamp that MiniMax's own error body already carries. It is a BUGREPORT because it is a
+defect outside the repo: the provider's message says `resets at 2026-05-15T15:00:00Z (2056)` and
+the platform's reformat drops the clock. With it, a blocked fire could report when it recovers;
+without it, the fleet can only observe recovery after the fact.
+
+**Submit it via the app's Feedback dialog, or email MiniMaxCode@minimax.io.**
+
+## What this still does not fix
+
+- **The quota itself.** Credits must be bought, and the context budget is still pinned at 1M
+  where M3.1-Flash's own guidance is 512K. Both are settings, not repo changes.
+- **The residual 08:30 two-way collision** (`#26` and `#92a`), for the reason above.
