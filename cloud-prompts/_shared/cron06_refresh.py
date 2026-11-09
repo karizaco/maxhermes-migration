@@ -468,6 +468,44 @@ def main():
     with open(args.out_json, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=1)
 
+    # the raw scan dump keeps the same shape the routine has always published
+    run_full = {
+        "run_date": args.fire_date,
+        "source": "shibui MCP (streamable-http at https://mcp.shibui.finance/mcp)",
+        "shibui_latest_date": args.data_date,
+        "scan_window": "10y",
+        "filter": "(current_close / 10y_min_close) - 1 >= 10.0 AND 10y_min >= 0.50 AND rows_10y >= 1260",
+        "scan_count": len(live_rows),
+        "rows_passing": scan[0].get("rows_passing"),
+        "tagged_count": len(tagged),
+        "newly_tagged": [r["ticker"] for r in newly_common],
+        "already_known": sorted(r["ticker"] for r in rescore
+                                if r["tag_change"] != "NEW"),
+        "cumulative_backlog_size": len(ledger) + len(newly_common),
+        "rows_full": [{
+            "symbol": sym,
+            "ticker": sym.split(".")[0],
+            "name": row.get("name"),
+            "exchange": row.get("exchange"),
+            "gics_sector": row.get("gics_sector"),
+            "security_type": row.get("type"),
+            "current_close": row.get("cur_close"),
+            "min_close_10y": row.get("min10"),
+            "max_close_10y": row.get("max10"),
+            "gain_pct": round(row.get("gain_pct"), 1) if row.get("gain_pct") is not None else None,
+            "peak_gain_pct": round((row.get("max10") / row.get("min10") - 1) * 100, 1)
+            if row.get("max10") and row.get("min10") else None,
+            "high_60d": shape.get(sym, {}).get("hi60"),
+            "contraction_ratio": row.get("contraction_live"),
+            "ytd_low": row.get("ytd_low"),
+            "last_day_pct": round(row["last_day_pct"], 2) if row.get("last_day_pct") is not None else None,
+            "volume": row.get("cur_vol"),
+            "tags_live": row.get("tags_live"),
+        } for sym, row in sorted(live_rows.items(), key=lambda kv: -kv[1].get("gain_pct", 0))],
+    }
+    with open(os.path.join(args.out_md_dir, "peoplewish-backlog-run-full.json"), "w", encoding="utf-8") as fh:
+        json.dump(run_full, fh, indent=1)
+
     if args.out_state:
         os.makedirs(os.path.dirname(os.path.abspath(args.out_state)), exist_ok=True)
         state = {

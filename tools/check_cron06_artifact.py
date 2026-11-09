@@ -30,7 +30,8 @@ import sys
 CONTRACT_VERSION = "cron06-refresh-v2"
 TRADEABLE_VERDICTS = {"TRADEABLE", "THIN", "ILLIQUID", "FLOAT_ARTIFACT", "NO_QUOTE"}
 TAG_CHANGES = {"NEW", "UNCHANGED", "ADDED", "REMOVED", "MIXED"}
-REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-backlog.md"]
+REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-backlog.md",
+                   "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
 CHECKS = 14
@@ -112,7 +113,8 @@ def main():
     if FAILURES:
         report()
         return
-    docs = {f: read(p) for f, p in paths.items()}
+    docs = {f: read(p) for f, p in paths.items()
+            if f.endswith(".md")}
     data = json.loads(read(args.json))
 
     # ---------------------------------------------------------------- C2 marker
