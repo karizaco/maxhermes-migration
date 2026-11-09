@@ -288,6 +288,16 @@ if [ -z "$NN" ]; then
     preopen-feed/*)                     NN=92; NM=preopen-catalyst-capture ;;
     _audit/status.json)                 NN=90; NM=delivery-auditor ;;
     swst-new-companies/*)               NN=grok-swst; NM=simply-wall-st-new-companies ;;
+    earnings-calendar/*)               NN=grok-earncal; NM=weekly-earnings-calendar ;;
+    refs/earnings-next-dates.json)      NN=grok-earncal; NM=weekly-earnings-calendar ;;
+    refs/watchlist.yaml|refs/watchlist.csv) NN=grok-watchlist; NM=watchlist-sync ;;
+    asx-stocks-in-play/*)               NN=grok-asx-sip; NM=asx-stocks-in-play ;;
+    europe-stocks-in-play/*)            NN=grok-eu-sip; NM=europe-stocks-in-play ;;
+    tokyo-stocks-in-play/*)             NN=grok-tokyo-sip; NM=tokyo-stocks-in-play ;;
+    taiwan-stocks-in-play/*)            NN=grok-taiwan-sip; NM=taiwan-stocks-in-play ;;
+    stocktwits-sentiment/*)             NN=grok-stocktwits; NM=stocktwits-sentiment-scan ;;
+    transcript-watch/*)                 NN=grok-transcripts; NM=weekly-transcript-watch ;;
+    finviz-screener-merge/*)            NN=grok-finviz; NM=finviz-screener-merge ;;
     *)                                  NN="";  NM="" ;;
   esac
   [ -n "$NN" ] && break
