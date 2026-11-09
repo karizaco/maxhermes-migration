@@ -514,6 +514,43 @@ sources with the session volume and disagrees with the moving averages by up to 
 liquid names (AAPL 0.8827 vs 0.9926). **This file's `rel_volume` IS the fleet's definition** —
 a routine that needs a relative volume reads this column, not its own vendor average.
 
+## 2c. The BASE assembly owns the numeric format, and the settle window is longer than 10 minutes (2026-11-09)
+
+**THE DERIVE STAGE DOES NOT REFORMAT THE BASE SESSION FIELDS.** `eod_derive.py` copies
+`open` / `high` / `low` / `close` / `volume` / `pe_ratio` / `market_cap` **verbatim** and only
+formats what it computes (`change_pct`, the derived columns, `market_cap`). So the numeric rule
+— 4 significant figures, trailing zeros stripped, values ≥ 100000 at full precision, integers
+for volume/cap/float — **must be applied by the base assembly**, before the derive stage runs.
+Measured 2026-11-09: a base that handed over raw floats published `close = 1.2400000095367432`
+and **every other assertion still passed (28/28)** — the format was not asserted anywhere.
+`tools/check_eod_artifact.py` now asserts it (101,066 numeric cells on that session), and the
+range must be widened **in formatted space** so the published close can never sit outside the
+published high/low after rounding.
+
+**THE SETTLE WINDOW IS LONGER THAN 10 MINUTES, AND THE QUOTE SERVICE'S PRICE IS NOT THE
+AUCTION CLOSE.** On 2026-11-09 the first history pass (16:21–16:27 ET) was still drifting: a
+second pass (16:31–16:39 ET) changed the close on **2,001 of 4,775** session bars. Two
+independent readings settle it:
+
+| name | 1st pass close | 2nd pass close | 1-minute final bar (O=H=L=C, vol 0) | quote service |
+|---|---|---|---|---|
+| AAPL | 350.69 | 350.69 | 350.69 | 350.69 |
+| AGL | 114.055 | 114.02 | **114.02** | 113.87 |
+| AP | 5.96 | 6.00 | **6.00** | 5.955 |
+| ALG | 140.48 | 140.97 | **140.97** | 140.74 |
+
+**The second pass and the 1-minute final bar agree (48/48 sampled names); the quote service's
+`regularMarketPrice` disagrees on 3 of those 4** — it is a last-trade quote, not the 16:00 ET
+auction print. So: **take the close from the settled daily bar, keep the LATER history pass,
+and cross-check against the 1-minute final bar — not against the quote price.** The quote
+service remains the source for the market cap, the trailing P/E and the dividend-adjusted
+prior close, which is what `--quote-prev` needs.
+
+**And the vendor's own EOD tables lag the session.** `shibui` carried no `2026-11-09` row in
+`stock_quotes` (its latest was `2026-11-06`), so the session prices cannot come from the
+vendor — they come from the settled daily bar, while the vendor supplies the universe, the
+carrier caps, the floats and the GICS sectors.
+
 ## 3. `data_quality` — a per-row flag, so a consumer can trust a row
 
 **A row is published with empty cells and NO marker only when the marker is `OK`.** An
