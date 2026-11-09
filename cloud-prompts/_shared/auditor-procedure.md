@@ -1,7 +1,7 @@
 # cron #90 delivery-auditor — THE PROCEDURE
 
 AUDITOR_PROCEDURE_V1
-PROCEDURE_VERSION: 2026-11-06.1
+PROCEDURE_VERSION: 2026-11-09.1
 
 This file is the PROCEDURE for cron #90 (delivery-auditor). It is fetched at RUN time by the
 routine's prompt, which carries only the title block, the fetch ladder and the REPLY FORMAT.
@@ -287,6 +287,54 @@ For `01-weekly-mcp-health-check` the path uses the **ISO week** of `$AUDIT_DATE`
 commit match `mcp-health` in the subject instead of the NN prefix. It writes those two files and
 nothing else, so there is no near-miss variant to hunt for: if the weekly report is absent,
 #01 did not deliver.
+
+### 4a — DELIVERY LATENCY: the artifact's push time vs the fire's scheduled time
+
+**A routine's run record CANNOT tell you when the work happened.** `started_at_ms` and
+`finished_at_ms` measure the platform DISPATCHING the prompt to the agent — about one second —
+not the agent doing the work. On 2026-11-05 cron #26's 08:30 ET fire closed in 1.288 s with
+`status: 1`, and its artifact did not appear until 21.4 hours later. A fire that was blocked and
+then resumed is INDISTINGUISHABLE from a healthy one in the run records. The only honest measure
+of latency is the artifact's own push time against the fire's scheduled time.
+
+You already cloned the outputs repo in STEP 2, so this costs one `git log` per due routine:
+
+```bash
+# the commit that ADDED the audited artifact — the FIRST delivery, because a later
+# fix-forward does not change when the routine first published
+git log --diff-filter=A --format=%ct -- "$ARTIFACT_PATH"
+```
+
+Subtract the routine's scheduled fire time on `$AUDIT_DATE` (the roster table's ET time, in
+`America/New_York` on that date) and convert to minutes. That is `delivery_latency_min`.
+
+- **≤ 45 minutes → `delivered`.** This is the default allowed latency for the whole fleet,
+  measured across 2026-11-04 → 2026-11-08: the slowest HEALTHY routine landed 32 minutes after
+  its schedule (#17's preclose slot), and #10 — which fires at 14:00 ET — landed at 14:07.
+- **> 45 minutes → `delivered_late`.** The artifact IS on the branch, so this is NOT `missing`;
+  it is a finding. The routine MUST also carry a `stalled` gap line naming the cause, and the
+  routine's state in the status file MUST be `delivered_late`.
+- **A routine that is chronically slower than 45 minutes** needs its own allowed value named in
+  `tools/auditor-contract.json` (`latency.default_allowed_minutes` is the default) — never widen
+  the global number to hide one slow routine.
+
+**Publish the latency for EVERY due routine**, not only the late ones: `delivery_latency_min`
+is a required field on every entry of the status file's `routines` map — a number for a routine
+that delivered, `null` for one that did not. The gate fails the audit if a `delivered_late`
+routine has no `stalled` gap line, or if a `stalled` gap line names a routine that is not
+`delivered_late`.
+
+**Naming the cause.** `delivered_late` is a MEASUREMENT; the cause says WHY. Read the fire's run
+record (`cron_read view=runs`) and that session's last message:
+
+- the session's last message is `42212: Token Plan usage limit reached … (2056)` → `quota_2056`;
+- the session shows a platform error or never started → `platform_500`;
+- the run was cut off and only completed later → `timeout`;
+- the push lost a race and a later attempt landed it → `push_failure`;
+- the session was resumed from an earlier fire → `delayed_replay`;
+- **the turn completed normally and was simply slow** → `slow_run`. This is a real answer, not a
+  cop-out: "the platform blocked it" and "the routine is slow" need different fixes, so say
+  which one the evidence supports. Never invent a token.
 
 **RECONSTRUCTED ARTIFACTS — a file that exists but was not produced by that date's run.**
 `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are reconstructions, not runs.
@@ -581,23 +629,25 @@ fix is different.
 Every gap line names a cause from this CLOSED list, as a token:
 
 <!-- AUDITOR-CONTRACT-CAUSES
-platform_500 timeout quota_2067 push_failure delayed_replay not_yet_fired skipped_by_design cron_update_failed never_fired
+platform_500 timeout quota_2056 quota_2067 push_failure delayed_replay not_yet_fired skipped_by_design cron_update_failed slow_run never_fired
 -->
 
 <!-- AUDITOR-CONTRACT-STATES
-delivered missing not_yet_fired skipped_by_design written_off not_due
+delivered delivered_late missing not_yet_fired skipped_by_design written_off not_due
 -->
 
 | Cause | Meaning |
 |---|---|
 | `platform_500` | The platform itself failed the fire (HTTP 500 / `CRON_EXECUTION_FAILED` / no session ever started). |
 | `timeout` | The run exceeded its time budget and was cut off before it could write or push. |
-| `quota_2067` | The Token Plan usage limit was reached — a BILLING wall, not a code bug. |
+| `quota_2067` | The Token Plan usage limit was reached and credit auto-consumption was OFF — a BILLING wall, not a code bug. |
+| `quota_2056` | The Token Plan **5-hour usage window** was exhausted (error 2056, surfaced by the platform as 42212). The fire's FIRST model call was rejected, so the turn died and could only be resumed in place later — the run record still says `status: 1` and ~1 s. The window ROLLS from the account's first use. |
 | `push_failure` | The run was healthy and the artifact was built, but the push never landed (a lost race, a non-fast-forward, a staging abort). The artifact was NOT delivered. |
 | `delayed_replay` | The fire was dispatched for an earlier date and resumed late; the artifact was rebuilt for the ORIGINAL date. |
 | `not_yet_fired` | The routine's current schedule had not reached its first fire at the audited date. |
 | `skipped_by_design` | The routine ran and correctly wrote nothing (holiday window, fail-closed key, out-of-window). |
 | `cron_update_failed` | A `cron_update` meant to change the routine's schedule or prompt did not land. |
+| `slow_run` | The turn completed normally but later than the routine's allowed latency, and no platform failure is evidenced — the routine is slow, not blocked. |
 | `never_fired` | The scheduler never dispatched the routine on a day its own schedule said it should fire. |
 
 **A gap line with an empty reason is a FAILED AUDIT: `errors: 1`, not `errors: 0`.** A
@@ -736,19 +786,22 @@ below; the rest are non-findings and are recorded, never published as a gap.
 
 | State | Meaning |
 |---|---|
-| `delivered` | The artifact exists on `origin/main` and was byte-verified. |
+| `delivered` | The artifact exists on `origin/main`, was byte-verified, and landed within the routine's allowed latency (STEP 4a). |
+| `delivered_late` | The artifact exists on `origin/main` but landed LATER than the routine's allowed latency (STEP 4a). The artifact IS there, so this is NOT `missing` — it is a finding, and it MUST also carry a `stalled` gap line naming the cause. |
 | `missing` | The routine was due, produced nothing, and the failure reason is KNOWN. Counted in `missing`. Never used for a routine that skipped by design. |
 | `not_yet_fired` | The routine's current schedule has not reached its first fire date yet (see the SCHEDULE CHANGES block). Expected, not a failure. NOT a gap — record it in the top-level `not_yet_fired` array, never in `gaps`. |
 | `skipped_by_design` | The routine RAN and correctly wrote NO artifact (STEP 4d): a holiday window skip, a fail-closed key check, an out-of-window decline. Requires a reason. NOT counted in `missing`, NOT published as a `gap:` line — it gets its own `skipped:` line. |
 | `written_off` | The operator accepted this gap (see `WRITTEN_OFF`). NOT a finding — record it in the top-level `written_off` array, never in `gaps`. |
 | `not_due` | The schedule does not fire on `$AUDIT_DOW`. Not a gap. |
 
-**A GAP's LABEL** — only for a routine that is genuinely missing something. Every gap
-carries a label AND a cause (STEP 4c-1) AND an age in hours (STEP 4c-2):
+**A GAP's LABEL** — for a routine that is genuinely missing something, OR that delivered
+LATE (STEP 4a). Every gap carries a label AND a cause (STEP 4c-1) AND an age in hours
+(STEP 4c-2):
 
 | Label | Meaning |
 |---|---|
 | `MISSING` | Due, expected, and the artifact is not on `origin/main`. **This is the important one.** |
+| `stalled` | The artifact IS on `origin/main` but landed later than the routine's allowed latency (STEP 4a). The run record's duration measures the DISPATCH, not the work, so the latency is the only measure of when the work actually happened. NOT a MISSING — the artifact is there. |
 | `present_but_empty` | The path exists but carries no data (a stub was pushed). |
 | `stale` | The artifact exists but is from an older date than expected. |
 | `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
@@ -801,13 +854,22 @@ above). Every field below is required:
   "gaps": [
     {"routine": "25-ntrt-gap-brief-daily", "path": "ntrt/2026-11-03.md",
      "label": "MISSING", "cause": "platform_500",
-     "gap_age_hours": 18.4, "streak": 1}
+     "gap_age_hours": 18.4, "streak": 1},
+    {"routine": "26b-agentic-pre-market-brief-refresh",
+     "path": "daily-briefs/2026-11-03-pre-market-refresh.md",
+     "label": "stalled", "cause": "quota_2056",
+     "gap_age_hours": 26.1, "streak": 0}
   ],
   "routines": {
     "25-ntrt-gap-brief-daily": {"routine": "25-ntrt-gap-brief-daily",
-                                 "state": "missing", "streak": 1},
+                                 "state": "missing", "streak": 1,
+                                 "delivery_latency_min": null},
+    "26b-agentic-pre-market-brief-refresh": {"routine": "26b-agentic-pre-market-brief-refresh",
+                                              "state": "delivered_late", "streak": 0,
+                                              "delivery_latency_min": 1284.0},
     "92a-preopen-catalyst-capture": {"routine": "92a-preopen-catalyst-capture",
-                                      "state": "skipped_by_design", "streak": 0}
+                                      "state": "skipped_by_design", "streak": 0,
+                                      "delivery_latency_min": null}
   },
   "audit_status": "ok" | "gaps_found" | "failed_no_repo" | "skipped_no_token"
 }
