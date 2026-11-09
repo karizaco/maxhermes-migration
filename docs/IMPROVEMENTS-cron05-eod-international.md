@@ -399,3 +399,68 @@ with whatever the main session can source itself. Delegation pays off for work w
 re-checked at leisure; here it could not. The data half of this routine (scanner pull, FX, floors,
 carry-over, verification) was never delegated and should not be: those steps produce the numbers,
 and they are cheap.
+
+---
+
+## 12. The universe is the scanner's `country` field, and four build traps (2026-11-09)
+
+Date: 2026-11-09. Scope: cron #05's build path. The 2026-11-09 fire published 4,308 rows across
+16 regions and passed `scripts/intl_assert.py` with **0 failures** and 97 warnings — the same
+warning count the 2026-11-06 artifact produces on the same check, so the warning profile is the
+baseline, not a regression.
+
+### 12.1 The universe definition, recovered from the archived row counts
+
+The country scanner's `symbols.query.types = ["stock"]` pull returns **every instrument quoted in
+that country**, including foreign issuers' local lines: `XETR:APC` and `VIE:AAPL` are Apple Inc.
+on German and Austrian venues. A country pull therefore does NOT hold that country's own
+issuers, and a file built from it would publish Apple and Nvidia as "German" and "Austrian"
+names.
+
+**The filter is the scanner's `country` column — the ISSUER's country — and the endpoint takes it
+as `filter`, not `filters`.** The `filters` key (a list of `{"field", "operator", "value"}`
+objects) is **silently ignored**: the response comes back with the unfiltered `totalCount` and
+no error, which is how a run can believe it applied a cap filter when it applied nothing. The
+key that works is `filter`: `[{"left": "country", "operation": "equal", "right": "Germany"}]`.
+
+The recovered filter reproduces the 2026-11-06 session's universe counts **exactly** — at 65/65,
+it 392/392, dk 134/134, ie 19/19, fi 188/188, jp 3905/3902, tw 2335/2334, de 4312/4307 — which is
+how the definition was identified: a candidate filter is right when it reproduces the archived
+counts, and every other candidate (a cap band, a volume band, a price band, an exchange list)
+missed by 3x to 20x.
+
+**So a region file holds that country's own issuers, and the foreign megacaps are gone.**
+
+### 12.2 Four build traps, each of which produced a plausible file
+
+1. **The ticker is `row["s"]`, not `row["d"][0]`.** The scanner's data array starts with the
+   NAME, not the symbol: `d[0]` is `"ARL"`, while the symbol is the sibling key `s`
+   (`"ASX:ARL"`). Reading the ticker from `d[0]` silently groups issuers by their first name
+   token — the file still looks complete and every column is still right.
+2. **Every preferred SERIES is its own line.** The line key must keep the share-class suffix
+   (`TSX:IFC.PR.K` and `TSX:IFC.PR.L` are two lines of one issuer); collapsing on the root
+   ticker alone merges them and drops ~17% of Canada's published rows.
+3. **The carry-over test compares against the IMMEDIATE prior session only.** The walk-back is
+   for finding `last_trade_date`, not for deciding that a row is a carry-over. Comparing the
+   close against ANY earlier session's file raises the carry-over count from 92 to ~330 and
+   flags real trades (XETR:BMW -0.84% on 9 Nov) as non-trading rows.
+4. **The America scanner labels NYSE American `AMEX`** (and the pre-Nasdaq codes `NASDAQGS` /
+   `NMS`). `AMEX` is not in the published `us_listing` vocabulary (`NYSE`/`NASDAQ`/`ADR`/`OTC`/
+   `none`), so every row it touches is a hard assertion failure — 35 rows in the 2026-11-09
+   build. Map `AMEX` to `NYSE` at the matcher, not in the vocabulary.
+
+### 12.3 What the cross-session check caught this time
+
+The per-region WRITTEN row counts landed within 4% of the 2026-11-06 archive in every region
+(au 295 vs 297, jp 1358 vs 1375, tw 846 vs 882, ca 629 vs 633, de 108 vs 112, fr 258 vs 272,
+it 180 vs 179, es 147 vs 147, nl 56 vs 62, be 77 vs 77, at 51 vs 50, pt 27 vs 27, ie 17 vs 17,
+fi 100 vs 101, dk 75 vs 75, gr 84 vs 86) — which is the cheapest available proof that the FX
+conversion direction, the floors and the cap-carrier rule all still hold.
+
+### 12.4 The 97 warnings are the baseline
+
+All 97 are the same heuristic: the checker reduces a description to its issuer by cutting at the
+first class marker (`cum|pref|preferred|unit|class|non-voting|depositary|ads|gdr`), and Canadian
+preferred descriptions put the COUPON before the marker (`"Enbridge Inc. 5.5 % Cum Red Pfd …"`
+reduces to `"Enbridge Inc. 5.5 %"`, against the primary line's `"Enbridge Inc."`). The
+issuer-preservation assertion itself passes — the ticker roots match on every carried cap.
