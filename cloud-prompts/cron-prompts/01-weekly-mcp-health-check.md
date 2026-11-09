@@ -41,6 +41,20 @@ echo "Token length: ${#GITHUB_TOKEN}"
 echo "All env var names: $(env | cut -d= -f1 | sort | tr '\n' ' ')"
 ```
 
+## 0. Token Plan quota probe — the account's own headroom (advisory)
+
+Run `cloud-prompts/_shared/quota_check.sh` first (fetch it the same way as `mcp_bridge.py` below).
+It is ADVISORY and fails open: with no `MINIMAX_API_KEY` it says the probe is unavailable and
+exits 0, and that is NOT an error and NOT a reason to skip the check. With a key it reports how
+much of the Token Plan 5-hour window is left and when it frees.
+
+A weekly check is the natural place to see the window's headroom, because the 5-hour window is
+what takes a whole morning block down when it runs out — on 2026-11-05 the 08:30 ET slot fired
+three routines in one minute and the window was exhausted by 08:30, which cost the fleet every
+fire from 08:30 to 09:50. Report the window state in the ledger row and in the reply when it is
+low; a 5-hour window that is nearly gone is a billing problem the operator needs to hear about
+before the next morning, not after it.
+
 ## 1. Connector-catalog probe — THE POINT OF THIS ROUTINE
 ```bash
 mcode-tools connector tools 2>/dev/null | python3 -c "
@@ -169,3 +183,18 @@ last week" section.
 # Reply
 Under 10 lines unless something changed. Lead with the delta, not with what is still fine.
 One line for push status, one line for `errors: <n>` (count of probe failures).
+
+The push line ALSO carries this check's own DELIVERY LATENCY, and a platform stall counts in
+`errors:`. The platform's run record measures the DISPATCH of the prompt to the agent (~1 s), not
+the work: on 2026-11-05 cron #26's 08:30 ET fire closed in 1.288 s with `status: 1` and its
+artifact did not appear for 21.4 hours. A weekly health check that arrived 20 hours late is
+itself a finding, so report it.
+
+- `push: ok (verified) - delivered 03:07 ET, 67 min after the 02:00 fire` - the latency is the
+  wall clock at the push minus this check's own scheduled fire time (02:00 ET).
+- If the fire was BLOCKED before its first tool call (the platform's delay between the dispatch
+  and the turn actually starting), count ONE error for it and add a `stalled:` line naming the
+  cause - read your OWN session's previous turn (`session_messages` on your own session id) and
+  quote the error it ended on, e.g. `42212: Token Plan usage limit reached ... (2056)`, or say
+  `stalled: the fire was blocked <n> min before its first tool call (no error recorded)`.
+  `errors: 0` on a stalled fire is a lie: the report may be clean and the schedule was not.

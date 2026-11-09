@@ -227,4 +227,16 @@ fi
 echo "window-check: OK ($FIRE_DATE)"
 echo "fire-date: $FIRE_DATE"
 echo "replay: $REPLAY"
+# The STALL: how long the platform took to hand the turn to the agent after the
+# fire was dispatched. The run record says "ok" in ~1 s either way, because it
+# measures the DISPATCH, not the work - so this is the only in-band signal that a
+# fire was BLOCKED (e.g. the Token Plan 5-hour window, error 2056). A routine
+# that sees stall_min > 5 must say so and count it in errors:.
+STALL_MIN=0
+if [ -n "$SCHED_MS" ]; then
+  _sd=$(( (NOW_MS_EFF - SCHED_MS + 30000) / 60000 ))
+  [ "$_sd" -lt 0 ] && _sd=0
+  STALL_MIN=$_sd
+fi
+echo "stall_min: $STALL_MIN"
 exit 0

@@ -82,3 +82,19 @@ ignored, not used as a fallback.
 
 Under 6 lines: the checkpoint, the number of records written, how many movers carry a catalyst,
 one line for push status, one line for `errors: <n>`.
+
+**The push line carries the DELIVERY LATENCY, and a platform stall counts in `errors:`.** The
+platform's run record measures the DISPATCH of the prompt to the agent (~1 s), not the work: on
+2026-11-05 cron #26b's run record closed in 1.008 s with `status: 1` and its first tool call
+did not execute until 49.8 minutes later. `window_check.sh` prints `stall_min:` — the platform's
+delay before the turn actually started — and the window check is the first action, so read it.
+
+- `push: ok (verified) — delivered 10:15 ET, 55 min after the 09:20 fire` — the latency is the
+  wall clock at the push minus this routine's own scheduled fire time.
+- `stall_min` over 5 ⇒ the fire was BLOCKED. Count ONE error for it and add a `stalled:` line.
+  To name the cause, read your OWN session's previous turn (`session_messages` on your own
+  session id) and quote the error it ended on — e.g.
+  `42212: Token Plan usage limit reached … (2056)` — or say
+  `stalled: the fire was blocked <n> min before its first tool call (no error recorded)`.
+  `errors: 0` on a stalled fire is a lie: the artifact may be perfect and the schedule was not.
+
