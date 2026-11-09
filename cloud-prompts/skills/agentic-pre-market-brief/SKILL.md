@@ -30,7 +30,7 @@ replay is a DATED fleet artifact:
 | Field | Source for a replayed fire |
 |---|---|
 | pre-market last, gap %, name | `preopen-feed/{fire-date}-0830.jsonl` (cron #92a checkpoint) |
-| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.md` (cron #26b — the same pull) |
+| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.csv` (cron #26b — the same pull, machine-readable); fall back to the `.md` only if the CSV is absent |
 | pre-market high/low (PM range) | Yahoo chart bars for the fire date, `includePrePost=true` |
 | prior close, prior session % | `us-eod/{fire-date-1}.csv` (cron #20, settled) |
 | earnings roster | `earnings/{fire-date}-reactions.md` (cron #15) when cron #19's file is absent |

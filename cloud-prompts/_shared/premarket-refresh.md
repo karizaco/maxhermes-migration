@@ -107,6 +107,10 @@ errors: 0
 
 4. **A one-line verdict** — is the tape more or less directional than it was at 08:30 ET?
 
+5. **A machine-readable companion CSV** — `daily-briefs/{date}-pre-market-refresh.csv`, the same
+   screen the tables were built from, so a DOWNSTREAM routine can consume the numbers without
+   parsing markdown tables. See `## The companion CSV` below for the pinned header.
+
 Two more blocks are published, both unnumbered so that NO existing section number changes.
 They sit directly under the front matter, because this file is read twenty minutes before the
 open and the reader needs the decision first.
@@ -219,6 +223,37 @@ URLs) and classifies it. One vocabulary, applied the same way every day:
   **That is a finding, not a blank**: a gap with no sourced catalyst is the profile that faded.
 
 
+## The companion CSV — the screen, machine-readable
+
+The markdown is for a reader; the CSV is for the next routine. On 2026-11-05 cron #26 was
+rebuilt 21 hours after its fire, and it had to recover its screen by PARSING THIS FILE'S
+MARKDOWN TABLES — which is how a routine ends up with 702 of the 779 names it should have
+had. A pinned CSV makes that chain exact.
+
+Write `daily-briefs/{date}-pre-market-refresh.csv` beside the markdown, one row per name in
+the screen, with this header and this order:
+
+```
+ticker,name,premarket_close,premarket_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,prior_close,prior_session_change_pct,live_close,live_change_pct,live_volume,market_cap,sector,exchange,screen_complete
+```
+
+- **`prior_close` is DERIVED, never taken from the screener's `close` column.** Once the
+  regular session is open that column carries the LIVE intraday price, so a prior close taken
+  from it is wrong by exactly the day's move. Derive it:
+  `prior_close = premarket_close / (1 + premarket_change_pct / 100)`. (Verified 2026-11-05:
+  SPY 766.81, QQQ 691.95, APP 271.75 — all three exact against an independent quote source.)
+- **`live_*` are the LIVE regular session at the pull, not pre-market.** They are in the CSV
+  so a downstream routine can say how a gap actually behaved after the open. They are never
+  pre-market numbers, and the column names say so.
+- **`screen_complete`** is `true` when `len(rows) == totalCount` held for BOTH screens, `false`
+  when the ±3% band exceeded the row cap. On `false` the markdown's counts are FLOORS, not
+  exact counts, and the markdown must say so.
+- **One pull, one table.** The CSV and the markdown are built from the SAME merged table. If
+  they disagree, the artifact is broken — and the numbers must trace to the pull.
+
+The push stages the whole output tree, so the CSV rides along in the same commit as the
+markdown. Pass `--add` ONCE (the markdown); the CSV comes with it.
+
 ## Inputs
 
 | What | Where |
@@ -259,8 +294,21 @@ that is the point of this file.
   catalyst. "A record quarter" is not an anchor; "$0.70 special dividend" is.
 - **If no name carries an anchored catalyst, publish that.** An empty bottom line is a
   legitimate result on a bad tape. Do not promote an unanchored name to fill the slot.
-- **If the morning brief is missing** (the 08:30 fire failed), say so in one line and publish
-  the refreshed screen alone, with no "changed since" section.
+- **If the morning brief is missing**, say so in one line and publish the refreshed screen
+  alone, with no "changed since" section. **Name WHICH kind of missing it is** — the three
+  cases need different reactions, and the first is not "it failed":
+
+  | Case | How to recognise it | What to publish |
+  |---|---|---|
+  | **Never ran** | `cron_read view=runs` has no run for the 08:30 fire, or the session's last message is a platform error (`CRON_EXECUTION_FAILED`, HTTP 500) | The refresh alone, with no "changed since" section. Name the cause. |
+  | **Quota-killed and MAY STILL BE RESUMED** | The session's last message is `42212: Token Plan usage limit reached … (2056)` | The refresh alone — but say the upstream fire was **quota-killed and may be resumed in place**, so this file is PROVISIONAL, and say what a resumed upstream would change (it would supply the missing baseline). Do NOT write the upstream off as dead. |
+  | **Genuinely dead** | A run exists, the session ended without a quota error and without a platform error, and no artifact appeared | The refresh alone, with the upstream named as dead. |
+
+  The distinction matters because a resumed upstream is a REPLAY: on 2026-11-05 cron #26's
+  08:30 fire was quota-killed, and it published the 11-05 brief 21.4 hours later — rebuilt
+  for the 11-05 fire, and citing THIS refresh's screen. A refresh that wrote "the morning
+  brief failed" was wrong by the next morning; one that wrote "the 08:30 fire was
+  quota-killed and may still be resumed" was right.
 - **A thin tape is a valid result.** If the screen returns fewer names than expected, publish
   what it has and say so.
 
@@ -295,3 +343,19 @@ how many headline names carry an anchored catalyst; how many names moved since t
 brief; the
 three biggest changes; the name to watch at the open and the level; one line for push status;
 one line for `errors: <n>`.
+
+**The push line carries the DELIVERY LATENCY, and a platform stall counts in `errors:`.** The
+platform's run record measures the DISPATCH of the prompt to the agent (~1 s), not the work: on
+2026-11-05 this routine's own run record closed in 1.008 s with `status: 1` and its first tool
+call did not execute until 49.8 minutes later. `window_check.sh` prints `stall_min:` — the
+platform's delay before the turn actually started — and the window check is this routine's first
+action, so read it.
+
+- `push: ok (verified) — delivered 10:15 ET, 55 min after the 09:20 fire` — the latency is the
+  wall clock at the push minus this routine's own scheduled fire time (09:20 ET).
+- `stall_min` over 5 ⇒ the fire was BLOCKED. Count ONE error for it, name it, and add a
+  `stalled:` line. To name the cause, read your OWN session's previous turn
+  (`session_messages` on your own session id) and quote the error it ended on — e.g.
+  `42212: Token Plan usage limit reached … (2056)` — or say
+  `stalled: the fire was blocked <n> min before its first tool call (no error recorded)`.
+  `errors: 0` on a stalled fire is a lie: the artifact may be perfect and the schedule was not.
