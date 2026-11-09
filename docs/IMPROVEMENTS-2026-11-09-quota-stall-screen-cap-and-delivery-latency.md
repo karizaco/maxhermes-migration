@@ -242,3 +242,45 @@ without it, the fleet can only observe recovery after the fact.
 - **The quota itself.** Credits must be bought, and the context budget is still pinned at 1M
   where M3.1-Flash's own guidance is 512K. Both are settings, not repo changes.
 - **The residual 08:30 two-way collision** (`#26` and `#92a`), for the reason above.
+
+---
+
+## 9. Deploying a prompt: what a 13 KB paste actually costs
+
+Cron #08's prompt had to be redeployed, because its stated schedule changed. A 2-line probe came
+first — the transport round-trips newlines, backslashes, `$`, backticks and quotes losslessly —
+but a 13.4 KB paste still introduced **three slips in prose**: `and has` → `and it has`,
+`as success` → `as a success`, and `view:runs` → `view=runs`. None of them is inside a shell
+block, so the deployed prompt's fetch chain is byte-identical to the repo's and the routine is
+unaffected.
+
+**The rule that came out of it: when the platform's copy is mechanically fine, sync the REPO to
+the PLATFORM; never re-paste.** Re-pasting a *working* 13 KB prompt to correct three cosmetic
+tokens would have risked dropping a backslash inside a fetch block — a failure that costs the
+routine its whole run — to fix prose that costs nothing. The repo now carries the platform's
+three tokens, so cron #91 sees no drift. Two are cosmetic; the third (`view=runs`) reads
+ambiguously but is not wrong.
+
+**How a deployment is verified.** `cron_read view=detail` returns the stored prompt as a JSON
+string. Copying that escaped string into a file and `json.loads`-ing it reproduces the
+platform's exact bytes; diffing those against the repo file localises every difference to a
+line. The byte arithmetic is what settles attribution. For #08 the deltas were −4 (`also`) −1
+(`$`) +3 (` it`) +1 (` a`) = −1 byte, matching the observed 13,396 → 13,395 exactly — and the
+two `-` deltas are slips in MY COPY (the platform's read-back carries them), while the two `+`
+deltas are slips in the PASTE. For #01 the paste was byte-perfect (10,967 = 10,967) and its only
+delta was a same-length letter substitution in my copy, confirmed by a second read-back: the
+deployed prompt and the repo file are identical.
+
+**Two operational rules that follow.**
+
+- A prompt paste is verified by DIFF against the platform's own read-back, not by eye. Copying
+  13 KB by eye is exactly how three slips survive a review.
+- Never leave the repo and the platform disagreeing. If a paste cannot be made clean, the repo
+  is synced to the platform and the residual defect is documented here, so cron #91's drift
+  guard stays quiet and the next reviewer inherits a known state instead of a mystery.
+
+**Still open for the next prompt revision of #08:** the boilerplate in #08 now reads
+`cron_read view=runs` and `as a success`, while its eighteen sibling prompts read `view:runs`
+and `as success`. Harmonising them means re-pasting nineteen prompts, which is not worth a
+13 KB paste's slip rate for two words; it should ride the next revision of those prompts, which
+the fleet already rewrites in batches.
