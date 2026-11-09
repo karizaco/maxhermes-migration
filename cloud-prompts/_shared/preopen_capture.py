@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+CAPTURE_SCRIPT_VERSION: 2026-11-09.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -8,17 +9,27 @@ A 15:50 ET digest can see where a stock IS, not where it came from, and not the
 catalyst as it was understood at the open. This script records that: for each name
 moving pre-market or at the open, WHO moved, WHAT moved it, and WHEN the news broke.
 
-THREE CALLS, THREE JOBS
------------------------
+FOUR CALLS, FOUR JOBS
+--------------------
   1. trending_symbols      (stocktwits pack)  -> candidates + a natural-language
       reason + a timestamp for each. This is the retail/WSB/X-chatter signal and
       it is LIVE: the summary carries its own `summary_at` stamp.
-  2. top_movers           (market-recap pack) -> GROUND TRUTH price, %chg, volume.
-  3. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with evidence,
+  2. top_movers gainers   (market-recap pack) -> GROUND TRUTH price, %chg, volume.
+  3. top_movers losers    (market-recap pack) -> the SAME ground truth for the other
+      DIRECTION. The two calls are DISJOINT halves of one movers scan (a name cannot
+      be both a top gainer and a top loser), so merging them can never put two prices
+      on one record. A gainers-only scan is not a pre-open tape: on 2026-11-09 it
+      missed IRTC -30.7%, DKNG -21.3% and AXON -18.2%, the day's worst decliners.
+  4. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with evidence,
       a source URL and a confidence score, for the movers that call 1 did not cover.
 
-**Prices always come from call 2.** Call 1 and call 3 explain; they never price.
-A percentage that disagrees with call 2 by more than 2pp is marked `unverified`.
+The grounded-call budget is spent on the biggest movers by |%|, in BOTH directions:
+ranking by change_pct instead would put every decliner behind every gainer and the
+worst pre-open loser would never get a catalyst.
+
+**Prices always come from calls 2 and 3.** Calls 1 and 4 explain; they never price.
+A percentage that disagrees with the movers scan by more than 2pp is marked
+`unverified`.
 
 xAI / Grok is OPTIONAL. The xAI chat API no longer serves live search
 (`search_parameters` returns HTTP 410 "Live search is deprecated"), and the
@@ -71,6 +82,38 @@ DISAGREE_PP = 2.0
 MIN_PRICE = 1.0
 MIN_DOLLAR_VOL = 1_000_000
 UA = {"User-Agent": "MaxHermes-Cron/1.0"}
+
+# The checkpoint slots cron #17 merges by NAME. A slot is a slot, never a wall clock.
+ALLOWED_SLOTS = ("0830", "0920", "0950")
+# How late a dispatch may be and still snap down onto the slot it belongs to.
+SNAP_MAX_MIN = 90
+
+
+def resolve_slot(cp):
+    """Return (slot, note). A late dispatch snaps DOWN; past the window it refuses.
+
+    A literal `date +%H%M` names an 08:35 execution "0835" -- a slot cron #17 never
+    reads, because it merges the checkpoints by slot name. Worse, a phantom slot sorts
+    AFTER 0950, so a consumer replaying the checkpoints oldest-first would replay the
+    08:30 tape LAST. Measured 2026-11-05: the 08:30 slot's work began at 10:09 ET after
+    a platform stall and a wall-clock slot would have named its file 1010.
+    """
+    if cp in ALLOWED_SLOTS:
+        return cp, None
+    try:
+        mins = int(cp[:2]) * 60 + int(cp[2:])
+    except Exception:
+        return None, f"unparseable checkpoint slot {cp!r}"
+    best = None
+    for s in ALLOWED_SLOTS:
+        sm = int(s[:2]) * 60 + int(s[2:])
+        if sm <= mins and (best is None or sm > best[0]):
+            best = (sm, s)
+    if best and (mins - best[0]) <= SNAP_MAX_MIN:
+        return best[1], (f"slot {cp} snapped DOWN to {best[1]} "
+                         f"({mins - best[0]} min late dispatch)")
+    return None, (f"checkpoint slot {cp} is more than {SNAP_MAX_MIN} min past its own "
+                  f"slot — no filename invented")
 
 
 def _et():
@@ -221,10 +264,17 @@ def infer_cat(text):
 def build(date_str, checkpoint, top_n=8):
     tr = call_trending()
     tm = call_top_movers()
+    tm_dn = call_top_movers(category="losers")
     if "error" in tr and "error" in tm:
         return {"error": f"both sources failed: trending={tr.get('error')} movers={tm.get('error')}"}
     trending = {r["ticker"]: r for r in (tr.get("rows") or [])}
     movers = tm.get("movers") or {}
+    # The decliners are the DISJOINT other half of the same movers scan (a name cannot be
+    # both a top gainer and a top loser), so merging the two halves can never put two
+    # prices on one record. Measured 2026-11-09: the gainers-only default missed IRTC
+    # -30.7%, DKNG -21.3% and AXON -18.2% -- the biggest pre-open decliners of the day.
+    for _tk, _m in (tm_dn.get("movers") or {}).items():
+        movers.setdefault(_tk, _m)
 
     # Names the tape should carry: trending names that also moved, plus the top movers.
     def liquid(m):
@@ -236,7 +286,10 @@ def build(date_str, checkpoint, top_n=8):
 
     candidates = []
     seen = set()
-    for tk, m in sorted(movers.items(), key=lambda kv: -(kv[1].get("change_pct") or 0)):
+    # Rank by the ABSOLUTE move, not by change_pct: the grounded-call budget is finite and
+    # must reach the biggest movers in BOTH directions. Ranking by change_pct puts every
+    # decliner behind every gainer, so the worst pre-open loser never gets a catalyst.
+    for tk, m in sorted(movers.items(), key=lambda kv: -abs(kv[1].get("change_pct") or 0)):
         if tk in seen or not liquid(m):
             continue
         seen.add(tk)
@@ -255,7 +308,7 @@ def build(date_str, checkpoint, top_n=8):
             continue
         rec = {
             "ts": datetime.datetime.now(_et()).isoformat(timespec="seconds"),
-            "src": "tv" if mv else "grok",
+            "src": "scanner" if mv else "stocktwits",
             "ticker": tk,
             "name": (mv or {}).get("name") or (trr or {}).get("name"),
             "pct": (mv or {}).get("change_pct"),
@@ -278,12 +331,13 @@ def build(date_str, checkpoint, top_n=8):
                 rec["cat"] = infer_cat(g["answer"])
                 rec["ref"] = g.get("evidence")
                 rec["conf"] = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
-                rec["src"] = "grok" if False else "pipeworx"
+                rec["src"] = "pipeworx"
                 rec["grounded_tool"] = g.get("tool_used")
         rows.append(rec)
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
-            "errors": [e for e in (tr.get("error"), tm.get("error")) if e]}
+            "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
+            "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error")) if e]}
 
 
 def main():
@@ -291,13 +345,30 @@ def main():
     ap.add_argument("--date")
     ap.add_argument("--checkpoint")
     ap.add_argument("--out")
-    ap.add_argument("--top", type=int, default=8)
+    ap.add_argument("--top", type=int, default=12)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     now = datetime.datetime.now(_et())
     date_str = args.date or now.strftime("%Y-%m-%d")
-    cp = args.checkpoint or now.strftime("%H%M")
+    cp, slot_note = resolve_slot(args.checkpoint or now.strftime("%H%M"))
+    if cp is None:
+        # Fail closed with a MARKER, never with a phantom filename. The marker must NEVER
+        # wear the tape's .jsonl name: cron #17 would parse it as tape and call every
+        # line malformed.
+        tape0 = args.out or f"/workspace/preopen-feed/{date_str}-{args.checkpoint}.jsonl"
+        out0 = (tape0[:-6] if tape0.endswith(".jsonl") else tape0) + ".DEVIATION.slot.md"
+        os.makedirs(os.path.dirname(out0), exist_ok=True)
+        with open(out0, "w", encoding="utf-8") as fh:
+            fh.write("# Pre-open catalyst capture — SLOT DEVIATION\n\n"
+                     f"- **Reason:** {slot_note}\n"
+                     f"- **Requested checkpoint:** {args.checkpoint}\n"
+                     f"- **Tape:** none. No tape was written, because cron #17 merges the "
+                     f"checkpoints by slot name and would never read an invented one.\n")
+        print(f"preopen capture: SLOT DEVIATION — {slot_note} (marker: {out0})")
+        return 0
+    if slot_note:
+        print(f"preopen capture: {slot_note}")
 
     if not os.environ.get("PIPEWORX_API_KEY") and not os.environ.get("XAI_API_KEY"):
         print("preopen capture: PIPEWORX_API_KEY unset — nothing written")
@@ -319,10 +390,18 @@ def main():
 
     out = args.out or f"/workspace/preopen-feed/{date_str}-{cp}.jsonl"
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "a", encoding="utf-8") as fh:
+    # ATOMIC, never append. A slot's tape holds ONE snapshot. Appending meant that two
+    # agents running the same slot against the same shared /workspace produced a tape
+    # with one row per ticker PER RUN -- 100 rows for 53 tickers, measured 2026-11-09
+    # 08:30 ET -- which breaks the fleet's "one row per ticker" rule and makes cron #17
+    # read a stale record as the latest one.
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(body)
+    os.replace(tmp, out)
     print(f"preopen capture: wrote {len(res['rows'])} records to {out} "
-          f"(movers={res['mover_count']}, trending={res['trending_count']}, "
+          f"(movers={res['mover_count']} = {res.get('gainers')} up / {res.get('losers')} down, "
+          f"trending={res['trending_count']}, "
           f"as_of={res.get('as_of')}, errors={len(res.get('errors') or [])})")
     return 0
 
