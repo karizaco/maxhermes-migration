@@ -1004,6 +1004,12 @@ EFX on the list; both fail the settled close (EFX's body ratio 0.373 > the 0.30 
 0.51 < 0.60). The published entry must be the price the trader can actually transact at, i.e.
 the official close.
 
+**This does NOT change the 15:55 fire.** A fire that publishes INSIDE the entry window uses the
+LIVE read and says so (the 16:00 print can still move the close, the DCR and the stop). The rule
+below applies only when the artifact is published AFTER the bell — a resumed fire, a late
+re-read, or an explicit post-close republication (the 2026-11-10 fire was published at 16:25 ET
+and hit exactly this).
+
 **The rule for a post-close read:**
 
 1. **Read the bar at ~16:20–16:25 ET, not at 16:02.** The script now reports

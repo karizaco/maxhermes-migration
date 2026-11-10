@@ -40,6 +40,11 @@ The difference is not cosmetic:
 entry price published must be the official close, because that is the price the trader can
 transact at (Bonde enters 3.58–4PM or MOC).
 
+**This does not change the 15:55 fire.** A fire that publishes inside the entry window uses the
+LIVE read and says so (the 16:00 print can still move the close). The rule applies only when the
+artifact is published AFTER the bell — a resumed fire, a late re-read, or an explicit
+post-close republication. The 2026-11-10 fire was published at 16:25 ET and hit exactly this.
+
 ## The changes
 
 ### `tools/reversal_bullish.py` (run-time fetched ⇒ the next fire picks them up)
