@@ -1,5 +1,7 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
+PROCEDURE_VERSION: 2026-11-10.1
+
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
 15:50 ET) reads the tape to explain why a stock moved and when the news broke — the one thing no
