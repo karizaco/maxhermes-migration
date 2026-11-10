@@ -31,11 +31,28 @@ Prints a JSON object: {"<TICKER>": {"avg": float, "n": int}, ...}
 `avg` is the mean session share volume over the N sessions ENDING at (and
 including) the session before `--date`; `n` is how many sessions were found.
 
+CAPABILITY
+  * `RVOL_FETCH_V2` (2026-11-10). The output JSON carries `"capability":
+    "RVOL_FETCH_V2"` and a new `"prior_session"` block. A consumer that needs the
+    PRIOR session's own daily volume (the open slot's per-symbol volume-basis
+    factor) must demand this marker: an older copy of this script has no such
+    field, and the symptom is a silent fallback to a second, per-symbol price
+    pull that costs ~3 minutes of a 15-minute budget.
+
+    `prior_session` = {"date": "<the most recent session actually fetched>",
+    "volumes": {"<TICKER>": <share volume that session>}}. It is the SAME
+    series as the `avg10` denominator, so a numerator built on it and the
+    denominator are on one basis (measured 2026-11-10: the Yahoo daily bar
+    divided by the polygon daily bar has a median of 0.9996 over 1,158 names,
+    so mixing the two carries a ~0.04% bias in every published pace).
+
 LIMITS
   * Massive (upstream) allows 5 requests/minute on the shared free key, so the
     fetches are serialized with a delay. 11 sessions ~= 2.5 minutes.
   * The upstream key can be overridden with `--api-key` / PIPEWORX_API_KEY.
 """
+
+CAPABILITY = "RVOL_FETCH_V2"
 
 import argparse
 import json
@@ -130,11 +147,13 @@ def main():
     days = sessions_before(end, args.sessions)
 
     vols = {}
+    fetched = []
     for i, day in enumerate(days):
         data = fetch_session(day, api_key=args.api_key, delay=args.delay)
         if data is None:
             print(f"  WARN could not fetch {day}", file=sys.stderr)
             continue
+        fetched.append(day)
         for t, r in data.items():
             v = r.get("v")
             if v:
@@ -148,16 +167,31 @@ def main():
         vals = [byday[d] for d in days if d in byday]
         if len(vals) >= args.sessions:
             avg[t] = {"avg": sum(vals) / len(vals), "n": len(vals)}
+
+    # The PRIOR session's own daily volume, on the SAME series as the denominator.
+    # The prior session is the most recent session actually fetched; if that day's
+    # call failed, fall back to the most recent one that succeeded and REPORT which
+    # date it is, so a consumer never silently pairs a factor from one session
+    # with a denominator that ends on another.
+    prior_day = fetched[-1] if fetched else None
+    prior_volumes = {}
+    if prior_day:
+        for t, byday in vols.items():
+            v = byday.get(prior_day)
+            if v:
+                prior_volumes[t] = v
     payload = {"date": args.date, "sessions": args.sessions,
-               "days": days, "symbols": len(avg), "avg10": avg}
+               "days": days, "fetched_days": fetched,
+               "symbols": len(avg), "capability": CAPABILITY,
+               "prior_session": {"date": prior_day, "volumes": prior_volumes},
+               "avg10": avg}
     text = json.dumps(payload)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(text)
         print(f"  wrote {args.out} ({len(avg)} symbols)", file=sys.stderr)
     else:
-        print(json.dumps({"date": args.date, "sessions": args.sessions,
-                          "symbols": len(avg), "avg10": avg}))
+        print(json.dumps(payload))
 
 
 if __name__ == "__main__":
