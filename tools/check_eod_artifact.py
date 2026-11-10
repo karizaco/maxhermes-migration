@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import re
 import sys
+from decimal import Decimal, ROUND_HALF_UP
 
 MARKER = "EOD_DERIVE_V2"
 
@@ -52,6 +54,64 @@ REQUIRED_COLUMNS = [
 VOCABULARY = {"OK", "RANGE_ADJUSTED", "HIGH_LOW_UNAVAILABLE", "CAP_CARRIED", "NO_SECTOR",
               "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION",
               "SPLIT_ADJUSTED"}
+
+# the archive's NUMERIC RULE, re-implemented here so the checker never shares code with
+# the builder: 4 significant figures with the fractional trailing zeros stripped, EXCEPT
+# values >= 100000 which keep full precision; the volume / cap / float columns are
+# integers. A plain "%.4g" renders 830500 as "8.305e+05" - that is the trap.
+#
+# WHY THIS ASSERTION EXISTS (2026-11-09): the derive stage does NOT restate the base
+# session fields - it copies them verbatim and only formats what it computes. A base
+# assembly that hands over RAW floats therefore published `close = 1.2400000095367432`
+# while every other assertion still passed (28/28). The archive's format is part of the
+# published contract, so it is now asserted rather than assumed.
+FULL_PRECISION_FROM = 100000
+
+NUMERIC_COLUMNS = ["open", "high", "low", "close", "change_pct", "pe_ratio", "rel_volume",
+                   "pct_from_52w_high", "pct_from_52w_low", "sma_20", "sma_50", "sma_200",
+                   "pct_vs_sma_50", "pct_vs_sma_200", "atr_14", "atr_pct", "gap_pct"]
+INTEGER_COLUMNS = ["volume", "market_cap", "market_cap_usd", "avg_daily_dollar_volume",
+                   "float_shares"]
+
+
+def fmt_num(x) -> str:
+    """The archive's numeric rule - independent implementation, 4 significant figures."""
+    if x is None or x == "":
+        return ""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return ""
+    if math.isnan(v) or math.isinf(v):
+        return ""
+    if v == 0:
+        return "0"
+    if abs(v) >= FULL_PRECISION_FROM:
+        s = f"{v:.6f}".rstrip("0").rstrip(".")
+        return s
+    d = Decimal(repr(v))
+    decimals = 3 - d.adjusted()
+    if decimals < 0:
+        step = Decimal(1).scaleb(-decimals)
+        q = (d / step).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * step
+    else:
+        q = d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    s = format(q, "f")
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def fmt_int(x) -> str:
+    if x is None or x == "":
+        return ""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return ""
+    if math.isnan(v) or math.isinf(v):
+        return ""
+    return str(int(round(v)))
 
 # independent implementation of the issuer grouping (do not import the builder)
 CLASS_MARKERS = re.compile(r"\s*[-–—]?\s*\b(class|series|ser\.?)\s*\.?\s*[a-z0-9]{1,3}\b\s*$",
@@ -177,6 +237,34 @@ def main() -> int:
     (bad if range_bad else ok)(f"no row publishes a close outside its own range ({range_bad})")
     (bad if zero_bad else ok)(f"no missing value is written as zero ({zero_bad})")
     (bad if capusd_bad else ok)(f"market_cap_usd == market_cap on every row ({capusd_bad})")
+
+    # the archive's NUMERIC RULE must hold on the PUBLISHED cells, byte for byte.
+    # The derive stage copies the base session fields verbatim - it does not reformat
+    # them - so an unformatted base publishes raw floats (`1.2400000095367432`) and every
+    # other assertion still passes. Measured 2026-11-09: 101,066 numeric strings, 0 drift.
+    fmt_checked = 0
+    fmt_bad = []
+    for r in rows:
+        for col in NUMERIC_COLUMNS:
+            v = (r.get(col) or "").strip()
+            if not v:
+                continue
+            fmt_checked += 1
+            if fmt_num(v) != v:
+                fmt_bad.append((r.get("ticker", ""), col, v, fmt_num(v)))
+        for col in INTEGER_COLUMNS:
+            v = (r.get(col) or "").strip()
+            if not v:
+                continue
+            fmt_checked += 1
+            if fmt_int(v) != v:
+                fmt_bad.append((r.get("ticker", ""), col, v, fmt_int(v)))
+    if fmt_bad:
+        bad(f"{len(fmt_bad)} numeric cell(s) are not in the archive's numeric format "
+            f"(first: {fmt_bad[0][0]} {fmt_bad[0][1]}={fmt_bad[0][2]!r} expected "
+            f"{fmt_bad[0][3]!r})")
+    else:
+        ok(f"every numeric cell is in the archive's numeric format ({fmt_checked} cells)")
     (bad if shares_bad else ok)(f"the implied share count is plausible on every capped row "
                                 f"({shares_bad})")
 

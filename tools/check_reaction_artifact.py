@@ -119,8 +119,12 @@ def min_ref_date(scan_date, venue):
       EU  the EU session is live at the 08:00 ET fire, so the base is the
           session before the scan date
       AU  an ASX bar is dated by its session OPEN (19:00 ET the previous
-          day), so the session that closed at 02:00 ET on the scan date is
-          dated D-1 and its base is the session before D-1
+          day, 18:00 ET after the ASX DST change), so the artifact's
+          `ref_close_asof` for an AU row is the ET stamp of the base bar -
+          one calendar day BEFORE the ASX session the bar carries. The base
+          session is the ASX session immediately before the reported one, so
+          the oldest label the artifact may carry is that session's date
+          minus one day.
     """
     if not scan_date:
         return None
@@ -128,12 +132,28 @@ def min_ref_date(scan_date, venue):
         s1 = prior_session_date(scan_date, "US")
         return prior_session_date(s1, "US") if s1 else None
     if venue == "AU":
+        # BUG FIXED 2026-11-09. This used to be
+        #   prior_session_date(scan_date - 1 day, "AU")
+        # which walks the SESSION calendar but forgets the one-day stamp
+        # shift. On a Tue-Fri scan the walk and the shift cancelled out (the
+        # floor landed on the same label the pipeline emits), so the bug
+        # stayed hidden for every artifact published 2026-11-04..11-06. On a
+        # MONDAY scan, scan_date - 1 is a Sunday, the walk lands on the
+        # Friday, and the floor came out one day NEWER than the label the
+        # pipeline can emit - so a perfectly correct artifact was rejected:
+        # 25 of 25 ASX rows failed on the 2026-11-09 run (VNT's base close
+        # 5.73 is the Friday Nov 6 ASX close, labelled 2026-11-05 by its
+        # 18:00 ET stamp - the value was right, the floor was wrong).
+        # The base session is the ASX session before the scan date; its
+        # label is one calendar day earlier.
+        base = prior_session_date(scan_date, "AU")
+        if not base:
+            return None
         try:
-            d = (datetime.datetime.strptime(scan_date, "%Y-%m-%d").date()
-                 - datetime.timedelta(days=1)).isoformat()
+            d = datetime.datetime.strptime(base, "%Y-%m-%d").date()
+            return (d - datetime.timedelta(days=1)).isoformat()
         except Exception:
             return None
-        return prior_session_date(d, "AU")
     return prior_session_date(scan_date, venue)
 
 

@@ -22,7 +22,14 @@ to, so the conversation list stays scannable.
 
 ## SCHEDULE
 - Original local schedule: 08:30 ET weekdays
-- Deployed schedule: `30 8 * * 1-5` America/New_York — 08:30 ET, Mon-Fri.
+- Deployed schedule: `34 8 * * 1-5` America/New_York — 08:34 ET, Mon-Fri.
+  Moved from 08:30 ET on 2026-11-09: the 08:30 slot fired THREE routines in the same
+  minute (#26, #08, #92a), each carrying a ~300–520k-token context, and that collision
+  is what exhausted the Token Plan 5-hour window and cost the whole morning block. #08's
+  artifact path carries no slot in its name, so it moved without touching any path;
+  #92a stays at 08:30 because its slot name (`-0830.jsonl`) is load-bearing in five
+  places (the checkpoint path, the feed's slot list, the procedure's slot assertion, the
+  auditor's stale-check regex and the skip-marker name).
 - The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
   weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
   file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot
@@ -110,7 +117,7 @@ The skill's procedure body lives here:
 
 **FIRST tool call:** `curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/SKILL.md?ref=main"` (or `web_fetch` if available). Read the procedure in full. Do NOT skip this step.
 
-If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert and has
+If curl fails with a certificate/TLS error (the sandbox egress proxy rotates its leaf cert and it has
 expired mid-session before), fall back to `web_fetch` on the SAME url. If both fail: write a stub
 artifact with `_source=skill_fetch_failed`, report `errors: 1`, and stop. Never improvise from memory.
 
@@ -169,7 +176,7 @@ Write the artifact to:
   `/workspace/daily-screens/{date}/pre-market-gapper.md`
 
 The `{date}` placeholder is the fire's **scheduled** date in US/Eastern, `YYYY-MM-DD`. Resolve it
-from the run's `scheduled_at_ms` (`cron_read view:runs` → `run.scheduled_at_ms`), not from `date`
+from the run's `scheduled_at_ms` (`cron_read view=runs` → `run.scheduled_at_ms`), not from `date`
 at execution time. If they differ, this is a **delayed replay**: rebuild for the scheduled date,
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
@@ -190,7 +197,7 @@ sh /workspace/verify_delivery.sh --path daily-screens/{date}/pre-market-gapper.m
 
 **If the push script cannot be fetched**, use the inline fallback in
 `cloud-prompts/_shared/push_artifact.sh` — but never `git add -A`, and never
-`git push … | head -3` (that returns head's exit status and reports a rejected push as success).
+`git push … | head -3` (that returns head's exit status and reports a rejected push as a success).
 
 ## DELIVERY VERIFICATION (MANDATORY - do this after the push block)
 

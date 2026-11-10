@@ -1,55 +1,56 @@
 #!/usr/bin/env python3
 """
-check_preopen_checkpoint.py — assert the cron #92 pre-open checkpoint contract.
+check_preopen_checkpoint.py — the machine gate for cron #92's pre-open checkpoint.
 
-Do not eyeball it. The 2026-11-04 08:30 checkpoint was mechanically correct and
-reader-hostile at the same time: the tape was sorted by pre-market VOLUME, so the
-biggest movers were buried under 666 rows of noise, the 09:50 fire on 2026-11-05
-published 123 rows with the moves cut off at ±0.2%, and a checkpoint with no
-XAI_API_KEY left NO trace at all — cron #90 reported the absence with an empty reason
-and cron #17 had to reconstruct the cause from its own provenance table.
+WHAT IT GATES
+-------------
+The pre-open tape (`.jsonl`) and the board that sits beside it (`.md`), plus the shared
+files that produce them. The gate exists because the three rules that matter were, until
+now, enforced only in prose:
 
-This script turns the acceptance criteria into machine assertions, so a run that
-breaks the contract FAILS instead of shipping.
+  1. ONE ROW PER TICKER. The tape is written atomically now, but the rule is still the
+     one cron #17 depends on: it merges the checkpoints and reads the LAST record per
+     ticker, so a doubled tape makes it read a stale record as the latest one.
+     (Measured 2026-11-09 08:30 ET: 100 rows for 53 tickers, from two agents running
+     the same slot against the same shared /workspace.)
+  2. MOVERS IN BOTH DIRECTIONS. A gainers-only scan is not a pre-open tape — on
+     2026-11-09 it missed IRTC -30.7%, DKNG -21.3% and AXON -18.2%, the day's three
+     worst movers. The gate now asserts the tape carries priced movers on BOTH sides.
+  3. PRICES FROM THE MOVERS SCAN ONLY. A narrative call explains; it never prices.
 
-WHAT IS ASSERTED
-  1. The procedure's scanner call is movers-sorted in BOTH directions, the expected
-     tape size (~678) is documented, and a ~120-row tape is flagged as a DEVIATION.
-  2. A human-readable digest exists beside the tape and lists the top 15 movers with
-     their `conf` token.
-  3. A fail-closed checkpoint writes a {date}-{slot}.SKIPPED.md naming the reason and
-     writes NO tape.
-  4. The checkpoint slot comes from the scheduled instant and is asserted to be in
-     {0830, 0920, 0950}.
-  5. The do-not list holds: the tape schema is unchanged, prices never come from
-     Grok, `halted` is never published as a count, and no record splices two scanner
-     calls.
+WHAT CHANGED AND WHY
+--------------------
+The 2026-11-08 rewrite replaced the TradingView sweep with a Pipeworx movers scan, and
+the checker was never updated with it: it still asserted two `scanner.tradingview.com`
+calls, a ~678-row tape and a 120-row "regression signature" — none of which exist any
+more, so it FAILED against the current repo and could not gate anything. The row-count
+heuristic is gone: the tape's size is now set by the movers scan plus the trending
+snapshot, so a row count proves nothing. Direction coverage and one-row-per-ticker do.
 
 USAGE
-    python3 check_preopen_checkpoint.py --repo <repo-root> [--tape <tape.jsonl>]
-                                         [--digest <digest.md>] [--skipped <marker.md>]
-                                         [--slot 0830]
-
-EXIT CODES
-  0 = contract satisfied
-  1 = at least one FAIL (each is printed)
-  2 = usage error
+  check_preopen_checkpoint.py --repo <repo-root>
+      [--tape <tape.jsonl>] [--digest <board.md>] [--skipped <marker.md>] [--slot 0830]
 """
-
 import argparse
 import json
 import os
 import re
 import sys
 
-# ---- the published constants (they live in the procedure; keep the two in sync) ----
-EXPECTED_TAPE_ROWS = 678
-DEVIATION_MIN_ROWS = 300
-REGRESSION_ROWS = 120
+# ---- the published constants -------------------------------------------------
 ALLOWED_SLOTS = ("0830", "0920", "0950")
 TOP_N = 15
 DIGEST_COLUMNS = ["Ticker", "%", "Conf", "Catalyst", "When it broke"]
+# The 10 keys cron #17 merges on — UNCHANGED since 2026-11-04.
 TAPE_KEYS = ["ts", "src", "ticker", "name", "pct", "price", "cat", "why", "ref", "conf"]
+# Provenance extras the capture script adds. They are additive: the consumer ignores
+# them, and the board reads the timestamp and the volume from them.
+TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "grounded_tool"]
+# The row's PROVENANCE, not a vendor.
+ALLOWED_SRC = ("scanner", "pipeworx", "stocktwits")
+# A priced row is one that came from the movers scan: src is scanner (price only) or
+# pipeworx (price + a grounded catalyst). A stocktwits row is narrative-only.
+PRICED_SRC = ("scanner", "pipeworx")
 CONFIDENCES = ("high", "medium", "low", "unverified")
 
 FAILURES = []
@@ -85,19 +86,11 @@ def read(path):
         return ""
 
 
-def unescape(t):
-    """The procedure embeds JSON inside a shell double-quoted string, so the file
-    literally holds \\"sortBy\\":\\"premarket_change\\". Matching the escaped form
-    alone would make the ABSENCE check for the old volume sort pass for the wrong
-    reason — a checker that cannot fail is not a guard."""
-    return t.replace('\\"', '"')
-
-
 def norm(s):
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-# ---- static: the shared procedure ----------------------------------------------
+# ---- static: the shared procedure ---------------------------------------------
 
 def check_procedure(path):
     print("procedure:")
@@ -105,84 +98,97 @@ def check_procedure(path):
     if not t:
         bad(f"{path} is missing or empty")
         return
-    check("PROCEDURE_VERSION:" in t, "carries a PROCEDURE_VERSION marker")
 
-    # 1. movers-sorted in BOTH directions, and NOT volume-sorted
-    j = unescape(t)
-    check('"sortBy":"premarket_change"' in j and '"sortOrder":"desc"' in j,
-          "scanner call is sorted by premarket_change DESCENDING (gains)")
-    check('"sortBy":"premarket_change"' in j and '"sortOrder":"asc"' in j,
-          "scanner call is sorted by premarket_change ASCENDING (losses)")
-    check('"sortBy":"premarket_volume"' not in j,
-          "the old premarket_volume sort is GONE (it buried the movers)")
-    n_scanner_calls = t.count("scanner.tradingview.com/america/scan")
-    check(n_scanner_calls == 2,
-          f"exactly two scanner calls in the procedure (got {n_scanner_calls}) — one snapshot, "
-          f"two disjoint directional halves")
-    check("egreater" in t and "eless" in t,
-          "the two halves use DISJOINT filters (change >= +2.5 vs change <= -2.5), so no name "
-          "can hold a price from two different calls")
+    # 1. the movers scan covers BOTH directions, as DISJOINT halves
+    check(re.search(r"top_movers.{0,40}gainers", t, re.I | re.S) is not None,
+          "the procedure scans the GAINERS half of the movers universe")
+    check(re.search(r"top_movers.{0,40}losers", t, re.I | re.S) is not None,
+          "the procedure scans the LOSERS half too — a gainers-only tape is not a tape")
+    check("both directions" in norm(t),
+          "the procedure states that the scan covers BOTH directions")
+    check("disjoint" in norm(t),
+          "the two halves are DISJOINT, so no record can hold two prices")
 
-    # 2. the documented expectation and the deviation rule
-    check(str(EXPECTED_TAPE_ROWS) in t,
-          f"the expected tape size (~{EXPECTED_TAPE_ROWS} rows) is DOCUMENTED")
-    check(str(REGRESSION_ROWS) in t,
-          f"the ~{REGRESSION_ROWS}-row regression signature is called out")
-    check("tape_size_deviation" in t,
-          "a small tape is flagged as a DEVIATION (tape_size_deviation), not accepted")
-
-    # 3. the slot comes from the scheduled instant and is asserted
-    check("0830 0920 0950" in t, "the allowed checkpoint slots {0830, 0920, 0950} are stated")
-    check('grep -qx "$CP"' in t,
-          "the filename's slot is ASSERTED against the allowed set")
-    check('date -d "@$((FIRE_MS/1000))" +%H%M' in t,
-          "the slot is derived from the FIRE'S INSTANT (FIRE_MS), not the wall clock")
-    check(not re.search(r"export CP=\$\(TZ=America/New_York date \+%H%M\)", t),
+    # 2. the slot comes from the FIRE'S INSTANT and never from a literal wall clock
+    for s in ALLOWED_SLOTS:
+        check(s in t, f"the allowed checkpoint slot {s} is stated")
+    check(not re.search(r"export\s+CP=\$\(TZ=America/New_York date \+%H%M\)", t),
           "no literal `date +%H%M` can name the slot (it would call an 08:35 execution 0835)")
+    check("wall clock" in norm(t) and "slot" in norm(t),
+          "the procedure says the slot is the FIRE'S slot, not the wall clock")
 
-    # 4. the fail-closed trail
-    check("SKIPPED.md" in t, "the fail-closed path writes a .SKIPPED.md marker")
-    check("preopen_checkpoint.py skipped" in t, "the marker is written by the checkpoint script")
-    check("no JSONL is written in this path" in t.lower()
-          or "no jsonl is written" in t.lower(),
-          "the fail-closed path explicitly writes NO tape")
+    # 3. one snapshot per slot: the tape is written atomically
+    check(re.search(r"atomic", t, re.I) is not None,
+          "the procedure states the tape is written ATOMICALLY (one snapshot per slot)")
+    check("one row per ticker" in norm(t),
+          "the one-row-per-ticker rule is stated")
 
-    # 5. the digest
-    check("preopen_checkpoint.py digest" in t, "the digest is written by the checkpoint script")
-    check("--meta /tmp/grok_meta.json" in t, "the digest receives the measured Grok cost")
+    # 4. the board is part of the checkpoint
+    check("preopen_digest.py" in t, "the procedure renders the board with preopen_digest.py")
+    check(re.search(r"preopen-feed/\$\{DATE\}-\$\{CP\}\.md", t) is not None,
+          "the procedure names the digest file beside the tape")
+    check(re.search(r"preopen-feed/\$\{DATE\}-\$\{CP\}\.jsonl", t) is not None,
+          "the procedure names the tape file")
+
+    # 5. the fail-closed trail
+    check("SLOT DEVIATION" in t or "DEVIATION.slot.md" in t,
+          "a slot outside the allowed set leaves a marker instead of a phantom filename")
 
     # 6. the do-not list
-    check("halted: not measurable" in t, "the halt state is published as 'not measurable'")
+    check("not measurable" in norm(t),
+          "the halt state is published as 'not measurable'")
     check(not re.search(r"halted:\s*0\b", t), "no halt COUNT is ever published")
-    check("Never take a price from Grok" in t or "never from Grok" in t.lower(),
-          "the rule that prices never come from Grok is stated")
+    check(re.search(r"prices are never taken from the narrative calls", t, re.I) is not None,
+          "the rule that prices never come from a narrative call is stated")
+    check(re.search(r"xai/grok is not used", t, re.I) is not None,
+          "the procedure states that xAI/Grok is not used (live search is 410)")
 
-    # 7. the fetch ladder demands the capability marker
-    check("PREOPEN_CHECKPOINT_V1" in t,
-          "the script fetch demands the PREOPEN_CHECKPOINT_V1 capability marker")
-    check("CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1" in t,
-          "the script fetch ALSO demands the script version (a marker alone cannot "
-          "detect a stale copy that already carries it)")
+    # 7. the fetch ladder demands a capability marker — and a VERSION, because a
+    # marker alone cannot detect a stale copy that already carries it.
+    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*\d{4}-\d{2}-\d{2}", t) is not None,
+          "the script fetch demands the CAPTURE_SCRIPT_VERSION marker")
+    check(re.search(r"PREOPEN_DIGEST_V1", t) is not None,
+          "the digest fetch demands the PREOPEN_DIGEST_V1 capability marker")
 
+
+# ---- static: the shared scripts -----------------------------------------------
 
 def check_script(path):
-    print("checkpoint script:")
+    print("capture script:")
     t = read(path)
     if not t:
         bad(f"{path} is missing or empty")
         return
-    check("PREOPEN_CHECKPOINT_V1" in t, "carries the PREOPEN_CHECKPOINT_V1 marker")
-    check("CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1" in t, "carries the script version")
-    m = re.search(r"TAPE_KEYS\s*=\s*\[([^\]]*)\]", t)
-    keys = re.findall(r'"([^"]+)"', m.group(1)) if m else []
-    check(keys == TAPE_KEYS,
-          f"the tape row shape is the unchanged 10-key contract ({len(keys)} keys)")
-    check("def merge_tape" in t and "def parse_scanner" in t and "def parse_grok_reply" in t,
-          "the merge is CODE, not model prose")
-    check("unverified" in t and "unverified_pp" in t,
-          "a Grok/scanner disagreement beyond the tolerance is written as unverified")
-    check("not measurable" in t,
-          "the merge reports the halt state as not measurable, never as a count")
+    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*\d{4}-\d{2}-\d{2}", t) is not None,
+          "carries the CAPTURE_SCRIPT_VERSION marker")
+    check('call_top_movers(category="losers")' in t,
+          "the capture scans the losers half (a gainers-only scan misses the worst movers)")
+    check("-abs(" in t,
+          "candidates are ranked by |%| so a decliner competes for a grounded catalyst")
+    check("os.replace" in t and not re.search(r'open\(out,\s*"a"', t),
+          "the tape is written with a temp file + rename, never appended")
+    check("ALLOWED_SLOTS" in t and "resolve_slot" in t,
+          "the slot is asserted against the allowed set and a late dispatch snaps down")
+    for k in TAPE_KEYS:
+        check(f'"{k}"' in t, f"the tape row carries the contract key {k!r}")
+    check("not measurable" in norm(t) or "halted" not in t,
+          "the script never publishes a halt count")
+
+
+def check_digest_script(path):
+    print("digest renderer:")
+    t = read(path)
+    if not t:
+        bad(f"{path} is missing or empty")
+        return
+    check("PREOPEN_DIGEST_V1" in t, "carries the PREOPEN_DIGEST_V1 marker")
+    check("DIGEST_COLUMNS" in t and "Ticker" in t,
+          "the board's columns are fixed in code")
+    check("TOP_N = 15" in t, "the board lists the top 15 movers")
+    check("scanner" in t and "stocktwits" in t and "pipeworx" in t,
+          "the board reports the row PROVENANCE split (scanner / stocktwits / pipeworx)")
+    check("not measurable" in norm(t),
+          "the board reports the halt state as not measurable")
 
 
 def check_prompts(repo):
@@ -217,6 +223,52 @@ def parse_md_table(lines):
     return rows
 
 
+def check_tape(tape_path):
+    print("tape:")
+    raw = read(tape_path)
+    rows = [json.loads(l) for l in raw.splitlines() if l.strip()] if raw else []
+    if not rows:
+        bad(f"{tape_path} has no rows")
+        return
+
+    missing = [r.get("ticker") for r in rows
+               if any(k not in r for k in TAPE_KEYS)]
+    check(not missing,
+          f"every row carries the 10 contract keys ({len(missing)} offenders)")
+    stray = sorted({k for r in rows for k in r.keys()
+                    if k not in TAPE_KEYS and k not in TAPE_EXTRA_KEYS})
+    check(not stray, f"no unexpected keys in a tape row (got {stray})")
+
+    bad_src = sorted({r.get("src") for r in rows if r.get("src") not in ALLOWED_SRC})
+    check(not bad_src,
+          f"every row's src is the row's real provenance {ALLOWED_SRC} (got {bad_src})")
+
+    # THE rule cron #17 depends on.
+    dupes = len(rows) - len({r.get("ticker") for r in rows})
+    check(dupes == 0, f"one row per ticker ({dupes} duplicates)")
+
+    # Prices come from the movers scan only.
+    priced = [r for r in rows if r.get("pct") is not None]
+    check(all(r.get("price") is not None for r in priced),
+          f"every priced row carries a price too ({len(priced)} priced rows)")
+    unpriced_priced_src = [r.get("ticker") for r in rows
+                           if r.get("src") in PRICED_SRC and r.get("pct") is None]
+    check(not unpriced_priced_src,
+          f"no row from the movers scan lacks a number ({unpriced_priced_src[:5]})")
+
+    # BOTH directions — the rule the gainers-only scan broke.
+    ups = [r for r in priced if (r.get("pct") or 0) > 0]
+    downs = [r for r in priced if (r.get("pct") or 0) < 0]
+    check(len(ups) > 0, f"the tape carries priced GAINERS ({len(ups)})")
+    check(len(downs) > 0, f"the tape carries priced LOSERS ({len(downs)})")
+
+    # The narrative rows are the honest ones: a row with no price carries no number.
+    narrative = [r for r in rows if r.get("src") == "stocktwits"]
+    check(all(r.get("pct") is None for r in narrative),
+          f"every narrative-only row carries no number ({len(narrative)} such rows)")
+    return rows
+
+
 def check_digest(tape_path, digest_path, slot):
     print("digest:")
     t = read(digest_path)
@@ -242,6 +294,7 @@ def check_digest(tape_path, digest_path, slot):
     check(f"**scanner:** {scanner}" in t, f"the header carries the scanner count ({scanner})")
     check(f"**unverified:** {unv}" in t, f"the header carries the unverified count ({unv})")
     check("$" in t, "the header carries the measured Grok cost")
+    check("not measurable" in norm(t), "the board publishes the halt state as not measurable")
 
     # the table
     tbl = parse_md_table(t.splitlines())
@@ -266,45 +319,24 @@ def check_digest(tape_path, digest_path, slot):
     confs = [r[2].replace("⚠", "").strip() for r in body if len(r) > 2]
     check(all(c in CONFIDENCES for c in confs),
           f"every row carries a conf token from {CONFIDENCES}")
+
     # An unverified row must be OBVIOUS — the bare word "unverified" in a column of
     # other words is not obvious. The marker is what makes it stand out.
     unv_cells = [r for r in body if len(r) > 2 and "unverified" in r[2]]
     check(all("⚠" in r[2] for r in unv_cells),
           f"every unverified row is marked as such ({len(unv_cells)} in the table)")
 
-    # the deviation rule
-    if 0 < n < DEVIATION_MIN_ROWS:
+    # a one-sided tape is a DEVIATION and the board has to say so
+    priced = [r for r in rows if r.get("pct") is not None]
+    one_sided = priced and not (
+        [r for r in priced if (r.get("pct") or 0) > 0]
+        and [r for r in priced if (r.get("pct") or 0) < 0])
+    if one_sided:
         check("DEVIATION" in t,
-              f"a {n}-row tape carries the DEVIATION banner (expected ≈{EXPECTED_TAPE_ROWS})")
-        if n <= REGRESSION_ROWS:
-            check("REGRESSION SIGNATURE" in t,
-                  f"a ~{REGRESSION_ROWS}-row tape is named as the regression signature")
+              "a one-sided tape (no decliners) carries the DEVIATION banner")
     else:
-        check("DEVIATION" not in t or n >= DEVIATION_MIN_ROWS,
-              "a normal-sized tape carries no deviation banner")
-
-
-def check_tape(tape_path):
-    print("tape:")
-    raw = read(tape_path)
-    rows = [json.loads(l) for l in raw.splitlines() if l.strip()] if raw else []
-    if not rows:
-        bad(f"{tape_path} has no rows")
-        return
-    bad_keys = [sorted(r.keys()) for r in rows if sorted(r.keys()) != sorted(TAPE_KEYS)]
-    check(not bad_keys,
-          f"every row carries exactly the 10 contract keys ({len(bad_keys)} offenders)")
-    check(all(r.get("src") in ("grok", "scanner") for r in rows),
-          "every row is src=grok or src=scanner")
-    dupes = len(rows) - len({r.get("ticker") for r in rows})
-    check(dupes == 0, f"one row per ticker ({dupes} duplicates)")
-    # no price from Grok: a grok row must carry the scanner's number, and a row with
-    # no number must be unverified
-    no_number = [r for r in rows if r.get("pct") is None]
-    check(all(r.get("conf") == "unverified" for r in no_number),
-          f"every row without a scanner number is unverified ({len(no_number)} such rows)")
-    check(all(r.get("pct") is not None for r in rows if r.get("src") == "scanner"),
-          "every scanner row carries a number")
+        check("DEVIATION" not in t,
+              "a tape with movers on both sides carries no deviation banner")
 
 
 def check_skipped(marker_path, slot):
@@ -313,7 +345,8 @@ def check_skipped(marker_path, slot):
     if not t:
         bad(f"{marker_path} is missing — a fail-closed checkpoint must leave a trail")
         return
-    check("SKIPPED" in t, "the marker says it was skipped")
+    check("SKIPPED" in t or "SLOT DEVIATION" in t,
+          "the marker says the checkpoint was skipped")
     # The reason must be ON THE SAME LINE as the label: a regex that can cross a
     # newline accepts an empty reason, which is exactly the 2026-11-03 failure
     # (cron #90 reported the absence "with an empty reason").
@@ -325,7 +358,11 @@ def check_skipped(marker_path, slot):
     check(bool(reason_line),
           f"the marker NAMES the reason (got {reason_line!r})")
     check(f"-{slot}" in t, f"the marker names its checkpoint slot ({slot})")
-    stem = os.path.basename(marker_path).replace(".SKIPPED.md", "")
+    stem = os.path.basename(marker_path)
+    for suffix in (".SKIPPED.md", ".DEVIATION.slot.md"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
     tape = os.path.join(os.path.dirname(marker_path), stem + ".jsonl")
     check(not os.path.exists(tape),
           "no JSONL was written beside the skip marker (a tape without a catalyst is worse "
@@ -343,7 +380,8 @@ def main():
 
     repo = os.path.abspath(a.repo)
     check_procedure(os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md"))
-    check_script(os.path.join(repo, "cloud-prompts", "_shared", "preopen_checkpoint.py"))
+    check_script(os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py"))
+    check_digest_script(os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py"))
     check_prompts(repo)
 
     if a.tape:

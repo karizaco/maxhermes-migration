@@ -731,7 +731,7 @@ def check_conversation_reuse(tasks, runs_by_task, EXPECTED=None, now_ms=None, tz
 
 
 
-def lint_shared_scripts():
+def lint_shared_scripts(repo_dir=None):
     """Lint the shared scripts every routine fetches at run time.
 
     WHY
@@ -748,9 +748,17 @@ def lint_shared_scripts():
     Returns a list of human-readable problems (empty = clean).
     """
     problems = []
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # The repo must come from the CALLER (--repo / the resolved clone), NOT from this file's
+    # own location: #91 fetches the detector to a FLAT scratch dir (/workspace/guard/), so
+    # resolving from __file__ yields /workspace, where cloud-prompts/_shared/ does not exist
+    # ⇒ the sweeps ran against an EMPTY list and the two "must also RUN" scripts were
+    # reported MISSING (measured 2026-11-07: the fleet's shared scripts were unlinted).
+    repo = repo_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shared = os.path.join(repo, "cloud-prompts", "_shared")
     tools_dir = os.path.join(repo, "tools")
+    if not os.path.isdir(shared):
+        problems.append("LINT repo: cloud-prompts/_shared/ not found under %s — "
+                        "the lint inspected ZERO files (pass --repo or run from the clone)" % repo)
 
     scripts = []
     if os.path.isdir(shared):
@@ -909,10 +917,13 @@ def main():
     # --- skill-spec drift -------------------------------------------------------
     spec_findings, spec_checked = [], []
     spec_error = None
+    # Resolve the repo ONCE, OUTSIDE the spec-check block: resolving it inside left the
+    # shared-script lint with no repo under --no-spec-check, i.e. a gate that only runs
+    # on one path is not a gate.
+    repo_dir = find_repo_dir(args.repo)
+    if not repo_dir:
+        repo_dir = clone_repo()
     if not args.no_spec_check:
-        repo_dir = find_repo_dir(args.repo)
-        if not repo_dir:
-            repo_dir = clone_repo()
         if not repo_dir:
             spec_error = "no repo clone available (clone failed and no --repo was given)"
         else:
@@ -939,7 +950,7 @@ def main():
     if args.repair and drift:
         report["repaired"] = repair(drift)
 
-    lint_problems = lint_shared_scripts()
+    lint_problems = lint_shared_scripts(repo_dir=repo_dir)
     findings = bool(drift or unknown or missing or mode_findings or live_reuse
                      or lint_problems or spec_findings or spec_error
                      or not roster["match"])

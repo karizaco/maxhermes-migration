@@ -416,6 +416,28 @@ is in `cloud-prompts/cron-prompts/README.md`.
    `errors:` MUST equal it exactly** — one entry per degraded source, not one
    per run. Three degraded sources are `errors: 3`, never `errors: 1`.
 
+   **The push line ALSO carries the DELIVERY LATENCY**, because the platform's own
+   accounting hides it: a run record's `started_at_ms`/`finished_at_ms` measure the
+   DISPATCH of the prompt to the agent (~1 s), not the work. On 2026-11-05 cron
+   #26's 08:30 ET fire closed in 1.288 s with `status: 1` and its artifact did not
+   appear for 21.4 hours. So the push line reads
+   `push: ok (verified) — delivered 10:15 ET, 55 min after the 09:20 fire`, where the
+   latency is the wall clock at the push minus the routine's OWN scheduled fire time
+   (every routine knows its own schedule). `window_check.sh` prints `stall_min:` —
+   the platform's delay BEFORE the turn actually started — and a `stall_min` over 5
+   means the fire was BLOCKED.
+
+   **A platform stall counts in `errors:` even when the artifact is perfect.** A fire
+   that was blocked and then resumed in place produced a correct artifact out of a
+   broken schedule; `errors: 0` on that reply is a lie. When `stall_min > 5`, count
+   ONE error for the stall, add a `stalled:` line naming it, and make sure the
+   artifact's `degraded_sources:` count (if it publishes one) INCLUDES the stall so
+   the equality rule above still holds. To name the cause, read your OWN session's
+   previous turn (`session_messages` on your own session id) and quote the error it
+   ended on — e.g. `42212: Token Plan usage limit reached … (2056)`. If there is no
+   recorded error, say `stalled: the fire was blocked <n> min before its first tool
+   call (no error recorded)`.
+
 **Formatting rules — the reply is rendered in a chat client, not read as a diff.**
 - Use a compact markdown **table** whenever there are 3+ comparable numeric rows (index
   levels, sector rotation, futures, breadth). Header row, `|---|` separator, numbers

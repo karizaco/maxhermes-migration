@@ -213,6 +213,44 @@ def check_status(status, contract, rep):
                       "C11", f"routines['{name}'] has a non-integer or negative streak "
                              f"({streak!r})")
 
+    # C14 — a late delivery must be VISIBLE. A routine whose state is `delivered_late` MUST
+    # have a `stalled` gap line, and a `stalled` gap line MUST name a routine whose state is
+    # `delivered_late`. The run record's duration measures the DISPATCH, not the work, so
+    # without this pairing a fire that was blocked for hours and then published late reads
+    # exactly like a healthy one — which is the defect this clause exists to close.
+    stalled_routines = {g.get("routine") for g in gaps
+                        if isinstance(g, dict) and g.get("label") == "stalled"}
+    if isinstance(routines, dict):
+        for name, r in routines.items():
+            state = r.get("state")
+            has = name in stalled_routines
+            rep.check((state == "delivered_late") == has, "C14",
+                      f"routines['{name}'] has state '{state}' but "
+                      f"{'no' if not has else 'a'} 'stalled' gap line")
+    for g in gaps:
+        if isinstance(g, dict) and g.get("label") == "stalled":
+            name = g.get("routine")
+            rep.check(isinstance(routines, dict) and isinstance(routines.get(name), dict)
+                      and routines[name].get("state") == "delivered_late", "C14",
+                      f"a 'stalled' gap line names '{name}', whose state is not 'delivered_late'")
+
+    # C16 — the latency is a PUBLISHED field, not prose. A routine that delivered carries a
+    # numeric `delivery_latency_min`; a routine with no artifact carries null. A delivered
+    # routine with no latency is a late delivery nobody measured.
+    if isinstance(routines, dict):
+        for name, r in routines.items():
+            lat = r.get("delivery_latency_min")
+            state = r.get("state")
+            if state in ("delivered", "delivered_late"):
+                rep.check(isinstance(lat, (int, float)) and not isinstance(lat, bool)
+                          and lat >= 0, "C16",
+                          f"routines['{name}'] has state '{state}' but no numeric "
+                          f"delivery_latency_min ({lat!r})")
+            else:
+                rep.check(lat is None, "C16",
+                          f"routines['{name}'] has state '{state}' but carries a "
+                          f"delivery_latency_min ({lat!r}); only a delivered routine has one")
+
     # roster_gap entries
     rg = status.get("roster_gap")
     if rep.check(isinstance(rg, list), "C12", "status.json 'roster_gap' must be a list"):
@@ -227,7 +265,7 @@ def check_status(status, contract, rep):
     # audit_status must agree with the findings.
     asg = status.get("audit_status")
     if asg in ("ok", "gaps_found"):
-        finding_labels = {"MISSING", "present_but_empty", "roster_desync"}
+        finding_labels = {"MISSING", "present_but_empty", "roster_desync", "stalled"}
         has_finding = any(isinstance(g, dict) and g.get("label") in finding_labels for g in gaps)
         has_finding = has_finding or bool(rg)
         rep.check(not (asg == "ok" and has_finding), "C13",

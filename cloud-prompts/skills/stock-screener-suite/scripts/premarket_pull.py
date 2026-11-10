@@ -398,6 +398,15 @@ def _load_focus(csv_path: str, session: str | None = None,
             fieldnames = reader.fieldnames or []
             dated = sorted([f for f in fieldnames
                             if re.fullmatch(r"close[_-]?\d{4}-\d{2}-\d{2}", f)])
+            # FIXED 2026-11-09 (cron #08): `today_col` / `screen_col` were USED
+            # below but never DEFINED, so _load_focus() raised NameError, the
+            # blanket `except` swallowed it, and the function returned {} - which
+            # silently dropped the screen provenance (stylists, origins) AND the
+            # focus.csv close from every row. The column names are resolved from
+            # the CSV HEADER, and the close column is still chosen BY DATE.
+            today_col = "today_close" if "today_close" in fieldnames else None
+            screen_col = ("screen_close_resolved"
+                          if "screen_close_resolved" in fieldnames else None)
             for row in reader:
                 sym = None
                 for key in ("ticker", "symbol", "Ticker", "Symbol"):

@@ -324,6 +324,91 @@ CONFORMING_REPLY = """### Signal
 """
 
 
+# ------------------------------------------- B2. the MONDAY AU reference close
+# THE 2026-11-09 REGRESSION. On a Monday scan the checker's AU floor was one
+# day NEWER than the label the pipeline can emit, so a perfectly correct
+# artifact was rejected: 25 of 25 ASX rows failed. An ASX daily bar is
+# stamped at the session OPEN - 18:00 ET the previous day after the ASX DST
+# change - so the Friday Nov 6 ASX close of 5.73 carries the label
+# 2026-11-05. The floor walked the SESSION calendar but forgot the one-day
+# stamp shift; on Tue-Fri scans the two cancelled out, which is why the bug
+# stayed hidden through 2026-11-04..11-06.
+#
+# This fixture is a MONDAY (2026-11-09) scan: the US base is Thursday Nov 5,
+# the EU base is Friday Nov 6, and the AU base is the Friday Nov 6 session
+# LABELLED 2026-11-05 by its ET stamp.
+def _monday_artifact():
+    t = CONFORMING_ARTIFACT
+    t = t.replace("# Earnings reaction scanner — 2026-11-05",
+                  "# Earnings reaction scanner — 2026-11-09")
+    t = t.replace("- Fire time (ET): 2026-11-05 08:03:11 Wed",
+                  "- Fire time (ET): 2026-11-09 08:03:11 Mon")
+    # US rows: the reported session is Friday Nov 6, so the base is Thu Nov 5.
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | US-listed |",
+                  "| yahoo_chart_daily | 2026-11-05 | US-listed |")
+    # EU row: the EU session is LIVE on the scan date, so its base is Fri Nov 6.
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | ADR (OTC:TMVWY) |",
+                  "| yahoo_chart_daily | 2026-11-06 | ADR (OTC:TMVWY) |")
+    # AU row: the Friday Nov 6 session, labelled 2026-11-05 by its ET stamp.
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | ADR (OTC:QABSY) |",
+                  "| yahoo_chart_daily | 2026-11-05 | ADR (OTC:QABSY) |")
+    t = t.replace("earnings-reactions:2026-11-05", "earnings-reactions:2026-11-09")
+    return t
+
+
+MONDAY_ARTIFACT = _monday_artifact()
+MONDAY_REPLY = CONFORMING_REPLY.replace("earnings/2026-11-05-reactions.md",
+                                         "earnings/2026-11-09-reactions.md")
+
+
+def test_monday_au_floor():
+    """The AU floor must be the label the pipeline can actually emit."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("reaction_checker", CHECKER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # (scan day, expected AU floor) — the floor is the base session minus the
+    # one-day ET stamp shift.
+    for scan_d, want in (("2026-11-09", "2026-11-05"),   # Monday
+                          ("2026-11-10", "2026-11-08"),   # Tuesday
+                          ("2026-11-06", "2026-11-04"),   # Friday
+                          ("2026-11-05", "2026-11-03")):  # Thursday
+        got = mod.min_ref_date(scan_d, "AU")
+        if got != want:
+            bad("B2-au-floor",
+                f"min_ref_date({scan_d}, 'AU') is {got} — expected {want} (the AU "
+                f"floor must be the base session minus the one-day ET stamp shift)")
+            return
+    ok("B2 the AU reference-close floor matches the label the pipeline emits "
+       "(Monday included)")
+
+    # And the Monday artifact must be ACCEPTED with that floor.
+    rc, out = run_checker(MONDAY_ARTIFACT, MONDAY_REPLY)
+    if rc != 0:
+        bad("B2-monday-artifact",
+            f"the checker rejected a correct MONDAY artifact (exit {rc}):\n{out}")
+    else:
+        ok("B2 the checker accepts a Monday-scan artifact with the ET-stamped "
+           "AU base")
+
+    # And the gate must still BITE: rolling the AU base back one session
+    # (the 2026-11-04 stale-reference class) must be rejected.
+    stale = MONDAY_ARTIFACT.replace(
+        "| yahoo_chart_daily | 2026-11-05 | ADR (OTC:QABSY) |",
+        "| yahoo_chart_daily | 2026-11-04 | ADR (OTC:QABSY) |")
+    if stale == MONDAY_ARTIFACT:
+        bad("B2-au-fault", "the AU fault mutation is a NO-OP — it would report a "
+                           "false 'NOT CAUGHT'")
+        return
+    rc, out = run_checker(stale, MONDAY_REPLY)
+    if rc == 0:
+        bad("B2-au-fault", "the checker ACCEPTED a Monday artifact whose AU base "
+                           "was rolled back one session")
+    else:
+        ok("B2 the checker rejects a Monday artifact whose AU base was rolled "
+           "back one session")
+
+
 def run_checker(artifact_text, reply_text=None, tmpdir=None):
     """Run the checker on a synthetic artifact. Returns (exit_code, stdout)."""
     tmpdir = tmpdir or tempfile.mkdtemp()
@@ -441,6 +526,9 @@ def main():
 
     print("B. the checker accepts a conforming artifact")
     test_checker_accepts_conforming()
+
+    print("B2. the AU reference-close floor (the 2026-11-09 Monday regression)")
+    test_monday_au_floor()
 
     print("C. fault injection — the checker must bite")
     test_checker_bites()

@@ -1,15 +1,17 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
+PROCEDURE_VERSION: 2026-11-10.1
+
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
 15:50 ET) reads the tape to explain why a stock moved and when the news broke — the one thing no
 price feed can tell it.
 
-**The whole procedure is one script.** Fetch it and run it; do not improvise the procedure.
+**The whole capture is one script.** Fetch it and run it; do not improvise the procedure.
 
 ## WHAT THIS IS FOR
 
-At 15:50 the digest sees where a stock IS, not where it came from, and — this is the gap — not the
+At 15:50 the digest sees where a stock IS, not where it came from, and — the gap — not the
 catalyst as it was understood at the open. By 15:50 the wire has moved on: the 09:12 headline is
 buried, and a name that gapped +12% on an FDA approval and now trades +2% looks identical to one
 that never moved. The skill requires the gap annex to separate a gap that **held into the bell**
@@ -17,24 +19,55 @@ from one that faded, and to attribute the move.
 
 ## STEPS — execute IN ORDER
 
-### 1. Fetch the capture script
+### 1. Fetch the capture script and the digest renderer
 
 ```bash
+# The CONTENTS API is authoritative and is NOT CDN-cached; the two CDNs cache `main`
+# independently (measured 2026-11-04: raw.githubusercontent served a stale blob for
+# >17 minutes after a push while jsDelivr was fresh). Require the CAPABILITY MARKER,
+# not just a non-empty body: an older script silently ignores the flags below, and a
+# stale copy would run the gainers-only scan that misses the biggest decliners.
 S=/workspace/preopen_capture.py
 for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen_capture.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_capture.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_capture.py" ; do
-  [ -s "$S" ] || curl -sL --max-time 30 -o "$S" "$U" 2>/dev/null
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-09' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
 done
-[ -s "$S" ] || echo "capture script fetch FAILED — write nothing"
+[ -s "$S" ] || { echo "capture script fetch FAILED — write nothing"; exit 1; }
+
+D=/workspace/preopen_digest.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen_digest.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_digest.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_digest.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$D.tmp" "$U" 2>/dev/null
+  if grep -q 'PREOPEN_DIGEST_V1' "$D.tmp" 2>/dev/null; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] || { echo "digest renderer fetch FAILED — the board is part of the checkpoint"; exit 1; }
 ```
 
-### 2. Run it
+### 2. Run the capture — with the FIRE'S SLOT, never the wall clock
 
 ```bash
 export DATE=$(TZ=America/New_York date +%Y-%m-%d)
-export CP=$(TZ=America/New_York date +%H%M)          # 0830 | 0920 | 0950 ...
-python3 "$S" --date "$DATE" --checkpoint "$CP"
+# The SLOT comes from the FIRE'S INSTANT (session.created_at), not from `date +%H%M`.
+# A literal wall clock names an 08:35 execution "0835" — a slot cron #17 never reads,
+# because it merges the checkpoints by slot name. The script asserts the slot is one of
+# 0830 / 0920 / 0950 and snaps a late dispatch DOWN onto the slot it belongs to
+# (<= 90 min); past that it writes a .DEVIATION.slot.md marker and writes NO tape.
+# Measured 2026-11-05: the 08:30 slot's work began at 10:09 ET after a platform stall
+# and a wall-clock slot would have named its file 1010 — a phantom slot that sorts
+# AFTER 0950, so a consumer replaying oldest-first replays the 08:30 tape LAST.
+export CP=0830        # <- the slot THIS fire was dispatched for
+python3 "$S" --date "$DATE" --checkpoint "$CP" --top 20
 ```
 
 The script prints one line: `preopen capture: wrote N records to <path> ...`.
@@ -42,17 +75,37 @@ The script prints one line: `preopen capture: wrote N records to <path> ...`.
 - **It writes nothing and exits 0 if `PIPEWORX_API_KEY` is unset** — a missing key is not a
   failure, it is a missing tape. Never write an empty tape: the consumer would read it as
   "no news" for names that had a catalyst.
-- Each checkpoint writes its **own** file `preopen-feed/{date}-{CP}.jsonl`, so two captures can
-  never clobber each other and the consumer merges them oldest-first.
+- The tape is written **atomically** (temp file + rename), so a slot's file holds exactly ONE
+  snapshot. Appending was how two agents running the same slot against the same shared
+  `/workspace` produced a 100-row tape for 53 tickers on 2026-11-09 — one row per ticker per
+  run, which breaks the "one row per ticker" rule and makes cron #17 read a stale record as
+  the latest one.
 
-### 3. Push
+### 3. Render the digest — the board a trader reads before the open
+
+```bash
+python3 "$D" --tape /workspace/preopen-feed/${DATE}-${CP}.jsonl \
+               --out  /workspace/preopen-feed/${DATE}-${CP}.md \
+               --date "$DATE" --slot "$CP"
+```
+
+Every successful checkpoint writes **TWO files**: the tape (`.jsonl`) and the digest (`.md`).
+The digest is rendered FROM the tape, never by hand, so the board can never disagree with the
+data cron #17 reads at 15:50. It carries the record count, the provenance split, the top 15
+movers by |%| with their catalyst, their `conf` token and when the news broke, and the halt
+state — `not measurable`, because the `halted` column is null on every row (never `0`).
+
+### 4. Push
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
 for U in "$B/push_artifact.sh" "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/push_artifact.sh"; do
   [ -s /workspace/push_artifact.sh ] || curl -sL -o /workspace/push_artifact.sh "$U"
 done
-sh /workspace/push_artifact.sh --out preopen-feed --add preopen-feed/${DATE}-${CP}.jsonl --branch main
+sh /workspace/push_artifact.sh --out preopen-feed \
+   --add preopen-feed/${DATE}-${CP}.jsonl \
+   --add preopen-feed/${DATE}-${CP}.md \
+   --branch main --nn 92
 sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.jsonl --branch main
 ```
 
@@ -60,25 +113,53 @@ sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.jsonl --branc
 
 ## WHAT THE SCRIPT DOES (for the reply, not for reimplementation)
 
-Three Pipeworx gateway calls, each with one job:
+Four Pipeworx gateway calls, each with one job:
 
 | Call | Pack | Job |
 |---|---|---|
 | `trending_symbols` | `stocktwits` | candidates + a natural-language reason + a `summary_at` timestamp for each. Live retail/WSB chatter — the X signal. |
-| `top_movers` | `market-recap` | **ground truth**: price, %chg, volume. Prices always come from here. |
+| `top_movers` (gainers) | `market-recap` | **ground truth**: price, %chg, volume. Prices always come from here. |
+| `top_movers` (losers) | `market-recap` | the same ground truth for the other direction. |
 | `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence, source and confidence, for movers the first call did not cover. |
 
-**Prices are never taken from the narrative calls.** A percentage that disagrees with
-`top_movers` by more than 2pp is marked `unverified`. The script also drops a grounded answer
+**Both directions are mandatory.** The gainers and losers halves are DISJOINT (a name cannot be
+both a top gainer and a top loser), so merging them can never put two prices on one record.
+A gainers-only scan is not a pre-open tape: measured 2026-11-09 it missed IRTC -30.7%,
+DKNG -21.3% and AXON -18.2% — the day's three worst decliners. The grounded-call budget is
+spent on the biggest movers by |%|, so a decliner competes with a gainer for its catalyst.
+
+**Prices are never taken from the narrative calls.** The script also drops a grounded answer
 that merely restates the price move, and drops one whose source was a filing index rather than
 news — a name with no findable catalyst is left with no catalyst, which is the honest result.
 
 **xAI/Grok is NOT used.** The xAI chat API no longer serves live search (`search_parameters`
 returns HTTP 410, "Live search is deprecated") and the Agent Tools API that replaces it is not
 enabled on most keys. Pipeworx does the job on its own. If `XAI_API_KEY` is present it is
-ignored, not used as a fallback.
+ignored, not used as a fallback. The measured Grok cost is therefore **$0.0000**.
+
+The tape's `src` field is the row's PROVENANCE, not a vendor: `scanner` = the movers scan gave
+this row its price; `pipeworx` = the grounded router gave this row its catalyst; `stocktwits` =
+a narrative row with no ground truth.
 
 ## REPLY
 
 Under 6 lines: the checkpoint, the number of records written, how many movers carry a catalyst,
 one line for push status, one line for `errors: <n>`.
+
+**The push line carries the DELIVERY LATENCY, and a platform stall counts in `errors:`.** The
+platform's run record measures the DISPATCH of the prompt to the agent (~1 s), not the work: on
+2026-11-05 cron #26b's run record closed in 1.008 s with `status: 1` and its first tool call
+did not execute until 49.8 minutes later. `window_check.sh` prints `stall_min:` — the platform's
+delay before the turn actually started — and the window check is the first action, so read it.
+
+- `push: ok (verified) — delivered 10:15 ET, 55 min after the 09:20 fire` — the latency is the
+  wall clock at the push minus this routine's own scheduled fire time.
+- `stall_min` over 5 ⇒ the fire was BLOCKED. Count ONE error for it and add a `stalled:` line.
+  To name the cause, read your OWN session's previous turn (`session_messages` on your own
+  session id) and quote the error it ended on — e.g.
+  `42212: Token Plan usage limit reached … (2056)` — or say
+  `stalled: the fire was blocked <n> min before its first tool call (no error recorded)`.
+  `errors: 0` on a stalled fire is a lie: the artifact may be perfect and the schedule was not.
+
+**The halt state is `not measurable`** — the `halted` column is null on every row, so never
+publish a halt count, and never publish `0`.

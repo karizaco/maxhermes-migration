@@ -39,7 +39,12 @@ TASKS = {
     "05-eod-international-daily.md":            ("457951662133387", "30 16 * * 1-5"),
     "06-stock-screener-pattern-study-backlog.md": ("457172664209604", "0 15 * * 6"),
     "07-stock-screener-focus-rvol-09:45.md":     ("446509795921995", "45 9 * * 1-5"),
-    "08-stock-screener-pre-market-gapper.md":   ("457578163015913", "30 8 * * 1-5"),
+    # Corrected 2026-11-10: the schedule was still 30 8 * * 1-5 here after #08 moved
+    # to 08:34 ET on 2026-11-09 (commit e881634), which moved it OFF the 08:30 slot
+    # where #26 and #92a still fire. A stale row here is worse than no row: --emit
+    # would have handed the next deployer a schedule that RE-COLLIDES the three
+    # routines in one minute and cost the fleet a whole morning on 2026-11-09.
+    "08-stock-screener-pre-market-gapper.md":   ("457578163015913", "34 8 * * 1-5"),
     "09-stock-screener-daily-sweep-18:30.md":   ("457172664209608", "30 18 * * 1-5"),
     "10-stock-screener-breadth-snapshot.md":    ("457173814395027", "0 14 * * 1-5"),
     "12-cross-asset-correlation-snapshot.md":   ("457172664209609", "0 10 * * 1-5"),

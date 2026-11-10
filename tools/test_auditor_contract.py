@@ -48,8 +48,8 @@ STATUS = {
     "audit_date_et": "2026-11-03",
     "audit_run_et": "2026-11-04T07:00:00-04:00",
     "origin_main_sha": "3a8c868",
-    "due": 24,
-    "delivered": 22,
+    "due": 25,
+    "delivered": 23,
     "missing": 1,
     "skipped_by_design_count": 1,
     "not_yet_fired": ["91-schedule-drift-guard"],
@@ -66,23 +66,37 @@ STATUS = {
         {"routine": "20-eod-watchlist-csv-snapshot", "path": "us-eod/2026-11-02.csv",
          "label": "reconstructed", "cause": "delayed_replay", "gap_age_hours": 20.2,
          "streak": 1},
+        {"routine": "26b-agentic-pre-market-brief-refresh",
+         "path": "daily-briefs/2026-11-02-pre-market-refresh.md",
+         "label": "stalled", "cause": "quota_2056", "gap_age_hours": 26.1, "streak": 0},
     ],
     "routines": {
         "25-ntrt-gap-brief-daily": {"routine": "25-ntrt-gap-brief-daily",
-                                     "state": "missing", "streak": 1},
+                                     "state": "missing", "streak": 1,
+                                     "delivery_latency_min": None},
         "20-eod-watchlist-csv-snapshot": {"routine": "20-eod-watchlist-csv-snapshot",
-                                           "state": "missing", "streak": 1},
+                                           "state": "missing", "streak": 1,
+                                           "delivery_latency_min": None},
         "92a-preopen-catalyst-capture": {"routine": "92a-preopen-catalyst-capture",
-                                          "state": "skipped_by_design", "streak": 0},
+                                          "state": "skipped_by_design", "streak": 0,
+                                          "delivery_latency_min": None},
         "16-unusual-options-flow-daily": {"routine": "16-unusual-options-flow-daily",
-                                          "state": "missing", "streak": 3},
+                                          "state": "missing", "streak": 3,
+                                          "delivery_latency_min": None},
+        "26b-agentic-pre-market-brief-refresh": {"routine": "26b-agentic-pre-market-brief-refresh",
+                                              "state": "delivered_late", "streak": 0,
+                                              "delivery_latency_min": 1284.0},
+        "15-earnings-reaction-scanner": {"routine": "15-earnings-reaction-scanner",
+                                           "state": "delivered", "streak": 0,
+                                           "delivery_latency_min": 28.4},
     },
     "audit_status": "gaps_found",
 }
 
-DIGEST = """audit: 2026-11-03 due=24 delivered=22 missing=1
+DIGEST = """audit: 2026-11-03 due=25 delivered=23 missing=1
 gap: 25-ntrt-gap-brief-daily MISSING ntrt/2026-11-02.md — cause=platform_500 age_h=18.4 — the 09:00 ET fire died with a platform 500 before writing; rebuilt 2026-11-03 03:21 ET
 gap: 20-eod-watchlist-csv-snapshot reconstructed us-eod/2026-11-02.csv — cause=delayed_replay age_h=20.2 — delayed replay, rebuilt 2026-11-03 03:48 ET from the TradingView scanner
+gap: 26b-agentic-pre-market-brief-refresh stalled daily-briefs/2026-11-02-pre-market-refresh.md — cause=quota_2056 age_h=26.1 — the 09:20 ET fire was rejected on the Token Plan 5-hour window (2056) and resumed in place; the artifact landed 1284 min after its schedule
 skipped: 92a-preopen-catalyst-capture XAI_API_KEY unset - nothing written — refs/skipped-markers/2026-11-03_SKIPPED_preopen_capture_0830.md
 streak: 16-unusual-options-flow-daily 3 consecutive missed fires
 push: ok (verified)
@@ -264,6 +278,42 @@ def main():
     expect_catch(tmp, "a deliberate skip published as a MISSING gap is caught",
                  digest_skipped_as_gap, ("D06", "D08"))
 
+    # --- 2b. the LATENCY dimension: a late delivery must be visible ------------------
+    def late_without_gap(s, digest, t):
+        # the audit measured the latency but published no 'stalled' line for it
+        s["gaps"] = [g for g in s["gaps"] if g.get("label") != "stalled"]
+        digest[0] = "\n".join(l for l in digest[0].splitlines()
+                              if not l.startswith("gap: 26b-agentic")) + "\n"
+    expect_catch(tmp, "a delivered_late routine with no 'stalled' gap line is caught",
+                 late_without_gap, "C14")
+
+    def stalled_not_late(s, digest, t):
+        s["routines"]["26b-agentic-pre-market-brief-refresh"]["state"] = "delivered"
+    expect_catch(tmp, "a 'stalled' gap line for a routine that is not delivered_late is caught",
+                 stalled_not_late, "C14")
+
+    def stalled_hidden_as_ok(s, digest, t):
+        s["gaps"] = [g for g in s["gaps"]
+                     if g.get("label") not in ("MISSING", "reconstructed")]
+        digest[0] = "\n".join(l for l in digest[0].splitlines()
+                              if not l.startswith("gap: 25-ntrt")
+                              and not l.startswith("gap: 20-eod")) + "\n"
+        digest[0] = digest[0].replace("missing=1", "missing=0")
+        s["missing"] = 0
+        s["audit_status"] = "ok"
+    expect_catch(tmp, "a stalled delivery hidden behind audit_status ok is caught",
+                 stalled_hidden_as_ok, "C13")
+
+    def no_latency(s, digest, t):
+        s["routines"]["26b-agentic-pre-market-brief-refresh"]["delivery_latency_min"] = None
+    expect_catch(tmp, "a delivered routine with no delivery_latency_min is caught",
+                 no_latency, "C16")
+
+    def stalled_wrong_cause(s, digest, t):
+        s["gaps"][2]["cause"] = "skipped_by_design"
+    expect_catch(tmp, "a 'stalled' gap paired with a cause the label does not accept is caught",
+                 stalled_wrong_cause, "C05")
+
     # --- 3. the roster self-check must catch the bug it was written for ----------
     tasks_path = tmp / "tasks.json"
     tasks_path.write_text(json.dumps(TASKS), encoding="utf-8")
@@ -326,7 +376,9 @@ def main():
                                  procedure=str(pr2))
         record(rc == 0, "the deployed prompt and procedure agree with the contract", detail)
 
-        broken = proc_text.replace("platform_500", "platform_500X", 1)
+        # anchor on the inline contract block itself (a bare line), not on the first
+        # mention of the token anywhere in the prose
+        broken = proc_text.replace("\nplatform_500 timeout", "\nplatform_500X timeout", 1)
         p3 = tmp / "procedure-broken.md"
         p3.write_text(broken, encoding="utf-8")
         rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,

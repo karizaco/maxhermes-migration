@@ -1677,38 +1677,123 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
 ### 8b. Cron #06 — the weekly refresh screens (IPO / high short float / pattern-study backlog)
 
 Cron #06 (`06-stock-screener-pattern-study-backlog`) fires Saturday 15:00 ET and publishes
-**three** files in `daily-screens/<fire-date>/` plus one durable ledger. The file names are
-the DEPLOYED ones — do not write the suite's `ipo.md` / `high-short-float.md` names:
+**three** artifacts plus a machine-readable companion, and maintains one durable ledger and
+one state series. The file names are the DEPLOYED ones — do not write the suite's `ipo.md` /
+`high-short-float.md` names:
 
 | File | Content |
 |---|---|
 | `daily-screens/<fire-date>/weekly-ipo.md` | filter N — recent US common-stock IPOs, mcap > $1B |
 | `daily-screens/<fire-date>/weekly-high-short-float.md` | filter O — common stock with `short_percent_float > 20%` |
-| `daily-screens/<fire-date>/peoplewish-backlog.md` | the 1000%-in-10-years backlog ledger |
-| `daily-screens/<fire-date>/peoplewish-backlog-run-full.json` | the machine-readable full scan |
+| `daily-screens/<fire-date>/peoplewish-backlog.md` | the 1000%-in-10-years backlog ledger + this week's live re-score |
+| `daily-screens/<fire-date>/peoplewish-backlog-run-full.json` | the machine-readable full 10y scan |
+| `daily-screens/<fire-date>/cron06-refresh.json` | **the contract companion** — universes, intersections, verdicts, coverage |
 | `pattern-study/peoplewish-1000pct-backlog.md` (outputs repo) | **the durable ledger** — read it FIRST, push it back every run |
+| `pattern-study/cron06-state/short-float-<fire-date>.json` (outputs repo) | **the state series** — one snapshot per week, appended, never rewritten |
 
-**Every branch is PAGED, not capped.** shibui's ceiling is 200 rows PER QUERY, so a query that
-returns exactly 200 rows has been truncated — it is not a complete set. Page with
-`LIMIT 200 OFFSET <n>` until the collected rows equal `rows_passing`, and publish both counts
-(`rows_kept == rows_passing`). This applies to the 10-year pattern-study scan, the short-float
-screen and the IPO screen alike.
+**The contract is `cron06-refresh-v2`.** The artifacts, the engine and the checker all carry
+it. An artifact without the marker is from an older run and does not satisfy this contract.
 
-**The IPO week-over-week note needs the PRIOR universe, not the prior published table.** The
-2026-10-31 run published only its top 50 of a larger passing set, so diffing this week's list
-against that table produces a false "entered/left" story. Re-run the SAME query with the
-previous resolved date, diff the two universes, and publish both passing counts.
+#### 8b.1 — WHY the shape changed (read this before "improving" anything)
 
-**Short float: separate "left the top 30" from "left the universe".** `ownership_stats` is a
-current snapshot with no `date` column, so names lose their row between runs. A name that falls
-out of the top 30 but is still above the gate is a re-stamp; a name with no row at all has left
-the universe. Say which.
+The 2026-11-07 run was mechanically correct and reader-hostile. Every screen published the
+HEAD of its own ranking, so the names that mattered — the ones in TWO universes at once —
+never appeared:
 
-**The backlog is a discovery ledger, not a quote sheet.** Newly-tagged names carry this run's
-live values; the carried-forward rows stay FROZEN at the values they carried when first tagged,
-with their `First Tagged` date. Read the prior ledger from the outputs repo
-(`pattern-study/peoplewish-1000pct-backlog.md`), append the newly tagged names, and push the
-ledger back — otherwise the next fire re-derives an empty backlog.
+* 12 names were 1000%-in-10-years compounders AND >20% short float. All 12 sat at ranks
+  57-335 of the 374-name short-float book, so the published top 30 contained NONE of them,
+  and the enrichment (liquidity, close, 30-day change) was spent on ranks 1-40 of a list
+  that has nothing to do with the join.
+* 5 names were sub-2-year IPOs AND >20% short float — the broken-float squeeze setup.
+* 58 of the 374 short-float names were already in the daily sweep's Master list, and 4 of
+  those (ACHC, FUN, RUN, SEZL) were Tier-A: squeeze fuel that is also a setup.
+
+**The join is the product. The per-screen lists are its inputs.** So the engine computes the
+intersections, and the ENRICHMENT FOLLOWS THE INTERSECTION — every name in any intersection
+is enriched whether or not it tops a screen.
+
+#### 8b.2 — the engine (fetch it at run time; it is not on disk in a fresh sandbox)
+
+```bash
+D=/workspace/cron06_refresh.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/cron06_refresh.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/cron06_refresh.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/cron06_refresh.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!' \
+     && grep -q 'CRON06_REFRESH_V1' "$D.tmp" 2>/dev/null; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] || { echo "cron06_refresh.py fetch FAILED - write a stub artifact with _source=cron06_engine_unavailable and reply with the failure"; exit 1; }
+```
+
+The capability marker `CRON06_REFRESH_V1` is mandatory: an OLD engine would render the OLD
+artifact shape and the checker would then fail the run for no visible reason.
+
+**The engine owns every number and renders the artifacts.** The Agent fetches the three
+shibui screens and passes the raw rows in as JSON; it does NOT transcribe numbers into the
+markdown. A hand-typed price is a defect, not a style choice.
+
+#### 8b.3 — the run sequence
+
+1. Resolve the data date: `SELECT MAX(date) FROM shibui.stock_quotes` (EOD, T+1).
+2. Run the three screens with the shibui bridge (filters N, O and the 10-year scan in
+   `references/filters.md`), **paging every branch**: shibui's ceiling is 200 rows PER
+   QUERY, so a query that returns exactly 200 rows is TRUNCATED, not complete. Page with
+   `LIMIT 200 OFFSET <n>` until the collected rows equal `rows_passing`.
+3. `python3 cron06_refresh.py --intersections-only ...` → the enrichment symbol list. The
+   intersection names are needed BEFORE the enrichment query can be built.
+4. Enrich those symbols (30-bar average dollar volume, close, close 30 bars ago, market
+   cap) in ONE query, plus the IPO names' liquidity.
+5. Fetch the prior ledger (`pattern-study/peoplewish-1000pct-backlog.md`) and the most
+   recent PRIOR state snapshot (`pattern-study/cron06-state/short-float-*.json` with a
+   fire_date earlier than this one) from the outputs repo. Both are needed: the ledger
+   for continuity, the state for the change in short float.
+6. Run the engine → the three `.md` artifacts, `cron06-refresh.json` and the state file.
+7. Run the checker: `python3 tools/check_cron06_artifact.py --md-dir <dir> --json <json>
+   --state <state> --prior-backlog <ledger>`. **A non-zero exit means the run FAILS** —
+   fix the artifact, do not publish it.
+8. Push the `daily-screens` tree AND the `pattern-study` ledger + state file, then verify
+   each path with `verify_delivery.sh`.
+
+#### 8b.4 — the published fields (a field, never a sentence)
+
+| Field | Vocabulary / rule |
+|---|---|
+| `tradeable_verdict` | `TRADEABLE` (30d ADVol >= $20M) / `THIN` ($5-20M) / `ILLIQUID` (< $5M) / `FLOAT_ARTIFACT` (short % of float > 100) / `NO_QUOTE` (no volume history). Precedence: FLOAT_ARTIFACT > NO_QUOTE > ILLIQUID > THIN > TRADEABLE. |
+| `squeeze_candidate` | `YES` only when short > 50% AND the verdict is `TRADEABLE`. |
+| `short_float_delta_pp` | the change in short % of float against the prior state snapshot, in percentage points; `NO_PRIOR_SNAPSHOT` when the name was not in it. |
+| `chg_30d_pct` | the price change over the 30-bar window already pulled for the ADVol denominator — it costs NO extra call. |
+| `mcap_verified` | `YES` when a `shibui.valuation` row exists within 14 days; `NO` means the name passed the $1B floor BY DEFAULT, not on a stamped number. |
+| `days_since_ipo` / `post_lockup` | days since the IPO date; `post_lockup = YES` past 180 days (the standard lockup length, used as a calendar marker, not a filing fact). |
+| `tag_change` | `NEW` / `UNCHANGED` / `ADDED` / `REMOVED` / `MIXED` — the live tag set against the ledger's frozen tags. |
+
+A placeholder `—` in one of these fields is a SILENT FAILURE, not a missing value. The
+checker rejects it.
+
+#### 8b.5 — the three traps this routine walks into
+
+* **The IPO week-over-week note needs the RECOMPUTED prior universe, not the prior
+  published table.** The 2026-10-31 run published only its top 50 of a larger passing set,
+  so diffing against that table produces a false "entered/left" story. Re-run the SAME
+  query with the previous resolved date and diff the two universes.
+* **Short float: separate "left the top 30" from "left the universe".**
+  `ownership_stats` is a current snapshot with no `date` column, so names lose their row
+  between runs — a name above the gate with a lower stamp is a RE-STAMP, a name with no
+  row at all has LEFT the universe. Say which.
+* **The backlog is a discovery ledger, not a quote sheet.** The carried-forward rows stay
+  FROZEN at their first-tagging values, with their `First Tagged` date. The live re-score
+  carries this week's tags. Freezing the TAGS too would hide the coil -> breakout
+  transition, which is the signal.
+
+#### 8b.6 — what the reply must carry
+
+The reply's `### Signal` section names **every newly tagged ticker** and **every
+intersection name**. The checker asserts it (clause C14) — a reply that names neither is a
+failed run.
 
 ## Data sources — what actually lives where
 

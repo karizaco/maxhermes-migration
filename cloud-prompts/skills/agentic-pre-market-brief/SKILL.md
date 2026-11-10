@@ -30,7 +30,7 @@ replay is a DATED fleet artifact:
 | Field | Source for a replayed fire |
 |---|---|
 | pre-market last, gap %, name | `preopen-feed/{fire-date}-0830.jsonl` (cron #92a checkpoint) |
-| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.md` (cron #26b — the same pull) |
+| pre-market volume, %ADV, market cap, sector | `daily-briefs/{fire-date}-pre-market-refresh.csv` (cron #26b — the same pull, machine-readable); fall back to the `.md` only if the CSV is absent |
 | pre-market high/low (PM range) | Yahoo chart bars for the fire date, `includePrePost=true` |
 | prior close, prior session % | `us-eod/{fire-date-1}.csv` (cron #20, settled) |
 | earnings roster | `earnings/{fire-date}-reactions.md` (cron #15) when cron #19's file is absent |
@@ -155,10 +155,31 @@ Origin: https://www.tradingview.com
             "premarket_close","premarket_change","premarket_high","premarket_low",
             "premarket_volume","market_cap_basic","sector",
             "exchange","type","halted","premarket_time","earnings_release_next_date"],
- "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,400]}
+ "sort":{"sortBy":"premarket_change","sortOrder":"desc"},"range":[0,1000]}
 ```
 
 **Losers screen:** identical but `"premarket_change" in_range [-1000,-3]`, `sortOrder:"asc"`.
+
+> **The screen has a ROW CAP, and a truncated screen publishes FLOORS, not counts.**
+> The range is `[0,1000]`, and the ±3% band is routinely larger than a single page:
+> on 2026-11-05 the band held 379 gainers and **547** decliners, and the old
+> `range:[0,400]` returned **400 of the 547 decliners** — silently, with HTTP 200 and
+> no warning, because the scanner simply honours the range. The 147 omitted rows were
+> the LEAST negative decliners, so the headline table was complete but `down_3pct`
+> read as a COUNT when it was a FLOOR.
+>
+> **Pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on BOTH screens.**
+> The scanner returns `totalCount` next to `data`, so the assert costs nothing:
+>
+> ```python
+> assert len(rows) == totalCount, (name, len(rows), totalCount)
+> ```
+>
+> **If the assert fails**, the band is larger than the cap: publish the rows you have,
+> set `screen_complete: false` in the front matter, and say in §Source health that the
+> published counts are FLOORS, not exact counts. Never publish a truncated count as if
+> it were the whole band. A count that is known to be a floor is fine; a count that
+> LOOKS exact and is not is the defect.
 
 > **Filter-operator traps.** `in` is NOT a valid operator — it returns HTTP 400 and looks like a
 > source outage. Use `equal`, `in_range`, `greater`, `less`. And `in_range` on the **string** column
@@ -169,7 +190,74 @@ Origin: https://www.tradingview.com
 >
 > **`type` must be `in_range ["stock","dr"]`.** `type=stock` silently drops ADRs; `type=fund` drops
 > REITs. ADRs and REITs are US-listed securities and belong in the universe.
+>
+> **The `close` column can be WRONG while `premarket_*` is right — RECONCILE, DO NOT TRUST.**
+> Measured 2026-11-09: for **VISN** the scanner served `close` = 3.995 against a pre-market print of
+> 4.14 (range 4.11–4.43, entirely ABOVE that close) and `premarket_change` = -24.66%. Those three
+> cannot all be true. An independent quote from the bridge put the real prior close at **5.495**
+> (+1.67% on the day) — and ONLY with 5.495 do the scanner's own print and gap reconcile. **The
+> defect was in `close`, not in the gap.** So the routine MUST sweep every row it publishes:
+>
+> ```python
+> bad = [r for r in rows if r["close"] and r["premarket_close"] is not None
+>        and abs((r["premarket_close"] - r["close"]) / r["close"] * 100 - r["premarket_change"]) > 0.25]
+> ```
+>
+> A sweep of 598 screened rows on 2026-11-09 flagged **exactly one** (VISN), and the bridge agreed
+> with the scanner on all 14 other cross-checked names. When the sweep flags a row, pull that ONE
+> name's quote from the bridge (`market-recap get_quotes`), publish the bridge's prior close with
+> the scanner's pre-market print and gap, and say so in `## Source health`. Publishing the
+> scanner's `close` unchallenged would have put a prior close of 4.00 next to a pre-market print of
+> 4.14 in the same row — a contradiction a reader can SEE, and a wrong number in the CSV.
+>
+> **The ±3% band is LIVE: re-pull it ONCE and publish THAT pull's counts.** Measured 2026-11-09: a
+> band pulled at 08:37 ET held 382 gainers / 199 decliners; the same band at 08:44 ET held 392 / 206,
+> because names that were absent at 08:37 had grown their pre-market volume past the filter and
+> crossed INTO the band. A count drawn from one pull and a table drawn from another disagree by
+> construction. Pull the band once, at the END of the data work, and take BOTH the counts and the
+> tables from that pull; earlier pulls are context only.
+>
+> **A row with no pre-market print is NOT a row with a blank price.** `premarket_close`,
+> `premarket_high`, `premarket_low` and `premarket_volume` are all null for a name with no
+> pre-market print (e.g. **MLTX** on 2026-11-09, a StockTwits-trending name). Exclude those rows
+> from the CSV — `check_premarket_brief.py` asserts a non-empty `prior_close` and `premarket_last`
+> on EVERY row — and publish the name in prose WITHOUT a price instead.
 
+> **`market_cap_basic` is `close × shares outstanding`, and the scanner does NOT refresh the share
+> count for corporate actions — so Gate B must be decided on a RECONCILED cap.** Measured
+> 2026-11-09: the scanner reported **$143,016,256** for **NWGL** (CL Workshop Group) after a
+> **one-for-80 ADS reverse split** and an ADS ratio change from 1:8 to 1:640 ordinary shares took
+> effect Friday 2026-11-06 (Nasdaq Equity Corporate Actions Alert #2026-787). The scanner paired
+> the POST-split price (2.53) with the PRE-split share count (56.53M) and produced a market cap
+> **87× too high**. The real cap sits in the **$0.5M–$1.9M** range (Nasdaq `/summary`, shibui's
+> dated `valuation`, stockanalysis.com and WallStreetZen all bracket it there) — so a sub-$2M
+> shell was published at the TOP of the headline gap table, over Gate B. The error runs BOTH ways:
+> the same sweep found names whose scanner cap is too LOW because the count predates a later
+> issuance (HELP, BTQ, WYHG).
+>
+> **The sweep — run it BEFORE the tables are built, not after.** For every name the routine is
+> about to publish, compare the scanner's implied share count against two independent caps:
+> Nasdaq's `/summary` `MarketCap` (unmetered; ~900 symbols in ~3 min at 12 threads) and shibui's
+> `valuation.market_cap` (the latest row `<= the prior-session date`, so it is already on the
+> gate's basis). Where they disagree by more than 15%, publish the **median** of the available
+> sources and recompute the gate flags from the PUBLISHED figure:
+>
+> ```python
+> implied_scanner = market_cap_basic / close
+> implied_nasdaq  = nasdaq_market_cap / nasdaq_previous_close
+> implied_shibui  = shibui_market_cap / shibui_close
+> ```
+>
+> On 2026-11-09 that sweep flagged **106 of 1,085** screened names (9%). It moved exactly one
+> published name between tables — NWGL, out of the headline table — and it is why `quality_screen`
+> and `liquid_screen` are computed from the published cap and not from the scanner's.
+>
+> **A name whose move is a corporate action is NOT a theme.** NWGL's +50.99% was a reverse split
+> and an at-the-market programme, not a metals bid. Before putting a name in a theme cluster,
+> check whether it had a corporate action in the last few sessions; if it did, publish it as a
+> corporate-action artefact with the event cited (a Nasdaq Equity Corporate Actions Alert is the
+> primary source), never as a catalyst.
+>
 ### Step 2b — The screen (pinned — do not reinvent this each run)
 
 Universe: every US-listed common stock **and ADR** on NASDAQ/NYSE/AMEX. Do NOT re-filter to
@@ -178,7 +266,7 @@ Universe: every US-listed common stock **and ADR** on NASDAQ/NYSE/AMEX. Do NOT r
 **GATE A — liquidity.** Pre-market volume ≥ **100,000** shares, **or** market cap ≥ **$200M** with
 ≥ **10,000** pre-market shares. A ±20% print on 100 shares is not a market.
 
-**GATE B — quality floor for the HEADLINE tables.** Market cap ≥ **$100M**.
+**GATE B — quality floor for the HEADLINE tables.** Market cap ≥ **$100M**. Decided on the **reconciled** market cap, not the scanner's — see the `market_cap_basic` trap in Step 2.
 
 - Names that pass Gate A but fail Gate B are still real moves: publish them in a compact
   **"thin tape" block** under the headline table (ticker, %, price, cap, pre-market volume) so
@@ -317,6 +405,8 @@ status: ok
 themes: <n>
 up_3pct: <n>
 down_3pct: <n>
+screen_complete: <true|false>   # false => the ±3% band exceeded the screen's row cap and
+                                 # the two counts above are FLOORS, not exact counts
 ---
 ```
 
@@ -381,6 +471,13 @@ not ready to push.
 ---
 
 ## ARTIFACT FORMAT CONTRACT v2 — `premarket-brief-artifact-v2`
+
+**Revision note (2026-11-09).** The front matter gained one key, `screen_complete`, and the
+contract gained one clause, **C6** (`tools/check_premarket_brief.py`): the ±3% counts must be
+published together with whether the screen returned EVERY row. The marker stays `v2` because the
+deployed cron #26 prompt names it, and a marker change would need a prompt redeployment for one
+word — the addition is additive and does not alter the meaning of any existing clause. C1–C5 are
+unchanged.
 
 This section IS the contract. It is fetched at RUN time, so an edit here changes the next fire
 with no prompt edit and no prompt drift. `tools/check_premarket_brief.py` asserts every clause
@@ -605,6 +702,7 @@ numbers.
 | **A 44 KB brief with no decision in it** | The TL;DR was a *map* of the brief (six themes) rather than a call. The trader had to do the synthesis. | §C1: `## Bottom line`, exactly three lines, above the theme TL;DR. |
 | **Setups with no prices** | The 2026-11-03 brief named "AMD is the referee tonight", Oracle's $20B capex and the Marvell/Lumentum spread — and published no level for any of them. A trader cannot act on a name without a number. | §C2: `Prior close`, `Pre-market last`, `Gap %`, `PM range`, `Key level`, `Invalidation` on every published name. |
 | **The CSV contradicted the spec** | The spec promised columns the CSV did not have, and the CSV carried date-named columns (`nov_2_2026_close`) that silently went stale. | §C3: a pinned, date-independent header; §C4: assert the header before the push. |
+| **The ±3% band was silently truncated** | The screen pinned `range:[0,400]` and the scanner honours a range SILENTLY — HTTP 200, no warning. On 2026-11-05 that returned 379 of 379 gainers but only **400 of 547** decliners, and `down_3pct` was published as a count when it was a floor. | §2: pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on both screens; publish `screen_complete: false` and say "floor" when the assert fails. |
 | **The brief had no follow-up** | Nothing recorded what happened to yesterday's calls, so the routine could not learn. | §C5: `## Yesterday's brief — what happened`, every run, with a `Thesis held?` column. |
 | **A stale shared helper** | `push_artifact.sh` was fetched with `[ -s file ] || curl`, so an old local copy kept using the old path→number table, and raw.githubusercontent served a stale blob for >17 min after a push. | Fetch-ladder rule below: contents API first, then raw, then jsDelivr, reject a 404 body, **refresh every run**. |
 

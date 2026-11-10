@@ -1,8 +1,9 @@
 {
-  "contract_version": "auditor-contract-v1",
+  "contract_version": "auditor-contract-v2",
   "_note": "THE contract for cron #90 (delivery-auditor). One file, shared by three consumers: the prompt (which fetches it at RUN time and applies it), tools/check_auditor_contract.py (the gate that validates a produced status.json + digest), and tools/test_auditor_contract.py (the fault injections). A contract that lives only in prose is a claim; a contract that lives here and is asserted is a contract. The prompt also carries a COMPACT INLINE COPY of the cause vocabulary and the state list as a fallback for a failed fetch - tools/check_auditor_contract.py --prompt parses that copy out of the prompt and FAILS if it disagrees with this file, so the fallback can never silently drift.",
   "states": {
     "delivered": "The artifact exists on origin/main and was byte-verified.",
+    "delivered_late": "The artifact exists on origin/main, but it landed LATER than the routine's allowed latency - measured from the fire's scheduled time to the commit that ADDED the artifact. The run record's duration measures the DISPATCH, not the work, so a fire that was blocked for hours and then resumed is indistinguishable from a healthy one unless the latency is measured. Counted in `delivered`; it MUST carry a `stalled` gap line naming the cause. NOT `missing` - the artifact IS there.",
     "missing": "The routine was due, produced nothing, and the failure reason is KNOWN (no run at all, a failed run, or a lost push). Counted in `missing`. Never used for a routine that skipped by design.",
     "not_yet_fired": "The routine's current schedule has not reached its first fire yet. Derived from the routine's OWN schedule, never from 'no artifact found'. NOT a finding.",
     "skipped_by_design": "The routine RAN and correctly wrote NO artifact: a window/holiday skip, a fail-closed precondition (an unset API key), or an out-of-window skip marker. Requires a reason. NOT counted in `missing`, NOT reported as a gap.",
@@ -11,6 +12,7 @@
   },
   "state_vocabulary": [
     "delivered",
+    "delivered_late",
     "missing",
     "not_yet_fired",
     "skipped_by_design",
@@ -19,6 +21,7 @@
   ],
   "gap_labels": [
     "MISSING",
+    "stalled",
     "reconstructed",
     "present_but_empty",
     "partial",
@@ -30,27 +33,40 @@
   "causes": [
     "platform_500",
     "timeout",
+    "quota_2056",
     "quota_2067",
     "push_failure",
     "delayed_replay",
     "not_yet_fired",
     "skipped_by_design",
     "cron_update_failed",
+    "slow_run",
     "never_fired"
   ],
   "_causes_note": "The controlled vocabulary is CLOSED. A gap line whose cause is not in this list (or whose reason is empty) is a FAILED AUDIT and increments `errors`. `never_fired` is the one addition to the operator's list: 'the scheduler never dispatched this routine on a due day' is a real cause with a different fix from every other token, and mislabelling it as one of the others would send the operator to the wrong place.",
   "cause_glossary": {
     "platform_500": "The platform itself failed the fire (HTTP 500 / CRON_EXECUTION_FAILED / no session ever started).",
     "timeout": "The run exceeded its time budget and was cut off before it could write or push.",
-    "quota_2067": "The Token Plan usage limit was reached (error 2067) - a BILLING wall, not a code bug.",
+    "quota_2067": "The Token Plan usage limit was reached and credit auto-consumption was OFF (error 2067) - a BILLING wall, not a code bug.",
+    "quota_2056": "The Token Plan 5-hour usage window was exhausted (error 2056, surfaced by the platform as 42212). The fire's FIRST model call was rejected, so the turn died and could only be RESUMED IN PLACE later - the run record still shows status 1 and a ~1 s duration. NOT a code bug: the window ROLLS from the account's first use.",
     "push_failure": "The run was healthy and the artifact was built, but the push never landed (a lost race, a non-fast-forward, or a staging abort). The artifact was NOT delivered.",
     "delayed_replay": "The fire was dispatched for an earlier date and resumed late; the artifact was rebuilt for the ORIGINAL date.",
     "not_yet_fired": "The routine's current schedule had not reached its first fire at the audited date.",
     "skipped_by_design": "The routine ran and correctly wrote nothing (holiday window, fail-closed key, out-of-window).",
     "cron_update_failed": "A `cron_update` that was meant to change the routine's schedule or prompt did not land.",
+    "slow_run": "The turn completed normally but later than the routine's allowed latency, and no platform failure is evidenced - the routine itself is slow, not blocked.",
     "never_fired": "The scheduler never dispatched the routine on a day its own schedule said it should fire."
   },
   "label_causes": {
+    "stalled": [
+      "quota_2056",
+      "quota_2067",
+      "platform_500",
+      "timeout",
+      "push_failure",
+      "delayed_replay",
+      "slow_run"
+    ],
     "MISSING": [
       "platform_500",
       "timeout",
@@ -95,6 +111,14 @@
     ]
   },
   "_label_causes_note": "Which causes may pair with which label. A pair outside this map is a FAILED AUDIT: e.g. `skipped_by_design` is never a cause OF a MISSING gap, because a routine that skipped by design is not missing at all.",
+  "latency": {
+    "field": "delivery_latency_min",
+    "unit": "minutes",
+    "measure": "the commit that ADDED the routine's artifact on origin/main (git log --diff-filter=A --format=%ct -- <path>), minus the routine's scheduled fire time on the audited date",
+    "default_allowed_minutes": 45,
+    "_note": "The run record's started_at_ms/finished_at_ms measure the DISPATCH of the prompt to the agent, NOT the work: a fire that was blocked for hours and then resumed still shows ~1 s and status 1. The artifact's push time against scheduled_at_ms is the only honest measure of when the work actually happened.",
+    "_allowed_note": "45 minutes is the default for the whole fleet, measured across 2026-11-04 to 2026-11-08: the slowest HEALTHY routine landed 32 min after its schedule (#17's preclose slot) and #10 - which fires at 14:00 ET - landed at 14:07. A routine that is chronically slower than that needs its own allowed value named HERE, never a global widening."
+  },
   "skip_marker": {
     "glob": "refs/skipped-markers/{date}_SKIPPED_*.md",
     "branch": "main",
@@ -160,7 +184,8 @@
     "routine_fields": [
       "routine",
       "state",
-      "streak"
+      "streak",
+      "delivery_latency_min"
     ],
     "streak_rule": "Consecutive DUE fires missed. Carried forward from the previous status.json on the audit/status branch: +1 when the routine is MISSING this cycle, 0 when it is delivered, and UNCHANGED when the routine was not due on the audited day (a routine that is not due must never reset its own streak).",
     "gap_age_hours_rule": "Hours from the routine's MISSED FIRE INSTANT on the audited date (its own scheduled ET time) to the audit run's instant, rounded to one decimal. It is the age of the most recent missed fire, so a three-day-old gap is distinguishable from a twenty-minute-old one.",

@@ -173,3 +173,56 @@ shibui `general_info` universe (4,892 rows, keyset) -> shibui `valuation` + `own
 (4,892/4,892 in 20 s) -> Yahoo chart daily history, **two passes** (4,892 symbols each,
 ~30/s) -> merge (later pass wins) -> base assembly -> `eod_derive.py` -> `build_eod_report.py`
 -> the checker -> push (verified byte-identical against `origin/main` via the contents API).
+
+---
+
+## 9. The base assembly owns the numeric format, and the settle window is ~40 minutes (2026-11-09)
+
+Written by the 2026-11-09 fire. The routine's own skill spec carries the rules
+(`cloud-prompts/skills/eod-watchlist-snapshot/SKILL.md` §2c).
+
+**The defect the checker did not catch.** `eod_derive.py` copies the base session fields
+**verbatim** — it formats only what it computes. A base assembly that handed over raw floats
+therefore published `close = 1.2400000095367432`, `high = 1.2649999856948853` and
+`volume = 2167698.0` — and **every existing assertion still passed (28/28)**. The archive's
+numeric rule (4 significant figures, trailing zeros stripped, values ≥ 100000 at full
+precision, integers for volume/cap/float) is part of the published contract, and nothing
+asserted it.
+
+Fixed in the repo, not in the prompt:
+- `tools/check_eod_artifact.py` re-implements the formatter independently and asserts every
+  numeric cell byte-for-byte (101,066 cells on the 2026-11-09 file, 0 drift). Fault injection
+  confirmed it bites: injecting the exact defect fails the checker and names the cell.
+- The base assembly must widen the high/low **in formatted space**, so the published close can
+  never sit outside the published range after rounding.
+
+**The settle window is longer than 10 minutes, and the quote price is not the auction close.**
+The first history pass (16:21–16:27 ET) was still drifting; a second pass (16:31–16:39 ET)
+changed the close on **2,001 of 4,775** session bars. The 1-minute final bar (`O=H=L=C`,
+volume 0) is the close of record and it agrees with the SECOND pass on 48/48 sampled names.
+The quote service's `regularMarketPrice` disagrees on 3 of 4 spot-checked names (AGL 113.87 vs
+the auction print 114.02; AP 5.955 vs 6.00; ALG 140.74 vs 140.97) — it is a last-trade quote,
+not the 16:00 ET auction print. **Take the close from the settled daily bar, keep the later
+history pass, cross-check against the 1-minute final bar.** The quote service still owns the
+market cap, the trailing P/E and the dividend-adjusted prior close.
+
+**The vendor's EOD tables lag the session.** `shibui` carried no `2026-11-09` row in
+`stock_quotes` (latest `2026-11-06`), so session prices cannot come from the vendor; it
+supplies the universe, the carrier caps, the floats and the GICS sectors.
+
+**The universe moved by +3 net and it is published, not absorbed:** 4,895 rows this session
+against 4,892 on 2026-11-06 — AGLT, BFH-P-C, BFS-P-D and INJC now carry the vendor's
+`country_iso='US'` tag, ALDF no longer does.
+
+**Run shape that worked (2026-11-09, 16:01 ET → ~17:00 ET):** window check → skill + shared
+blocks + the four derive scripts (capability marker) → one joined keyset sweep of the vendor
+(33 pages, universe + carrier caps + floats + trailing P/E + sector in ONE query per page,
+which keeps the metered bridge inside its daily allowance) → Yahoo `v7/finance/quote` batch
+(4,895/4,895 in 9 s, cookie + crumb) → Yahoo chart daily history, TWO passes (later wins) →
+base assembly (formatted) → `eod_derive.py` → `build_eod_report.py` → the checker → push
+(verified byte-identical against `origin/main` via the blob API).
+
+**Result:** 4,895 rows, 4,775 settled closes, 4,774 verified changes, 4,739 caps, 2,927
+trailing P/Es, 4,527 GICS sectors, 120 rows with no session bar, 29/29 assertions passed, and
+the formatter reproduced 100,037 of 100,037 numeric strings of the 2026-11-06 file
+byte-for-byte.

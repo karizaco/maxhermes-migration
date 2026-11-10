@@ -434,6 +434,59 @@ def check_yesterday(lines):
 
 
 # ----------------------------------------------------------------------------------
+# --- C6: the screen's completeness is a PUBLISHED field ---------------------------
+# The ±3% band is pulled with a row cap. On 2026-11-05 the cap (400) was smaller than the
+# band (547 decliners), so `down_3pct` was a FLOOR and read as a count. The routine must
+# assert `len(rows) == totalCount` at pull time and publish the outcome; when the assert
+# failed the artifact must SAY the counts are floors.
+FRONT_MATTER_FIELDS = ("up_3pct", "down_3pct", "screen_complete")
+
+
+def front_matter(raw):
+    """The machine-readable block, as a dict.
+
+    It is a `---` fenced block. It is NOT always the first thing in the file - a
+    title may precede it - so find the FIRST fence rather than assuming offset 0.
+    """
+    lines = raw.split("\n")
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "---":
+            start = i
+            break
+    if start is None:
+        return {}
+    out = {}
+    for line in lines[start + 1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        out[k.strip()] = v.split("#", 1)[0].strip()
+    return out
+
+
+def check_screen_complete(raw):
+    problems = []
+    fm = front_matter(raw)
+    for field in FRONT_MATTER_FIELDS:
+        if field not in fm:
+            problems.append(f"the front matter has no '{field}' - the screen's "
+                            f"completeness must be a published field")
+    for name in ("up_3pct", "down_3pct"):
+        val = fm.get(name)
+        if val is not None and not re.fullmatch(r"\d+", val):
+            problems.append(f"front matter '{name}' is '{val}', not a whole number")
+    sc = fm.get("screen_complete")
+    if sc is not None and sc not in ("true", "false"):
+        problems.append(f"front matter 'screen_complete' is '{sc}', not true|false")
+    if sc == "false" and "floor" not in raw.lower():
+        problems.append("front matter says screen_complete: false but the artifact never "
+                        "says the counts are floors - a truncated screen must say so")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--md", required=True)
@@ -483,6 +536,9 @@ def main() -> int:
 
     record("C5_YESTERDAY", check_yesterday(lines),
            "the section exists and every row's verdict is in the vocabulary")
+
+    record("C6_SCREEN_COMPLETE", check_screen_complete(raw),
+           "the front matter publishes the ±3% counts and whether they are exact")
 
     print()
     if PROBLEMS:

@@ -80,6 +80,7 @@ status: ok
 themes: 1
 up_3pct: 1
 down_3pct: 1
+screen_complete: true
 ---
 
 ## Bottom line
@@ -340,6 +341,21 @@ def m17(t, c):
     return t, "\n".join(lines)
 
 
+@mutation("the screen's completeness is not published")
+def m18(t, c):
+    return t.replace("screen_complete: true\n", ""), c
+
+
+@mutation("a truncated screen whose counts are not called floors")
+def m19(t, c):
+    return t.replace("screen_complete: true", "screen_complete: false"), c
+
+
+@mutation("a malformed screen_complete value")
+def m20(t, c):
+    return t.replace("screen_complete: true", "screen_complete: maybe"), c
+
+
 @mutation("the contract marker is missing")
 def m16(t, c):
     return t.replace("contract: premarket-brief-artifact-v2\n", ""), c
@@ -356,6 +372,18 @@ def main() -> int:
         print(out)
         return 1
     print("ok   the synthetic compliant artifact passes the checker")
+
+    # The documented FALLBACK path must satisfy the contract too: a truncated screen that
+    # says its counts are floors is honest, and honest must pass.
+    honest = (MD.replace("screen_complete: true", "screen_complete: false")
+              + "\nThe +/-3% band exceeded the screen's row cap, so the published counts "
+                "are FLOORS, not exact counts.\n")
+    rc, out = run_checker(honest, CSV_TEXT)
+    if rc != 0:
+        print("FAIL the documented floor case does NOT pass the checker:")
+        print(out)
+        return 1
+    print("ok   a truncated screen that says its counts are floors passes the checker")
 
     failures = []
     for name, fn in MUTATIONS:

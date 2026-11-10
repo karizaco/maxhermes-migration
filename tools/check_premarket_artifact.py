@@ -159,6 +159,17 @@ def md_table(body):
     return headers or [], rows
 
 
+def _split(v):
+    """Split a provenance field on ';' or '|'.
+
+    The sweep's focus.csv writes `origins` and `stylists` PIPE-separated
+    (A_stockbee_4pct|B_stockbee_ep9m|...), while the older schema used ';'.
+    Splitting only on ';' counted every name as ONE origin and collapsed the
+    setup-quality ranking to |gap| order.
+    """
+    return [x.strip() for x in re.split(r"[;|]", str(v or "")) if x.strip()]
+
+
 def marker_line(raw):
     """The one-line contract header the artifact must carry."""
     for ln in raw.split("\n")[:40]:
@@ -382,7 +393,7 @@ def check_nonqualifying(lines, secs, rows):
         if not re.search(rf"\b{re.escape(tick)}\b", text):
             bad(f"non-qualifying name {tick} does not appear in the section")
             continue
-        origins = [o.strip() for o in str(r.get("origins", "")).split(";") if o.strip()]
+        origins = _split(r.get("origins"))
         if origins:
             missing = [o for o in origins if o not in text]
             if missing:
@@ -430,8 +441,8 @@ def ranking(rows):
     origins desc, then |gap| desc. The spec states this order; the reply must
     name the top 2."""
     def key(r):
-        st = num(r.get("stylists")) or 0
-        og = len([o for o in str(r.get("origins", "")).split(";") if o.strip()])
+        st = len(_split(r.get("stylists")))
+        og = len(_split(r.get("origins")))
         g = abs(num(r.get("pm_gap_pct")) or 0.0)
         return (-st, -og, -g, str(r.get("ticker", "")))
     nonflag = [r for r in rows if str(r.get("verdict", "")).strip().upper() != "FLAGGED"]
