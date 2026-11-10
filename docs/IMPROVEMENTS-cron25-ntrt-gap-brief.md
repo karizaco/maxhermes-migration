@@ -661,3 +661,94 @@ revert of the PROMPT (the screener request and the push block) needs the redeplo
 
 The tag `pre-ntrt-format-v2-2026-11-04` points at the pre-change commit
 `d2562b1d64cf1ae0742fabf8a1807f3dafa6e76a`.
+
+---
+
+## 20. The `master` mirror went DIVERGED, and every routine silently stopped mirroring — NEW (2026-11-10)
+
+Measured on the 2026-11-09 fire of cron #25, at the moment of its amendment push.
+
+**Symptom.** `push_artifact.sh` printed `master mirror: skipped (origin/master has commits the
+pushed tip does not - not a fast-forward)`. The artifact was delivered and verified on
+`origin/main`, but `master` — the repo's **`default_branch`**, the branch a human sees when they
+open the repo URL or run a bare `git clone` — still carried the PRE-amendment markdown.
+
+**Why it happened.** The mirror is ancestry-gated by design:
+
+```bash
+if ! git merge-base --is-ancestor origin/master "$TARGET"; then
+  echo "  master mirror: skipped (origin/master has commits the pushed tip does not - not a fast-forward)"
+  return 0
+fi
+```
+
+That gate exists so a mirror failure can never lose a commit — correct, and it did its job. But
+it is **one-way**: `master` can only ever move forward to a `main` tip that already contains it.
+Two cron #05 runs pushed the same `_fx.json` / `_moves.json` cleanup to `main` and to `master`
+as **separate commit objects with identical content** (master-only `6cf30a3` + `c500765`; the
+`main` equivalents `d607146` + `4792c9a`). Neither branch contained the other, so
+`origin/master` was no longer an ancestor of `origin/main`, and from that moment **every
+routine's mirror was blocked** — silently, because a mirror failure is `return 0` by design.
+
+**Two costs, only one of them visible.**
+1. `master` (the default branch) froze at a stale tree — it was missing `daily-screens/2026-11-09/*`
+   (cron #09) and carried the pre-amendment `ntrt/2026-11-09.md`. Every reader landing on the
+   repo URL saw yesterday's artifacts.
+2. The `master mirror: skipped` line is informational only. A reader of the reply sees
+   `push: ok (verified)` — which is TRUE of `main` — and has no way to know the default branch
+   is stale. **The delivery verification checks `origin/main`; the mirror checks `origin/master`;
+   nothing checks that the two agree.**
+
+**The fix (content-neutral, no force, no artifact rewritten).** Merge `master` into `main`, then
+fast-forward `master` to the merged tip:
+
+```bash
+git fetch origin main master
+git checkout -B rec origin/main
+git merge --no-ff --no-edit origin/master      # <- content-neutral here
+# SAFETY GATE: the merge must not change a single file. Verify the TREES are equal:
+test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse origin/main^{tree}" \
+  || { git merge --abort; echo "merge changed content - ABORT"; exit 1; }
+git push origin HEAD:main                        # fast-forward for every other routine
+git push origin origin/main:refs/heads/master    # pointer-only, now unblocked
+```
+
+Verified on 2026-11-10: the merged tree `92802e3c` was byte-identical to `origin/main`'s tree
+(`git write-tree` vs `git rev-parse origin/main^{tree}`), so the reconcile carried **no content
+change at all** — it only joined two histories that already agreed on every file. After the push,
+`main` and `master` were both `98e090c`, `git diff --name-only origin/main origin/master` was
+empty, all 15 branches survived, and the mirror gate
+(`git merge-base --is-ancestor origin/master origin/main`) passed again.
+
+**The rule this exposes, for the push script (NOT changed here — see the Do-not list below).**
+The mirror needs a **second** check that nobody runs: *does `origin/master`'s tree agree with
+`origin/main`'s tree for the paths this routine just wrote?* A pointer mirror that is blocked
+leaves the default branch stale, and the artifact contract says nothing about the default
+branch at all. Two candidate hardenings, for whoever owns `push_artifact.sh`:
+
+1. **Detect the stuck mirror.** After a skip, compare the artifact's own blob on `origin/master`
+   against `origin/main`. If they differ, the mirror is stale for THIS routine's file and the
+   skip should be reported as a **degradation**, not a footnote — it belongs in the reply's
+   `errors:` line, because a reader on the default branch is seeing a different artifact.
+2. **Auto-reconcile when the merge is content-neutral.** If `git merge-tree` shows `master` can be
+   merged into `main` with no tree change, do it — that is exactly the case where a merge is free
+   and the gate can never self-heal.
+
+**Do-not list for this routine (unchanged by this finding).**
+- Do NOT change `push_artifact.sh` from this routine — it is the fleet's shared helper and the
+  change belongs to whoever owns it, with the same probe-and-diff discipline every other shared
+  script change has had.
+- Do NOT `git push --force` either branch. The fast-forward-only property is the reason no commit
+  has ever been lost; a force-push would trade that guarantee for convenience.
+- Do NOT hand-merge `master` on a schedule — one reconcile fixed all 21 routines at once.
+- Do NOT treat `push: ok (verified)` as proof the default branch is current. It proves `main`.
+
+**Verification performed (2026-11-10).**
+- `git merge-base --is-ancestor origin/master origin/main` → false before, true after.
+- `git write-tree` (post-merge) == `git rev-parse origin/main^{tree}` → `92802e3c` both, so the
+  reconcile changed no file content.
+- `git diff --name-only origin/main origin/master` → 0 files after (19 before: cron #09's
+  `daily-screens/2026-11-09/*` plus this routine's pre-amendment markdown).
+- `ntrt/2026-11-09.md` and `ntrt/2026-11-09.csv` fetched from **both** branches via the GitHub
+  contents API → byte-identical to the local files on both.
+- `check_ntrt_artifact.py` re-run after the amendment: `CONTRACT OK — contract: 16/16`.
