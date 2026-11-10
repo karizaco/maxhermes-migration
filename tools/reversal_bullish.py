@@ -133,6 +133,28 @@ def et_now():
     return datetime.now(ET)
 
 
+def session_is_settled(date_str):
+    """True when this run happened AFTER the 16:00 ET bell for the scanned session.
+
+    TradingView's daily bar finalizes LATE. Measured 2026-11-10: the 15:56 ET read saw a
+    partial bar, the 16:02 ET and 16:04 ET reads still carried a PRE-AUCTION print, and only
+    the 16:23 ET read carried the official 16:00 close. A pre-auction read is not a small
+    discrepancy: on 2026-11-10 it published EAT with a 0.00% stop line, and EAT and EFX both
+    fail the settled close. A settled read must be cross-checked against the market-recap
+    quote (`as_of` 16:00:00 ET) before it is published. See SKILL.md §5.
+    """
+    now = et_now()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        return False
+    if now.date() > d:
+        return True          # a replay of a past session
+    if now.date() < d:
+        return False
+    return now.hour >= 16
+
+
 def tv_scan(filters, sort, rng, cols=None, retries=3):
     """One TradingView scanner POST. Returns a list of row dicts."""
     body = {"markets": ["america"], "symbols": {"query": {"types": []}},
@@ -604,6 +626,7 @@ def run_settled(date_str, bridge, out_dir, dry_run=False):
 def run(date_str, bridge, out_dir, dry_run=False):
     started = et_now()
     report = {"date": date_str, "started_et": started.isoformat(timespec="seconds")}
+    report["candle_settled"] = session_is_settled(date_str)
 
     today_et = started.strftime("%Y-%m-%d")
     if date_str != today_et:
@@ -928,9 +951,12 @@ def write_md(path, results, report, bridge):
         A("")
     A("## TL;DR")
     A("")
+    settled = bool(report.get("candle_settled"))
+    entry_note = ("entry = the settled 16:00 ET close (the screen was read after the bell)."
+                  if settled else "entry 15:58–16:00 ET.")
     A(f"- **Mechanical passers: {report.get('passing', 0)}** of "
       f"{report.get('universe_rows', 0)} names scanned · mode **{report.get('mode')}** · "
-      f"signal session **{a}** · entry 15:58–16:00 ET.")
+      f"signal session **{a}** · {entry_note}")
     A(f"- **Ideas promoted: 0** {PROMOTED_COUNT_MARK} — _pending the discretionary review; set "
       f"this count to the number of ✅ IDEA blocks below._")
     A(f"- {tldr_caveat(results)}")
@@ -1011,15 +1037,30 @@ def write_md(path, results, report, bridge):
     A(f"- **The signal is TODAY's live candle, not yesterday's.** The routine proves this at "
       f"runtime (alignment above); it no longer resolves the screen date as \"shibui's latest "
       f"settled date\", which was a one-session lag.")
-    A("- **The candle is read at ~15:55 ET, five minutes before the close.** The 16:00 print can "
-      "change the close, the DCR and the stop. Treat the entry as the 16:00 close.")
-    A("- **`v ≥ 290,000` uses a partial day's volume** (as of ~15:55 ET). A name that clears 290k "
-      "only after the close was wrongly excluded.")
+    if settled:
+        A("- **The candle was read AFTER the 16:00 ET bell — these are the settled "
+          f"{a} numbers.** TradingView's daily bar finalizes late (measured 2026-11-10: the "
+          "16:02 ET and 16:04 ET reads still carried a PRE-AUCTION print; only the 16:23 ET read "
+          "carried the official close), so a post-close read must be cross-checked against the "
+          "`market-recap get_quotes` close (`as_of` 16:00:00 ET) before it is published. If the "
+          "two disagree by more than ~0.3%, the bar is not settled yet — re-read.")
+        A("- **`v ≥ 290,000` is judged on the FULL day's volume** — the read is post-close, so no "
+          "name was excluded for clearing 290k only in the last minutes.")
+    else:
+        A("- **The candle is read at ~15:55 ET, five minutes before the close.** The 16:00 print "
+          "can change the close, the DCR and the stop. Treat the entry as the 16:00 close.")
+        A("- **`v ≥ 290,000` uses a partial day's volume** (as of ~15:55 ET). A name that clears "
+          "290k only after the close was wrongly excluded.")
     A("- **ADR(20) is computed over the 20 SETTLED sessions before today**, not over a window that "
       "includes the incomplete live bar.")
-    A("- **`vol_vs_30d_avg_pct` compares a partial day's volume with a full-day 30-session mean**, "
-      "so it reads slightly low at 15:55 ET. `capitulation = CAPITULATION` at ≥ 150% of that "
-      "mean, `LOW_VOLUME` below it.")
+    if settled:
+        A("- **`vol_vs_30d_avg_pct` compares the FULL day's volume with the full-day 30-session "
+          "mean** (both settled), so no partial-day discount applies. `capitulation = "
+          "CAPITULATION` at ≥ 150% of that mean, `LOW_VOLUME` below it.")
+    else:
+        A("- **`vol_vs_30d_avg_pct` compares a partial day's volume with a full-day 30-session "
+          "mean**, so it reads slightly low at 15:55 ET. `capitulation = CAPITULATION` at ≥ 150% "
+          "of that mean, `LOW_VOLUME` below it.")
     A("- **The market-cap gate uses TradingView's live `market_cap_basic`**, not shibui's "
       "`valuation` table, which stores stale rows per symbol and can admit a phantom name if the "
       "cap filter is applied before the latest-row pick.")
@@ -1039,9 +1080,19 @@ def write_md(path, results, report, bridge):
     A("|---|---|---|")
     A(f"| TradingView public scanner | live session OHLC for the universe | ok "
       f"({report.get('universe_rows', 0)} names) |")
-    A(f"| shibui-finance (bridge) | settled history, latest close | ok "
-      f"(latest session {report.get('shibui_latest_sessions', ['n/a'])[:1]}) |")
+    hist_src = report.get("history_source", "shibui")
+    if hist_src == "shibui":
+        A(f"| shibui-finance (bridge) | settled history, latest close | ok "
+          f"(latest session {report.get('shibui_latest_sessions', ['n/a'])[:1]}) |")
+    else:
+        A(f"| shibui-finance (bridge) | settled history, latest close | **degraded** — the bridge "
+          f"call failed on this run, so settled history came from the documented **{hist_src}** "
+          f"fallback; the day-alignment check still resolved against those closes |")
     A("| market-recap (bridge) | market state / index backdrop | see caveats |")
+    if hist_src != "shibui":
+        A("")
+        A(f"degraded_sources: 1 (shibui-finance settled history — the documented {hist_src} "
+          f"fallback was used)")
     A("")
     A(f"_Generated by cron #4 `reversal-bullish-3:55` · tool `tools/reversal_bullish.py` · "
       f"session {a} · contract `{CONTRACT_VERSION}` · `_source=mcp`_")

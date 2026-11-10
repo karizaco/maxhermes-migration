@@ -985,6 +985,47 @@ Two caveats the artifact must state: `v >= 290000` is judged on a **partial day'
 ADR(20) is computed over the 20 **settled** sessions before today, not over a window that
 includes the incomplete live bar.
 
+#### THE DAILY BAR FINALIZES LATE — a post-close read is not automatically a settled read
+
+**Measured 2026-11-10 (the 15:55 ET fire):** TradingView's daily bar does NOT carry the 16:00
+close for the first ~20 minutes after the bell. The same session was read four times:
+
+| read (ET) | what the bar held | outcome |
+|---|---|---|
+| 15:56 | partial session bar | 5 passers, EAT with a **0.00% stop line** |
+| 16:02 | pre-auction print (TV close still moving) | 4 passers, EAT with a 0.00% stop |
+| 16:04 | pre-auction print | 5 passers, EAT with a 0.00% stop |
+| **16:23** | **the official 16:00 close** | **4 passers — EAT and EFX both fail the settled close** |
+
+So "re-run the screen after the close" is **not** enough. A read at 16:02–16:10 ET can still be
+a pre-auction print, and the difference is not cosmetic: on 2026-11-10 the pre-auction print
+promoted EAT with a stop of exactly the entry price (a 0.00% risk line is not a stop) and kept
+EFX on the list; both fail the settled close (EFX's body ratio 0.373 > the 0.30 gate, EAT's DCR
+0.51 < 0.60). The published entry must be the price the trader can actually transact at, i.e.
+the official close.
+
+**The rule for a post-close read:**
+
+1. **Read the bar at ~16:20–16:25 ET, not at 16:02.** The script now reports
+   `candle_settled: true|false` in its JSON report, and it writes post-close-accurate method
+   bullets only when the read is post-bell. A `candle_settled: true` read still needs step 2.
+2. **Cross-check the close against `market-recap get_quotes`** (Yahoo, `as_of` 16:00:00 ET,
+   `market_state: post`). If the scanner's close and the quote's close differ by **more than
+   ~0.3%**, the bar is not settled — re-read later. On 2026-11-10 the settled closes were DOCU
+   77.66, TRI 108.41, SYK 324.29 (Yahoo 324.155) — a 13-cent gap on SYK is fine; EFX's 186.94
+   vs Yahoo's 188.30 (0.75%) was NOT.
+3. **Never publish a pre-auction print.** If the read cannot be repeated after ~16:20 ET, say
+   so in the artifact and in the reply rather than publishing a close nobody can trade at.
+4. **Re-derive the candidate set from the settled read, not from the earlier one.** The gate
+   matrix, the stop class and the promoted set all change with the final print: the settled
+   2026-11-10 read dropped EAT and EFX and changed DOCU's stop from a structural bar-low stop to
+   a **capped** stop at 75.72 sitting 0.21% ABOVE its 75.56 bar low.
+
+**What the settled read changes about the caveats.** After the bell the volume caveats invert:
+`v >= 290000` and `vol_vs_30d_avg_pct` are then FULL-day numbers, so the artifact must NOT carry
+the "partial day's volume" wording — a false method bullet is worse than a stale one. The
+script now emits the correct variant automatically (`candle_settled`).
+
 On a **delayed replay** (the routine rebuilt for a past scheduled date) the signal bar is that
 session's settled close and the entry was that session's close. Report the two failure modes
 separately there, as before: a close a few cents below a doji body stop is a *noise breach*
