@@ -341,6 +341,9 @@ to prove it resolves** (venue + local currency + name). `us_peer` is the US-list
 | Vale | `VALE3.SA` | B3 (Brazil) | VALE (NYSE) | ADR (US-listed) |
 | Petrobras | `PETR4.SA` | B3 (Brazil) | PBR (NYSE) | ADR (US-listed) |
 | Constellation Software | `CSU.TO` | Toronto Stock Exchange | CNSWF (OTC) | ADR (OTC) |
+| Infineon Technologies | `IFX.DE` | XETRA | IFNNY (OTC) | ADR (OTC) |
+| SoftBank Group | `9984.T` | Tokyo Stock Exchange | SFTBY (OTC) | ADR (OTC) |
+| Sea Limited | `SE.SI` | Singapore Exchange | SE (NYSE ADR) | ADR (US-listed) |
 
 ### ADR-ticker traps — every one of these cost a wrong row
 
@@ -588,6 +591,57 @@ band_low_usd: 40000000000
   `1793959200` works, `1793959199` returns HTTP 400). A date-column sweep is the cheapest
   completeness check for a roster: filter every US name whose `earnings_release_next_date` falls on
   the fire date and compare that set with the calendar-derived roster.
+
+## Traps measured on the 2026-11-10 fire — re-verify, but they are not opinions
+
+- **The TradingView scanner's `range` CAP silently truncates a sweep, and the truncation HIDES the
+  biggest names.** Measured 2026-11-10: a `range: [0, 5000]` scan of the US universe returned exactly
+  5000 rows and never said it was truncated; the $40B+ names it missed were **Infineon ($72B),
+  SoftBank Group ($136B) and Petrobras ($112B)** — i.e. the sweep that was supposed to prove the
+  roster complete would have missed two of the four non-US issuers published that day. **Always
+  cross-check the sweep with a market-cap-filtered second call** (`market_cap_basic greater 20e9`
+  plus the earnings-date window, `range [0, 300]`) and treat the two as a pair: the filtered call is
+  the completeness check, the wide call is only the name list.
+- **`total_count` is `null` on this scanner** — there is no "did I get everything" signal. The
+  filtered call is the only guard.
+- **The EarningsWhispers calendar's two lists are delimited by the SECTION HEADINGS, and
+  `cal-section` after the AMC heading SKIPS the AMC list.** Measured 2026-11-10: searching for the
+  next `class="cal-section"` after `Reporting After the Close` lands on the section AFTER the AMC
+  list, so the AMC roster parses as EMPTY (0 rows) while the page plainly has 89. **Slice the HTML
+  from `Reporting Before the Open` to `Reporting After the Close` for BMO and from the AMC heading
+  to the END for AMC**, and assert both counts against the page's own headline ("58 before the open
+  and 89 after the close").
+- **The `ewc` cookie token is NOT in the calendar page.** The token lives in the wall's HTML on a
+  COMPANY page. The static token documented above works for company pages without extracting
+  anything (`s="d6tQpU0uwhHW_cBwCjsT5Aey.EEA6F080F89DC140.9322836971"`, reversed, sent as `ewc`) —
+  verified 2026-11-10 on TDG, SE and PBR (161 KB pages, not the 2 KB cookie wall). Grep the calendar
+  page for the token and you will not find it; do not treat that as a failure.
+- **An issuer can publish BEFORE the ET day it belongs to, and a company page may have already
+  MOVED ON to the next quarter.** Measured 2026-11-10: EarningsWhispers' IFNNY page read "expected
+  to report earnings on November 18, 2026" — Infineon had already published its FY2026 Q4 on
+  10 November (its own press release, 07:30 CET), so the aggregator had rolled forward. **A company
+  page showing a LATER date than the fire date is evidence the issuer ALREADY reported**, not a
+  wrong date; confirm against the issuer's IR page before publishing either way.
+- **The implied-move expiry can be later than the report date, and that is not a bug.** Measured
+  2026-11-10: TDG has NO expiry before 2026-11-20 (its listed expiries were 261120, 261218, 270219,
+  270521, 271217), so for a 10 November event the first expiry that straddles it is 20 November.
+  The column definition ("ATM straddle cost at the first expiry that straddles the event") governs,
+  not "the expiry on the report date". The Cboe chain's option symbol lives under `data.options[].option`
+  (NOT `option_symbol`), the key is `option`, and the expiry is `symbol[3:9]` with the strike in
+  `symbol[-8:]` and the side in `symbol[-9]`.
+- **Yahoo does not quote every primary listing, and that is not a reason to drop the issuer.** Sea
+  Limited's SGX line (`SE.SI`) returns no quote from Yahoo's `v7/finance/quote` (it comes back
+  `type=NONE, marketCap 0`) and `stockanalysis.com` is behind a Cloudflare challenge. Sea's primary
+  listing was confirmed instead from Wikipedia (SGX ordinary shares primary, NYSE ADS secondary) plus
+  the issuer's own 27 October 2026 release. Publish the primary listing with the standard exchange
+  suffix and say in the notes that the quote source has no coverage for that line — do not publish a
+  US ADR as the headline and do not drop the issuer.
+- **Yahoo's quote page prints "S&P 500" as a BENCHMARK LABEL, not as a membership statement.**
+  Measured 2026-11-10: the Yahoo quote pages for HEI and WCN both show "S&P 500 (^GSPC)" next to
+  the price, and neither company is a constituent. Membership must come from the live Wikipedia
+  constituent list (or an index-membership database) — `HEI` and `WCN` are both OUT of the index
+  (the latter confirmed twice, by the Wikipedia list and by an index-membership database dated
+  23 October 2026) and both belong in the band table.
 
 ## Out of scope
 
