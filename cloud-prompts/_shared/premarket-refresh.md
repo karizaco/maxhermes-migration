@@ -134,9 +134,26 @@ open and the reader needs the decision first.
   `LIABILITY-RESOLVED`, `ASSET-VALUE` or `EARNINGS-RAISE`, carrying the `+ANCHORED` suffix.
   Those are the classes with measured evidence: on 2026-11-04 every name whose gap ran carried a
   hard number in its catalyst (a $37.00 offer, a $0.70 special dividend, a $7.35B settlement,
-  $409.5M of loans resolved) and every name whose gap faded did not. If nothing carries an
-  anchored catalyst, say so honestly — "no name carries an anchored catalyst this morning — the
-  setup is cash" — rather than promoting a name that does not.
+  $409.5M of loans resolved) and every name whose gap faded did not.
+- **The setup slot has a LADDER — take the first rung that is satisfiable.** The gate's purpose is
+  to promote a gap **anchored to a hard number** and never an unanchored one; the class list is
+  the set of classes that have carried such an anchor, not a second gate.
+  1. **Anchored + one of the five classes** → name it and print the class.
+  2. **Anchored + any other class + the gap is still HOLDING (Hold % ≥ 80)** → name it, print
+     the class, and state the deviation in one clause of line 1 and once in Source health.
+     Measured 2026-11-09: four of the 25 headline names carried an anchor (DCTH, IMVT —
+     `EARNINGS-RECONFIRM`; ZURA, IBRX — `EARNINGS-CUT`) and **none** was in the five classes, so
+     rung 1 was empty. DCTH took the slot because it was the only anchored name whose gap was
+     still holding (Hold 96%).
+  3. **Nothing anchored at all** → say so honestly — "no name carries an anchored catalyst this
+     morning — the setup is cash" — rather than promoting a name that does not.
+  **Never promote an unanchored name to fill the slot, and never publish "no anchored catalyst"
+  when an anchored name exists.** Both errors are live: the first promotes a narrative gap, the
+  second is a false statement about the tape.
+  **A gate may not be tightened without a second session.** Measured 2026-11-09: the five-class
+  list was written from ONE session's evidence (2026-11-04). A name class may be ADDED to the
+  eligible set when a second session shows an anchored gap of that class running — but a class
+  may not be REMOVED, and no class may be invented at run time to fill the slot.
 - Line 1's trigger level is the name's **PM high** (the level that must break for the gap to
   extend) and its invalidation is the name's prior close, written with its side.
 - The pm %ADV band is NOT part of this gate. It is a descriptor of the print, not a predictor —
@@ -209,8 +226,22 @@ URLs) and classifies it. One vocabulary, applied the same way every day:
 | `EARNINGS-RAISE` | a beat AND a guidance raise |
 | `EARNINGS-RECONFIRM` | a beat with guidance unchanged |
 | `EARNINGS-CUT` | a miss, a loss, or a guidance cut |
+| `CORPORATE-EVENT` | a company-specific event that is not cash, liability or a reported result — a governance, legal or regulatory shock |
 | `SECTOR-BETA` | a group move — policy, macro or a sector theme; no company-specific news |
 | `NONE` | no sourced catalyst for this name |
+
+**Scope of the `EARNINGS-*` classes.** They describe the DIRECTION of a company-reported
+RESULT, not the instrument that produced it: an earnings print, a clinical readout, a regulatory
+decision or a trial outcome are all "a beat" or "a miss". Measured 2026-11-09: IMVT's fiscal-Q2
+release met its primary endpoint (ACR20 92.5% vs 75.6% placebo, p=0.0139, cash $722.3M) — a beat
+with no guidance change, so `EARNINGS-RECONFIRM`; ZURA's Phase 2 missed its primary endpoint and
+the company discontinued the indication — a miss, so `EARNINGS-CUT`. Do **not** stretch
+`ASSET-VALUE` to cover a readout: that class means previously-impaired value was crystallised.
+
+**`CORPORATE-EVENT` exists because the tape produces them.** Measured 2026-11-09: NVDA's board
+opened an independent investigation into its CEO — a sourced catalyst with `has_news = yes` that
+no cash, liability or reported-result class describes. A run that has to bend a class to fit it
+will bend a different one tomorrow; this is the class for that case.
 
 - **`ANCHORED` suffix.** Append `+ANCHORED` when the catalyst carries a **hard number** — a
   price, a per-share amount, a settlement figure, a balance-sheet total. Measured 2026-11-04:
@@ -218,9 +249,13 @@ URLs) and classifies it. One vocabulary, applied the same way every day:
   $409.5M of loans resolved) and every name whose gap faded did not (revenue doubled, "path to
   profitability", a policy hope). A narrative gap has to be built entirely by trading, and it is
   fragile.
+- **The vocabulary is CLOSED.** A run may not invent a class, or stretch one, to make a name fit.
+  If the catalyst genuinely has no class, use `unclassified` and say so once in Source health.
 - If the morning brief is missing, every Driver is `unclassified` and Source health says so once.
-- If a name is in no theme cluster and `has_news = no` in the morning CSV, its Driver is `NONE`.
-  **That is a finding, not a blank**: a gap with no sourced catalyst is the profile that faded.
+- **`has_news = no` in the morning CSV ⇒ `NONE`, whatever the cluster.** A name can sit in a
+  cluster's TABLE without having a catalyst in that cluster's PROSE (2026-11-09: FTH, NKTX and
+  ABEO were in the biotech table with no per-name catalyst). **That is a finding, not a blank**:
+  a gap with no sourced catalyst is the profile that faded.
 
 
 ## The companion CSV — the screen, machine-readable
@@ -245,6 +280,15 @@ ticker,name,premarket_close,premarket_change_pct,premarket_volume,avg_volume_30d
 - **`live_*` are the LIVE regular session at the pull, not pre-market.** They are in the CSV
   so a downstream routine can say how a gap actually behaved after the open. They are never
   pre-market numbers, and the column names say so.
+- **At the normal 09:20 ET pull the session has NOT opened, so `live_*` are BLANK.** The regular
+  session opens at 09:30; a 09:20 pull has no live regular-session price, change or volume to
+  publish. **Write them empty — never 0** (a zero is a number, and a downstream routine that
+  divides by it will divide by a lie). Say it once in Source health. The columns become
+  meaningful only on a post-open pull (the late-pull branch above), where they carry the live
+  values and the front matter says `market_open_at_pull: true`.
+- **`premarket_time` is NOT published per row.** It is the pre-market session START (04:00 ET),
+  not the last trade time, so a row stamped with it carries a 5-hour-old "snapshot". Publish the
+  pull's own clock (`snapshot_et`) instead.
 - **`screen_complete`** is `true` when `len(rows) == totalCount` held for BOTH screens, `false`
   when the ±3% band exceeded the row cap. On `false` the markdown's counts are FLOORS, not
   exact counts, and the markdown must say so.
@@ -277,11 +321,101 @@ The morning brief's CSV is the reference: same rows, same screen, one pull earli
 screen and the CSV disagree on a name by more than 0.2 percentage points, the market moved —
 that is the point of this file.
 
+## The pull is a CONTRACT, not a suggestion
+
+**Pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on BOTH screens.** The scanner
+returns `totalCount` next to `data`, so the assert costs nothing. The ±3% band is routinely
+larger than one page, and the scanner honours a range SILENTLY — HTTP 200, no warning, no
+truncation flag. Measured 2026-11-05: `range:[0,400]` returned 400 of 547 decliners and the
+147 omitted rows were the least negative ones, so the headline table looked complete while
+`down_3pct` was published as a count when it was a FLOOR.
+
+**If the assert fails**, the band is larger than the cap: publish the rows you have, set
+`screen_complete: false` in the front matter and in every CSV row, and say in Source health that
+the published counts are FLOORS, not exact counts. Never publish a truncated count as if it were
+the whole band. A count that is known to be a floor is fine; a count that LOOKS exact and is not
+is the defect.
+
+**Gate A and Gate B are decided on a RECONCILED market cap** (the brief skill's Step 2b). The
+scener's `market_cap_basic` is `close × shares outstanding`, and it does not refresh the share
+count for corporate actions: measured 2026-11-09 it reported **$143,016,256** for **NWGL** after a
+one-for-80 ADS reverse split and an ADS ratio change, pairing the POST-split price with the
+PRE-split share count — **87× too high**; the real cap sat in the $0.5M–$1.9M range, so a
+sub-$2M shell topped the headline gap table over Gate B. The error runs BOTH ways (a count that
+predates a later issuance makes the cap too LOW). **Reconcile the cap for every name whose
+scanner cap is near a gate boundary ($100M for Gate B, $200M for Gate A) before it tops a
+headline table**, and publish the reconciled figure.
+
+**`premarket_time` is the pre-market session START (04:00 ET), not the last trade time.** It is
+unusable as a per-row snapshot stamp. **Publish the pull's own clock** as `snapshot_et` and on
+every row.
+
+---
+
+## The artifact skeleton — PINNED
+
+Two days of the current spec (2026-11-09, 2026-11-10) published **different skeletons**: 7
+front-matter keys versus 11, unnumbered sections versus `## 1.` … `## 5.`, and the gap-quality
+block before the top-of-book versus after it. A reader and a checker cannot both work with a
+skeleton that moves. **Publish exactly this, in this order:**
+
+```
+---
+date: <YYYY-MM-DD>
+cron: 26-agentic-pre-market-brief-refresh
+fire_time_et: <YYYY-MM-DD HH:MM>
+snapshot_et: <HH:MM>
+source: TradingView america scanner
+status: ok
+changes_since_morning: <n>
+up_3pct: <n>
+down_3pct: <n>
+screen_complete: true
+---
+
+## Bottom line
+## What to watch at the open
+## 1. Refreshed top-of-book
+### Top 15 gainers
+### Top 10 decliners
+### Thin tape
+## 2. Gap quality — can this gap hold?
+## 3. What changed since the morning brief
+## 4. Verdict
+## 5. Source health
+```
+
+- `cron:` is the literal string `26-agentic-pre-market-brief-refresh`.
+- **`changes_since_morning`** = the number of names present in BOTH the live screen and the
+  morning CSV whose gap moved by **more than 0.2 percentage points**. Define it that way in the
+  front matter so two runs mean the same thing and the auditor can check it.
+- `up_3pct` / `down_3pct` = the band counts **from this pull**; `screen_complete` = `true` when
+  the assert held on both screens.
+- `## 5. Source health` is where every caveat lives. A caveat that lives only in prose above it
+  is a caveat the reader has to find.
+
+---
+
 ## Rules
 
 - **One pull.** Pull the screen ONCE and use it for every table and every number, including the
   prose. The morning brief shipped an artifact that contradicted itself because two pulls fed
   two sections; do not repeat that.
+- **The fade and entrant counts are computed on the BAND, not on the CSV.** The morning brief's
+  CSV carries its band PLUS the thin-tape names PLUS individually fetched names — 931 rows on
+  2026-11-09 against a 598-name band. Comparing "morning CSV rows" against the live band rows
+  counts names that were never in the band: the raw base gave **394** fades on 2026-11-09, the
+  true figure is **90**. **Filter the morning CSV to `abs(gap_pct) >= 3` first.**
+- **A cross-pull count inherits the baseline's completeness.** The morning brief's published band
+  counts are FLOORS unless its front matter carries `screen_complete: true` (2026-11-05 and
+  2026-11-06 were pulled with the `range:[0,400]` cap: the 2026-11-06 brief published **403
+  gainers** while the band actually held **650**). When the baseline is a floor, the fade and
+  entrant counts are floors too, and the comparison base must be named in Source health.
+- **Thin tape is published IN FULL.** The Gate-A-passing, Gate-B-failing names are published, all
+  of them, with the count of each side. On 2026-11-06 the block claimed "22 gainers and 22
+  decliners qualify" and showed **18 rows**; on 2026-11-09 it claimed 48 and showed 20. A
+  truncated block with an unstated truncation reads as a complete one. If you must truncate, the
+  line has to say "showing N of M".
 - **Never invent a number.** Every price and percentage comes from the screen or from the
   morning CSV.
 - **No catalyst SEARCH.** This file does not look for news and does not write a reason. It
@@ -290,8 +424,25 @@ that is the point of this file.
 - **The Driver is never a guess.** If the morning brief does not source a catalyst for a name,
   the Driver is `NONE` (or `unclassified` when the brief itself is missing) — never inferred
   from the price action. A gap that rose 40% because it rose 40% is not a driver.
-- **Anchors are counted, not adjectives.** `+ANCHORED` requires a hard number in the sourced
-  catalyst. "A record quarter" is not an anchor; "$0.70 special dividend" is.
+- **The Driver's SOURCE is the morning CSV, not prose you re-mine.** The morning brief already
+  publishes, per name: `setup_theme` (the theme cluster the name belongs to), `has_news` (whether
+  a catalyst was sourced for it) and `setup_published`. **Read them:**
+
+  | Morning CSV says | Driver |
+  |---|---|
+  | `has_news = no` | `NONE` — no sourced catalyst. This is a finding, not a blank. |
+  | `has_news = yes` + a `setup_theme` cluster | classify that cluster's catalyst with the fixed vocabulary below |
+  | `has_news = yes` + no `setup_theme` | classify the name's own catalyst from the brief's §9 earnings table |
+  | the name is in no cluster and has no row in the morning CSV | `NONE` (it is new to the screen since the brief) |
+
+  **A name in a cluster's TABLE is not the same as a name with a catalyst in that cluster's
+  PROSE.** On 2026-11-09 FTH, NKTX and ABEO sat in the biotech cluster's table with
+  `has_news = no` and no per-name catalyst in its narrative — they are `NONE`. Reading the
+  clusters by eye is how a run ends up publishing a class it invented; reading two columns is
+  how it ends up reproducible.
+- **The `+ANCHORED` suffix is decided by the catalyst, not by the name.** See the vocabulary
+  below for the test; the rule that matters here is that a run may not invent a new class to
+  make a name fit.
 - **If no name carries an anchored catalyst, publish that.** An empty bottom line is a
   legitimate result on a bad tape. Do not promote an unanchored name to fill the slot.
 - **If the morning brief is missing**, say so in one line and publish the refreshed screen
@@ -311,6 +462,36 @@ that is the point of this file.
   quota-killed and may still be resumed" was right.
 - **A thin tape is a valid result.** If the screen returns fewer names than expected, publish
   what it has and say so.
+- **A LATE PULL — the platform stalled and the pull landed after the 09:30 open.** This has
+  happened (2026-11-05: a 49-minute stall put the pull at 10:10 ET with the market open). The
+  columns then mean something different, and the file has to say so:
+  - the `premarket_*` columns are the **completed** pre-market session — the final prints before
+    the bell, which is later than intended but not less complete;
+  - the regular-session columns (`close`, `change`, `volume`) are **live**, and are published in
+    their own clearly labelled block, never mixed into a pre-market table and never presented as
+    "yesterday's tape";
+  - the front matter carries `pull_late: true` and `market_open_at_pull: true`, and the intro
+    states the stall, the pull time and the open time;
+  - **Rule 1 cannot be applied** (the open has happened); publish the pre-market prints and the
+    live session separately.
+- **When the upstream brief lands AFTER this file — AMEND, do not rewrite.** The 08:30 fire can
+  be quota-killed and then resumed in place, hours later (2026-11-05: it was resumed and the
+  brief published the next morning at 05:52 ET). This file is then the **baseline** the brief
+  was rebuilt against, and it must say so. **Add a dated amendment block at the TOP of the
+  file**, under the title, in this form — never rewrite the original numbers:
+
+  ```
+  > **UPDATE — <YYYY-MM-DD HH:MM ET>: the baseline resolved.** Cron #26's 08:30 ET fire was
+  > <quota-killed / stalled>, not dead: the platform resumed that conversation IN PLACE on
+  > <date> and the morning brief was published at <time> (<commit>), rebuilt for the <date>
+  > fire and citing THIS artifact as its screen source. The note below describes the state as
+  > it stood at this file's pull (<pull time>).
+  ```
+
+  The same convention applies to any later correction: the original numbers stay, and the
+  correction is dated and attributed.
+
+---
 
 ## Output and push
 

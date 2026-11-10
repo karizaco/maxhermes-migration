@@ -38,6 +38,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-cron23-post-market-brief.md`](IMPROVEMENTS-cron23-post-market-brief.md) | Improvements — cron #23 (agentic-post-market-brief): the brief is named POST-MARKET, so tomorrow's setup is the product — Four reader-hostile defects in the post-market brief, fixed in the routine's **skill spec** |
 | [`IMPROVEMENTS-cron25-ntrt-gap-brief.md`](IMPROVEMENTS-cron25-ntrt-gap-brief.md) | Improvements — cron #25 ntrt-gap-brief-daily — Reviewed 2026-11-03, after the routine's own 09:00 ET fire on 2026-11-03; section 13 added |
 | [`IMPROVEMENTS-cron26-agentic-pre-market-brief.md`](IMPROVEMENTS-cron26-agentic-pre-market-brief.md) | Improvements — cron #26 agentic-pre-market-brief — Reviewed 2026-11-03, after the routine's own 08:30 ET fire on 2026-11-03. Evidence base: the |
+| [`IMPROVEMENTS-cron26b-agentic-pre-market-brief-refresh.md`](IMPROVEMENTS-cron26b-agentic-pre-market-brief-refresh.md) | IMPROVEMENTS — cron #26b, the 09:20 ET pre-market refresh — **Date:** 2026-11-10 · **Routine:** `26b-agentic-pre-market-brief-refresh-0920.md` · |
 | [`IMPROVEMENTS-cron92-preopen-capture.md`](IMPROVEMENTS-cron92-preopen-capture.md) | Improvements — 2026-11-06: cron #92's pre-open capture gets a recipe, a digest, and an audit trail — Three defects in the pre-open catalyst capture (`cron #92`, checkpoints 08:30 and 09:50 ET), |
 
 ## Convention
