@@ -239,6 +239,26 @@ def load_feed(date_str):
     return out
 
 
+def _to_et_iso(v):
+    """A UTC article stamp as an ET-aware ISO string.
+
+    The VALUE changes (it is now the news time, not the capture time); the FORMAT
+    does not, so this routine's timestamp convention stays exactly as it was.
+    """
+    if not v:
+        return None
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        raw = str(v).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("America/New_York")).isoformat(timespec="seconds")
+    except Exception:
+        return str(v)
+
+
 def build(symbols, date_str, want_feed=True):
     scan = scanner_premarket(symbols) if isinstance(scanner_premarket(symbols), dict) else {}
     scan_err = scan.get("error") if isinstance(scan, dict) else None
@@ -296,7 +316,24 @@ def build(symbols, date_str, want_feed=True):
             "exchange": sc.get("exchange"),
             "catalyst": verified[-1].get("why") if verified else None,
             "catalyst_cat": verified[-1].get("_cat") if verified else None,
-            "catalyst_ts": verified[-1].get("ts") if verified else None,
+            # WHEN THE CATALYST BROKE - and never the capture clock.
+            #
+            # The tape row's `ts` is when the CAPTURE SCRIPT RAN. Publishing it as
+            # the catalyst's timestamp tells the 15:50 board that the news broke
+            # when the script ran - which is false for any catalyst older than the
+            # run, and false in the worst possible way: measured on the 2026-11-09
+            # 09:50 checkpoint, ARWR's ten-month-old press release would have been
+            # published with a 09:53:48 timestamp, and `has_catalyst_timestamp` would
+            # have said "yes".
+            #
+            # The pre-open tape now carries the article's own publication stamp as
+            # `news_date`, so use THAT. A catalyst with no resolvable date yields no
+            # timestamp at all, and this routine then researches the catalyst itself
+            # against issuer IR and EDGAR - which is the honest "we do not know when
+            # it broke" path, and exactly what `has_catalyst_timestamp` exists to
+            # express.
+            "catalyst_ts": (_to_et_iso(verified[-1].get("news_date"))
+                            or verified[-1].get("trending_ts")) if verified else None,
             "catalyst_conf": verified[-1].get("conf") if verified else None,
             "feed_records": len(verified),
         })

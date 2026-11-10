@@ -107,6 +107,10 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             "trending_score": None,
             "volume": 1234567,
             "exchange": "NASDAQ",
+            # WHEN the catalyst broke, and the article it came from. Every row
+            # carries the keys; a grounded row carries a value.
+            "news_date": "2026-11-09T11:30:00Z" if grounded else None,
+            "news_url": ("https://news.example.test/m%d" % i) if grounded else None,
         })
     for i in range(n_narrative):
         rows.append({
@@ -124,6 +128,8 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             "trending_score": 5.2,
             "volume": None,
             "exchange": None,
+            "news_date": None,
+            "news_url": None,
         })
     with open(tape, "w", encoding="utf-8") as fh:
         for r in rows:
@@ -305,13 +311,92 @@ def m_no_losers_call(repo, tape, digest):
 
 def m_no_version_marker(repo, tape, digest):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
-    mutate(p, "CAPTURE_SCRIPT_VERSION: 2026-11-09.1", "CAPTURE_SCRIPT_VERSION:")
+    mutate(p, "CAPTURE_SCRIPT_VERSION: 2026-11-10.1", "CAPTURE_SCRIPT_VERSION:")
     return True
 
 
 def m_slot_guard_removed(repo, tape, digest):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p, "ALLOWED_SLOTS = (\"0830\", \"0920\", \"0950\")", "ALLOWED_SLOTS = ()")
+    return True
+
+
+def m_stale_news_date(tape, digest, repo):
+    """A catalyst dated ten months before the tape - the ARWR defect.
+
+    Measured 2026-11-09 09:50: ARWR (-16.59%) carried Arrowhead's 2026-01-06 press
+    release ("stock surging 17.81% to a new 52-week high") at `conf: high`. A
+    catalyst that cannot be today's news is not a cause, and the tape must not be
+    able to carry one.
+    """
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        if r.get("src") == "pipeworx":
+            r["news_date"] = "2026-01-06T15:32:23Z"
+            r["news_url"] = "https://news.example.test/stale"
+            break
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_undated_confident(tape, digest, repo):
+    """A grounded catalyst published as high confidence with no date."""
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        if r.get("src") == "pipeworx":
+            r["news_date"] = None
+            r["news_url"] = None
+            break
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_missing_news_date_key(tape, digest, repo):
+    """A row with no news_date field at all."""
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    rows[0].pop("news_date", None)
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_board_shows_capture_clock(digest, tape, repo):
+    """The board's 'When it broke' shows the CAPTURE clock instead of the news date.
+
+    This is the exact defect the ARWR row exposed: the column fell back to `ts`,
+    which is when the script ran, and so told a reader that a ten-month-old press
+    release broke forty minutes ago.
+    """
+    mutate(digest, "06:30:00", "08:47:31", replace_all=True)
+    return True
+
+
+def m_no_staleness_gate(repo, tape, digest):
+    """The capture script no longer dates its catalysts."""
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    # The gate is a CALL to resolve_news_date(); the checker also requires the tape
+    # to carry the field, so the quoted key is what has to disappear.
+    mutate(p, '"news_date": None,', '"news_dateX": None,')
+    return True
+
+
+def m_stale_window_drift(repo, tape, digest):
+    """The script's staleness window no longer matches the checker's."""
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "CATALYST_MAX_AGE_DAYS = 4", "CATALYST_MAX_AGE_DAYS = 400")
+    return True
+
+
+def m_board_ignores_news_date(repo, tape, digest):
+    """The renderer stops reading news_date for its break-time column."""
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py")
+    mutate(p, 'broke = r.get("news_date") or r.get("trending_ts") or ""',
+           'broke = r.get("trending_ts") or ""')
     return True
 
 
@@ -337,6 +422,13 @@ CASES = [
     ("a capture script with no losers call is caught", False, m_no_losers_call),
     ("a capture script with no version marker is caught", False, m_no_version_marker),
     ("a capture script with no slot guard is caught", False, m_slot_guard_removed),
+    ("a catalyst dated outside the window is caught", False, m_stale_news_date),
+    ("an undated catalyst published as high confidence is caught", False, m_undated_confident),
+    ("a row with no news_date field is caught", False, m_missing_news_date_key),
+    ("a board that shows the capture clock as the break time is caught", False, m_board_shows_capture_clock),
+    ("a capture script with no staleness gate is caught", False, m_no_staleness_gate),
+    ("a capture script whose staleness window drifted from the checker's is caught", False, m_stale_window_drift),
+    ("a renderer that ignores news_date is caught", False, m_board_ignores_news_date),
 ]
 
 

@@ -33,7 +33,9 @@ for U in \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_capture.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_capture.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-09' "$S.tmp" 2>/dev/null; then
+  # 2026-11-10 is the version that DATES every catalyst and gates it on age. An
+  # older copy still accepts a ten-month-old press release as this morning's cause.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-10' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -113,14 +115,15 @@ sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.jsonl --branc
 
 ## WHAT THE SCRIPT DOES (for the reply, not for reimplementation)
 
-Four Pipeworx gateway calls, each with one job:
+Five Pipeworx gateway calls, each with one job:
 
 | Call | Pack | Job |
 |---|---|---|
 | `trending_symbols` | `stocktwits` | candidates + a natural-language reason + a `summary_at` timestamp for each. Live retail/WSB chatter — the X signal. |
 | `top_movers` (gainers) | `market-recap` | **ground truth**: price, %chg, volume. Prices always come from here. |
 | `top_movers` (losers) | `market-recap` | the same ground truth for the other direction. |
-| `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence, source and confidence, for movers the first call did not cover. |
+| `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence and confidence, for movers the first call did not cover. It does **not** say WHEN the news broke. |
+| `polygon_io_news` | `polygon-io` | the article feed, straight from the provider: `published_utc`, `article_url`, title and description. This is where the catalyst gets its DATE. |
 
 **Both directions are mandatory.** The gainers and losers halves are DISJOINT (a name cannot be
 both a top gainer and a top loser), so merging them can never put two prices on one record.
@@ -131,6 +134,48 @@ spent on the biggest movers by |%|, so a decliner competes with a gainer for its
 **Prices are never taken from the narrative calls.** The script also drops a grounded answer
 that merely restates the price move, and drops one whose source was a filing index rather than
 news — a name with no findable catalyst is left with no catalyst, which is the honest result.
+
+## THE CATALYST IS DATED, AND AGE-CHECKED
+
+A catalyst without a date is a claim with nothing behind it. Measured on the 2026-11-09 09:50
+checkpoint, **ARWR (-16.59%)** carried Arrowhead's **2026-01-06** press release — *"announced
+significant positive interim trial results … with stock surging 17.81% to a new 52-week
+high"*, a story about the opposite move from ten months earlier — at `conf: high`, and the
+board printed `09:53:48` in its **When it broke** column, because that column fell back to the
+CAPTURE clock. The board therefore told a trader, in the one column that exists to date the
+catalyst, that a January press release broke forty minutes ago.
+
+So the tape now carries, on every row:
+
+- `news_date` — the article's `published_utc` (ISO-8601), or null when no date could be
+  resolved.
+- `news_url` — the article the catalyst came from, so the claim can be checked.
+
+and the capture applies two rules:
+
+1. **STALE ⇒ DROPPED.** If the newest dated article the provider holds for that company is
+   older than `CATALYST_MAX_AGE_DAYS` (four days — a Monday board still has to reach Friday's
+   and the weekend's news), the catalyst is removed: `why` goes to null, the row reverts to
+   `src: scanner` (its price, and nothing else) and the name is counted in the run's
+   `stale_dropped=` figure. A cause that cannot be today's news is not a cause.
+2. **UNDATED ⇒ DEMOTED, NOT DROPPED.** If no date could be resolved at all, the catalyst is
+   kept but demoted to `conf: low` with `news_date: null`. An undated cause is a weaker
+   claim, not a false one.
+
+The gate reads the provider's newest article for the name rather than the article that best
+matches the answer, because the router reads the same provider: if the newest thing it holds
+for a name is old, the router cannot have found anything newer, however confident it sounds.
+
+**Cost.** Call 5 is one provider call per grounded name (the same provider the grounded
+router already calls internally), so the marginal cost is one extra article fetch per
+catalyst — a few cents per checkpoint. The router alone is not enough: it returns a
+summary with no date and no URL, which is exactly what makes the defect invisible.
+
+**The board's "When it broke" now reads `news_date`, then the trending snapshot's own stamp,
+and otherwise prints an em-dash.** It never falls back to the capture clock — that is the
+clock when the script ran, not when the news broke. `tools/check_preopen_checkpoint.py`
+enforces all of this, and the ARWR row is itself a fault-injection case in
+`tools/test_preopen_checkpoint_contract.py`.
 
 **xAI/Grok is NOT used.** The xAI chat API no longer serves live search (`search_parameters`
 returns HTTP 410, "Live search is deprecated") and the Agent Tools API that replaces it is not

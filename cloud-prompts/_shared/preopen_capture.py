@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-09.1
+CAPTURE_SCRIPT_VERSION: 2026-11-10.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -9,7 +9,7 @@ A 15:50 ET digest can see where a stock IS, not where it came from, and not the
 catalyst as it was understood at the open. This script records that: for each name
 moving pre-market or at the open, WHO moved, WHAT moved it, and WHEN the news broke.
 
-FOUR CALLS, FOUR JOBS
+FIVE CALLS, FIVE JOBS
 --------------------
   1. trending_symbols      (stocktwits pack)  -> candidates + a natural-language
       reason + a timestamp for each. This is the retail/WSB/X-chatter signal and
@@ -20,16 +20,47 @@ FOUR CALLS, FOUR JOBS
       be both a top gainer and a top loser), so merging them can never put two prices
       on one record. A gainers-only scan is not a pre-open tape: on 2026-11-09 it
       missed IRTC -30.7%, DKNG -21.3% and AXON -18.2%, the day's worst decliners.
-  4. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with evidence,
-      a source URL and a confidence score, for the movers that call 1 did not cover.
+  4. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with evidence
+      and a confidence score, for the movers that call 1 did not cover.
+  5. polygon_io_news      (polygon-io pack)   -> the DATE the catalyst broke, and the
+      article it came from. Call 4 answers "what happened" but it does not say WHEN:
+      measured 2026-11-09, it returned ARWR's January 6, 2026 obesity press release
+      for a name that fell 16.6% that morning, and stamped it `conf: high`.
 
 The grounded-call budget is spent on the biggest movers by |%|, in BOTH directions:
 ranking by change_pct instead would put every decliner behind every gainer and the
 worst pre-open loser would never get a catalyst.
 
-**Prices always come from calls 2 and 3.** Calls 1 and 4 explain; they never price.
+**Prices always come from calls 2 and 3.** Calls 1, 4 and 5 explain; they never price.
 A percentage that disagrees with the movers scan by more than 2pp is marked
 `unverified`.
+
+THE STALENESS GATE - WHY THIS FILE NOW CARRIES A DATE
+-----------------------------------------------------
+A catalyst without a date is a claim with nothing behind it. Measured on the
+2026-11-09 09:50 checkpoint, ARWR (-16.59%) carried the 2026-01-06 press release
+"Arrowhead announced significant positive interim trial results ... with stock
+surging 17.81% to a new 52-week high" - a story about the opposite move, from ten
+months earlier - and the board printed "09:53:48" in its **When it broke** column,
+because that column fell back to the CAPTURE clock. The board therefore asserted,
+in a column whose whole job is to say when the news broke, that a January press
+release broke forty minutes ago.
+
+So every catalyst is now DATED (call 5) and dated catalysts are AGE-CHECKED:
+
+  * `news_date` - the article's `published_utc`, ISO-8601, or null if no date could
+    be resolved. The board prints it; it never invents one.
+  * `news_url`  - the article the catalyst came from, so the claim is checkable.
+  * A catalyst whose newest dated evidence for that company is older than
+    CATALYST_MAX_AGE_DAYS is DROPPED: `why` goes to null, the row reverts to
+    `src: scanner` (its price, and nothing else) and the name is listed in the run's
+    stale-dropped report. A cause that cannot be today's news is not a cause.
+  * A catalyst whose date cannot be resolved is KEPT but demoted to `conf: low`
+    with `news_date: null`, and the board shows an em-dash rather than a clock. An
+    undated cause is a weaker claim, not a false one.
+
+Both rules are checked by tools/check_preopen_checkpoint.py, and the ARWR case
+itself is a fault-injection case in tools/test_preopen_checkpoint_contract.py.
 
 xAI / Grok is OPTIONAL. The xAI chat API no longer serves live search
 (`search_parameters` returns HTTP 410 "Live search is deprecated"), and the
@@ -60,6 +91,13 @@ import urllib.request
 GATEWAY = "https://gateway.pipeworx.io"
 PACK_MARKET = "market-recap"
 PACK_STOCKTWITS = "stocktwits"
+# The article feed. It is a SEPARATE pack from market-recap: the grounded router uses
+# polygon_io_news internally and returns a SUMMARY of an article with no date and no
+# URL, so the router alone cannot tell a January press release from a this-morning
+# one. Calling the provider directly is what gives every catalyst a real
+# `published_utc`. (The pack is not listed in market-recap's tools/list; it is
+# reachable through the same gateway and through discover_tools.)
+PACK_POLYGON = "polygon-io"
 CAT_PATTERNS = [
     ("acquisition", r"\bacquir|acquisition|merger|to buy|takeover|buyout|definitive agreement"),
     ("fda", r"\bfda|approval|approved|cleared by the fda|priority review|breakthrough therapy"),
@@ -81,6 +119,18 @@ DISAGREE_PP = 2.0
 # (measured 2026-11-06: NEXR +742% at $2.01, RCT +68% at $0.0505, SITC -83% at $0.61).
 MIN_PRICE = 1.0
 MIN_DOLLAR_VOL = 1_000_000
+# How old a catalyst may be and still be allowed to explain today's move.
+#
+# FOUR DAYS, and not one: the 08:30 checkpoint on a MONDAY has to reach Friday's and
+# the weekend's news, or every Monday board would look like a quiet one.
+#
+# The gate exists because a cause that cannot be today's news is not a cause.
+# Measured 2026-11-09: ARWR fell 16.6% and the router attached Arrowhead's
+# 2026-01-06 obesity press release ("stock surging 17.81% to a new 52-week high") as
+# the reason, at `conf: high`. The provider's newest dated evidence for ARWR that
+# day was 2026-09-30, so a four-day window rejects the claim; the honest tape row is
+# the price with no catalyst.
+CATALYST_MAX_AGE_DAYS = 4
 UA = {"User-Agent": "MaxHermes-Cron/1.0"}
 
 # The checkpoint slots cron #17 merges by NAME. A slot is a slot, never a wall clock.
@@ -251,6 +301,110 @@ def call_grounded(ticker, name=None):
             "tool_used": r.get("tool_used"), "second_source": r.get("second_source")}
 
 
+def call_polygon_news(ticker, limit=8):
+    """The provider's articles for one ticker, each with its own publication stamp.
+
+    WHY THIS IS NOT THE ROUTER
+    --------------------------
+    `ask_pipeworx_grounded` answers "what happened" and returns a SUMMARY of an
+    article. It does not return the article's date, and it does not return the URL
+    even when the question demands it (measured 2026-11-09: the question said "Give
+    the one-clause reason and the source URL" and the payload carried no URL and no
+    date). A summary with no date cannot be age-checked, and an un-age-checkable
+    summary is exactly how a ten-month-old press release becomes this morning's
+    headline at `conf: high`.
+
+    The provider is reachable through the same gateway under its own pack, and every
+    article carries `published_utc`, `article_url`, `title` and `description`. That is
+    the field the staleness gate needs.
+    """
+    out = rpc(PACK_POLYGON, "polygon_io_news",
+              {"ticker": ticker, "limit": limit},
+              prefer=["results"])
+    if "error" in out:
+        return []
+    res = out.get("results")
+    return res if isinstance(res, list) else []
+
+
+def _parse_iso(s):
+    """An ISO-8601 stamp as an aware datetime, or None."""
+    try:
+        raw = str(s).strip().replace("Z", "+00:00")
+        dt = datetime.datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def _iso_z(dt):
+    return dt.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# Words that carry no signal when matching an article to a catalyst sentence.
+_STOP = {"the", "and", "for", "with", "its", "was", "were", "has", "have", "had",
+         "that", "this", "from", "after", "into", "over", "than", "then", "they",
+         "stock", "shares", "company", "announced", "reported", "said"}
+
+
+def _tokens(text):
+    if not text:
+        return set()
+    return {t for t in re.findall(r"[a-z0-9]{3,}", str(text).lower()) if t not in _STOP}
+
+
+def resolve_news_date(ticker, answer, cutoff):
+    """Date a grounded catalyst, and expose how fresh that company's news actually is.
+
+    Returns (news_date_iso, news_url, freshest_iso):
+      * news_date_iso - the publication stamp of the article the catalyst came from:
+                        the best textual match to the grounded answer, or the
+                        freshest article for the name when nothing matches. None if
+                        no date could be resolved.
+      * news_url      - that article's URL, so the claim can be checked. None if
+                        there is no article.
+      * freshest_iso  - the publication stamp of the NEWEST dated article the
+                        provider holds for this company, or None.
+
+    The gate reads `freshest_iso`, not `news_date_iso`, and that is deliberate. The
+    router reads the SAME provider, so if the provider's newest article for a name
+    is old, the router cannot have found anything newer - and its answer is not
+    about today's move no matter how confident it sounds. Gating on the match alone
+    would let a good-text match to a January article through.
+
+    `cutoff` is the capture instant: an article published after the snapshot cannot
+    be the cause of a move the snapshot recorded.
+    """
+    articles = call_polygon_news(ticker)
+    dated = []
+    for a in articles:
+        dt = _parse_iso(a.get("published_utc"))
+        if dt is None:
+            continue
+        if cutoff is not None and dt > cutoff:
+            continue
+        dated.append((dt, a))
+    if not dated:
+        return None, None, None
+    dated.sort(key=lambda p: p[0], reverse=True)
+    freshest_dt, freshest = dated[0]
+
+    chosen_dt, chosen = freshest_dt, freshest
+    if answer:
+        aw = _tokens(answer)
+        if aw:
+            scored = []
+            for dt, a in dated:
+                at = _tokens((a.get("title") or "") + " " + (a.get("description") or ""))
+                scored.append((len(aw & at), dt, a))
+            scored.sort(key=lambda s: (-s[0], -s[1].timestamp()))
+            if scored and scored[0][0] > 0:
+                chosen_dt, chosen = scored[0][1], scored[0][2]
+    return _iso_z(chosen_dt), chosen.get("article_url"), _iso_z(freshest_dt)
+
+
 def infer_cat(text):
     if not text:
         return "other"
@@ -300,14 +454,18 @@ def build(date_str, checkpoint, top_n=8):
             candidates.append(tk)
 
     rows = []
+    stale_dropped = []          # names whose catalyst was rejected as too old
     grounded_budget = top_n
     for tk in candidates:
         mv = movers.get(tk)
         trr = trending.get(tk)
         if not mv and not trr:
             continue
+        # ONE capture instant per row: it stamps the row AND bounds the article
+        # search, so a catalyst can never post-date the record that carries it.
+        row_dt = datetime.datetime.now(_et())
         rec = {
-            "ts": datetime.datetime.now(_et()).isoformat(timespec="seconds"),
+            "ts": row_dt.isoformat(timespec="seconds"),
             "src": "scanner" if mv else "stocktwits",
             "ticker": tk,
             "name": (mv or {}).get("name") or (trr or {}).get("name"),
@@ -321,8 +479,15 @@ def build(date_str, checkpoint, top_n=8):
             "trending_score": (trr or {}).get("score"),
             "volume": (mv or {}).get("volume"),
             "exchange": (mv or {}).get("exchange"),
+            # WHEN the catalyst broke, and the article it came from. Both are null
+            # until a grounded catalyst is dated; see resolve_news_date().
+            "news_date": None,
+            "news_url": None,
         }
-        # A mover with no trending reason: ask the grounded router for one.
+        # A mover with no trending reason: ask the grounded router for one, then DATE
+        # it. The router is good at "what happened" and blind to "when" - so every
+        # answer it gives is age-checked against the provider's own stamps before it
+        # is allowed onto the tape.
         if mv and not rec["why"] and grounded_budget > 0:
             grounded_budget -= 1
             g = call_grounded(tk, rec["name"])
@@ -333,10 +498,36 @@ def build(date_str, checkpoint, top_n=8):
                 rec["conf"] = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
                 rec["src"] = "pipeworx"
                 rec["grounded_tool"] = g.get("tool_used")
+                nd, nurl, freshest = resolve_news_date(tk, rec["why"], row_dt)
+                if freshest is None:
+                    # No dated evidence for this company at all. Keep the cause, but
+                    # stop claiming to know when it broke and stop calling it high
+                    # confidence: an undated cause is a weaker claim, not a false one.
+                    rec["news_date"] = None
+                    rec["news_url"] = None
+                    rec["conf"] = "low"
+                elif (row_dt.date() - _parse_iso(freshest).date()).days > CATALYST_MAX_AGE_DAYS:
+                    # STALE. The newest thing the provider holds for this company is
+                    # older than the window, so this answer cannot be describing
+                    # today's move however confident it sounds. Drop the cause and
+                    # keep the price - the honest row is a price with no catalyst.
+                    rec["why"] = None
+                    rec["ref"] = None
+                    rec["cat"] = "other"
+                    rec["conf"] = "low"
+                    rec["src"] = "scanner"
+                    rec["grounded_tool"] = None
+                    rec["news_date"] = None
+                    rec["news_url"] = None
+                    stale_dropped.append(tk)
+                else:
+                    rec["news_date"] = nd
+                    rec["news_url"] = nurl
         rows.append(rec)
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
             "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
+            "stale_dropped": stale_dropped,
             "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error")) if e]}
 
 
@@ -399,10 +590,17 @@ def main():
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(body)
     os.replace(tmp, out)
+    # The three numbers here are DIFFERENT things and must not be written as an
+    # equation: `gainers`/`losers` are how many names each half of the scan
+    # returned, and `mover_count` is how many distinct names they added up to.
+    # Printed as "movers=20 = 20 up / 10 down" it reads as an arithmetic claim that
+    # is simply false.
     print(f"preopen capture: wrote {len(res['rows'])} records to {out} "
-          f"(movers={res['mover_count']} = {res.get('gainers')} up / {res.get('losers')} down, "
+          f"(movers scan: {res.get('gainers')} up + {res.get('losers')} down, "
+          f"{res['mover_count']} names, "
           f"trending={res['trending_count']}, "
-          f"as_of={res.get('as_of')}, errors={len(res.get('errors') or [])})")
+          f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
+          f"errors={len(res.get('errors') or [])})")
     return 0
 
 

@@ -32,6 +32,7 @@ USAGE
       [--tape <tape.jsonl>] [--digest <board.md>] [--skipped <marker.md>] [--slot 0830]
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -45,7 +46,13 @@ DIGEST_COLUMNS = ["Ticker", "%", "Conf", "Catalyst", "When it broke"]
 TAPE_KEYS = ["ts", "src", "ticker", "name", "pct", "price", "cat", "why", "ref", "conf"]
 # Provenance extras the capture script adds. They are additive: the consumer ignores
 # them, and the board reads the timestamp and the volume from them.
-TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "grounded_tool"]
+TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "grounded_tool",
+                    "news_date", "news_url"]
+# How old a catalyst may be and still explain a move that happened today. This MUST
+# equal the capture script's own CATALYST_MAX_AGE_DAYS - check_script() asserts it,
+# because a gate that reads a different window than the one that wrote the tape
+# checks nothing.
+CATALYST_MAX_AGE_DAYS = 4
 # The row's PROVENANCE, not a vendor.
 ALLOWED_SRC = ("scanner", "pipeworx", "stocktwits")
 # A priced row is one that came from the movers scan: src is scanner (price only) or
@@ -147,8 +154,21 @@ def check_procedure(path):
     # marker alone cannot detect a stale copy that already carries it.
     check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*\d{4}-\d{2}-\d{2}", t) is not None,
           "the script fetch demands the CAPTURE_SCRIPT_VERSION marker")
+
     check(re.search(r"PREOPEN_DIGEST_V1", t) is not None,
           "the digest fetch demands the PREOPEN_DIGEST_V1 capability marker")
+
+    # 8. the procedure demands the DATED capture script and states the gate. Without
+    # these the procedure could keep asking for the 2026-11-09 script, which publishes
+    # a ten-month-old press release as this morning's cause.
+    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-10", t) is not None,
+          "the procedure demands the 2026-11-10 capture script (the one that DATES catalysts)")
+    check("news_date" in t and "news_url" in t,
+          "the procedure states that every catalyst carries a date and a source article")
+    check("stale" in norm(t),
+          "the procedure states the STALENESS rule (a catalyst that cannot be today's news is dropped)")
+    check(re.search(r"never falls back to the capture clock", t, re.I) is not None,
+          "the procedure states that the board never publishes the capture clock as the break time")
 
 
 # ---- static: the shared scripts -----------------------------------------------
@@ -173,6 +193,15 @@ def check_script(path):
         check(f'"{k}"' in t, f"the tape row carries the contract key {k!r}")
     check("not measurable" in norm(t) or "halted" not in t,
           "the script never publishes a halt count")
+    # THE STALENESS GATE. Without this the script can date a catalyst and still
+    # publish a stale one, and the tape's date field becomes decoration.
+    check("resolve_news_date" in t and '"news_date"' in t,
+          "the script dates every catalyst (resolve_news_date -> news_date)")
+    check("polygon_io_news" in t,
+          "the script reaches the article feed for the catalyst's publication date")
+    m = re.search(r"CATALYST_MAX_AGE_DAYS\s*=\s*(\d+)", t)
+    check(m is not None and int(m.group(1)) == CATALYST_MAX_AGE_DAYS,
+          f"the script's staleness window matches the checker's ({CATALYST_MAX_AGE_DAYS} days)")
 
 
 def check_digest_script(path):
@@ -189,6 +218,8 @@ def check_digest_script(path):
           "the board reports the row PROVENANCE split (scanner / stocktwits / pipeworx)")
     check("not measurable" in norm(t),
           "the board reports the halt state as not measurable")
+    check("news_date" in t,
+          "the board's 'When it broke' reads the tape's news_date, not the capture clock")
 
 
 def check_prompts(repo):
@@ -208,6 +239,47 @@ def check_prompts(repo):
 
 
 # ---- dynamic: the artifacts -----------------------------------------------------
+
+def _parse_date(v):
+    """An ISO-8601 stamp as a date, or None."""
+    try:
+        s = str(v).strip().replace("Z", "+00:00")
+        return datetime.datetime.fromisoformat(s).date()
+    except Exception:
+        return None
+
+
+def _fmt_et(v):
+    """Render a tape timestamp the way the board renders it: ET wall clock.
+
+    This is an INDEPENDENT copy of the renderer's rule, on purpose - a checker that
+    calls the code under test proves nothing. tools/test_preopen_digest_contract.py
+    pins the renderer's own conversion separately.
+    """
+    if not v:
+        return "\u2014"
+    s = str(v).strip()
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return s[11:19] if len(s) >= 19 else s
+    try:
+        dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return s[11:19] if len(s) >= 19 else s
+    if dt.tzinfo is None:
+        try:
+            dt = dt.replace(tzinfo=ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+    else:
+        try:
+            dt = dt.astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%H:%M:%S")
+
 
 def parse_md_table(lines):
     """Return the rows of the digest's markdown table as lists of cells."""
@@ -266,6 +338,60 @@ def check_tape(tape_path):
     narrative = [r for r in rows if r.get("src") == "stocktwits"]
     check(all(r.get("pct") is None for r in narrative),
           f"every narrative-only row carries no number ({len(narrative)} such rows)")
+
+    # ------------------------------------------------------------------
+    # WHEN THE CATALYST BROKE. This is the ARWR defect, made machine-checkable.
+    #
+    # Measured 2026-11-09 09:50: ARWR (-16.59%) carried Arrowhead's 2026-01-06
+    # press release - "stock surging 17.81% to a new 52-week high", a story about the
+    # opposite move from ten months earlier - at `conf: high`, and the board printed
+    # "09:53:48" in its **When it broke** column because that column fell back to
+    # the CAPTURE clock. The tape had no field that could have said "January 6".
+    #
+    # So: every row carries a news_date (and the article it came from in news_url),
+    # no dated catalyst may be older than the window, and a catalyst the tape is
+    # confident about must be dated.
+    # ------------------------------------------------------------------
+    missing_date = [r.get("ticker") for r in rows if "news_date" not in r]
+    check(not missing_date,
+          f"every row carries a news_date field ({len(missing_date)} missing)")
+    missing_url = [r.get("ticker") for r in rows if "news_url" not in r]
+    check(not missing_url,
+          f"every row carries a news_url field ({len(missing_url)} missing)")
+
+    # The tape's DATE comes from its own name: cron #17 merges the checkpoints by
+    # slot, so {date}-{slot}.jsonl is the contract, not a convention.
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})-\d{4}\.jsonl$", os.path.basename(tape_path))
+    tape_date = None
+    if m:
+        try:
+            tape_date = datetime.date.fromisoformat(m.group(1))
+        except Exception:
+            tape_date = None
+    check(tape_date is not None,
+          f"the tape is named {{date}}-{{slot}}.jsonl so its date can be checked "
+          f"(got {os.path.basename(tape_path)})")
+
+    stale, undated_confident = [], []
+    for r in rows:
+        nd = r.get("news_date")
+        if nd:
+            d = _parse_date(nd)
+            if d is None:
+                stale.append((r.get("ticker"), nd, "unparseable"))
+            elif tape_date is not None and (tape_date - d).days > CATALYST_MAX_AGE_DAYS:
+                stale.append((r.get("ticker"), nd, f"{(tape_date - d).days}d old"))
+        # A catalyst the tape is CONFIDENT about has to be dated. An undated one may
+        # only ever ride at `low` confidence, because we cannot say when it broke.
+        if (r.get("src") == "pipeworx" and r.get("conf") in ("high", "medium")
+                and not nd):
+            undated_confident.append((r.get("ticker"), r.get("conf")))
+    check(not stale,
+          f"no catalyst is dated outside the {CATALYST_MAX_AGE_DAYS}-day window "
+          f"(got {stale[:3]})")
+    check(not undated_confident,
+          f"no undated catalyst is published as high/medium confidence "
+          f"(got {undated_confident[:3]})")
     return rows
 
 
@@ -295,6 +421,10 @@ def check_digest(tape_path, digest_path, slot):
     check(f"**unverified:** {unv}" in t, f"the header carries the unverified count ({unv})")
     check("$" in t, "the header carries the measured Grok cost")
     check("not measurable" in norm(t), "the board publishes the halt state as not measurable")
+    grounded_rows = sum(1 for r in rows if r.get("src") == "pipeworx")
+    dated_rows = sum(1 for r in rows if r.get("news_date"))
+    check(f"**Dated catalysts:** {dated_rows} of {grounded_rows}" in t,
+          f"the board reports the dated-catalyst count ({dated_rows} of {grounded_rows})")
 
     # the table
     tbl = parse_md_table(t.splitlines())
@@ -337,6 +467,37 @@ def check_digest(tape_path, digest_path, slot):
     else:
         check("DEVIATION" not in t,
               "a tape with movers on both sides carries no deviation banner")
+
+    # ------------------------------------------------------------------
+    # "WHEN IT BROKE" MUST BE THE NEWS DATE.
+    #
+    # The column's whole job is to date the catalyst. The capture clock (`ts`) is
+    # when the SCRIPT RAN, and publishing it there asserts that the news broke when
+    # the script ran. For a catalyst that is older than the run that is a lie, and it
+    # is the lie a trader reads before the open.
+    # ------------------------------------------------------------------
+    by_ticker = {r.get("ticker"): r for r in rows}
+    wrong_time, cap_fallback = [], []
+    for cells in body:
+        if len(cells) < 5:
+            continue
+        tick = cells[0].strip()
+        rec = by_ticker.get(tick)
+        if rec is None:
+            continue
+        nd = rec.get("news_date")
+        want = (_fmt_et(nd) if nd
+                else (_fmt_et(rec.get("trending_ts")) if rec.get("trending_ts") else "\u2014"))
+        got = cells[4].strip()
+        if got != want:
+            wrong_time.append((tick, got, want))
+        if rec.get("ts") and got == _fmt_et(rec.get("ts")) and want != got:
+            cap_fallback.append(tick)
+    check(not wrong_time,
+          f"every row's 'When it broke' shows the NEWS date, not the capture clock "
+          f"({len(wrong_time)} wrong: {wrong_time[:3]})")
+    check(not cap_fallback,
+          f"no row falls back to the capture clock for its break time ({cap_fallback[:3]})")
 
 
 def check_skipped(marker_path, slot):

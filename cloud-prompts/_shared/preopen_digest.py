@@ -138,6 +138,12 @@ def render(rows, date_str, slot, tape_name, scan_note):
         out.append("- **Catalyst classes:** " + " · ".join(f"{k} {v}" for k, v in
                    sorted(cats.items(), key=lambda kv: -kv[1])))
     out.append(f"- **Named catalysts:** {named} of {n} records")
+    grounded_rows = sum(1 for r in rows if r.get("src") == "pipeworx")
+    dated_rows = sum(1 for r in rows if r.get("news_date"))
+    out.append(f"- **Dated catalysts:** {dated_rows} of {grounded_rows} grounded rows carry a "
+               f"news date (`news_date`, and the article it came from in `news_url`). An "
+               f"undated catalyst shows an em-dash in **When it broke** - never the capture "
+               f"clock, which is when the script ran, not when the news broke.")
     out.append("")
     out.append("| " + " | ".join(DIGEST_COLUMNS) + " |")
     out.append("|---|---|---|---|---|")
@@ -149,7 +155,19 @@ def render(rows, date_str, slot, tape_name, scan_note):
         conf = (r.get("conf") or "low")
         if conf == "unverified":
             conf = "⚠ unverified"
-        broke = r.get("trending_ts") or r.get("ts")
+        # WHEN THE NEWS BROKE - and never the capture clock.
+        #
+        # The capture clock (`ts`) is the moment THIS SCRIPT RAN. Printing it in a
+        # column titled "When it broke" asserts that the catalyst broke when the
+        # script ran, which is false whenever the catalyst is older than the run.
+        # Measured on the 2026-11-09 09:50 checkpoint: ARWR carried a 2026-01-06
+        # press release and the board printed "09:53:48" for it - forty minutes
+        # after the capture, for a ten-month-old story about the opposite move.
+        #
+        # So the order is: the NEWS date (news_date), then the trending snapshot's
+        # own stamp, and then nothing at all. An em-dash means "we do not know",
+        # which is the truth; a clock would be a lie.
+        broke = r.get("news_date") or r.get("trending_ts") or ""
         out.append(f"| {clean(r.get('ticker'), 12)} | {fmt_pct(r.get('pct'))} | "
                    f"{clean(conf, 14)} | {clean(why)} | {fmt_ts(broke)} |")
     out.append("")
