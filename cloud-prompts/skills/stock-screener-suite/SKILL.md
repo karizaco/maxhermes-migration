@@ -656,6 +656,8 @@ The shared reply format from `_shared/PROMPT-BLOCKS.md` (`## DELIVERY`) applies,
 - `daily-screens/<date>/stalk.md`             — Master ∩ (price within 2% of 10/20-DMA)
 - `daily-screens/<date>/focus.md`             — Focus: Master ∩ (≥ **2** distinct stylists) ∪ top-5 velocity (≤ 12)
 - `daily-screens/<date>/tier-a.md`            — Tier-A: Focus ∩ (≥ **3** distinct stylists) (≤ 8), with regime flag
+- `daily-screens/<date>/tier-a-fresh.md`      — Tier-A names that are NOT extended (the extension label, §4.6)
+- `daily-screens/<date>/tier-a-extended.md`   — Tier-A names that ARE extended (published, never dropped)
 - `daily-screens/<date>/_summary.md`          — human-readable digest
 - `daily-screens/<date>/_regime.json`         — breadth/regime payload
 - `daily-screens/<date>/_results.json`        — **machine-readable** companion: every candidate with its
@@ -665,6 +667,14 @@ The shared reply format from `_shared/PROMPT-BLOCKS.md` (`## DELIVERY`) applies,
                                                `screen_coverage` — the per-branch `rows_passing` /
                                                `rows_kept` table — so a truncated book is visible to any
                                                consumer, not just to the run that produced it.
+                                               **Since 2026-11-10 it also carries, per candidate,
+                                               `data_as_of` and `source`** (`fresh` / `t1` / `fresh+t1`),
+                                               the `fresh_origins`, the `extension` label and the
+                                               `quality` verdict — so a consumer can never mistake a
+                                               previous-session metric for today's, and the file
+                                               publishes `fresh_data_as_of`, `t1_data_as_of`,
+                                               `tier_a_fresh`, `tier_a_extended` and
+                                               `fresh_branches` (the fresh book's own coverage table).
 - `daily-screens/<date>/_cache.json`          — cache marker (cron date, resolved data date, counts) used by
                                                `screen.py cache` / `plan --use-cache` to avoid repeating a
                                                completed sweep.
@@ -723,6 +733,197 @@ When the run genuinely cannot complete a branch, say so in the artifact — "bra
 `A_stockbee_4pct`: 233 passed, 200 retrieved (shibui's per-query ceiling), 33 names not
 published" — and mark the sweep INCOMPLETE. A truncated book presented as a complete
 one is the worst outcome available.
+
+### 4.5 The FRESH book — the cron day's OWN settled bar (cron #09)
+
+**Why this section exists.** shibui is T+1, so at the 18:30 ET fire its newest
+settled session is the PREVIOUS session. The 2026-11-09 run published a book
+whose every screen metric described **2026-11-06** while the artifact was read
+as "today's screen", and the freshness was a caveat sentence rather than a
+field. Measured cost of that gap: running the same 4%-breakout + 2x-volume
+gate on the 2026-11-09 settled bar returned **68 names, of which 25 were
+absent from the published book entirely** (TLS +48.8%, DCTH +35.8%, LINC
++24.6%, UAMY +23.0%, INDI +21.6%).
+
+**The rule: the TRIGGER branches are computed on the cron day's settled bar.**
+The multi-session CONTEXT branches (5-day gainers/losers, 14-day velocity, the
+coil, the 252-session RS window) stay on shibui and stay labelled T+1. A
+trigger is "something happened today"; a context branch is "the name has been
+doing this for a week", and one session of lag on a week-long construct is a
+different problem from a one-session lag on today's trigger.
+
+#### 4.5.1 The engine
+
+```bash
+# --- fetch the engine (run-time fetch: fixes land with no redeploy) ---
+mkdir -p /workspace/tools
+E=/workspace/tools/daily_sweep_engines.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/daily_sweep_engines.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/daily_sweep_engines.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/daily_sweep_engines.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$E.tmp" "$U" 2>/dev/null
+  if [ -s "$E.tmp" ] && grep -q 'DAILY_SWEEP_ENGINES_V1' "$E.tmp" 2>/dev/null; then
+    mv -f "$E.tmp" "$E"; break
+  fi
+  rm -f "$E.tmp"
+done
+if [ ! -s "$E" ] || ! grep -q 'DAILY_SWEEP_ENGINES_V1' "$E"; then
+  echo "daily_sweep_engines.py: UNAVAILABLE (no copy carrying the current contract)"
+  echo "fall back to the shibui-only book, label every row data_as_of=<shibui date>, and say so"
+fi
+
+# --- the fresh book + the extension metrics ---
+python3 "$E" tv-sweep --date <CRON_DATE> --out /workspace/scratch/tv_sweep.json
+python3 "$E" selftest          # offline; must be green before the book is published
+```
+
+The engine's output carries the universe (with `totalCount` asserted against
+the rows fetched — a truncated scan is a FAILURE, never a shorter book), the
+per-branch `rows_passing`, the per-symbol extension metrics, and the gates it
+applied. **Publish the gates in the artifact** — they are part of the contract.
+
+#### 4.5.2 THE FRESH GATES — published, not copied
+
+| Branch | Gate | Relation to the shibui gate |
+|---|---|---|
+| `A_tv_breakout_4pct` | change ≥ 4%, close ≥ $3, session volume > the prior-NINE-session mean, avg volume ≥ 100k | **VARIANT**: shibui's gate is "volume > prev_session"; the scanner publishes no prior-session volume, so the expansion test is against the prior-nine mean — STRICTER, and published as its own gate |
+| `B_tv_ep9m` | session volume ≥ 8,900,000 SHARES, close ≥ $3, avg volume ≥ 100k | exact mirror |
+| `D_tv_gap_10pct` | open/prev_close ≥ +10%, prior-nine-session average dollar volume ≥ $50M, close ≥ $3 | **VARIANT**: the $50M floor is measured on the prior-nine-session mean dollar volume, because the scanner publishes no 20-day ADV |
+| `TV_volume_breakout` | change ≥ 3%, relative volume ≥ 1.5 | unchanged from the suite's existing screen |
+
+#### 4.5.3 WHY `Perf.W` IS NOT USED AS THE 5-SESSION MOVE
+
+Measured 2026-11-09 against shibui's own history on 11 names: TradingView's
+`Perf.W` correlates **r=0.997 (mean abs error 1.31 pp) with a SIX-session move**
+and only r=0.924 (6.85 pp) with a five-session move. The parabolic gates
+(+25% / −25% / −50% over five sessions) are therefore **NOT** re-expressed on
+`Perf.W`: they stay on shibui and stay labelled T+1. Copying them onto a
+six-session window would silently shift the parabolic books, which is the same
+class of defect as the per-branch `LIMIT`.
+
+**What IS reconstructed exactly:** the scanner's `average_volume_10d_calc` is
+the mean of the last ten sessions **including today** (bias 0.00% against a
+hand-computed reference on 11 names), so the prior-nine-session baseline is
+recovered as `(10 × avg10 − volume_today) / 9` with no second data source.
+
+#### 4.5.4 The dual book
+
+Both books are published, and **every row carries `data_as_of` and `source`**:
+
+| `source` | meaning |
+|---|---|
+| `fresh` | the cron day's settled bar only |
+| `t1` | shibui's newest ingested session only (a context-branch name) |
+| `fresh+t1` | both books carry the name |
+
+The T+1 book is the **cross-check**, not the headline. The fresh book is
+primary. When they disagree, the artifact says so with both lists — it never
+substitutes one for the other.
+
+#### 4.5.5 The run order for cron #09
+
+1. `tv-sweep` → the fresh book + extension metrics (no auth, no rate limit).
+2. The 8 shibui branches as before (the context branches + the T+1 cross-check).
+3. The CANSLIM rebuild on shibui — **the growth inputs are quarterly, so T+1
+   never applied to them**; only the price half was stale, and that is now
+   fresh.
+4. The overlay (§4.7) over the candidate symbols.
+5. `screen.py consume --fresh-book ... --overlay ...` → the tiered book.
+
+```bash
+python3 scripts/screen.py consume \
+  --in /workspace/scratch/results.json --date <CRON_DATE> --vault <vault> \
+  --fresh-book /workspace/scratch/tv_sweep.json \
+  --overlay     /workspace/scratch/overlay.json
+```
+
+### 4.6 The extension label — which names are ALREADY EXTENDED
+
+The tiering has **no extension filter**, so Tier-A is structurally biased
+toward names that have already run: six of the eight branches are momentum /
+breakout / velocity screens, and "≥ 3 stylists agree" selects for maximum
+agreement among them. Measured on the 2026-11-09 book: FLY +34.0% above its
+20-DMA with ATR 8.03%, RHLD RSI 80.7, ARRY +33.8% above its 20-DMA.
+
+**The label is published on every row. Nothing is ever dropped from the book
+because it trips a rule** — dropping information is what made the parabolic
+branch's own label read as a forward-looking signal when it is a state
+detector.
+
+| Rule | Threshold | Note |
+|---|---|---|
+| `atr_pct` | ATR / close > 5.0% | fires on 15.8% of the $10B+ names but on 36.0% of the $1–10B names — so the **percentile is published next to it** (`atr_pct_pctile`, and `atr_pct_pctile_lc` against the $10B+ sub-universe) |
+| `rsi` | RSI > 75 | fires on ~3% of the universe |
+| `pct_above_sma20` | > 15% above its own 20-DMA | fires on ~7% of the universe, 2.3% of the $10B+ names |
+| `up_days_streak` | 3+ consecutive up sessions | from the shibui history, extended by the fresh session |
+
+**Tier-A is published TWICE**: `tier-a-fresh.md` (not extended) and
+`tier-a-extended.md` (extended), alongside the full `tier-a.md`. On the
+2026-11-09 book that split was **0 fresh / 6 extended** — the whole Tier-A
+list was extended, which is the honest answer to "why do these names always
+look like they have already run".
+
+### 4.7 The valuation / quality overlay (cron #09)
+
+**The gap it closes.** The CANSLIM screen asks for growth and strength and
+nothing else. It has never asked what the multiple is, because `shibui.valuation`
+carries only `market_cap`, `price_to_book` and `enterprise_value` — no P/E at
+all. But `shibui.fundamentals_derived_daily` carries `trailing_pe`,
+`operating_pe`, `ev_ebit`, `price_to_sales`, `free_cash_flow_yield`,
+`trailing_revenue_peg` and `earnings_quality_flags`, and the suite never
+joined a table it already pays for. On 2026-11-09 KRMN carried **trailing P/E
+120.6, operating P/E 55.8, EV/EBIT 62.7, FCF yield −0.12%, PEG 1.84,
+debt/equity 2.28 and a `LOW_EARNINGS_QUALITY` flag** — and the book published
+it with a `+` next to its name.
+
+#### 4.7.1 The red flags
+
+| Flag | Rule |
+|---|---|
+| `trailing_pe` | trailing P/E > 50 |
+| `operating_pe` | operating P/E > 40 |
+| `trailing_revenue_peg` | PEG > 3 (at 2 it fired on AAPL and did **not** catch KRMN — a rule that misses its own case is not a rule) |
+| `free_cash_flow_yield` | negative free cash flow |
+| `debt_to_equity` | > 1.5 |
+| `earnings_quality_flags` | shibui's own flag list |
+
+#### 4.7.2 A MISSING value is a DISCLOSURE, not a flag
+
+A name with no trailing P/E is published as `earnings_data_missing: true` with
+`valuation_gate: unknown` — **never a silent pass, and never counted as a red
+flag**. Measured 2026-11-09: counting a null P/E as a red flag flagged 910 of
+1,232 names (73%). A label that fires on three quarters of the book is as
+useless as one that never fires.
+
+`valuation_gate` is therefore one of:
+
+| gate | meaning |
+|---|---|
+| `pass` | no red flag, and earnings data present |
+| `unknown` | no red flag, but no trailing earnings either — **disclosed, not cleared** |
+| `fail` | at least one red flag |
+
+`quality_severity` is `clean` (0 flags) / `watch` (1) / `flagged` (2+).
+
+#### 4.7.3 The run
+
+```bash
+python3 "$E" overlay --date <CRON_DATE> --t1-date <shibui date> \
+  --symbols /workspace/scratch/book_symbols.txt \
+  --out /workspace/scratch/overlay.json \
+  --bridge /workspace/mcp_bridge.py --tv-json /workspace/scratch/tv_sweep.json
+```
+
+One shibui call per 200 symbols (the overlay joins the fundamentals and the
+streak server-side so the result is one row per symbol). The overlay is
+published per name in the artifact's table with the VALUES next to the flags —
+a flag without its number is not actionable.
+
+**The overlay is a LABEL, not a filter.** It never removes a name from the
+book; it tells the reader that the growth screen says nothing about what the
+price already assumes.
 
 ### 5. 3:55 PM ET Reversal Bullish (Bonde)
 
@@ -1805,7 +2006,7 @@ is unavailable" — read the runtime contract before declaring a source dead.
 | Source | Local Mavis (stdio MCP) | Cloud runtime (what the cron actually uses) |
 |---|---|---|
 | `shibui-finance` | `mcp__shibui-finance__stock_data_query` | Same server over HTTPS JSON-RPC via `cloud-prompts/_shared/mcp_bridge.py` — `python3 mcp_bridge.py shibui stock_data_query args.json` |
-| `tradingview` | `mcp__tradingview__screen_stocks` / `screen_etf` | TradingView's per-country scanner HTTP API: `POST https://scanner.tradingview.com/america/scan` (no auth, no rate limit) |
+| `tradingview` | `mcp__tradingview__screen_stocks` / `screen_etf` | TradingView's per-country scanner HTTP API: `POST https://scanner.tradingview.com/america/scan` (no auth, no rate limit) — **the PRIMARY source for cron #09's fresh book** (§4.5): the settled `close` is the official 16:00 ET print, and the scanner carries the cron day's own bar, which shibui does not have yet |
 | `tradingview-advanced` | `mcp__tradingview-advanced__*` | Not reachable. The scanner API covers most of it; the CBOE delayed-quote CDN covers the index quotes |
 | `yahoo-finance` | `mcp__yahoo-finance__*` | JSON endpoints return HTTP 429 from the Cloud egress; the quote *page* still renders |
 | `financekit` | `mcp__financekit__sector_rotation` | Not reachable — sector rotation is computed from TradingView ETF relative strength instead |
