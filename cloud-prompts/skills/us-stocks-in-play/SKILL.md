@@ -248,6 +248,28 @@ that **held into the bell** from one that faded. Never publish an intraday price
 close. Do not wait for the after-close earnings slate — the fleet's post-market brief owns that;
 the carry hands off to it.
 
+#### The settled close has TWO sources, and they disagree — pick one and cross-check (measured 2026-11-10)
+
+The settled close is available from **two** post-bell sources, and on a small set of names they
+**disagree by more than 0.6%**:
+
+| Source | Field | Note |
+|---|---|---|
+| **Nasdaq official quote API** `/quote/<sym>/info` | after 16:00 ET, **`secondaryData.lastSalePrice`** | its `primaryData` has already flipped to the after-hours print — that is the documented field flip. Sweep it in parallel over the whole screened set |
+| **Bridge `market-recap get_quotes`** | `price` + `previous_close` + `volume` | `market_state: "post"`, `as_of` ≈ 21:00Z. **The bridge caps a call at 40 symbols** — a 100-symbol request silently returns only 40, so batch at 40 (24 calls priced 943 names on 2026-11-10) |
+
+Measured 2026-11-10 over 943 names: **13 names disagreed by >0.6%** (BWET, CTEV, HYLN, SSK,
+GDMN, AZUL, NEHI, MTA, GCTS, NEWP, XTND, COOK, SJT). **Yahoo's own daily bar corroborated the
+bridge on all 13** and contradicted Nasdaq's `secondaryData` — so the **bridge is the one to
+publish**, and the disagreement must be **disclosed in Source health**, never silently resolved.
+**Recompute the change % from the SAME source's close and previous_close**, or a row mixes a
+close from one source with a percentage from another.
+
+**The cheap tiebreak is one Yahoo `interval=1d` call per disputed symbol** — pull it only for the
+names that disagree, never for the whole universe. A **class-share ticker** (`BH.A`, `LEN.B`) is
+not carried by the bridge at all; its price comes from the Nasdaq API and its RVol from the
+scanner volume.
+
 ### Gap provenance — the missing mechanism (required)
 
 The gap rules above **mandate a computation that nothing else in the fleet performs**: whether a
@@ -274,6 +296,28 @@ python3 /workspace/preopen_feed.py merge --date <YYYY-MM-DD> --symbols <A,B,C>
 - Tag affected names in the artifact and in chat: `GAP_FADED`, `REVERSED`.
 - Self-test: `python3 /workspace/preopen_feed.py selftest` runs four known sessions and must
   print 4 PASS.
+
+#### The pre-close verdict must be computed AT THE BELL, not at 15:50 (measured 2026-11-10)
+
+**The helper's `now` column prefers the 15:50 bar** (it falls back to 16:00 only when 15:50 is
+absent). At the `preclose` slot the question is whether a gap **held into the bell**, so the
+published verdicts are recomputed at the **16:00 regular-session close** from the same Yahoo
+5-minute series: pull `interval=5m` for the session date, take the **last bar at or before
+16:00** as the bell, and keep the open / 10:00 / 12:00 / 15:50 points for the path. The helper
+still supplies the path and the verdict bands — it just does not supply the bell.
+
+This is not a cosmetic difference. On 2026-11-10 it changed two published verdicts:
+
+- **GEV** — the 15:50 read said `held` (the gap had recovered from -8.90% to -4.59% by 15:50),
+  but it finished only **-3.89%**, so it gave the open move back: **`faded`**.
+- **PAYS** — the 15:50 read said `held`, but the gap **flipped sign** from **+4.72%** at the open
+  to **-18.94%** at the bell: **`reverse`**.
+
+A 15:50 verdict would have published both wrong, and the pre-close board's whole claim — that a
+gap which **held into the bell** is the signal — rests on the bell.
+
+The reconstruction's **open** agrees with the TradingView scanner's native `gap` column to a
+**median 0.003pp, p90 0.43pp** across 911 names, so the scanner's gap may be published directly.
 
 ### Triggers (≥1 after the floor)
 
@@ -428,6 +472,19 @@ researches catalysts itself via `web_search` against issuer IR and EDGAR filings
 row with `has_catalyst_timestamp = no` still owes the reader the reason. A blank reason
 is a silent failure: it reads like "nothing happened" when in fact the reason exists and
 was simply never timestamped.
+
+**This applies to EVERY row of the candidates CSV, not only the published tier tables.**
+The checker asserts it on all rows (measured 2026-11-10: **921 of 943 rows carried a blank
+reason and failed the contract**, while the board itself read fine). The convention the
+prior boards use for a name where a search was run and found nothing is the literal string
+**`no same-session company catalyst located`** — set it as the **default** in the tiering
+step, so a re-tier can never wipe the reasons that were researched.
+
+**Generate the tier tables from the data, never hand-type them.** On 2026-11-10 the
+hand-written tables drifted from the settled dataset on several rows (a stale close, a stale
+RVol) while the CSV was correct — and the checker, which validates structure and not the
+numbers, passed it. The board's tables must be **rendered from the same dataset the CSV is
+written from**, so a number cannot be wrong in one file and right in the other.
 
 #### No halt counts, ever
 
