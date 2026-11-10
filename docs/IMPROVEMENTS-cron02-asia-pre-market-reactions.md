@@ -79,3 +79,54 @@ Two changes:
   that is correct, because TWSE and TPEX tickers can differ for the same issuer.
 
 No change was made to the deployed cron prompt.
+
+## 4. The format now front-loads the six items that carry the day (v1.5)
+
+The brief publishes ~100 names a run, and on most days 90+ of them carry no sourced catalyst —
+the movers list is breadth, not events. Meanwhile the numbers a reader is most likely to misquote
+(limit-locked prints, stale venue prints) were buried in `## Flags`, and the backdrop table
+published only a ONE-session move, which on a volatile day inverts the story.
+
+Two changes to the artifact contract:
+
+### `## What matters today` - two lists of three, directly under the TL;DR
+
+- **Top 3 real events** = published rows whose CATALYST cell carries a **sourced,
+  company-specific** catalyst (earnings/guidance, buyback or capital action, M&A, a named
+  broker action on that company), ranked by `|change %|`. **Never padded**: if fewer than three
+  rows are sourced, the artifact says `only <n> sourced catalysts today`. A macro driver (crude,
+  the Wall Street tape, a sidecar trigger, a limit-lock cluster) is **not** a company event and
+  belongs in the TL;DR or the traps list. Every ticker in the list must already be a published
+  row in its country section **with the same percentage** — the block is a pointer, never a
+  second source of truth.
+- **Top 3 artifact traps** = the published numbers a reader is most likely to quote and be wrong
+  about. The test is *"does this change how the HEADLINE is read?"* — a trap that only matters
+  to the method stays in `## Flags`. Each entry names the misleading number, why it is wrong, and
+  the published number instead.
+
+### `## Market backdrop` gains a 5-session chg column
+
+`| Chg |` is the one-session move; `| 5-session chg |` is `close[-1]` against `close[-6]` of the
+same chart fetch — five **sessions**, not five calendar days, so a holiday inside the window
+shifts the base bar correctly. If a market returns fewer than 6 bars, the cell prints `n/a` and
+the caveat line says so; the cell is never empty and the 1-session move is never substituted.
+
+This is not a cosmetic column. Measured on the 2026-11-10 fire:
+
+| Index | 1-session | 5-session | What the one-day column alone would have said |
+|---|---|---|---|
+| KOSPI | **+4.39%** | **-7.25%** | strongest market of the four — it was the deepest drawdown |
+| Nikkei 225 | **+2.87%** | **-4.16%** | a solid up day — a bounce inside a 4% fall |
+| TAIEX | **+2.52%** | **-1.38%** | second strongest — still below the pre-selloff base |
+| Hang Seng | **+0.44%** | **+4.38%** | the weakest — the only index actually up over the window |
+
+### Two new machine assertions
+
+Assertion 5 proves the What-matters block exists, carries exactly three items per list, and that
+every event ticker is a published row whose percentage matches the country table. Assertion 6
+proves the backdrop's 5-session cell is present, non-empty and numeric for all four markets. Both
+are the kind of check that a prose summary does not satisfy: they exit non-zero on the first
+violation.
+
+The skill is fetched at RUN time, so the next fire picks up the new format with no `cron_update`
+and no prompt drift. The deployed cron prompt was not touched.

@@ -355,8 +355,12 @@ artifact.
      that changes how to read it.
    - plus the US read-across block: one short paragraph and at most 3 bullets.
 
+   ## What matters today
+   ### Top 3 real events (sourced catalyst)
+   ### Top 3 artifact traps (do not quote)
+
    ## Market backdrop
-   | Market | Index | Close | Chg | Session date | Source |
+   | Market | Index | Close | Chg | 5-session chg | Session date | Source |
 
    ## Japan (JP) — session <YYYY-MM-DD>
    ### REACTION tier
@@ -383,7 +387,9 @@ artifact.
    - `## TL;DR` carries **exactly 3 bullets** plus the read-across block. A fourth bullet is a
      defect, not a style choice.
    - `## Market backdrop` carries each market's index level **with that market's session date** —
-     the reader must be able to see in one table that a market is stale.
+     the reader must be able to see in one table that a market is stale — and a **5-session chg**
+     column, so a one-day move can be read against the trend it sits in. See *What matters today*
+     for both new blocks.
    - A country whose market is closed replaces its whole section with the "no data — closed"
      block; that country's `###` tiers are then absent.
    - `## Flags` is the "numbers a human should distrust" section — thin prints, limit moves,
@@ -461,6 +467,64 @@ suffixes (`Ltd`, `Co`, `Corporation`, `Inc`, `Holdings`) before comparing.
 still applies; no price targets. A US name with neither an ADR nor a direct peer is **not** a US
 exposure: write "no direct US-listed proxy" instead of stretching the link. Two real names beat
 three invented ones.
+
+## What matters today (the front-loaded 6)
+
+Two lists of three, immediately after the TL;DR, so the reader gets the six items that carry the
+day BEFORE the 100-row table. This section exists because the artifact's movers list is mostly
+breadth: on a typical run 90+ of the published names carry no sourced catalyst, and the numbers a
+reader is most likely to misread are limit-locked prints.
+
+```markdown
+## What matters today
+
+### Top 3 real events (sourced catalyst)
+- TSE:6269 +15.86% - Modec, Inc. - Q3 FY26: 9M operating profit +27.8%, backlog US$15.9bn, FY26 guidance raised, JPY10bn buyback.
+
+### Top 3 artifact traps (do not quote)
+- `SAPSE:4502` Takeda +23.26% - a frozen regional-venue print, byte-identical to the previous artifact - the published number is `TSE:4502` -1.20%.
+```
+
+### Top 3 real events - selection rule
+
+- A row qualifies only if its CATALYST cell carries a **sourced, company-specific** catalyst:
+  earnings or guidance, a buyback or capital action, M&A, a capital raise, or a named
+  broker/press action on that company (e.g. a Morgan Stanley note on GenScript).
+- Rank by `|change %|` desc. **Never pad the list with unsourced rows** - if fewer than three
+  rows are sourced, publish the rows you have and state `only <n> sourced catalysts today`.
+- A **macro driver is not a company event**: lower crude, the Wall Street tape, a policy change, a
+  sidecar trigger or a limit-lock cluster belongs in the TL;DR or in the traps list, never here.
+- Every ticker in this list must already appear as a published row in its country section, with the
+  **same percentage** - the block is a pointer, never a second source of truth.
+
+### Top 3 artifact traps - selection rule
+
+- These are the three **published** numbers a reader is most likely to quote and be wrong about:
+  limit-locked or limit-pinned prints (Taiwan's +10% cluster, Korea's ±30% preferred lines),
+  stale or divergent venue prints (JP regional venues, OTC ADR fields), intraday-vs-close
+  confusion, and stale index quotes.
+- The test: **the trap must change how the HEADLINE is read.** A trap that only matters to the
+  method belongs in `## Flags`, not in this block.
+- Each entry names the misleading number, says why it is wrong, and gives the published number
+  instead. A trap with no published number to quote instead is not a trap - it is a caveat.
+
+### The backdrop's 5-session chg
+
+`| Chg |` is the one-session move. `| 5-session chg |` is the same index's move over the
+**five sessions before today**: `close[-1]` against `close[-6]` of the same chart fetch. Five
+SESSIONS, not five calendar days - a holiday inside the window shifts the base bar, which is
+correct.
+
+- The `range=10d` fetch in step 2 returns ~10 daily bars, so `close[-6]` normally exists. If a
+  market returned **fewer than 6 bars**, print `n/a` in the cell and say so in the caveat line -
+  **never leave the cell empty** and never substitute the 1-session move.
+- The index % changes and the 5-session % changes come from the **chart API's bars**, not from the
+  bridge: the bridge's `previous_close` is one session stale for `^TWII` and `^HSI` (measured
+  2026-11-10).
+
+This column is what stops a one-day number from being over-read: on 2026-11-10 the KOSPI's
+**+4.39%** was a bounce inside a **-7.25%** five-session drawdown, while the Hang Seng's **+0.44%**
+sat inside a **+4.38%** five-session gain - the opposite of what the one-day column alone says.
 
 ## Chat reply (country blocks, in order, with session dates)
 
@@ -554,6 +618,67 @@ for ln in body.splitlines():
 assert not empty, "EMPTY CATALYST CELL on: %s" % empty[:5]
 
 print("ASSERTIONS OK")
+PY
+```
+
+```bash
+# 5 - the WHAT MATTERS block exists, carries exactly three items in each list, and
+#     every event ticker is a published row whose percentage matches the country table.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^## What matters today\s*$(.*?)^## ", body, re.M | re.S)
+assert m, "no '## What matters today' section"
+blk = m.group(1)
+for head in ("Top 3 real events", "Top 3 artifact traps"):
+    hm = re.search(r"^### %s.*$" % re.escape(head), blk, re.M)
+    assert hm, "missing block: %s" % head
+    seg = blk[hm.end():]
+    nxt = re.search(r"^### ", seg, re.M)
+    seg = seg[:nxt.start()] if nxt else seg
+    items = [l for l in seg.splitlines() if l.startswith("- ")]
+    assert len(items) == 3, "%s carries %d items, expected 3" % (head, len(items))
+    print("%s: 3 items OK" % head)
+
+# every event ticker must be a published row, with the same percentage
+COUNTRY = re.compile(r"^## (?:Japan|Korea|Taiwan|Hong Kong)[^\n]*$", re.M)
+published = []
+for mm in COUNTRY.finditer(body):
+    nxt = re.search(r"^## ", body[mm.end():], re.M)
+    end = mm.end() + (nxt.start() if nxt else len(body) - mm.end())
+    published.append(body[mm.start():end])
+pub = "\n".join(published)
+for ln in blk.splitlines():
+    tm = re.match(r"^- ([A-Z]+:[0-9A-Z]+) ([+-]?\d+\.\d+)%", ln)
+    if not tm:
+        continue
+    tick, pct = tm.group(1), tm.group(2)
+    assert tick in pub, "%s is not a published row" % tick
+    row = [l for l in pub.splitlines() if l.startswith("| %s |" % tick)]
+    assert row, "%s has no row" % tick
+    assert pct in row[0], "%s percentage %s does not match the country table (%s)" % (tick, pct, row[0])
+    print("event row OK:", tick, pct)
+print("WHAT-MATTERS ASSERTIONS OK")
+PY
+
+# 6 - the backdrop table carries a non-empty 5-session chg for every market.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^## Market backdrop\s*$(.*?)^## ", body, re.M | re.S)
+assert m, "no Market backdrop section"
+tbl = [l for l in m.group(1).splitlines() if l.startswith("|")]
+hdr = [c.strip() for c in tbl[0].strip().strip("|").split("|")]
+assert "5-session chg" in hdr, "backdrop table has no 5-session chg column: %s" % hdr
+i = hdr.index("5-session chg")
+rows = [l for l in tbl[2:] if l.strip()]
+assert len(rows) == 4, "backdrop has %d market rows, expected 4" % len(rows)
+for r in rows:
+    cells = [c.strip() for c in r.strip().strip("|").split("|")]
+    assert len(cells) == len(hdr), "backdrop row has %d cells, expected %d" % (len(cells), len(hdr))
+    assert cells[i], "empty 5-session chg cell in %s" % cells[0]
+    assert re.search(r"[+-]?\d", cells[i]), "non-numeric 5-session chg in %s: %s" % (cells[0], cells[i])
+print("backdrop 5-session column OK")
 PY
 ```
 
@@ -843,6 +968,16 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.5 - 2026-11-10.** The brief grew a `## What matters today` section directly under the
+  TL;DR, carrying **two lists of three**: *Top 3 real events* (published rows with a sourced,
+  company-specific catalyst - never padded with unsourced rows) and *Top 3 artifact traps* (the
+  published numbers a reader is most likely to misquote). The `## Market backdrop` table gained a
+  **5-session chg** column (`close[-1]` vs `close[-6]` of the same chart fetch), because the
+  one-session move alone inverts the read: on 2026-11-10 the KOSPI's +4.39% was a bounce inside a
+  **-7.25%** five-session drawdown and the Hang Seng's +0.44% sat inside a **+4.38%** five-session
+  gain. Two new machine assertions (5: the What-matters block carries exactly three items per
+  list and every event ticker is a published row with a matching percentage; 6: the backdrop's
+  5-session cell is present and numeric for all four markets).
 - **v1.4 — 2026-11-10.** Two defects closed. (1) **The down-leg screener filter**: the step-2
   snippet applied `change > 2` to BOTH legs, so re-sorting the gainer list ascending returned the
   gainers again and every loser row was silently lost; the legs now use `change > 2` and
