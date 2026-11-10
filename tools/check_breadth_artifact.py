@@ -59,6 +59,7 @@ REQUIRED_FRONTMATTER = [
     "data_date",
     "live_date",
     "breadth_universe",
+    "cross_reference",
 ]
 
 REQUIRED_CSV_COLS = [
@@ -221,6 +222,25 @@ def check(md_path, csv_path, json_path, regime_path, reply_path):
     for flag in ("uncertainty", "late_cycle"):
         if flag in fm and parse_bool(fm[flag]) is None:
             failures.append(f"front matter `{flag}` is not a boolean: {fm[flag]!r}")
+
+    # --- 2b. the cross-reference must name a REAL counterpart --------------------------
+    # The renderer used to hardcode the literal template `daily-screens/<date>/breadth.md`,
+    # so the published artifact carried a placeholder that points at nothing, and the
+    # checker did not look at the field at all. The end-of-day counterpart of an intraday
+    # read is the directory of the FIRE date (cron #09 closes that same session at
+    # 18:30 ET), so the path must carry the live_date, not the settled data_date.
+    xr = fm.get("cross_reference", "")
+    if xr:
+        if "<date>" in xr or not re.search(r"\d{4}-\d{2}-\d{2}", xr):
+            failures.append(
+                "front matter `cross_reference` carries no concrete date — the literal "
+                f"`<date>` placeholder must not ship: {xr!r}"
+            )
+        elif fm.get("live_date") and fm["live_date"] not in xr:
+            failures.append(
+                f"front matter `cross_reference` does not name the live_date's end-of-day "
+                f"counterpart ({fm['live_date']}): {xr!r}"
+            )
 
     # --- 3. the section skeleton, in order --------------------------------------------
     seen = []

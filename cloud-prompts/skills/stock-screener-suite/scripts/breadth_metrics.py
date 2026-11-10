@@ -820,7 +820,11 @@ def render_markdown(metrics: dict, live: dict | None = None) -> str:
         f"breadth_universe: \"{u['filter']}, {n_lc} names\"",
         f"vix_quote_time: \"{fill('vix_quote_time')}\"",
         f"vix_pair: \"{fill('vix_pair')}\"",
-        'cross_reference: "end-of-day counterpart: daily-screens/<date>/breadth.md (cron #09, 18:30 ET)"',
+        # The cross-reference must name the FIRE date's end-of-day counterpart (the session
+        # cron #09 closes at 18:30 ET on the SAME day this intraday read fires), not a
+        # literal `<date>` placeholder and not the SETTLED data_date's directory.
+        f"cross_reference: \"end-of-day counterpart: daily-screens/{live.get('live_date') or data_date}"
+        f"/breadth.md (cron #09, 18:30 ET)\"",
         f"size_cut_pct: {r['size_cut_pct']}",
         f"uncertainty: {str(r['uncertainty']).lower()}",
         f"late_cycle: {str(r['late_cycle']).lower()}",
