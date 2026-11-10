@@ -389,15 +389,22 @@ fi
   never checked is not a checked byte, and the checker is the only thing standing between the
   artifact and the reader.
 - **The reply publishes the count.** One line in `### Files`, after the file list:
-  `contract: 16/16`. A reader must be able to see that the artifact was **verified**, not
+  `contract: 17/17`. A reader must be able to see that the artifact was **verified**, not
   assumed. (The checker also accepts `--reply <file>` and verifies that published count — use
   it if you keep the reply text on disk.)
+- **Publish the number the checker PRINTS.** The checker behind the `NTRT_CONTRACT_CHECK_V2`
+  marker runs **17** checks, and `--reply` FAILS if the published pair is anything other than
+  `17/17`. An earlier revision of this section said `16/16` — a run that followed it literally
+  would fail the REPLY check even with every artifact check green. Read the count off the
+  checker's own output line, never from memory.
 - **If the checker cannot be fetched**: still deliver the brief, publish
   `contract: NOT RUN (checker fetch failed)` on that line, and count it in `errors:`. Never
   claim a check that did not run.
-- The sixteen checks, in one place: `SECTIONS · SECTION_EMPTY · NO_CATALYSTS · ONE_NAME_ONCE ·
+- The seventeen checks, in one place: `SECTIONS · SECTION_EMPTY · NO_CATALYSTS · ONE_NAME_ONCE ·
   MD_CSV_AGREE · CSV_CONTRACT · PCT_ADV_EMPTY · MKTCAP_FORMAT · NOISE_FLAG · TLDR_BULLETS ·
-  TLDR_ADV_CHECK · GATE · FOURCELL · FOURCELL_EX · SUBFLOOR · ALSO_CLEARED`.
+  TLDR_ADV_CHECK · GATE · FOURCELL · FOURCELL_EX · SUBFLOOR · ALSO_CLEARED · YESTERDAY`.
+  `YESTERDAY` is the seventeenth — it arrived with §13 and this list was never updated.
+  Verified 2026-11-10 against the checker's own `CONTRACT_CHECKS` constant.
 
 ---
 
@@ -532,6 +539,12 @@ done
   ±2.5% snapshot landed. A tape **longer** than the old band is normal, not a deviation; only a
   ~120-row tape is. Read the expected size out of `cloud-prompts/_shared/preopen-capture.md`
   (`PROCEDURE_VERSION`) if you need to quote it.
+- **A short tape is not a screen.** Measured on the 2026-11-10 fire: the 08:30 checkpoint came
+  back with **49 rows** — well under the size of a movers-sorted snapshot — and it covered only
+  6 of the 50 published names, **none of which carried a source URL**. With no `ref`, §11's rule
+  forbids publishing the tape's `why` as a catalyst, so a short tape means every catalyst has to
+  come from a search instead. Say `pre-open tape: short (N rows)` in the source-health section
+  and count it as a degraded source.
 - **A tape row is a lead, not a verdict.** Use the tape's `why` as the catalyst **only when it
   carries a `ref` URL and its `conf` is not `low`**; then the cell names the driver and the
   source URL. For `conf: unverified` or a missing `ref`, **verify it with one fetch of the URL**
@@ -555,8 +568,16 @@ gapped at all when the screen was pulled (SUPN) was at −35% an hour later.
   pulls, or that crossed the 3% band in either direction. Name the ticker and both numbers.
 - **A truncated delta pull is not a flag** — check `totalCount` against the rows returned
   (§7) and skip the flag if the pull did not complete.
-- If the delta pull could not be made (the clock ran past 09:25, the network failed), **say so
-  in Flags** — one line — and carry on. Never publish a number from the delta pull.
+- If the delta pull could not be made (the network failed), **say so in Flags** — one line — and
+  carry on. Never publish a number from the delta pull.
+- **A LATE delta pull is still worth taking.** The 09:25 window is a target, not a gate: a run
+  whose own latency (50 catalyst lookups, the contract check) carries it to 09:30 can still take
+  the pull, because TradingView keeps serving the last pre-market print for a short while after
+  the open. Take it, use it for flags only, and **state the actual pull time in Flags** — a pull
+  taken after the open may already include the opening trade, and the reader has to know that.
+  Measured on the 2026-11-10 fire: the pull landed at 09:32 ET and produced 16 movement flags
+  the 09:03 pull alone could not show (PXLW +18.9% → +38.3%, APPS −23.0% → −26.8%, SECZ
+  +29.3% → +26.0%, and two names crossing back out of the screen).
 
 
 ---

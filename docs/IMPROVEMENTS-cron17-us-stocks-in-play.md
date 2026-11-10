@@ -4,6 +4,13 @@ Findings from the 2026-11-04 pre-close fire (settled session, 15:50 ET).
 Two are reusable by any routine that uses the TradingView scanner or the
 `market-recap` bridge, and both cost a wrong board if missed.
 
+**§10–§12 were added 2026-11-10** from the 2026-11-09 open slot, which took 25m17s: the
+09:50 universe pull is now **pre-filtered** (a union of three legs, 10,696 → 7,517
+requests, **0 of the 767 board names missed**), the **volume-basis factor comes from the
+polygon call the routine already makes** (−2,328 requests), and the spec's two
+conflicting instructions for the same published field are reconciled. The source is
+**throughput-capped at ~17 req/s**, so fewer requests is the only lever that exists.
+
 ---
 
 ## 1. NEVER paginate a volatile TradingView filter — pull it in ONE call
@@ -237,3 +244,145 @@ The 2026-11-06 run's first cut left **21 names below $50M inside the tiered set*
 in Tier A. **Applying it as a screen reproduces the prior board's chain** and keeps the
 published board comparable across sessions — the same reasoning the skill already states
 for the price and dollar-volume floors.
+
+---
+
+## 10. The 09:50 universe pull is PRE-FILTERED — and the pre-filter is a UNION (2026-11-10)
+
+**Measured 2026-11-10, from the 2026-11-09 open slot (25m17s end to end).** The open
+slot pulled 5-minute bars for **10,696 symbols** and kept **767** of them. That pull was
+**11m49s — 46% of the whole run** — and it is pure overhead for the 93% of symbols that
+cannot reach the board.
+
+The first instinct is to raise the concurrency. **That was measured and it is worth
+nothing.** 260 symbols per round, `range=5d`:
+
+| Workers | Throughput | Failures |
+|---|---|---|
+| 12 | 17.1 req/s | 0 |
+| 24 | 16.7 req/s | 0 |
+| 48 | 16.7 req/s | 0 |
+
+The Yahoo chart API is **throughput-capped at ~17 req/s per egress**, and the 2026-11-09
+run was already at 15.1 req/s on 12 workers. The edge throttles; the worker pool does
+not matter. **So the only way to make the pull faster is to make FEWER requests.**
+
+The cut is a **union of three legs**, all computed from the ONE unpaginated scanner call
+the routine already makes:
+
+| Leg | Test | Catches |
+|---|---|---|
+| turnover | `close × volume ≥ $100k` | names whose 09:50 turnover could clear the $500k floor — including the big movers that had FADED by pull time |
+| move | `abs(change) ≥ 2pp` OR `abs(gap) ≥ 2pp` | thin names the scanner prices correctly but whose turnover product is small |
+| no price | the scanner cannot price the symbol | dead / unlisted / OTC — always pulled |
+
+**Each leg alone is wrong, and the ground truth says so.** Tested against all **767** names
+that made the 2026-11-09 board:
+
+| Filter | Symbols pulled | Board names missed | of which ≥ 5% |
+|---|---|---|---|
+| turnover ≥ $500k | 3,407 | **100** | 14 |
+| turnover ≥ $250k | 4,397 | **27** | 7 |
+| turnover ≥ $100k | 5,839 | 3 | 0 |
+| move band alone (≥ 2pp) | 3,192 | **110** | 11 |
+| **move band OR turnover ≥ $100k OR no price** | **7,517** | **0** | **0** |
+
+The move-leg failure is the interesting one, and it is a trap for anyone who assumes the
+scanner's live quote is a proxy for the 09:50 state. **It is not** — the 09:50 → 10:00
+drift is largest for the biggest movers: **SKHY +3.11% at 09:50 vs +0.84% at 10:00, NBIS
++7.41% vs +1.64%, CRWV +6.34% vs −0.37%, MRNA +3.46% vs +1.01%.** A band-only filter
+misses exactly the names the routine exists to find.
+
+**$100k is not a tuned number.** It is 5× headroom below the $500k floor, and the measured
+miss count goes **9 → 0** between the $250k and $100k boundaries. The residual hole is
+the symbol the scanner cannot price at all, and the artifact must disclose the pre-filter
+and the universe size on both sides of it — a reader who knows a name was skipped can
+weigh it; a reader who does not cannot.
+
+**Net effect:** the pull drops from 10,696 to 7,517 requests (**−30%**), and with §11 below
+the routine's total Yahoo traffic drops from 13,024 requests to 7,517 (**−42%**).
+
+## 11. The volume-basis factor comes from polygon — there is NO second price pull (2026-11-10)
+
+The 2026-11-09 open slot measured each symbol's own volume-basis factor by pulling a
+**5-day 5-minute series and a 1-month daily series for 1,164 trigger survivors — 2,328
+extra Yahoo requests, 3m00s.** That work was already done by the polygon call the routine
+makes, and nobody noticed.
+
+**Measured 2026-11-10: the Yahoo daily bar and the polygon daily bar are the SAME series.**
+Yahoo trailing-10 mean ÷ polygon trailing-10 mean = **median 0.9996, p10 0.9966, p90
+1.0000** across 1,158 symbols; the single-session volume ratio is **median 1.0002, p10
+1.0000, p90 1.0053** across 1,162. Two consequences:
+
+1. **The factor can be built from the polygon call that already happens.** `_shared/
+   rvol_fetch.py` now returns the prior session's own daily volume in a `prior_session`
+   block (`"capability": "RVOL_FETCH_V2"`), and the 5-minute series is fetched with
+   `range=10d` so the prior session's 5-minute total arrives in the SAME response. The
+   payload grows ~5KB → ~38KB per symbol, but the per-request time is flat (0.11s →
+   0.14s measured) and the throughput ceiling is unchanged. **Net: −2,328 requests.**
+2. **Today's board carried a small basis bias, and it is now gone.** The numerator was on
+   the Yahoo daily basis while the denominator was on the polygon basis; the ~0.04%
+   mismatch understated every published pace. Building the factor from polygon's own
+   prior session puts numerator and denominator on one series.
+
+The published CSV column `vol_basis_factor` keeps its meaning (< 1, the 5-minute series'
+completeness against the daily bar), so published paces stay comparable with the boards
+already on the branch.
+
+**The helper's fetch now DEMANDS the capability marker.** An older copy of
+`rvol_fetch.py` has no `prior_session` block, and the symptom of using it is silent: the
+routine falls back to the second per-symbol pull and loses 3 minutes without saying so.
+The CDNs cache `main` independently, so a marker check — not a file-exists check — is the
+only way to be sure the fetched copy is the current one.
+
+## 12. The skill spec told two routines to do the same thing differently (2026-11-10)
+
+The open-slot section of the skill spec said **"Use the scanner's running session volume
+as the numerator … so no correction is needed."** The pre-close board's practice — and the
+2026-11-06 and 2026-11-09 open boards — used the **Yahoo 5-minute volume through the
+09:50 bar** with a per-symbol factor instead.
+
+The scanner's volume is the running total **at the moment the scanner is pulled**. If the
+pull happens at 10:04 it already carries the 09:50 → 10:04 volume, so a "volume to 09:50"
+built from it is wrong by exactly that increment — and the increment lands on the largest
+movers. The spec now states the bar-based reconstruction explicitly (a bar's timestamp is
+the START of its interval: the price at 09:50 is the close of the 09:45 bar, and the volume
+to 09:50 is the sum of the 09:30, 09:35, 09:40 and 09:45 bars).
+
+**The rule this exposes: a spec that carries two ways to compute the same published field
+will have one of them used by half the fleet.** The open slot is the only routine that
+publishes a "volume to 09:50", and it now says once, in the section that publishes it,
+which reconstruction is correct and why.
+
+**The change was verified by A/B, not by inspection.** The old script and the new script
+were both run for the same date within minutes of each other, and the **`avg10` block came
+out BYTE-IDENTICAL** (12,000 symbols, same ticker set, same values) — so the pre-close
+slot's denominator is provably unaffected by the new field. The new `prior_session` block
+returned the expected prior session (**2026-11-06**) with **12,570** volumes and
+`"capability": "RVOL_FETCH_V2"`, and its volumes agree with the Yahoo daily bar to a
+median of **1.0002**.
+
+## 13. The trailing-10 denominator is a LIVE upstream series — it moves between boards (2026-11-10)
+
+Found while A/B-testing the helper. Fetching the same ten sessions (2026-10-26 →
+2026-11-06) on 2026-11-09 and again on 2026-11-10 returned **three symbols whose
+10-session average changed materially**: **NCI −87.5%, JOB −96.7%, OFAL −90.0%**. The
+changes are exact fractions (−7/8, −29/30, −9/10), which is the signature of **one
+session's volume being restated upstream**, not of a drifting average.
+
+**This is upstream drift, not a defect in the routine** — and it is invisible unless you
+look, because the helper reports `n = 10` for every symbol either way: a symbol with one
+session restated still has ten sessions, so it passes the completeness test and its
+denominator silently changes.
+
+**What it means for the fleet:** the pre-close board's `RVol` for a name can differ from
+the previous board's for reasons that have nothing to do with the tape. That is inherent
+to a market-wide denominator read from a live feed, and the published `avg_vol_10d` is the
+honest value on the day it was read — but a board-to-board comparison of RVol for these
+names should not be read as a change in the stock. **The rule: the denominator is dated,
+and a published pace or RVol carries the date of the denominator it was computed against.**
+
+**The same argument applies to the volume-basis factor**, and it is why the factor stays
+per-symbol: it measured **0.856** on 2026-11-05 and **0.9168** on 2026-11-09, so a global
+constant applied to either day would be wrong for a large part of the universe. A constant
+is not a shortcut here; it is a wrong number.

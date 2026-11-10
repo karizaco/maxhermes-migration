@@ -160,3 +160,70 @@ guard — and requires the checker to fail each one. **29/29 contract cases beha
 The three prompts were the only thing that needed a `cron_update`: they said "If
 `${XAI_API_KEY}` is unset, write nothing", which directly contradicts the skip marker. They are
 deployed byte-exactly and hash-verified against the repo blobs.
+
+---
+
+## 2026-11-10 — the digest's "When it broke" column mixed two timezones
+
+Found during the 2026-11-10 09:50 ET checkpoint (the fire that produced
+`preopen-feed/2026-11-10-0950.{jsonl,md}`).
+
+### The defect
+
+`cloud-prompts/_shared/preopen_digest.py` → `fmt_ts()` sliced the timestamp STRING
+(`s[11:19]`) and printed the result as if every timestamp were ET. But the tape carries
+two different shapes, and they are not the same zone:
+
+| field | shape | zone |
+|---|---|---|
+| `ts` | `2026-11-10T09:57:44-05:00` | ET (the capture clock, `_et()` aware) |
+| `trending_ts` | `2026-11-10T14:38:21Z` | **UTC** (the stocktwits snapshot's own stamp) |
+
+Slicing both printed the UTC stamp AS IF IT WERE ET — five hours late in November (EST
+is UTC-5).
+
+### Why it matters
+
+That column is the **WHEN** of the tape — the whole reason the capture exists is WHO /
+WHAT / WHEN, and cron #17 (`us-stocks-in-play`, 15:50 ET) reads it to date a catalyst.
+The published 2026-11-10 09:50 board showed:
+
+```
+| HIMS | -9.65% | high | ... its Q3 report showed a surprise loss ... | 14:38:21 |
+```
+
+`14:38:21` is the UTC stamp of news that actually broke at **09:38:21 ET**. The error is
+the dangerous kind: the value still *looks* like a time of day, and it lands in the
+FUTURE relative to the capture that published it, so it survives a glance.
+
+### The fix
+
+`fmt_ts()` now PARSES the offset and CONVERTS to `America/New_York` instead of slicing
+characters. A naive timestamp (no offset) is read as ET — that is the capture script's
+own format — and never as UTC. `ZoneInfo` is used rather than a hardcoded `-5`, so it
+stays correct across the DST boundary.
+
+### Evidence
+
+- Before: `fmt_ts("2026-11-10T14:38:21Z")` → `14:38:21` (wrong; ET is 09:38:21).
+- After: `fmt_ts("2026-11-10T14:38:21Z")` → `09:38:21` (correct).
+- The re-rendered 2026-11-10 09:50 board shows `09:38:21` for HIMS and contains **no**
+  `1[4-9]:` clock time in the table.
+- The tape `.jsonl` is byte-identical before and after the re-render
+  (`46ea4a75cde57c37d2922beb71483b3d64143f5d5a3db098e734e3e3a7f3e998`) — only the
+  rendering changed, which is the point: the board is derived from the tape, never
+  hand-edited.
+- Guard: `tools/test_preopen_digest_contract.py` renders a synthetic tape carrying BOTH
+  shapes, asserts every displayed time is the ET wall clock, asserts the board agrees
+  with the tape's row count and tickers, and **mutates the renderer back to the
+  string-slice behaviour and requires the test to fail** — so the guard is proven to
+  bite, not merely to pass.
+
+### Deployment
+
+| file | deployed? | note |
+|---|---|---|
+| `cloud-prompts/_shared/preopen_digest.py` | run-time fetch | **no `cron_update` needed** — the routine downloads it at fire time, so the NEXT fire uses it |
+| `tools/test_preopen_digest_contract.py` | repo | the regression test |
+
+No prompt file changed, so no prompt redeploy and no byte-drift risk.

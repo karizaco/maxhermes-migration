@@ -121,6 +121,7 @@ Notes on filters:
 | Exchange code | What it is | Why drop |
 |---|---|---|
 | `OTC`, `PINK`, `OTCBB`, `GREY` | US OTC | ADR duplicates of primary Asian listings |
+| `SAPSE` (Sapporo), `SSEO` (Osaka) | JP regional venues | Same class as NAG/FSE -- their prints are stale or divergent, never the primary line |
 | `LSE`, `LSX` | London listings + German mirrors | Asian companies sometimes have a London listing as a secondary venue (older FTSE structure). Primary remains JP/TW/HK/KR. |
 | Any exchange starting with `TPE` other than `TWSE` (e.g., TPEX) | Taipei Exchange (Taiwan OTC) | Sub-tier of Taiwan; only TWSE primary counts unless TWSE is missing |
 | `NASDAQ:ASX` for HK / KRX names | ADR pre-listing | Same drop rule as EU |
@@ -134,7 +135,33 @@ Notes on filters:
 | 3 | `HKEX` (Hong Kong) | HK | Primary for HK-listed. |
 | 4 | `KRX` (Korea) | KR | Covers both KOSPI and KOSDAQ listings. |
 | 5 | `TPEX` (Taipei Exchange) | TW | OTC tier — use only when TWSE result is missing for the same company. |
-| 6 | `NAG` (Nagoya Stock Exchange) | JP | Regional JP secondary — keep only when TSE doesn't list the same ticker. |
+| 6 | `NAG` (Nagoya Stock Exchange) | JP | Regional JP secondary — see the resolution rule below. |
+| 7 | `SAPSE` (Sapporo), `SSEO` (Osaka) | JP | Regional JP secondary — see the resolution rule below. |
+
+### THE JP REGIONAL-PRINT RULE (measured 2026-11-10 -- read this before publishing a JP row)
+
+**A regional JP venue print (NAG / SAPSE / SSEO / FSE) is NEVER the primary line. Resolve it
+against TSE and DROP the regional row.** Measured on 2026-11-10: **all 13** regional JP rows in
+the scan diverged from their TSE line, some wildly --
+
+| Ticker | Regional print | TSE line (correct) |
+|---|---|---|
+| 4502 Takeda | `SAPSE` +23.26% | `TSE` 6,593, **-1.20%** |
+| 5333 NGK Corp | `NAG` -33.40% | `TSE` +6.33% |
+| 7011 Mitsubishi Heavy | `NAG` -5.23% | `TSE` +2.87% |
+| 8306 MUFG | `NAG` +10.83% | `TSE` +2.05% |
+
+The Takeda `SAPSE` print was **byte-identical to the previous day's artifact** (+23.26% both
+days) -- a frozen regional quote, not a live print. The rule:
+
+1. For every row whose `exchange` is not `TSE`, query the scanner for the same ticker name
+   (one `{"left":"name","operation":"equal","right":"<ticker>"}` call per ticker; the scanner
+   answers with BOTH venues).
+2. If a `TSE` line exists, **substitute the TSE close and change** and drop the regional row.
+3. If NO `TSE` line exists, **drop the row entirely** -- never publish a regional print.
+
+Do this BEFORE the 15-up / 15-down cap: a bogus +23.26% row otherwise takes the top slot and
+displaces a real mover.
 
 ### Dedupe logic
 1. **Regional primary beats US ADR.** E.g., Toyota → `TSE:7203` (primary), never `NYSE:TM` (ADR).
@@ -198,21 +225,28 @@ artifact.
 
    ```bash
    # --- 8 screener calls (unchanged shape) ---
+   # The UP and DOWN legs need DIFFERENT change filters. Re-sorting the gainer list
+   # ascending does NOT return losers -- it returns the same gainers, sorted the other
+   # way -- so a shared `change > 2` filter on both legs silently returns ZERO decliners
+   # and the brief loses every loser row. (Measured 2026-11-10: the up leg returned
+   # 216/79/17/105 rows and the down leg 28/15/6/8 -- with the old shared filter both
+   # legs returned the gainers only.)
    for M in japan taiwan hongkong korea; do
      for D in desc asc; do
+       if [ "$D" = desc ]; then OP=greater; RIGHT=2;  SO=desc; else OP=less; RIGHT=-2; SO=asc; fi
        curl -sS --max-time 30 -X POST "https://scanner.tradingview.com/$M/scan" \
          -H "Content-Type: application/json" -H "User-Agent: Mozilla/5.0" \
          -H "Origin: https://www.tradingview.com" -d '{
            "filter":[{"left":"type","operation":"equal","right":"stock"},
                      {"left":"country","operation":"equal","right":"<Country>"},
-                     {"left":"change","operation":"greater","right":2},
+                     {"left":"change","operation":"'$OP'","right":'$RIGHT'},
                      {"left":"market_cap_basic","operation":"greater","right":<local_cap_floor>},
                      {"left":"close","operation":"greater","right":5}],
            "options":{"lang":"en"},
            "columns":["name","description","close","change","change_abs","volume",
                       "market_cap_basic","exchange","currency","sector","type",
                       "earnings_release_next_date","update_mode"],
-           "sort":{"sortBy":"change","sortOrder":"desc"},
+           "sort":{"sortBy":"change","sortOrder":"'$SO'"},
            "range":[0,600]}' -o "/workspace/_asia_${M}_${D}.json" &
      done
    done
@@ -255,8 +289,9 @@ artifact.
 4. **Apply primary-listing exchange whitelist.** For each screener output:
    - Drop any row where `exchange` is in the drop list (OTC/PINK/LSE/LSX).
    - Apply dedupe logic: regional primary beats US ADR; TPEX only if TWSE is missing.
-   - Resolve every regional JP row (NAG/FSE) against its TSE line — a stale regional print is the
-     single biggest data-integrity risk on the JP scan.
+   - Resolve every regional JP row (NAG/FSE/SAPSE/SSEO) against its TSE line per **THE JP
+     REGIONAL-PRINT RULE** below — a stale regional print is the single biggest data-integrity
+     risk on the JP scan, and on 2026-11-10 all 13 of them were wrong.
    - Drop HK rows whose `currency` is not `HKD` (the CNY counters quote off the liquid line).
    - Keep top 15 per market per direction (sort by `|change_percent|` desc) — caps each market at 30 rows.
 
@@ -320,8 +355,12 @@ artifact.
      that changes how to read it.
    - plus the US read-across block: one short paragraph and at most 3 bullets.
 
+   ## What matters today
+   ### Top 3 real events (sourced catalyst)
+   ### Top 3 artifact traps (do not quote)
+
    ## Market backdrop
-   | Market | Index | Close | Chg | Session date | Source |
+   | Market | Index | Close | Chg | 5-session chg | Session date | Source |
 
    ## Japan (JP) — session <YYYY-MM-DD>
    ### REACTION tier
@@ -348,7 +387,9 @@ artifact.
    - `## TL;DR` carries **exactly 3 bullets** plus the read-across block. A fourth bullet is a
      defect, not a style choice.
    - `## Market backdrop` carries each market's index level **with that market's session date** —
-     the reader must be able to see in one table that a market is stale.
+     the reader must be able to see in one table that a market is stale — and a **5-session chg**
+     column, so a one-day move can be read against the trend it sits in. See *What matters today*
+     for both new blocks.
    - A country whose market is closed replaces its whole section with the "no data — closed"
      block; that country's `###` tiers are then absent.
    - `## Flags` is the "numbers a human should distrust" section — thin prints, limit moves,
@@ -426,6 +467,64 @@ suffixes (`Ltd`, `Co`, `Corporation`, `Inc`, `Holdings`) before comparing.
 still applies; no price targets. A US name with neither an ADR nor a direct peer is **not** a US
 exposure: write "no direct US-listed proxy" instead of stretching the link. Two real names beat
 three invented ones.
+
+## What matters today (the front-loaded 6)
+
+Two lists of three, immediately after the TL;DR, so the reader gets the six items that carry the
+day BEFORE the 100-row table. This section exists because the artifact's movers list is mostly
+breadth: on a typical run 90+ of the published names carry no sourced catalyst, and the numbers a
+reader is most likely to misread are limit-locked prints.
+
+```markdown
+## What matters today
+
+### Top 3 real events (sourced catalyst)
+- TSE:6269 +15.86% - Modec, Inc. - Q3 FY26: 9M operating profit +27.8%, backlog US$15.9bn, FY26 guidance raised, JPY10bn buyback.
+
+### Top 3 artifact traps (do not quote)
+- `SAPSE:4502` Takeda +23.26% - a frozen regional-venue print, byte-identical to the previous artifact - the published number is `TSE:4502` -1.20%.
+```
+
+### Top 3 real events - selection rule
+
+- A row qualifies only if its CATALYST cell carries a **sourced, company-specific** catalyst:
+  earnings or guidance, a buyback or capital action, M&A, a capital raise, or a named
+  broker/press action on that company (e.g. a Morgan Stanley note on GenScript).
+- Rank by `|change %|` desc. **Never pad the list with unsourced rows** - if fewer than three
+  rows are sourced, publish the rows you have and state `only <n> sourced catalysts today`.
+- A **macro driver is not a company event**: lower crude, the Wall Street tape, a policy change, a
+  sidecar trigger or a limit-lock cluster belongs in the TL;DR or in the traps list, never here.
+- Every ticker in this list must already appear as a published row in its country section, with the
+  **same percentage** - the block is a pointer, never a second source of truth.
+
+### Top 3 artifact traps - selection rule
+
+- These are the three **published** numbers a reader is most likely to quote and be wrong about:
+  limit-locked or limit-pinned prints (Taiwan's +10% cluster, Korea's ±30% preferred lines),
+  stale or divergent venue prints (JP regional venues, OTC ADR fields), intraday-vs-close
+  confusion, and stale index quotes.
+- The test: **the trap must change how the HEADLINE is read.** A trap that only matters to the
+  method belongs in `## Flags`, not in this block.
+- Each entry names the misleading number, says why it is wrong, and gives the published number
+  instead. A trap with no published number to quote instead is not a trap - it is a caveat.
+
+### The backdrop's 5-session chg
+
+`| Chg |` is the one-session move. `| 5-session chg |` is the same index's move over the
+**five sessions before today**: `close[-1]` against `close[-6]` of the same chart fetch. Five
+SESSIONS, not five calendar days - a holiday inside the window shifts the base bar, which is
+correct.
+
+- The `range=10d` fetch in step 2 returns ~10 daily bars, so `close[-6]` normally exists. If a
+  market returned **fewer than 6 bars**, print `n/a` in the cell and say so in the caveat line -
+  **never leave the cell empty** and never substitute the 1-session move.
+- The index % changes and the 5-session % changes come from the **chart API's bars**, not from the
+  bridge: the bridge's `previous_close` is one session stale for `^TWII` and `^HSI` (measured
+  2026-11-10).
+
+This column is what stops a one-day number from being over-read: on 2026-11-10 the KOSPI's
+**+4.39%** was a bounce inside a **-7.25%** five-session drawdown, while the Hang Seng's **+0.44%**
+sat inside a **+4.38%** five-session gain - the opposite of what the one-day column alone says.
 
 ## Chat reply (country blocks, in order, with session dates)
 
@@ -519,6 +618,67 @@ for ln in body.splitlines():
 assert not empty, "EMPTY CATALYST CELL on: %s" % empty[:5]
 
 print("ASSERTIONS OK")
+PY
+```
+
+```bash
+# 5 - the WHAT MATTERS block exists, carries exactly three items in each list, and
+#     every event ticker is a published row whose percentage matches the country table.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^## What matters today\s*$(.*?)^## ", body, re.M | re.S)
+assert m, "no '## What matters today' section"
+blk = m.group(1)
+for head in ("Top 3 real events", "Top 3 artifact traps"):
+    hm = re.search(r"^### %s.*$" % re.escape(head), blk, re.M)
+    assert hm, "missing block: %s" % head
+    seg = blk[hm.end():]
+    nxt = re.search(r"^### ", seg, re.M)
+    seg = seg[:nxt.start()] if nxt else seg
+    items = [l for l in seg.splitlines() if l.startswith("- ")]
+    assert len(items) == 3, "%s carries %d items, expected 3" % (head, len(items))
+    print("%s: 3 items OK" % head)
+
+# every event ticker must be a published row, with the same percentage
+COUNTRY = re.compile(r"^## (?:Japan|Korea|Taiwan|Hong Kong)[^\n]*$", re.M)
+published = []
+for mm in COUNTRY.finditer(body):
+    nxt = re.search(r"^## ", body[mm.end():], re.M)
+    end = mm.end() + (nxt.start() if nxt else len(body) - mm.end())
+    published.append(body[mm.start():end])
+pub = "\n".join(published)
+for ln in blk.splitlines():
+    tm = re.match(r"^- ([A-Z]+:[0-9A-Z]+) ([+-]?\d+\.\d+)%", ln)
+    if not tm:
+        continue
+    tick, pct = tm.group(1), tm.group(2)
+    assert tick in pub, "%s is not a published row" % tick
+    row = [l for l in pub.splitlines() if l.startswith("| %s |" % tick)]
+    assert row, "%s has no row" % tick
+    assert pct in row[0], "%s percentage %s does not match the country table (%s)" % (tick, pct, row[0])
+    print("event row OK:", tick, pct)
+print("WHAT-MATTERS ASSERTIONS OK")
+PY
+
+# 6 - the backdrop table carries a non-empty 5-session chg for every market.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^## Market backdrop\s*$(.*?)^## ", body, re.M | re.S)
+assert m, "no Market backdrop section"
+tbl = [l for l in m.group(1).splitlines() if l.startswith("|")]
+hdr = [c.strip() for c in tbl[0].strip().strip("|").split("|")]
+assert "5-session chg" in hdr, "backdrop table has no 5-session chg column: %s" % hdr
+i = hdr.index("5-session chg")
+rows = [l for l in tbl[2:] if l.strip()]
+assert len(rows) == 4, "backdrop has %d market rows, expected 4" % len(rows)
+for r in rows:
+    cells = [c.strip() for c in r.strip().strip("|").split("|")]
+    assert len(cells) == len(hdr), "backdrop row has %d cells, expected %d" % (len(cells), len(hdr))
+    assert cells[i], "empty 5-session chg cell in %s" % cells[0]
+    assert re.search(r"[+-]?\d", cells[i]), "non-numeric 5-session chg in %s: %s" % (cells[0], cells[i])
+print("backdrop 5-session column OK")
 PY
 ```
 
@@ -808,6 +968,24 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.5 - 2026-11-10.** The brief grew a `## What matters today` section directly under the
+  TL;DR, carrying **two lists of three**: *Top 3 real events* (published rows with a sourced,
+  company-specific catalyst - never padded with unsourced rows) and *Top 3 artifact traps* (the
+  published numbers a reader is most likely to misquote). The `## Market backdrop` table gained a
+  **5-session chg** column (`close[-1]` vs `close[-6]` of the same chart fetch), because the
+  one-session move alone inverts the read: on 2026-11-10 the KOSPI's +4.39% was a bounce inside a
+  **-7.25%** five-session drawdown and the Hang Seng's +0.44% sat inside a **+4.38%** five-session
+  gain. Two new machine assertions (5: the What-matters block carries exactly three items per
+  list and every event ticker is a published row with a matching percentage; 6: the backdrop's
+  5-session cell is present and numeric for all four markets).
+- **v1.4 — 2026-11-10.** Two defects closed. (1) **The down-leg screener filter**: the step-2
+  snippet applied `change > 2` to BOTH legs, so re-sorting the gainer list ascending returned the
+  gainers again and every loser row was silently lost; the legs now use `change > 2` and
+  `change < -2` with matching sort orders. (2) **THE JP REGIONAL-PRINT RULE**: `SAPSE` (Sapporo)
+  and `SSEO` (Osaka) joined `NAG`/`FSE` in the resolve-and-drop list — all 13 regional JP prints
+  on 2026-11-10 diverged from their TSE line, including a `SAPSE:4502` Takeda print that was
+  byte-identical to the previous day's artifact (+23.26%) while `TSE:4502` closed -1.20%. The
+  rule resolves every regional row against TSE and drops it before the per-market cap.
 - **v1.3 — 2026-11-05.** The holiday detector was rebuilt on **date provenance**: a closed market returns the prior session's rows, not zero, so the row-count heuristic could never see a closure (it missed 2026-11-03's Japan, which served the 2 Nov session as a healthy 128-row universe). The index's own session date (`^N225`/`^TWII`/`^HSI`/`^KS11`, last daily bar) is now the primary test, the previous run's artifact is the second independent proof, and the row count is a secondary signal only. A closed market now gets a "no data — closed" section with **no prices published**. Also added: the US read-across block and its 3-bullet TL;DR, the fixed artifact skeleton (TL;DR / Market backdrop / country sections / Flags / Method, source health & caveats), per-country session dates in both the artifact and the chat reply, the contiguous country-block rule for the reply, and the runnable pre-publish assertions (name uniqueness, closed-market purity, catalyst cells, reply order).
 - **v1.2 — 2026-11-04.** Output ordering made explicit: the brief is grouped **by country in the fixed order Japan → Korea → Taiwan → Hong Kong**, and inside each country every row (REACTION table + NOTABLE one-liners) is sorted by `|change %|` descending, with contiguous country blocks. The chat reply follows the same country order as the artifact.
 - **v1.1 — 2026-09-23.** Validation pass. Market codes confirmed: `japan`, `taiwan`, `hongkong`, `korea` (NOT `south_korea` — that returns 0). Added `NAG` (Nagoya) and `TPEX` (Taipei Exchange) to the secondary-venue dedupe logic — keep only when the primary venue (TSE/TWSE respectively) doesn't list the same ticker. Added HK dual-ticker dedupe (e.g., 89988 vs 9988 for Alibaba). JP results dominated by `TSE:` with ~5-10% NAG noise; TW results ~30% `TPEX:` (smaller companies not on TWSE); HK all `HKEX:` with ~5-10% dual-ticker duplicates; KR all `KRX:` clean.

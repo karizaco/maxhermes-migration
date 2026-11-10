@@ -551,7 +551,13 @@ def _one(sym: str, args, focus: dict | None = None,
     # contradiction - it is a different session. It is then excluded from both
     # the candidates and the conflict list.
     live_ok = focus.get("live_sources_session_valid", True)
-    candidates = [("focus.csv", focus.get("close"))]
+    # The label of the universe-derived close comes from the MANIFEST, not from
+    # the literal "focus.csv": when the sweep published its Focus list without a
+    # close column, the close comes from the independent sources and calling it
+    # "focus.csv" would publish a source that does not exist. (Measured
+    # 2026-11-10: the 2026-11-09 sweep published focus.md but no focus.csv.)
+    label = (focus.get("close_col") or "focus.csv").split(":")[0]
+    candidates = [(label, focus.get("close"))]
     if live_ok:
         candidates += [("tradingview", tv.get("close")),
                        ("cboe", (cboe or {}).get("close"))]
@@ -566,9 +572,15 @@ def _one(sym: str, args, focus: dict | None = None,
         if not val or primary is None:
             continue
         if abs(val - primary) <= max(0.005, primary * 0.0005):
-            agree.append(name)
+            if name not in agree:
+                agree.append(name)
         else:
             conflict.append("%s %.4f vs %.4f" % (name, val, primary))
+    # the manifest's independent confirmations (e.g. session-exact Nasdaq history)
+    # belong in the published source string
+    for lab in (focus.get("confirmed_by") or []):
+        if lab not in agree:
+            agree.append(lab)
     src = "+".join(agree) if agree else (primary_name or "none")
     if conflict:
         src += " (CONFLICT: " + "; ".join(conflict) + ")"
@@ -753,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
                 row["universe_date"] = sweep_date
                 row["ref_close_date"] = session
                 row["universe_source"] = mrec.get("ref_close_source")
+                row["confirmed_by"] = mrec.get("confirmed_by") or []
                 row["live_sources_session_valid"] = live_valid
     tv_rows = _fetch_tv(syms) if args.tv else {}
 

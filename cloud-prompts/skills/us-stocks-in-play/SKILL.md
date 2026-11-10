@@ -174,10 +174,42 @@ pace = (session volume to 09:50 ÷ trailing-10 FULL-session average volume) ÷ 0
 - **Tier A (open slot) = pace ≥ 1.5**; **Soft-A = pace < 1.5**. The bar is **1.5×, not 2.0×**,
   because the measure carries regime noise (below) that the full-session RVol does not.
 
-**Use the scanner's running session volume as the numerator.** It reconciles with the Yahoo DAILY
-bar (the same basis as the trailing-10 denominator), so no correction is needed. The 0.856
-5-minute-series ratio above is a property of Yahoo's *intraday* series only — it does **not**
-apply to the scanner's volume and must not be applied to it.
+**The numerator is the 5-minute volume through the 09:50 bar — NOT the scanner's running
+volume.** The scanner's `volume` field is the running session total AT THE MOMENT THE SCANNER
+IS PULLED; if the pull happens at 10:04 it already carries the 09:50 → 10:04 volume, so a
+"volume to 09:50" built from it is wrong by exactly that increment, and the error lands on
+the largest movers. Rebuild it from the 5-minute bars instead: a bar's timestamp is the
+START of its 5-minute interval, so **the price at 09:50 is the close of the bar stamped
+09:45** and **the session volume to 09:50 is the sum of the bars stamped 09:30, 09:35,
+09:40 and 09:45**.
+
+**The volume-basis factor comes from `polygon-io grouped_daily` — there is NO second price
+pull.** The Yahoo 5-minute series is a fraction of the true session volume, so the 09:50
+numerator has to be put on the daily-bar basis before it can be divided by the trailing-10
+average. **That fraction is NOT a constant**: it measured **0.856** on 2026-11-05 (480
+symbol-sessions) and **0.9168** on 2026-11-09 (1,163 symbols), and it moves by symbol and
+by session — which is why the factor is measured **per symbol on the prior session**
+instead of taken from a table. Measured 2026-11-10: the Yahoo daily bar and the polygon
+daily bar are the **same series** (per-session volume ratio median **1.0002**, p10 1.0000,
+p90 1.0053 over 1,162 names), so the factor can be built from the polygon call the run
+**already makes**:
+
+```
+vol_basis_factor    = yahoo_5m_total(prior session) ÷ polygon_daily_volume(prior session)
+session_vol_to_0950 = yahoo_5m_volume_through_09:50 ÷ vol_basis_factor      # daily basis
+pace                = session_vol_to_0950 ÷ avg_vol_10d ÷ 0.125
+```
+
+`_shared/rvol_fetch.py` returns the prior session's own daily volume in its
+`prior_session` block (`"capability": "RVOL_FETCH_V2"`) — that data is already in the
+helper's hands, so **no extra Yahoo request is needed**. Fetch the 5-minute series with
+**`range=10d`, not `1d`**, so the prior session's 5-minute total is in the same response:
+the payload grows from ~5KB to ~38KB per symbol, but the per-request time is flat
+(0.11s → 0.14s measured) and the throughput ceiling is unchanged.
+
+**A symbol whose prior session falls outside the 10-day window uses the GLOBAL MEDIAN
+factor** — and the artifact says so, because the factor is the only thing holding the
+numerator and the denominator on one basis.
 
 **Publish these caveats with the pace numbers, every time:**
 - The opening share is **not stable** — its daily median moved between **10.77% and 16.49%** over
@@ -530,7 +562,9 @@ Discover on the **trigger**, not on the close-to-close move. A name that gapped 
    digest. If a cap is genuinely unavoidable, state it in the artifact along with the
    **priced / unpriced counts** and which candidates the cap dropped.
 4. Record in the artifact: universe size, survivors after the trigger, survivors after the
-   floors, number priced, number tiered.
+   floors, number priced, number tiered. **In the open slot, also record the universe size
+   AFTER the pre-filter and state the pre-filter itself** — the trigger was evaluated on
+   that subset, and the reader has to know it.
 5. Compute RVol as session volume ÷ the **trailing 10 settled sessions from the same series**
    and state that denominator. A screener's own RVol column uses a different denominator and is
    not comparable across sources.
@@ -560,6 +594,47 @@ filter (measured 2026-11-06: `gap > 2` → 3,461 names). The `gap` column on a r
 open-vs-prior-close gap, and it agrees with a 5-minute-bar reconstruction to a
 **median 0.000pp** (p90 0.50pp) across 644 names — so it can be published directly.
 
+#### The 09:50 universe pull is PRE-FILTERED — and the pre-filter is a UNION (2026-11-10)
+
+**The 5-minute pull does not need every symbol in the universe.** On 2026-11-09 the open
+slot pulled 5-minute bars for **10,696 symbols** and kept **767** of them; that pull was
+**11m49s of a 25-minute run**. It is the single largest block in the routine, and the source
+is **throughput-capped at ~17 requests per second** — measured 2026-11-10 with 260 symbols
+per round: **12 workers → 17.1 req/s, 24 → 16.7, 48 → 16.7, zero failures.** Raising the
+worker count buys **nothing**, so the only way to make the pull faster is to make **fewer
+requests**.
+
+So the universe is cut before the pull, by a **union** of tests, all computed from the ONE
+unpaginated scanner call above:
+
+| Leg | Test | What it catches |
+|---|---|---|
+| **turnover** | `close × volume ≥ $100k` | the names whose 09:50 turnover could clear the slot's $500k floor — including the big movers that had FADED by the time the scanner was pulled |
+| **move** | `abs(change) ≥ 2pp` OR `abs(gap) ≥ 2pp` | the thin names the scanner prices correctly but whose turnover product is small |
+| **no price** | the scanner cannot price the symbol | always pull these (dead, unlisted, OTC) |
+
+Pull a symbol if **ANY** leg is true. Measured 2026-11-10 against the 2026-11-09 board's
+full **767-name** ground truth: **7,517 symbols pulled, 0 board names missed.**
+
+**Both legs are needed, and the measurements say why — each one alone is wrong:**
+
+- **The turnover leg ALONE at $250k LOSES 27 of the 767** board names, 7 of them moving
+  ≥ 5% (**MPAA −20.5%, LU −11.4%, EDU, MBC, ALKT, TBLA**). At $100k it loses 3.
+- **The move leg ALONE loses 110 of the 767**, 11 of them moving ≥ 5%: the scanner's live
+  quote is a **poor proxy for the 09:50 state** precisely because the 09:50 → 10:00 drift is
+  largest for the biggest movers — **SKHY +3.11% at 09:50 vs +0.84% at 10:00, NBIS +7.41%
+  vs +1.64%, CRWV +6.34% vs −0.37%, MRNA +3.46% vs +1.01%**.
+- **$100k is not a tuned number.** It is 5× headroom below the $500k floor, and the measured
+  miss count goes **9 → 0** between the $250k and $100k boundaries.
+
+**The pre-filter is a disclosed hole, never a silent one.** The artifact MUST state the
+universe size before and after the pre-filter, and say that the 09:50 trigger was evaluated
+on the pre-filtered subset. A reader who knows a name was skipped can weigh it; a reader who
+does not cannot.
+
+**This applies to the OPEN slot only.** The pre-close slot reads the settled session, and its
+universe comes from the settled bars rather than an intraday pull.
+
 #### RVol and session volume: use the market-wide feed, not per-symbol history (2026-11-03)
 
 **Do NOT pull one `chart_data` call per ticker.** Each is one metered gateway call and the
@@ -581,13 +656,18 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/rvol_fetch.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  # The capability marker is MANDATORY, not decoration: an OLDER copy of this helper has
+  # no `prior_session` block, and the symptom is a silent fallback to a second,
+  # per-symbol price pull that costs ~3 minutes of a 15-minute budget. The CDNs also
+  # cache `main` independently, so one of them can serve stale bytes for hours.
   if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
-     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!'; then
+     && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!' \
+     && grep -q 'RVOL_FETCH_V2' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
 done
-[ -s "$D" ] || echo "rvol_fetch.py fetch FAILED - fall back to the caller's own denominator source"
+[ -s "$D" ] || echo "rvol_fetch.py fetch FAILED (no RVOL_FETCH_V2 copy) - fall back to the caller's own denominator source"
 python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
 ```
 

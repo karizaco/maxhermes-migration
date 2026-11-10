@@ -36,13 +36,49 @@ def fmt_pct(v):
 
 
 def fmt_ts(v):
+    """Render a timestamp as ET wall-clock, whatever timezone it arrived in.
+
+    WHY THIS IS NOT A STRING SLICE
+    ------------------------------
+    The tape carries TWO different timestamp shapes and they are not the same zone:
+      * `ts`          - the capture clock, written ET-aware (2026-11-10T09:57:44-05:00);
+      * `trending_ts` - the stocktwits snapshot's own stamp, written UTC (2026-11-10T14:38:21Z).
+
+    Slicing [11:19] off both printed the UTC stamp AS IF IT WERE ET, so every row that
+    carried a trending_ts read 5 hours late. Measured 2026-11-10 09:50 ET checkpoint:
+    HIMS showed "14:38:21" for news that actually broke at 09:38:21 ET - and the board
+    labels that column "When it broke", which is exactly what cron #17 reads at 15:50 to
+    date the catalyst. A catalyst stamped in the FUTURE relative to the capture is the
+    kind of error that survives a glance, because the number looks plausible.
+
+    So: PARSE the offset and CONVERT. A naive timestamp (no offset) is already ET -
+    that is what the capture script writes - so it is read as ET, never as UTC.
+    """
     if not v:
         return "—"
-    s = str(v)
+    s = str(v).strip()
     try:
-        return s[11:19]
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
     except Exception:
-        return s
+        return s[11:19] if len(s) >= 19 else s
+    raw = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        return s[11:19] if len(s) >= 19 else s
+    if dt.tzinfo is None:
+        # No offset: the capture clock's own format, which is already ET.
+        try:
+            dt = dt.replace(tzinfo=ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+    else:
+        try:
+            dt = dt.astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%H:%M:%S")
 
 
 def clean(text, width=110):

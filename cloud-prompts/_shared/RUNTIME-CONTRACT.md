@@ -469,19 +469,34 @@ grep -c "<your marker>" /tmp/remote     # a marker string, not just the file's e
 Put a **marker string** in the change you are publishing (a section heading, a version token) so
 this check is a `grep -c` and not a byte-diff against something you are unsure about.
 
-### 5c. `cron_update` stores the prompt with ONE trailing newline (measured 2026-11-06)
+### 5c. `cron_update` stores the prompt VERBATIM — it does not touch the bytes (measured 2026-11-10)
 
 The scheduler's `cron_update` transport does three things that matter when you deploy a prompt
-byte-exactly (all measured on cron #25's task `457578106761360`, 2026-11-06):
+byte-exactly:
 
 1. **Multi-line prompt text is stored as real newlines** — it does not flatten the prompt into
    one line, and it does not interpret backslash escapes. A 2-line probe came back as
    `"PROBE LINE 1\nPROBE LINE 2"` with a genuine newline between them.
-2. **It APPENDS one trailing `\n` to whatever you send.** A paste that already ended with the
-   repo file's own final newline was stored with **one byte more** than the repo blob — a
-   permanent one-byte PROMPT-DRIFT for the fleet's guard to report, forever.
-   **So: paste the file's content WITHOUT its final newline.** The transport puts it back and
-   the deployed prompt is byte-identical to the repo blob.
+2. **It stores EXACTLY what you send — no newline is added and none is removed.**
+   Measured 2026-11-10 on cron #08's task `457578163015913` with three probes: a 33-byte
+   payload with no trailing newline came back as 33 bytes with no trailing newline; a 28-byte
+   payload **with** a trailing newline came back as 28 bytes **with** it; and the full
+   13,401-byte prompt came back byte-identical to the repo blob (`e6b586ac…`) with no newline
+   added.
+   The fleet-wide census agrees: all 26 deployed prompts are byte-identical to their repo
+   blobs, and **21 of those 26 repo files carry NO trailing newline** — if the transport
+   appended one, every one of those 21 would be a byte off.
+   **So: paste the file's bytes EXACTLY, including its final newline if it has one.**
+   `tools/deploy_prompts.py --emit` already does the right thing (it reads the file verbatim);
+   do not hand-trim its output.
+   **This reverses the earlier rule in this section.** The 2026-11-06 deployment of #25 was
+   read as "the transport appends one trailing `\n`". Re-read, the extra byte came from **the
+   paste**: the emitted payload carried a newline the repo blob did not have. That is the
+   recurring pattern — **the drift is MY emission, not the transport** — and it is now settled
+   by direct probe instead of inference. The old advice was not merely wrong but *dangerous*:
+   taken literally it would strip the final newline from the 5 repo prompts that legitimately
+   end with one (`#04`, `#05`, `#90`, `#92a`, `#92b`) and manufacture a permanent one-byte
+   PROMPT-DRIFT on each.
 3. **`enabled` must NOT be sent.** It is coerced to the string `"true"` and the call fails
    validation. Send `task_id`, `schedule`, `timezone` and `prompt` only — and always send
    `timezone`, because omitting it resets it to `Etc/GMT-7` (UTC+7).
@@ -508,9 +523,17 @@ curl -sL -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${GIT
 ```
 
 The 2026-11-06 deployment of #25 took **three attempts**: one character mistyped in the paste
-(`view=runs` → `view:runs`, caught by the hash check, not by reading), and then the trailing
-newline above. Both were caught by the hash comparison and neither would have been caught by
-reading the deployed prompt — which is exactly why the hash is the check.
+(`view:runs` → `view=runs`, caught by the hash check, not by reading), and then the trailing
+newline above — which turned out to be the paste's own extra byte, not the transport's. Both
+were caught by the hash comparison and neither would have been caught by reading the deployed
+prompt — which is exactly why the hash is the check.
+
+**A same-length slip is the dangerous one.** On 2026-11-06 (#25) and again on 2026-11-10
+(#08) the paste changed exactly one character inside a `view`…`runs` token — the `=` became
+a `:` — and the byte count was **UNCHANGED**: a length check passes and only SHA-256 catches
+it. On 2026-11-10 the 13,401-byte deploy of #08 was pasted twice; the first paste came back
+**byte-identical**, the second came back with that one character changed and the **same
+length**. Nothing short of the hash would have noticed.
 
 ### 5b. Another session may be editing the same file — resolve by content, not by base
 

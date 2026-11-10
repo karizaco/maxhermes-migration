@@ -484,3 +484,116 @@ carried no information at all.
 2026-11-05 artifact was regenerated with it: no candidate carries a skip-flag, and the
 tier lists carry only the two flags that are genuinely computable from the 2026-11-04 OHLC
 (`wicky_breakout`, `ma_shrink_5d`).
+
+## 13. Third pass (2026-11-10): the screen described the WRONG SESSION, Tier-A had no extension filter, and CANSLIM never asked what the price assumed
+
+**Triggered by:** the 2026-11-09 18:30 ET fire, reviewed with the user on 2026-11-10. Three defects, three
+fixes, all landed in the skill spec (so they take effect on the next fire with no `cron_update`).
+
+### 13.1 The screen ran on the PREVIOUS session and the artifact read as today's
+
+At the 18:30 ET fire shibui's newest settled session is the previous one, so every screen metric in the
+published artifact described **2026-11-06** while the artifact was read as "today's screen". The T+1 note
+was a caveat sentence and a `_summary.md` quote — not a field — and the Tier-A table sat Friday's metrics
+next to Monday's move with only a header line to distinguish them. `_results.json` carried no per-row
+session, so the pre-market brief inherited the ambiguity.
+
+**Measured cost of the gap.** The same 4%-breakout + 2x-relative-volume gate, run on the 2026-11-09
+settled bar, returned **68 names; 25 of them were absent from the published book entirely** — TLS +48.8%,
+DCTH +35.8%, LINC +24.6%, UAMY +23.0%, INDI +21.6%, HQ +20.7%, QMCO +17.4%. **37% of the day's fresh
+breakout book was invisible to the artifact.**
+
+**The fix — §4.5 of the skill.** `tools/daily_sweep_engines.py` (marker `DAILY_SWEEP_ENGINES_V1`) computes
+the TRIGGER branches on the cron day's own settled bar from TradingView's scanner, and the shibui T+1 book
+is kept as the cross-check. Every candidate now publishes `data_as_of` and `source` (`fresh` / `t1` /
+`fresh+t1`), and `_results.json` publishes `fresh_data_as_of`, `t1_data_as_of` and `fresh_branches`.
+
+**What stayed on shibui, and why.** The multi-session CONTEXT branches — the 5-day gainers/losers, the
+14-day velocity, the coil, the 252-session RS window — stay T+1 and are labelled so. Two measured facts
+decide that:
+
+* `Perf.W` is a **six**-session move, not five (r=0.997 / 1.31 pp mean error against 6 sessions;
+  r=0.924 / 6.85 pp against 5, 11 names). Re-expressing the published ±25% / −50% five-session gates on a
+  six-session window would silently shift the parabolic books — the same defect class as the per-branch
+  `LIMIT`.
+* `average_volume_10d_calc` is **exactly** the mean of the last ten sessions including today (bias 0.00%
+  against a hand-computed reference, 11 names), so the prior-nine-session baseline is recovered exactly as
+  `(10 × avg10 − volume_today) / 9` with no second data source.
+
+The CANSLIM screen stays on shibui because its inputs are **quarterly** — T+1 never applied to them. Only
+its price half was stale, and that half is now fresh.
+
+### 13.2 Tier-A had no extension filter, so it was structurally biased toward names that had already run
+
+Six of the eight branches are momentum / breakout / velocity screens and Tier-A means "≥ 3 stylists agree",
+which selects for maximum agreement among them. Measured on the 2026-11-09 book: FLY +34.0% above its
+20-DMA with ATR 8.03%, RHLD RSI 80.7, ARRY +33.8% above its 20-DMA, TMDX +28.3%.
+
+**The fix — §4.6.** Every row now carries an extension LABEL with its reasons: ATR% > 5, RSI > 75, > 15%
+above its 20-DMA, or 3+ consecutive up sessions. Tier-A is published three times — the full list, the
+not-extended list (`tier-a-fresh.md`) and the extended list (`tier-a-extended.md`). On the 2026-11-09 book
+the split was **0 fresh / 6 extended**, which is the honest answer to the question that started this pass.
+
+**Nothing is dropped.** An absolute ATR threshold means different things at different market caps — it
+fires on 15.8% of the $10B+ names but on 36.0% of the $1–10B names — so the **percentile** is published
+next to it (`atr_pct_pctile`, and `atr_pct_pctile_lc` against the $10B+ sub-universe).
+
+### 13.3 CANSLIM never asked what the price already assumed
+
+The screen asks for growth and strength and nothing else, and it has no valuation metric anywhere. The
+reason was structural: `shibui.valuation` carries only `market_cap`, `price_to_book` and
+`enterprise_value` — no P/E at all. But `shibui.fundamentals_derived_daily` carries `trailing_pe`,
+`operating_pe`, `ev_ebit`, `price_to_sales`, `free_cash_flow_yield`, `trailing_revenue_peg` and
+`earnings_quality_flags`, and **the suite never joined a table it already pays for**.
+
+On 2026-11-09 KRMN carried trailing P/E **120.6**, operating P/E **55.8**, EV/EBIT **62.7**, FCF yield
+**−0.12%**, PEG 1.84, debt/equity **2.28** and a `LOW_EARNINGS_QUALITY` flag — and the book published it
+with a `+` next to its name.
+
+**The fix — §4.7.** A valuation/quality overlay over the candidate symbols, published per name with the
+VALUES next to the flags. A missing value is a **disclosure, not a flag**: a name with no trailing P/E
+gets `earnings_data_missing: true` and `valuation_gate: unknown`, never a silent pass. Counting a null P/E
+as a red flag flagged 910 of 1,232 names (73%) — a label that fires on three quarters of the book is as
+useless as one that never fires. The PEG threshold is 3, not 2: at 2 the rule fired on AAPL and did **not**
+catch KRMN (PEG 1.84), and a rule that misses its own case is not a rule.
+
+### 13.4 A live defect found on the way: `focus.md` never had the header cron #07 reads
+
+Cron #07's prompt says to read the sweep's `Screen data_date: <date> (shibui T+1)` line **out of
+focus.md** and to report `lag_sessions` from it — and `write_per_stylist_markdown` had never emitted
+that line, so #07 had to infer the date from the folder name. The writer now emits it, in the exact form
+#07 expects, plus `Screen fresh_data_date:` for the fresh book.
+
+### 13.5 What changed, file by file
+
+| File | Change |
+|---|---|
+| `tools/daily_sweep_engines.py` | **NEW** — the fresh book (TradingView), the extension metrics, the valuation/quality overlay, the up-day streak. Marker `DAILY_SWEEP_ENGINES_V1`. `selftest` covers every derived quantity offline |
+| `cloud-prompts/skills/stock-screener-suite/SKILL.md` | **§4.5** the fresh book and the dual-book contract · **§4.6** the extension label · **§4.7** the overlay · the output contract and the data-source table updated |
+| `cloud-prompts/skills/stock-screener-suite/scripts/screen.py` | `consume` takes `--fresh-book` and `--overlay`; candidates carry `data_as_of` / `source` / `fresh_origins` / `extension` / `quality`; the fresh branches join the coverage table and fail the run when truncated; `tier-a-fresh.md` and `tier-a-extended.md` are written; the per-stylist header carries both data dates; the summary gains the FRESH/EXTENDED split and the overlay |
+| `cloud-prompts/skills/stock-screener-suite/scripts/smoke_test.py` | three new guards: the fresh book merges and every row publishes its session · an extension label never removes a name · the `focus.md` header publishes both data dates |
+
+### 13.6 Not changed, deliberately
+
+* **The eight shibui branches still run.** They are the T+1 cross-check and the multi-session context.
+* **No name is dropped** for being extended or for failing the valuation gate. Both are labels.
+* **The universe is unchanged** ($300M floor, NYSE/NASDAQ/AMEX) — changing it would make the series
+  non-comparable.
+* **C and D (the VCP branch and the state-screen relabelling) are NOT in this change.** The VCP branch
+  needs 10d/50d average range, which the scanner does not publish, so it stays a shibui computation and
+  must be published with its own `data_as_of`; the relabelling is a wording change that can ride along
+  with it.
+
+### 13.7 How to verify this landed
+
+```bash
+python3 tools/daily_sweep_engines.py selftest                       # all green
+python3 cloud-prompts/skills/stock-screener-suite/scripts/smoke_test.py --date <date>
+# then, on the next fire:
+grep -n "fresh_data_as_of" daily-screens/<date>/_results.json
+head -8 daily-screens/<date>/focus.md        # both data dates, and the header #07 reads
+ls daily-screens/<date>/tier-a-fresh.md daily-screens/<date>/tier-a-extended.md
+```
+
+On the 2026-11-09 data the fresh book reproduces the 25 names the T+1 book missed, the Tier-A split reads
+0 fresh / 6 extended, and KRMN arrives carrying five valuation/quality flags.
