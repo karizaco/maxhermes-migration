@@ -121,6 +121,7 @@ Notes on filters:
 | Exchange code | What it is | Why drop |
 |---|---|---|
 | `OTC`, `PINK`, `OTCBB`, `GREY` | US OTC | ADR duplicates of primary Asian listings |
+| `SAPSE` (Sapporo), `SSEO` (Osaka) | JP regional venues | Same class as NAG/FSE -- their prints are stale or divergent, never the primary line |
 | `LSE`, `LSX` | London listings + German mirrors | Asian companies sometimes have a London listing as a secondary venue (older FTSE structure). Primary remains JP/TW/HK/KR. |
 | Any exchange starting with `TPE` other than `TWSE` (e.g., TPEX) | Taipei Exchange (Taiwan OTC) | Sub-tier of Taiwan; only TWSE primary counts unless TWSE is missing |
 | `NASDAQ:ASX` for HK / KRX names | ADR pre-listing | Same drop rule as EU |
@@ -134,7 +135,33 @@ Notes on filters:
 | 3 | `HKEX` (Hong Kong) | HK | Primary for HK-listed. |
 | 4 | `KRX` (Korea) | KR | Covers both KOSPI and KOSDAQ listings. |
 | 5 | `TPEX` (Taipei Exchange) | TW | OTC tier — use only when TWSE result is missing for the same company. |
-| 6 | `NAG` (Nagoya Stock Exchange) | JP | Regional JP secondary — keep only when TSE doesn't list the same ticker. |
+| 6 | `NAG` (Nagoya Stock Exchange) | JP | Regional JP secondary — see the resolution rule below. |
+| 7 | `SAPSE` (Sapporo), `SSEO` (Osaka) | JP | Regional JP secondary — see the resolution rule below. |
+
+### THE JP REGIONAL-PRINT RULE (measured 2026-11-10 -- read this before publishing a JP row)
+
+**A regional JP venue print (NAG / SAPSE / SSEO / FSE) is NEVER the primary line. Resolve it
+against TSE and DROP the regional row.** Measured on 2026-11-10: **all 13** regional JP rows in
+the scan diverged from their TSE line, some wildly --
+
+| Ticker | Regional print | TSE line (correct) |
+|---|---|---|
+| 4502 Takeda | `SAPSE` +23.26% | `TSE` 6,593, **-1.20%** |
+| 5333 NGK Corp | `NAG` -33.40% | `TSE` +6.33% |
+| 7011 Mitsubishi Heavy | `NAG` -5.23% | `TSE` +2.87% |
+| 8306 MUFG | `NAG` +10.83% | `TSE` +2.05% |
+
+The Takeda `SAPSE` print was **byte-identical to the previous day's artifact** (+23.26% both
+days) -- a frozen regional quote, not a live print. The rule:
+
+1. For every row whose `exchange` is not `TSE`, query the scanner for the same ticker name
+   (one `{"left":"name","operation":"equal","right":"<ticker>"}` call per ticker; the scanner
+   answers with BOTH venues).
+2. If a `TSE` line exists, **substitute the TSE close and change** and drop the regional row.
+3. If NO `TSE` line exists, **drop the row entirely** -- never publish a regional print.
+
+Do this BEFORE the 15-up / 15-down cap: a bogus +23.26% row otherwise takes the top slot and
+displaces a real mover.
 
 ### Dedupe logic
 1. **Regional primary beats US ADR.** E.g., Toyota → `TSE:7203` (primary), never `NYSE:TM` (ADR).
@@ -198,21 +225,28 @@ artifact.
 
    ```bash
    # --- 8 screener calls (unchanged shape) ---
+   # The UP and DOWN legs need DIFFERENT change filters. Re-sorting the gainer list
+   # ascending does NOT return losers -- it returns the same gainers, sorted the other
+   # way -- so a shared `change > 2` filter on both legs silently returns ZERO decliners
+   # and the brief loses every loser row. (Measured 2026-11-10: the up leg returned
+   # 216/79/17/105 rows and the down leg 28/15/6/8 -- with the old shared filter both
+   # legs returned the gainers only.)
    for M in japan taiwan hongkong korea; do
      for D in desc asc; do
+       if [ "$D" = desc ]; then OP=greater; RIGHT=2;  SO=desc; else OP=less; RIGHT=-2; SO=asc; fi
        curl -sS --max-time 30 -X POST "https://scanner.tradingview.com/$M/scan" \
          -H "Content-Type: application/json" -H "User-Agent: Mozilla/5.0" \
          -H "Origin: https://www.tradingview.com" -d '{
            "filter":[{"left":"type","operation":"equal","right":"stock"},
                      {"left":"country","operation":"equal","right":"<Country>"},
-                     {"left":"change","operation":"greater","right":2},
+                     {"left":"change","operation":"'$OP'","right":'$RIGHT'},
                      {"left":"market_cap_basic","operation":"greater","right":<local_cap_floor>},
                      {"left":"close","operation":"greater","right":5}],
            "options":{"lang":"en"},
            "columns":["name","description","close","change","change_abs","volume",
                       "market_cap_basic","exchange","currency","sector","type",
                       "earnings_release_next_date","update_mode"],
-           "sort":{"sortBy":"change","sortOrder":"desc"},
+           "sort":{"sortBy":"change","sortOrder":"'$SO'"},
            "range":[0,600]}' -o "/workspace/_asia_${M}_${D}.json" &
      done
    done
@@ -255,8 +289,9 @@ artifact.
 4. **Apply primary-listing exchange whitelist.** For each screener output:
    - Drop any row where `exchange` is in the drop list (OTC/PINK/LSE/LSX).
    - Apply dedupe logic: regional primary beats US ADR; TPEX only if TWSE is missing.
-   - Resolve every regional JP row (NAG/FSE) against its TSE line — a stale regional print is the
-     single biggest data-integrity risk on the JP scan.
+   - Resolve every regional JP row (NAG/FSE/SAPSE/SSEO) against its TSE line per **THE JP
+     REGIONAL-PRINT RULE** below — a stale regional print is the single biggest data-integrity
+     risk on the JP scan, and on 2026-11-10 all 13 of them were wrong.
    - Drop HK rows whose `currency` is not `HKD` (the CNY counters quote off the liquid line).
    - Keep top 15 per market per direction (sort by `|change_percent|` desc) — caps each market at 30 rows.
 
@@ -808,6 +843,14 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.4 — 2026-11-10.** Two defects closed. (1) **The down-leg screener filter**: the step-2
+  snippet applied `change > 2` to BOTH legs, so re-sorting the gainer list ascending returned the
+  gainers again and every loser row was silently lost; the legs now use `change > 2` and
+  `change < -2` with matching sort orders. (2) **THE JP REGIONAL-PRINT RULE**: `SAPSE` (Sapporo)
+  and `SSEO` (Osaka) joined `NAG`/`FSE` in the resolve-and-drop list — all 13 regional JP prints
+  on 2026-11-10 diverged from their TSE line, including a `SAPSE:4502` Takeda print that was
+  byte-identical to the previous day's artifact (+23.26%) while `TSE:4502` closed -1.20%. The
+  rule resolves every regional row against TSE and drops it before the per-market cap.
 - **v1.3 — 2026-11-05.** The holiday detector was rebuilt on **date provenance**: a closed market returns the prior session's rows, not zero, so the row-count heuristic could never see a closure (it missed 2026-11-03's Japan, which served the 2 Nov session as a healthy 128-row universe). The index's own session date (`^N225`/`^TWII`/`^HSI`/`^KS11`, last daily bar) is now the primary test, the previous run's artifact is the second independent proof, and the row count is a secondary signal only. A closed market now gets a "no data — closed" section with **no prices published**. Also added: the US read-across block and its 3-bullet TL;DR, the fixed artifact skeleton (TL;DR / Market backdrop / country sections / Flags / Method, source health & caveats), per-country session dates in both the artifact and the chat reply, the contiguous country-block rule for the reply, and the runnable pre-publish assertions (name uniqueness, closed-market purity, catalyst cells, reply order).
 - **v1.2 — 2026-11-04.** Output ordering made explicit: the brief is grouped **by country in the fixed order Japan → Korea → Taiwan → Hong Kong**, and inside each country every row (REACTION table + NOTABLE one-liners) is sorted by `|change %|` descending, with contiguous country blocks. The chat reply follows the same country order as the artifact.
 - **v1.1 — 2026-09-23.** Validation pass. Market codes confirmed: `japan`, `taiwan`, `hongkong`, `korea` (NOT `south_korea` — that returns 0). Added `NAG` (Nagoya) and `TPEX` (Taipei Exchange) to the secondary-venue dedupe logic — keep only when the primary venue (TSE/TWSE respectively) doesn't list the same ticker. Added HK dual-ticker dedupe (e.g., 89988 vs 9988 for Alibaba). JP results dominated by `TSE:` with ~5-10% NAG noise; TW results ~30% `TPEX:` (smaller companies not on TWSE); HK all `HKEX:` with ~5-10% dual-ticker duplicates; KR all `KRX:` clean.
