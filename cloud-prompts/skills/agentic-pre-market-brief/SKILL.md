@@ -223,6 +223,41 @@ Origin: https://www.tradingview.com
 > from the CSV — `check_premarket_brief.py` asserts a non-empty `prior_close` and `premarket_last`
 > on EVERY row — and publish the name in prose WITHOUT a price instead.
 
+> **`market_cap_basic` is `close × shares outstanding`, and the scanner does NOT refresh the share
+> count for corporate actions — so Gate B must be decided on a RECONCILED cap.** Measured
+> 2026-11-09: the scanner reported **$143,016,256** for **NWGL** (CL Workshop Group) after a
+> **one-for-80 ADS reverse split** and an ADS ratio change from 1:8 to 1:640 ordinary shares took
+> effect Friday 2026-11-06 (Nasdaq Equity Corporate Actions Alert #2026-787). The scanner paired
+> the POST-split price (2.53) with the PRE-split share count (56.53M) and produced a market cap
+> **87× too high**. The real cap sits in the **$0.5M–$1.9M** range (Nasdaq `/summary`, shibui's
+> dated `valuation`, stockanalysis.com and WallStreetZen all bracket it there) — so a sub-$2M
+> shell was published at the TOP of the headline gap table, over Gate B. The error runs BOTH ways:
+> the same sweep found names whose scanner cap is too LOW because the count predates a later
+> issuance (HELP, BTQ, WYHG).
+>
+> **The sweep — run it BEFORE the tables are built, not after.** For every name the routine is
+> about to publish, compare the scanner's implied share count against two independent caps:
+> Nasdaq's `/summary` `MarketCap` (unmetered; ~900 symbols in ~3 min at 12 threads) and shibui's
+> `valuation.market_cap` (the latest row `<= the prior-session date`, so it is already on the
+> gate's basis). Where they disagree by more than 15%, publish the **median** of the available
+> sources and recompute the gate flags from the PUBLISHED figure:
+>
+> ```python
+> implied_scanner = market_cap_basic / close
+> implied_nasdaq  = nasdaq_market_cap / nasdaq_previous_close
+> implied_shibui  = shibui_market_cap / shibui_close
+> ```
+>
+> On 2026-11-09 that sweep flagged **106 of 1,085** screened names (9%). It moved exactly one
+> published name between tables — NWGL, out of the headline table — and it is why `quality_screen`
+> and `liquid_screen` are computed from the published cap and not from the scanner's.
+>
+> **A name whose move is a corporate action is NOT a theme.** NWGL's +50.99% was a reverse split
+> and an at-the-market programme, not a metals bid. Before putting a name in a theme cluster,
+> check whether it had a corporate action in the last few sessions; if it did, publish it as a
+> corporate-action artefact with the event cited (a Nasdaq Equity Corporate Actions Alert is the
+> primary source), never as a catalyst.
+>
 ### Step 2b — The screen (pinned — do not reinvent this each run)
 
 Universe: every US-listed common stock **and ADR** on NASDAQ/NYSE/AMEX. Do NOT re-filter to
@@ -231,7 +266,7 @@ Universe: every US-listed common stock **and ADR** on NASDAQ/NYSE/AMEX. Do NOT r
 **GATE A — liquidity.** Pre-market volume ≥ **100,000** shares, **or** market cap ≥ **$200M** with
 ≥ **10,000** pre-market shares. A ±20% print on 100 shares is not a market.
 
-**GATE B — quality floor for the HEADLINE tables.** Market cap ≥ **$100M**.
+**GATE B — quality floor for the HEADLINE tables.** Market cap ≥ **$100M**. Decided on the **reconciled** market cap, not the scanner's — see the `market_cap_basic` trap in Step 2.
 
 - Names that pass Gate A but fail Gate B are still real moves: publish them in a compact
   **"thin tape" block** under the headline table (ticker, %, price, cap, pre-market volume) so
