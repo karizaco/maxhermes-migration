@@ -632,6 +632,9 @@ CYRX, ETON, FLY, FROG, IONQ, KRMN, LASR, OKLO, QNT, RGTI, RHLD, TMDX), and confi
 reference closes on TradingView + Cboe + Nasdaq's session-exact per-symbol history — the settled
 2026-11-09 close, which is what the gap must be measured against.
 
-**The upstream half of the defect is cron #09's.** The sweep should publish `focus.csv` again; a
-markdown-only Focus list is a degraded publish, and the next routine that needs a machine-readable
-universe will hit the same door.
+**The upstream half of the defect is cron #09's — and it has ALREADY hit another routine.** The
+sweep should publish `focus.csv` again; a markdown-only Focus list is a degraded publish.
+Measured: `daily-screens/2026-11-09/focus-rvol-snapshot.csv` (cron #07, 09:45 ET on 9 Nov) opens
+with **WRBY and XERS** — the **2026-11-06** Focus names — because the 2026-11-09 sweep published no
+`focus.csv` for it to read. So the missing companion file has already silently degraded a second
+routine's universe for that session: it re-ranked the 6 Nov book instead of the 9 Nov one.
