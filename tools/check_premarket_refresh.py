@@ -347,6 +347,22 @@ def main():
     check(header == CSV_HEADER, "CSV-HEADER", "header is %s" % ",".join(header[:4]) + "…")
     check(len({r[0] for r in rows}) == len(rows), "CSV-UNIQUE", "duplicate ticker in the CSV")
     check(all(r[7].strip() for r in rows), "CSV-PRIOR-CLOSE", "a row has an empty prior_close")
+    # every row must reproduce its own prior close from its own published price and change:
+    # prior_close = round(premarket_close / (1 + premarket_change_pct/100), 4). Deriving from the
+    # RAW pull instead leaves rows that do not reconcile (24 of 693 in the 2026-11-09 CSV).
+    unrec = []
+    for r in rows:
+        try:
+            pm = float(r[2]); ch = float(r[3]); pc = float(r[7])
+        except (ValueError, IndexError):
+            continue
+        if not pm:
+            continue
+        derived = pm / (1.0 + ch / 100.0)
+        if abs(derived - pc) > 0.0005 + abs(pc) * 1e-6:
+            unrec.append("%s (published %.4f, derives %.4f)" % (r[0], pc, derived))
+    check(not unrec, "PRIOR-CLOSE-RECONCILES",
+          "%d row(s) do not reproduce their own prior close: %s" % (len(unrec), "; ".join(unrec[:4])))
     check(all(r[2].strip() for r in rows), "CSV-PREMARKET", "a row has an empty premarket_close")
     live_blank = all((r[9].strip() == "" and r[10].strip() == "" and r[11].strip() == "") for r in rows)
     market_open = str(fm.get("market_open_at_pull", "")).lower() == "true"

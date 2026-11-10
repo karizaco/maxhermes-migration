@@ -189,6 +189,24 @@ from one session must survive a second):
 The 2026-11-10 artifact passing 179/179 is the important line: **the contract is satisfiable by a
 real run, not only by a synthetic fixture.**
 
+### E12 — the CSV's `prior_close` did not reproduce from the row's own numbers (→ derive from the published values)
+
+The 2026-11-10 fire (the other session's run) measured this class and fixed it there: deriving
+`prior_close` from the RAW pull leaves rows that do not reconcile, because the published
+`premarket_close` and `premarket_change_pct` are rounded — a reader who divides the row's own
+price by its own change gets a different close than the row publishes. The **2026-11-09 CSV has
+the defect**: 293 of its 693 rows fail to reproduce (24 differ by more than half a cent, the
+largest by 4.5¢ on FIX; exactly one of the 25 headline names is affected — INO, by half a cent —
+so the published gap-fill levels are materially correct). The convention the 2026-11-10 CSV
+already follows, and which the procedure now states: publish `premarket_close` at 4 dp,
+`premarket_change_pct` at 2 dp, and compute
+`prior_close = round(premarket_close / (1 + premarket_change_pct / 100), 4)` **from those
+published values**. The checker asserts it on every row (`PRIOR-CLOSE-RECONCILES`).
+
+The 2026-11-09 artifact is **not** rewritten: the fleet's rule is that a published artifact's
+numbers are not edited after the fact (the amendment convention above is for dated corrections
+in prose). The gate now catches it, and the next fire publishes it right.
+
 ---
 
 ## 4. What was NOT changed here, and why

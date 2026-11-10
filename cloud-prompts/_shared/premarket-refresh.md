@@ -277,6 +277,15 @@ ticker,name,premarket_close,premarket_change_pct,premarket_volume,avg_volume_30d
   from it is wrong by exactly the day's move. Derive it:
   `prior_close = premarket_close / (1 + premarket_change_pct / 100)`. (Verified 2026-11-05:
   SPY 766.81, QQQ 691.95, APP 271.75 — all three exact against an independent quote source.)
+- **Derive it from the values THIS CSV publishes, not from the raw pull.** Publish
+  `premarket_close` at 4 dp and `premarket_change_pct` at 2 dp, and compute
+  `prior_close = round(premarket_close / (1 + premarket_change_pct / 100), 4)` **from those
+  published values**, so every row reproduces its own prior close and a reader can check it:
+  `467.25 / (1 + 4.06/100) = 449.0198`. Deriving from the raw pull instead leaves rows that do
+  NOT reconcile — the published price and change are rounded, so the row's own numbers give a
+  different close than the row publishes (24 of the 693 rows in the 2026-11-09 CSV: a ≤4.5¢
+  difference, and half a cent on the one headline name affected). The checker asserts this
+  reconciliation on every row.
 - **`live_*` are the LIVE regular session at the pull, not pre-market.** They are in the CSV
   so a downstream routine can say how a gap actually behaved after the open. They are never
   pre-market numbers, and the column names say so.

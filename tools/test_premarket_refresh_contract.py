@@ -26,12 +26,17 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-GAINERS = [("GA%02d" % i, "Gain Co %d" % i, round(40.0 - i * 1.1, 2), round(20.0 - i, 2),
-            500000 + i, 1000000, round((500000 + i) / 1000000 * 100, 2), 10.0 + i,
-            1200000000 + i, "Technology Services", "NASDAQ") for i in range(15)]
-DECLINERS = [("DE%02d" % i, "Dec Co %d" % i, round(30.0 - i * 1.2, 2), round(-12.0 + i, 2),
-              400000 + i, 1000000, round((400000 + i) / 1000000 * 100, 2), 8.0 + i,
-              900000000 + i, "Health Technology", "NASDAQ") for i in range(10)]
+def _row(t, name, px, gap, vol, adv, pavg, cap, sec, ex):
+    """prior_close DERIVES from the published price and change, so the row reproduces itself."""
+    return (t, name, px, gap, vol, adv, pavg, round(px / (1.0 + gap / 100.0), 4), cap, sec, ex)
+
+
+GAINERS = [_row("GA%02d" % i, "Gain Co %d" % i, round(40.0 - i * 1.1, 4), round(20.0 - i, 2),
+                500000 + i, 1000000, round((500000 + i) / 1000000 * 100, 2),
+                1200000000 + i, "Technology Services", "NASDAQ") for i in range(15)]
+DECLINERS = [_row("DE%02d" % i, "Dec Co %d" % i, round(30.0 - i * 1.2, 4), round(-12.0 + i, 2),
+                  400000 + i, 1000000, round((400000 + i) / 1000000 * 100, 2),
+                  900000000 + i, "Health Technology", "NASDAQ") for i in range(10)]
 THIN = [("TH%02d" % i, "Thin Co %d" % i, 5.0 + i, 9.0 + i, 300000, 95000000,
          "Process Industries", "NYSE") for i in range(4)] + \
         [("TD%02d" % i, "Thin Dec %d" % i, 4.0 - i * 0.1, -8.0 + i, 250000, 90000000,
@@ -224,6 +229,7 @@ def main():
         ("THIN-COMPLETE", lambda t, c: (drop_line(t, THIN3), c)),
         ("TRACE-GAP", lambda t, c: (mutate_line(t, GQ14, "+6.00%", "+61.00%"), c)),
         ("NO-PLACEHOLDER", lambda t, c: (md_mut(t, "## 4. Verdict", "## 4. Verdict\n\nTODO: write this"), c)),
+        ("PRIOR-CLOSE-RECONCILES", lambda t, c: (t, md_mut(c, ",33.3333,", ",33.3000,"))),
     ]
 
     # the CSV mutations need their own file handling
