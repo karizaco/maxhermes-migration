@@ -81,7 +81,11 @@ def main() -> int:
             return 1
         print("docs/README.md is up to date")
         return 0
-    open(target, "w", encoding="utf-8").write(body)
+    # newline="\n" so the file is byte-identical on Windows and on the Linux
+    # sandbox: the default text mode translates \n to \r\n on Windows, and the
+    # whole index then reads as changed.
+    with open(target, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
     print(f"wrote {target}")
     return 0
 

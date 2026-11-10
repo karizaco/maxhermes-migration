@@ -446,8 +446,12 @@ python3 https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tool
 ```
 
 It exits non-zero when the prose, the tables and the CSV disagree, when a section is missing or out
-of order, or when an unfinished placeholder is left in the file. **A non-zero exit means the
-artifact is not ready to push.** (Fetch it to a file first; `python3 <url>` does not work.)
+of order, when an unfinished placeholder is left in the file, **and when a claim about the screen's
+names is false** — a universal claim whose floor one name in the set is under, or a name listed
+inside a band it falls outside of. A claim whose set the screen's own columns cannot resolve is
+printed as a `note:` and does not fail the run; name your set (a `sector` value, or a count that
+identifies one set) and it becomes checkable. **A non-zero exit means the artifact is not ready to
+push.** (Fetch it to a file first; `python3 <url>` does not work.)
 
 **Then run the CONTRACT gate** — the one that asserts §C1–§C5 of this spec:
 
@@ -705,6 +709,9 @@ numbers.
 | **The ±3% band was silently truncated** | The screen pinned `range:[0,400]` and the scanner honours a range SILENTLY — HTTP 200, no warning. On 2026-11-05 that returned 379 of 379 gainers but only **400 of 547** decliners, and `down_3pct` was published as a count when it was a floor. | §2: pull with `range:[0,1000]` and ASSERT `len(rows) == totalCount` on both screens; publish `screen_complete: false` and say "floor" when the assert fails. |
 | **The brief had no follow-up** | Nothing recorded what happened to yesterday's calls, so the routine could not learn. | §C5: `## Yesterday's brief — what happened`, every run, with a `Thesis held?` column. |
 | **A stale shared helper** | `push_artifact.sh` was fetched with `[ -s file ] || curl`, so an old local copy kept using the old path→number table, and raw.githubusercontent served a stale blob for >17 min after a push. | Fetch-ladder rule below: contents API first, then raw, then jsDelivr, reject a 404 body, **refresh every run**. |
+| **A universal claim the screen contradicts** | The 2026-11-09 brief said "every one of the 35 ... names is at or above +3.00%" and UEC printed **+2.60%**. The claim names no ticker, so the per-ticker checks never looked at it, and nothing compared it to the screen. | A universal claim about the screen's names must name its set by a `sector` value of the screen (or state a count that identifies one set), and the floor it states must hold for EVERY name in that set. The linter resolves the set and checks the floor. |
+| **A name listed inside a band it is nowhere near** | The same brief wrote "the liquid expression moves a uniform +3.0% to +4.7%: **GFR +38.39%**, TECK +4.63%, ...". GFR's own percentage was right; the band was wrong. | Every name listed after a stated band must fall inside that band. The linter reads the band and the names in the same sentence. |
+| **A superlative that is not true of the set it names** | The same brief called GFR "the largest name left in the theme, at a $1.35B market cap" when the theme held BHP at $201B and FCX at $85B. | Rank by the thing you claim: "the largest MOVE" for a percentage, "the largest NAME" only for a market cap. Check it against the screen's `market_cap` column before you write it. |
 
 ## The fetch-ladder rule (every shared helper, every run)
 
@@ -754,6 +761,7 @@ Do NOT chain a third MCP after a fallback. The Playbook's day-window has its own
 - Use only the tools named in the RUNTIME DATA-SOURCE CONTRACT (`web_search`, `web_fetch`, `bash` and the MCP-over-HTTP bridge). No browser automation, no new network endpoints without user approval.
 - **Citation required:** every cluster leader has ≥ 1 source (URL or file path).
 - **One pull per brief.** A live tape pulled twice yields two versions of the same number. Pick one pull and make every section agree with it.
+- **Every claim about the screen's names is checkable.** A universal claim ("every one", "all N", "none is down") names its set by a `sector` value of the screen's CSV, or by a count that identifies one set, and the floor it states holds for every name in that set. A band ("a uniform +3.0% to +4.7%") contains every name listed after it. A superlative ("the largest name", "the biggest mover") is true of the column it ranks.
 - If the brief is short of themes (≤ 2), surface "thin tape" in the TL;DR — do not pad.
 - If MCP `financial_news` (`MARKETAUX_API_TOKEN not configured`) fails, fall back to `web_search` + the bridge and note in `Source health`.
 - **The `mcp__*` tool names do not exist in this runtime.** Do not call them and do not spend turns proving they are absent.

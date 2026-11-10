@@ -17,6 +17,18 @@ names while the markdown took the earlier bulk screen, so AEHR read +18.5% in on
 +18.8% in the CSV, and RDAC read +119.6% in a note and +118.0% in the table above it. Nothing
 in the pipeline noticed — the file looked fine. This script is the check.
 
+It also checks what the brief CLAIMS about the screen, which is a different thing from what it
+publishes. Two claims in the published 2026-11-09 brief named no ticker and so passed every
+per-ticker check above:
+
+  * "every one of the 35 ... names is at or above +3.00%" - UEC printed +2.60%
+  * "the liquid expression moves a uniform +3.0% to +4.7%: GFR +38.39%, ..." - the name is
+    nowhere near the band it is listed inside
+
+A universal claim is resolved against the screen (a `sector` value, or a count that identifies
+one set of rows) and checked against it. A claim whose set cannot be resolved is printed as a
+`note:` rather than believed.
+
 USAGE
   python3 tools/check_brief_consistency.py --md daily-briefs/2026-11-04-pre-market.md \
                                               --csv daily-briefs/2026-11-04-pre-market.csv
@@ -164,11 +176,198 @@ def load_csv(path: str) -> dict:
             out[t] = {"pct": _f("gap_pct", "premarket_change_pct"),
                       "session_pct": _f("prior_session_change_pct", "prev_change_pct",
                                         "nov_2_change_pct"),
-                      "px": _f("premarket_last", "premarket_close")}
+                      "px": _f("premarket_last", "premarket_close"),
+                      "sector": (row.get("sector") or "").strip(),
+                      "raw": row}
     return out
 
 
+BAND_RE = re.compile(
+    r"([+-]?\d+(?:\.\d+)?)\s*%\s*(?:to|through|–|—)\s*([+-]?\d+(?:\.\d+)?)\s*%")
+PAIR_RE = re.compile(r"\b([A-Z][A-Z0-9.\-]{0,6})\s+([+-]?\d+(?:\.\d+)?)\s*%")
+UNIVERSAL_RE = re.compile(
+    r"\b(every one|every name|every single|each name|all (?:of )?the \d+"
+    r"|all \d+|all of them|all|not one|none)\b", re.I)
+THRESHOLD_RE = re.compile(
+    r"(?:at or above|at least|no less than|≥|>=|>)\s*([+-]?\d+(?:\.\d+)?)\s*%", re.I)
+COUNT_RE = re.compile(r"\b(\d+)\s+(?:[\w\-]+\s+){0,4}?names?\b", re.I)
+UP_OR_DOWN_RE = re.compile(
+    r"\b(not one is down|none (?:is )?down|all (?:are |were )?up|every one.*up)\b", re.I)
+
+
+def sentences(text: str) -> list:
+    """One sentence per item, so a claim and the set it names stay together."""
+    out = []
+    for line in text.splitlines():
+        for s in re.split(r"(?<=[.!?])\s+", line):
+            s = s.strip()
+            if s:
+                out.append(s)
+    return out
+
+
+GATE_WORDS = ("liquid", "quality")
+GATE_COMBOS = ((), ("liquid",), ("quality",), GATE_WORDS)
+REPORTING_RE = re.compile(
+    r"\b(said|says|wrote|written|claimed|claims|published|states|stated|quoted|"
+    r"quotes|reads|earlier|previously|used to|no longer|corrected|amended|"
+    r"amendment|correction|did not survive|instead of)\b", re.I)
+
+
+def _passes(r, col):
+    """Whether a screen's gate flag says this row passed."""
+    return str(r["raw"].get(col, "")).strip().lower() in ("pass", "yes", "true")
+
+
+def resolve_set(sent: str, rows: dict, sentence_lower: str, want_count=None):
+    """The CSV rows a claim is about, or None when the claim names no set.
+
+    A claim about "35 names on the screen" is checkable when the count
+    identifies a set: the screen's own sector and gate columns produce exactly
+    one set of that size often enough, and a claim that fits one set is a
+    claim about it. A sector named in the sentence settles it outright. The
+    gate words in the claim narrow it the way the screen's flags do; with no
+    gate word, the count decides which combination it meant.
+    """
+    sectors = sorted({r["sector"] for r in rows.values() if r["sector"]})
+    sector = None
+    for s in sectors:                      # longest first, so "Non-Energy
+        if s.lower() in sentence_lower:    # Minerals" beats "Energy Minerals"
+            if sector is None or len(s) > len(sector):
+                sector = s
+
+    def _apply(base, gates):
+        picked = dict(base)
+        for g in gates:
+            cols = [c for c in list(picked.values())[0]["raw"]
+                    if c.startswith(g)] if picked else []
+            if cols:
+                picked = {t: r for t, r in picked.items() if _passes(r, cols[0])}
+        return picked
+
+    stated = [g for g in GATE_WORDS if g in sentence_lower]
+    if sector:
+        base = {t: r for t, r in rows.items() if r["sector"] == sector}
+        if stated:
+            return _apply(base, stated), sectors, "%s, %s" % (sector, " + ".join(stated))
+        if want_count is not None:
+            for gates in GATE_COMBOS:
+                picked = _apply(base, gates)
+                if len(picked) == want_count:
+                    return picked, sectors, "%s, %s" % (
+                        sector, " + ".join(gates) if gates else "no gate")
+            return None, sectors, None
+        return base, sectors, sector
+
+    # No sector named. The count may still identify one set in the screen.
+    if want_count is not None:
+        matches = []
+        for s in sectors:
+            base = {t: r for t, r in rows.items() if r["sector"] == s}
+            for gates in GATE_COMBOS:
+                picked = _apply(base, gates)
+                if len(picked) == want_count:
+                    matches.append((picked, "%s, %s" % (
+                        s, " + ".join(gates) if gates else "no gate")))
+        if len(matches) == 1:
+            return matches[0][0], sectors, matches[0][1]
+    return None, sectors, None
+
+
+def check_claims(md: str, rows: dict) -> tuple:
+    """Prose claims about the screen's names, against the screen itself.
+
+    Two shapes misled a reader on 2026-11-09 and both passed the per-ticker
+    checks above, because neither names a ticker in the claim:
+
+      * "every one of the 35 ... names is at or above +3.00%" - one of them
+        printed +2.60%. A universal numeric claim is either checkable against
+        the screen or it must not be made.
+      * "the liquid expression moves a uniform +3.0% to +4.7%: GFR +38.39%, ..."
+        - the name is listed INSIDE a band it is nowhere near.
+
+    Returns (problems, notes). A note is printed and is not a breach: a claim
+    whose set cannot be resolved is surfaced, not silently believed.
+    """
+    problems, notes = [], []
+    band_checked = claim_checked = 0
+
+    for sent in sentences(md):
+        # --- a name listed inside a stated band must be inside that band ---
+        bm = BAND_RE.search(sent)
+        if bm:
+            lo, hi = float(bm.group(1)), float(bm.group(2))
+            if lo > hi:
+                lo, hi = hi, lo
+            for t, p in PAIR_RE.findall(sent[bm.end():]):
+                pct = float(p)
+                band_checked += 1
+                if pct < lo - 0.05 or pct > hi + 0.05:
+                    problems.append(
+                        f"band claim: {t} {pct:+.2f}% is listed inside the stated "
+                        f"{lo:+.2f}% to {hi:+.2f}% band")
+
+        # --- a universal claim about the screen's names ---
+        um = UNIVERSAL_RE.search(sent)
+        if not um or not re.search(r"\bnames?\b", sent, re.I):
+            continue
+        if REPORTING_RE.search(sent):
+            # A correction note that QUOTES an earlier claim is reporting, not
+            # claiming. "§1 still said every one of the 35 ... was at or above
+            # +3.00%" is true about the old text and false about the screen.
+            continue
+        thr = THRESHOLD_RE.search(sent)
+        updown = UP_OR_DOWN_RE.search(sent)
+        if not thr and not updown:
+            continue
+        low = sent.lower()
+        cm = COUNT_RE.search(sent)
+        want = int(cm.group(1)) if cm else None
+        picked, sectors, gates = resolve_set(sent, rows, low, want_count=want)
+        claim_checked += 1
+        if picked is None:
+            # The claim names a set the screen's own columns cannot resolve -
+            # "Metals" is not a sector value, so no row can be checked against
+            # it. That is not a breach (the claim may well be true), but it is
+            # exactly how a false number got through: a universal claim that
+            # nothing can check. It is surfaced, with the fix.
+            why = ("a universal claim about the screen's names must name its set "
+                   "by a sector value of the screen (%s)" % ", ".join(sectors[:6]))
+            if want is not None:
+                why += (" - no gate combination of those rows produces the %d names "
+                        "the claim states" % want)
+            notes.append(f"unverifiable claim (not a breach): {sent[:70]}... - {why}")
+            continue
+        pcts = [r["pct"] for r in picked.values() if r["pct"] is not None]
+        where = "%d row(s) of the screen, %s" % (len(picked), gates)
+        if not pcts:
+            continue
+        if thr:
+            floor = float(thr.group(1))
+            if min(pcts) < floor - 0.05:
+                problems.append(
+                    f"claim says every one is at or above {floor:+.2f}%; "
+                    f"{where} the lowest is {min(pcts):+.2f}%")
+        if updown and min(pcts) <= 0:
+            problems.append(
+                f"claim says every one is up and none is down; {where} "
+                f"the lowest is {min(pcts):+.2f}%")
+        if cm and int(cm.group(1)) != len(picked):
+            notes.append(
+                f"claim says {cm.group(1)} names; {where} match the set as stated "
+                f"({min(pcts):+.2f}% to {max(pcts):+.2f}%)")
+    return problems, notes, band_checked, claim_checked
+
+
 def main() -> int:
+    # A message can carry `≥` or an em-dash. On a Windows console that is
+    # cp1252 and the print would raise, which hides the finding the checker
+    # exists to report.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--md", required=True)
     ap.add_argument("--csv", required=True)
@@ -247,10 +446,18 @@ def main() -> int:
     if "pre-market.csv" not in md:
         problems.append("the markdown does not reference its CSV companion")
 
+    # --- 6. prose claims about the screen's names, against the screen ---
+    claim_problems, notes, band_checked, claim_checked = check_claims(md, rows)
+    problems.extend(claim_problems)
+
     print(f"check-brief-consistency: {args.md}")
     print(f"  table rows checked : {table_checked}")
     print(f"  prose ticks checked: {prose_checked}")
+    print(f"  band names checked : {band_checked}")
+    print(f"  set claims checked : {claim_checked}")
     print(f"  CSV names          : {len(rows)}")
+    for n in notes:
+        print(f"  note: {n}")
     if problems:
         print(f"  RESULT: INCONSISTENT ({len(problems)} problem(s))")
         for p in problems:
