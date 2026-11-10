@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """premarket_universe.py — resolve and PROVE the pre-market universe for a given fire date.
 
-MARKER: premarket-universe-v1
+MARKER: premarket-universe-v2
 
 WHY THIS EXISTS
 ---------------
@@ -63,7 +63,11 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
 
-MARKER = "premarket-universe-v1"
+MARKER = "premarket-universe-v2"
+# The v1 string is kept in this file on purpose: a runner holding an OLD fetch
+# ladder (which greps for v1) must still accept the NEW script. A ladder that
+# greps for v2 rejects a STALE v1 copy, so the fix cannot be silently missed.
+LEGACY_MARKER = "premarket-universe-v1"
 OUTPUTS_REPO = "karizaco/minimax-cloud-outputs"
 PROMPTS_REPO = "karizaco/maxhermes-migration"
 
@@ -96,7 +100,17 @@ def _github_raw(repo: str, path: str, ref: str = "main", token: str | None = Non
     headers = {"Accept": "application/vnd.github.raw"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    body, _ = _http(url, headers)
+    # A missing path is a 404, NOT an exception: the resolver walks back through
+    # sessions looking for a published sweep, and a session whose focus.csv was
+    # never published must read as "not published" instead of killing the run.
+    # (Measured 2026-11-10: the 2026-11-09 sweep published focus.md but no
+    # focus.csv, and the unhandled HTTPError aborted the whole fire.)
+    try:
+        body, _ = _http(url, headers)
+    except urllib.error.HTTPError as e:
+        return None, "not published (HTTP %s)" % e.code
+    except urllib.error.URLError as e:
+        return None, "not published (%s)" % (getattr(e, "reason", e) or "network error")
     if body.lstrip()[:200].find('"message"') >= 0:
         return None, body
     return body, None
@@ -176,18 +190,108 @@ def resolve_sessions(fire_date: dt.date, token: str | None = None,
 
 # -------------------------------------------------------------------- universe
 def fetch_focus(session: dt.date, token: str | None = None, root: str | None = None):
-    path = f"daily-screens/{session.isoformat()}/focus.csv"
+    """The Focus list published for a session: the .csv if there is one, else the .md.
+
+    The markdown Focus list IS the published universe — a sweep that ships
+    `focus.md` without its `focus.csv` companion has still published its Focus
+    list. The returned path tells the caller which kind it got.
+    """
     if root:
-        # local mirror (used by the regression test): <root>/<date>/focus.csv
-        local = os.path.join(root, session.isoformat(), "focus.csv")
-        if os.path.exists(local):
-            with open(local, encoding="utf-8", errors="replace") as fh:
-                return fh.read(), local, None
-        return None, local, "not published"
-    body, err = _github_raw(OUTPUTS_REPO, path, "main", token)
+        # local mirror (used by the regression test): <root>/<date>/focus.{csv,md}
+        for name in ("focus.csv", "focus.md"):
+            local = os.path.join(root, session.isoformat(), name)
+            if os.path.exists(local):
+                with open(local, encoding="utf-8", errors="replace") as fh:
+                    return fh.read(), local, None
+        return None, os.path.join(root, session.isoformat(), "focus.csv"), "not published"
+    for name in ("focus.csv", "focus.md"):
+        path = f"daily-screens/{session.isoformat()}/{name}"
+        body, err = _github_raw(OUTPUTS_REPO, path, "main", token)
+        if body is not None:
+            return body, path, None
+    return None, f"daily-screens/{session.isoformat()}/focus.csv", "not published"
+
+
+def fetch_results_prov(session: dt.date, token: str | None = None,
+                       root: str | None = None):
+    """Per-name screen provenance from the sweep's canonical machine file.
+
+    `_results.json` is listed in the sweep manifest's canonical machine files. It
+    carries, per candidate, the stylist NAMES and the origin names. `focus.md`
+    carries only the COUNTS plus the origin list, so the stylist names (which the
+    non-qualifying ranking needs) are recovered from here.
+    """
+    if root:
+        path = os.path.join(root, session.isoformat(), "_results.json")
+        if not os.path.exists(path):
+            return {}, path, "not published"
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            body = fh.read()
+        err = None
+    else:
+        path = f"daily-screens/{session.isoformat()}/_results.json"
+        body, err = _github_raw(OUTPUTS_REPO, path, "main", token)
     if body is None:
-        return None, path, err
-    return body, path, None
+        return {}, path, err
+    try:
+        d = json.loads(body)
+    except Exception as e:
+        return {}, path, "unparseable (%s)" % type(e).__name__
+    out: dict[str, dict] = {}
+    for c in d.get("candidates") or []:
+        sym = str(c.get("symbol", "")).strip().upper()
+        if not sym:
+            continue
+        out[sym] = {
+            "stylists": "|".join(str(x) for x in (c.get("stylists") or [])),
+            "origins": "|".join(str(x) for x in (c.get("origins") or [])),
+            "flags": "",
+        }
+    return out, path, None
+
+
+def parse_focus_md(text: str, session: dt.date, prov: dict | None = None):
+    """Parse the Focus list's markdown table -> (names, meta, error).
+
+    The table is `| Symbol | Stylists | Origins | Flags | Velocity | ADR% | Notes |`
+    where `Stylists`/`Origins` are COUNTS and `Notes` carries the origin names.
+    """
+    rows = []
+    for ln in text.split("\n"):
+        ln = ln.strip()
+        if not ln.startswith("|"):
+            continue
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        if not cells:
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        if cells[0].lower() in ("symbol", "ticker"):
+            continue
+        if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", cells[0]):
+            continue
+        rows.append(cells)
+    if not rows:
+        return [], {"close_by_session": {}, "schema": "focus.md (no close column)",
+                    "data_date": None, "screen_col": None, "prov": {}, "rows": []}, \
+               "focus.md has no parseable rows"
+    prov = prov or {}
+    names, pmap = [], {}
+    for cells in rows:
+        sym = cells[0].upper()
+        names.append(sym)
+        p = prov.get(sym, {})
+        origins = p.get("origins") or ""
+        if not origins and len(cells) >= 7:
+            origins = ",".join(x.strip() for x in cells[6].split(",") if x.strip())
+        pmap[sym] = {
+            "stylists": p.get("stylists") or (cells[1] if len(cells) > 1 else ""),
+            "origins": origins,
+            "flags": p.get("flags") or (cells[3] if len(cells) > 3 and cells[3] != "—" else ""),
+            "data_date": None,
+        }
+    return names, {"close_by_session": {}, "schema": "focus.md (no close column)",
+                   "data_date": None, "screen_col": None, "prov": pmap, "rows": []}, None
 
 
 def parse_focus(text: str, session: dt.date):
@@ -359,11 +463,13 @@ def main(argv=None) -> int:
     universe_path = None
     text = None
     walked = []
+    universe_kind = "focus.csv"
     for s in sessions[: a.max_walk]:
         body, path, err = fetch_focus(s, a.token, a.focus_root)
         walked.append(s.isoformat())
         if body is not None:
             universe_date, universe_path, text = s, path, body
+            universe_kind = "focus.md" if str(path).endswith("focus.md") else "focus.csv"
             break
     assert_that("H2_published_focus_list_exists", text is not None,
                 f"looked for a published sweep on {walked}"
@@ -377,7 +483,15 @@ def main(argv=None) -> int:
         print(json.dumps(manifest, indent=2))
         return 3
 
-    names, meta, perr = parse_focus(text, universe_date)
+    if universe_kind == "focus.md":
+        prov, prov_path, prov_err = fetch_results_prov(universe_date, a.token, a.focus_root)
+        names, meta, perr = parse_focus_md(text, universe_date, prov)
+        meta["prov_path"] = prov_path
+        if prov_err:
+            flags.append(f"the sweep provenance file could not be read ({prov_err}); "
+                         f"the stylist names are the counts published in focus.md")
+    else:
+        names, meta, perr = parse_focus(text, universe_date)
     assert_that("H2b_focus_csv_parses", not perr, perr or f"{len(names)} names, schema={meta['schema']}")
 
     # --- H3: the universe's own session == the expected prior session ------
@@ -397,11 +511,18 @@ def main(argv=None) -> int:
     ref_col = meta["close_by_session"].get(expected.isoformat())
     ref_session = expected.isoformat() if ref_col else None
     if ref_col is None and not stale:
-        assert_that("H4_reference_close_column_for_the_denominator_session", False,
-                    f"the CSV has no close column for {expected.isoformat()} "
-                    f"(columns carrying a close: {sorted(meta['close_by_session'].values())}; "
-                    f"the screen's own resolved close {meta['screen_col']} belongs to "
-                    f"data_date {meta['data_date']} and is NEVER a valid denominator)")
+        # A universe published WITHOUT a close column (focus.md only) is not a
+        # defect: the denominator close is then taken from the INDEPENDENT
+        # sources only, and H5 requires it to be confirmed. Failing here would
+        # kill a fire over a missing companion file, not over a wrong number.
+        flags.append(f"the universe was published with NO close column for "
+                     f"{expected.isoformat()} (focus.md carries no close), so the "
+                     f"denominator close is taken from the INDEPENDENT sources only")
+        assert_that("H4_reference_close_column_for_the_denominator_session", True,
+                    f"the universe carries no close column; the denominator close comes "
+                    f"from the independent sources (TradingView/Cboe + session-exact "
+                    f"Nasdaq history), which H5 confirms",
+                    hard=False)
     if ref_col:
         assert_that("H4_reference_close_column_for_the_denominator_session", True,
                     f"denominator column `{ref_col}` resolves to session {expected.isoformat()}")
@@ -468,9 +589,15 @@ def main(argv=None) -> int:
             chosen, src = k, "cboe:close"
         elif x is not None:
             chosen, src = x, "ref_close_file"
-        nh = nasdaq_hist_close(s, expected) if (not a.offline or s in (extra_close or {})) else None
-        if nh is None and s in extra_close:
-            nh = extra_close[s]
+        # OFFLINE MEANS OFFLINE: the session-exact close is fetched from the
+        # network only in a live run. A regression test must not depend on the
+        # network to agree with it.
+        if a.offline:
+            nh = extra_close.get(s)
+        else:
+            nh = nasdaq_hist_close(s, expected)
+            if nh is None and s in extra_close:
+                nh = extra_close[s]
         agree = []
         pairs = [("nasdaq_historical", nh)]
         if tv_cboe_session_valid:
@@ -522,6 +649,8 @@ def main(argv=None) -> int:
         "universe_stale": stale,
         "universe_path": universe_path,
         "universe_schema": meta["schema"],
+        "universe_kind": universe_kind,
+        "universe_provenance_path": meta.get("prov_path"),
         "universe_data_date": meta["data_date"],
         "tv_cboe_session_valid": tv_cboe_session_valid,
         "ref_close_column": ref_col,

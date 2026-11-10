@@ -593,3 +593,45 @@ and confirms all 12 reference closes against the session-exact Nasdaq history.
 There was **no missing fire** on 2026-11-07: that was a **Saturday**, and the routine is
 `30 8 * * 1-5`. The last fire was Friday 2026-11-06. (The Nasdaq `market-info` endpoint settles
 this question in one call — it returns `preMarketOpeningTime` for the NEXT session.)
+
+---
+
+## 5. 2026-11-10 — A SWEEP THAT PUBLISHED `focus.md` AND NO `focus.csv`
+
+**Evidence (the 2026-11-10 fire, 08:34 ET).** The 18:30 ET sweep of **2026-11-09** published
+`daily-screens/2026-11-09/focus.md` — 12 Focus names with their provenance — and **no
+`focus.csv`**. Its own `_manifest.json` records the `focus` screen as *"no .csv for this screen"*
+(alongside `master`, `peoplewish`, `qullamaggie`, `ariel-hernandez`, `jeff-sun`, `breadth`).
+
+Two defects met in one fire:
+
+1. **The resolver aborted the run on the 404.** `_github_raw()` let `HTTPError` escape, so the
+   session walk died instead of reading the missing file as "not published". The fire died before
+   a universe was proved — no artifact at all.
+2. **Had it survived, it would have scanned the WRONG session's names.** The walk looks for
+   `focus.csv`; with the 2026-11-09 CSV absent it would have walked back to the **2026-11-06**
+   sweep and measured today's gaps against the 2026-11-06 universe — the exact failure H3 exists
+   to catch, arriving through a door H3 does not guard.
+
+A third, quieter defect: `premarket_pull.py` labelled the reference close **`focus.csv`** in
+`ref_close_source` no matter where it came from. With no CSV close available, the published
+source string named a file that does not exist.
+
+**What changed**
+
+| file | change |
+|---|---|
+| `scripts/premarket_universe.py` (marker `premarket-universe-v1` → **v2**) | a missing path is **"not published"**, not an exception; the Focus list is read from `focus.md` when the CSV is absent; the stylist **names** are recovered from the sweep's canonical `_results.json`; a universe with no close column takes the denominator from the **independent sources only** and is flagged; `universe_kind` is published in the manifest. `--offline` now never touches the network. |
+| `scripts/premarket_pull.py` | the published `ref_close_source` names the source the close ACTUALLY came from (the manifest's `ref_close_source`), and the manifest's independent confirmations are carried into it — no more `focus.csv` for a close that no focus.csv provided. |
+| `tools/test_premarket_universe.py` | the test could not run at all: it looked for the resolver in `tools/`, but the resolver lives in the skill's `scripts/`. Now it resolves the real path (**20/20 → 31/31 pinned checks**), including **T6** (a markdown-only universe resolves the right session, takes the close from the independent source and does NOT attribute it to a `focus.csv`) and **T7** (a markdown universe for the wrong session still **exits 3**). |
+| `SKILL.md` §6.3a | the fetch ladder now demands `premarket-universe-v2`, so a cached OLD copy cannot win; the markdown-universe path is documented. |
+
+**Measured on the live repo.** The resolver now resolves the expected prior session **2026-11-09**
+from Nasdaq's own session history, finds the 2026-11-09 sweep's **markdown** Focus list (12 names:
+CYRX, ETON, FLY, FROG, IONQ, KRMN, LASR, OKLO, QNT, RGTI, RHLD, TMDX), and confirms **12/12**
+reference closes on TradingView + Cboe + Nasdaq's session-exact per-symbol history — the settled
+2026-11-09 close, which is what the gap must be measured against.
+
+**The upstream half of the defect is cron #09's.** The sweep should publish `focus.csv` again; a
+markdown-only Focus list is a degraded publish, and the next routine that needs a machine-readable
+universe will hit the same door.

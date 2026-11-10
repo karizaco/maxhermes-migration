@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_premarket_universe.py — the universe/date guard must BITE.
 
-MARKER: premarket-universe-v1
+MARKER: premarket-universe-v2
 
 A checker that never observed failing is a claim, not a gate. This test runs
 `premarket_universe.py` offline against FIXTURES and asserts:
@@ -29,7 +29,15 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESOLVER = os.path.join(HERE, "premarket_universe.py")
+# The resolver lives in the SKILL's scripts/ directory (it is fetched at RUN
+# time), so it is NOT next to this test. The old path made the whole
+# regression test unrunnable — a guard that cannot be executed is a claim.
+_CANDIDATES = (
+    os.path.join(HERE, "premarket_universe.py"),
+    os.path.join(HERE, os.pardir, "cloud-prompts", "skills", "stock-screener-suite",
+                 "scripts", "premarket_universe.py"),
+)
+RESOLVER = next((c for c in _CANDIDATES if os.path.exists(c)), _CANDIDATES[0])
 
 CURRENT_HEADER = ("symbol,stylists,n_stylists,origins,screen_close_resolved,chg_pct_resolved,"
                    "today_close,today_change,today_volume,data_date,source")
@@ -160,6 +168,68 @@ def main() -> int:
                   == "ref_close_file",
                   "T5 the reference close is attributed to the independent source, "
                   "not to the stale focus.csv")
+
+        # --- T6: the sweep published focus.md but NO focus.csv -------------
+        # Measured 2026-11-10: the 2026-11-09 sweep shipped focus.md and no
+        # focus.csv. A resolver that only looks for the CSV walks back to an
+        # OLDER sweep and measures today's gaps against the wrong day's names.
+        r6 = os.path.join(tmp, "root_md")
+        d6 = os.path.join(r6, "2026-11-06")
+        os.makedirs(d6, exist_ok=True)
+        with open(os.path.join(d6, "focus.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Focus (appears in >=2 stylists OR top-5 velocity)\n\n"
+                     "Generated 2026-11-06\n\nCount: 1\n\n"
+                     "| Symbol | Stylists | Origins | Flags | Velocity | ADR% | Notes |\n"
+                     "|---|---|---|---|---|---|---|\n"
+                     "| APP | 4 | 5 | — |  |  | A_stockbee_4pct|B_stockbee_ep9m|"
+                     "C_qullamaggie_rs|D_qullamaggie_ep|G_peoplewish |\n")
+        with open(os.path.join(d6, "_results.json"), "w", encoding="utf-8") as fh:
+            json.dump({"candidates": [{"symbol": "APP",
+                                        "stylists": ["jeff_sun", "peoplewish",
+                                                     "qullamaggie", "stockbee"],
+                                        "origins": ["A_stockbee_4pct", "B_stockbee_ep9m",
+                                                    "C_qullamaggie_rs", "D_qullamaggie_ep",
+                                                    "G_peoplewish"]}]}, fh)
+        rc, mf, err = run(tmp, "2026-11-07", r6,
+                          extra=["--ref-close-file", rcfile])
+        print("[T6] the sweep published focus.md and NO focus.csv")
+        check(rc == 0, f"T6 the markdown universe exits 0 (got {rc}: {err.strip()[:120]})")
+        if mf:
+            check(mf.get("universe_date") == "2026-11-06",
+                  f"T6 the universe session is 2026-11-06 (got {mf.get('universe_date')})")
+            check(mf.get("universe_kind") == "focus.md",
+                  f"T6 the manifest records the markdown universe "
+                  f"(got {mf.get('universe_kind')})")
+            check(mf.get("names") == ["APP"],
+                  f"T6 the name comes from the markdown Focus list (got {mf.get('names')})")
+            check(mf.get("reference_closes", {}).get("APP", {}).get("ref_close") == 391.22,
+                  "T6 the reference close comes from the INDEPENDENT source")
+            check(mf.get("reference_closes", {}).get("APP", {}).get("ref_close_source")
+                  == "ref_close_file",
+                  "T6 the close is NOT attributed to a focus.csv that does not exist")
+            check("stockbee" in (mf.get("reference_closes", {}).get("APP", {})
+                                  .get("stylists") or ""),
+                  "T6 the stylist names are recovered from the sweep's _results.json")
+            check(any("no close column" in str(f).lower() for f in mf.get("flags", [])),
+                  "T6 the missing close column is flagged")
+
+        # --- T7: a markdown universe for the WRONG session must still BITE ---
+        r7 = os.path.join(tmp, "root_md_wrong")
+        d7 = os.path.join(r7, "2026-11-05")
+        os.makedirs(d7, exist_ok=True)
+        with open(os.path.join(d7, "focus.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Focus\n\n| Symbol | Stylists | Origins | Flags | Velocity | ADR% | Notes |\n"
+                     "|---|---|---|---|---|---|---|\n"
+                     "| APP | 4 | 5 | — |  |  | A_stockbee_4pct |\n")
+        rc, mf, err = run(tmp, "2026-11-07", r7)
+        print("[T7] a markdown universe for the WRONG session — the guard must BITE")
+        check(rc == 3, f"T7 the run exits 3 (got {rc})")
+        if mf:
+            check(mf.get("status") == "FAIL", "T7 the manifest status is FAIL")
+            hard = [a for a in mf.get("assertions", []) if not a["ok"] and a.get("hard")]
+            check(any(a["assertion"].startswith("H3") for a in hard),
+                  f"T7 H3 (universe session) is the hard failure "
+                  f"(got {[a['assertion'] for a in hard]})")
 
         print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} checks passed")
         if FAILURES:

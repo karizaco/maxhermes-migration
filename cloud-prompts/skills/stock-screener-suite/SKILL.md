@@ -1448,12 +1448,12 @@ for URL in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_universe.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$U.tmp" "$URL" 2>/dev/null
-  if [ -s "$U.tmp" ] && grep -q 'premarket-universe-v1' "$U.tmp" 2>/dev/null; then
+  if [ -s "$U.tmp" ] && grep -q 'premarket-universe-v2' "$U.tmp" 2>/dev/null; then
     mv -f "$U.tmp" "$U"; break
   fi
   rm -f "$U.tmp"
 done
-if [ ! -s "$U" ] || ! grep -q 'premarket-universe-v1' "$U"; then
+if [ ! -s "$U" ] || ! grep -q 'premarket-universe-v2' "$U"; then
   echo "premarket_universe.py: UNAVAILABLE - the universe cannot be proven, so there is no artifact"
   exit 1
 fi
@@ -1472,6 +1472,21 @@ prints the failed assertion. The hard assertions:
 | H3 | the universe's own session == the expected prior session | **the wrong day's names** (a stale sweep) |
 | H4 | every name has a reference close for the denominator session | a gap with no denominator |
 | H5 | every reference close is confirmed by an independent source | a gap measured against a price nobody else saw |
+
+**A sweep may publish its Focus list as MARKDOWN, with no CSV.** Measured 2026-11-10: the
+2026-11-09 sweep published `focus.md` (12 names, with their provenance) but **no `focus.csv`** —
+its manifest entry says "no .csv for this screen". A resolver that looks only for the CSV walks
+back to an **older** sweep and measures today's gaps against the wrong day's names; the fetched
+resolver also aborted the whole fire on the 404 instead of reading it as "not published". The
+resolver now:
+
+- reads the markdown Focus list when the CSV is absent, and recovers the **stylist NAMES** from
+  the sweep's canonical `_results.json` (the markdown carries only the COUNTS plus the origin
+  list, and the non-qualifying ranking needs the names);
+- takes the denominator close from the **INDEPENDENT sources only** when the universe carries no
+  close column — the manifest records `universe_kind: focus.md` and flags *"the universe was
+  published with NO close column"*, and `ref_close_source` names the independent source instead
+  of a `focus.csv` that does not exist.
 
 **A stale universe is a FAIL, not a warning.** `--allow-stale-universe` downgrades H3 to a flag —
 and then the reference close **must** come from the independent sources, because the stale CSV's
