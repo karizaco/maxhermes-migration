@@ -565,7 +565,7 @@ is holding or already half-filled, and the last price alone cannot say.
 The companion CSV ships with exactly this header, in this order:
 
 ```
-ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published
+ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published,driver_class,driver_anchor
 ```
 
 - **No column name may contain a date.** The 2026-11-03 CSV shipped `nov_2_2026_close` and
@@ -583,6 +583,37 @@ ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prio
 - `has_news` = `yes` **only** where a catalyst is sourced in this run. On 2026-11-03 exactly 35 of
   1,491 rows had one, and the count is meaningful precisely because it is small. Never fill it
   from a theme's existence — only from a source.
+- **`driver_class` = the catalyst class for that name, and `driver_anchor` = `yes`/`no` — whether
+  the catalyst carries a hard number. EVERY row carries both.** `driver_anchor` is `yes` only
+  when the catalyst carries a price, a per-share amount, a settlement figure, a balance-sheet
+  total, or a reported percentage or cash balance from the company's own release. "A record
+  quarter" is not an anchor; "$0.70 special dividend" is. Measured 2026-11-04: every name whose
+  gap ran carried one, and every name whose gap faded did not.
+
+  **The vocabulary is CLOSED** — it is the same list cron #26b's procedure carries
+  (`cloud-prompts/_shared/premarket-refresh.md`), and **a run may never invent a class**:
+
+  | `driver_class` | Meaning |
+  |---|---|
+  | `CASH-OUT` | cash comes TO the holder — a dividend (incl. a special one), a buyback, a redemption |
+  | `CASH-IN` | an acquirer puts cash IN — a takeover offer, a merger at a price |
+  | `LIABILITY-RESOLVED` | a contingent liability is capped or settled — a litigation settlement, a provision taken |
+  | `ASSET-VALUE` | previously-impaired value is crystallised — loan resolutions, a NAV/discount-to-NAV event |
+  | `EARNINGS-RAISE` | a beat AND a guidance raise |
+  | `EARNINGS-RECONFIRM` | a beat with guidance unchanged |
+  | `EARNINGS-CUT` | a miss, a loss, or a guidance cut |
+  | `CORPORATE-EVENT` | a company-specific event that is not cash, liability or a reported result — a governance, legal or regulatory shock |
+  | `SECTOR-BETA` | a group move — policy, macro or a sector theme; no company-specific news |
+  | `NONE` | no sourced catalyst for this name |
+
+  The `EARNINGS-*` classes describe the **DIRECTION of a company-reported RESULT**, not the
+  instrument that produced it: an earnings print, a clinical readout, a regulatory decision or a
+  trial outcome are all "a beat" or "a miss". **`has_news = no` ⇒ `NONE`, whatever the cluster** —
+  a name can sit in a cluster's table without having a catalyst in that cluster's narrative.
+
+  **Why this column exists:** cron #26b's refresh re-derives the driver of every headline name by
+  reading this brief's prose. Publishing it here turns that into a JOIN instead of an
+  interpretation — and stops two routines from inventing two vocabularies on two different days.
 - Round what you publish: prices to 2 dp, percentages to 2 dp. The 2026-11-04 CSV shipped
   `3.06406685236769` for a gap of 3.06%.
 
@@ -595,7 +626,7 @@ before pushing**. The check is mechanical:
 ```bash
 python3 - <<'PY'
 import csv, sys
-want = "ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published".split(",")
+want = "ticker,name,premarket_last,premarket_high,premarket_low,prior_close,gap_pct,prior_session_change_pct,premarket_volume,avg_volume_30d,pct_of_adv,market_cap,sector,exchange,liquid_screen,quality_screen,has_news,key_level,invalidation,setup_theme,setup_published,driver_class,driver_anchor".split(",")
 with open("/workspace/daily-briefs/{date}-pre-market.csv", newline="", encoding="utf-8") as fh:
     got = csv.DictReader(fh).fieldnames or []
 missing = [c for c in want if c not in got]

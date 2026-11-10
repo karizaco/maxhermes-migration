@@ -49,8 +49,15 @@ CSV_COLUMNS = [
     "prior_close", "gap_pct", "prior_session_change_pct", "premarket_volume",
     "avg_volume_30d", "pct_of_adv", "market_cap", "sector", "exchange",
     "liquid_screen", "quality_screen", "has_news", "key_level", "invalidation",
-    "setup_theme", "setup_published",
+    "setup_theme", "setup_published", "driver_class", "driver_anchor",
 ]
+
+# --- the Driver vocabulary cron #26b's procedure carries; a class outside it is a class
+# invented at run time, and two routines must never publish two vocabularies -------------
+DRIVER_CLASSES = {
+    "CASH-OUT", "CASH-IN", "LIABILITY-RESOLVED", "ASSET-VALUE", "EARNINGS-RAISE",
+    "EARNINGS-RECONFIRM", "EARNINGS-CUT", "CORPORATE-EVENT", "SECTOR-BETA", "NONE",
+}
 
 # --- C2: the level columns every published name must carry ------------------------
 # Each entry: (contract id, accepted normalised header patterns, human label)
@@ -393,6 +400,21 @@ def check_csv_rows(rows):
         if hn not in ("yes", "no", ""):
             problems.append(f"CSV row {n} ({t}) has has_news={hn!r} — the vocabulary is "
                             f"yes/no")
+        dc = (r.get("driver_class") or "").strip()
+        if not dc:
+            problems.append(f"CSV row {n} ({t}) has an empty `driver_class` — every row carries "
+                            f"one, and `NONE` is a value")
+        elif dc not in DRIVER_CLASSES:
+            problems.append(f"CSV row {n} ({t}) has driver_class={dc!r} — it is not in the "
+                            f"fixed vocabulary cron #26b's procedure carries; a class "
+                            f"invented at run time is a class invented differently tomorrow")
+        da = (r.get("driver_anchor") or "").strip().lower()
+        if da not in ("yes", "no"):
+            problems.append(f"CSV row {n} ({t}) has driver_anchor={da!r} — the vocabulary is "
+                            f"yes/no")
+        if hn == "no" and dc and dc != "NONE":
+            problems.append(f"CSV row {n} ({t}) has has_news=no but driver_class={dc!r} — "
+                            f"no sourced catalyst means NONE")
     return problems
 
 

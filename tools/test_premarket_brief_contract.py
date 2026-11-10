@@ -40,7 +40,7 @@ CSV_COLUMNS = [
     "prior_close", "gap_pct", "prior_session_change_pct", "premarket_volume",
     "avg_volume_30d", "pct_of_adv", "market_cap", "sector", "exchange",
     "liquid_screen", "quality_screen", "has_news", "key_level", "invalidation",
-    "setup_theme", "setup_published",
+    "setup_theme", "setup_published", "driver_class", "driver_anchor",
 ]
 
 ROWS = [
@@ -50,14 +50,15 @@ ROWS = [
     ["AMD", "Advanced Micro Devices", 452.02, 477.77, 450.10, 404.40, 11.78,
      -17.26, 1282734, 23659987, 5.42, 660172878478, "Technology", "NASDAQ",
      "pass", "pass", "yes", "477.77",
-     "below 450.10 - the gap filled", "C1 Semis", "yes"],
+     "below 450.10 - the gap filled", "C1 Semis", "yes", "SECTOR-BETA", "no"],
     ["MRVL", "Marvell Technology", 151.32, 156.70, 150.00, 133.55, 13.31,
      -16.43, 1005470, 25582543, 3.93, 117110000496, "Technology", "NASDAQ",
      "pass", "pass", "yes", "156.70",
-     "below 150.00 - the gap filled", "C1 Semis", "yes"],
+     "below 150.00 - the gap filled", "C1 Semis", "yes", "SECTOR-BETA", "no"],
     ["INTC", "Intel", 62.20, 63.10, 61.40, 59.97, 3.72, -8.81, 990000,
      25582543, 3.87, 317008000000, "Technology", "NASDAQ", "pass", "pass", "no",
-     "59.97", "a trade back to or below 59.97 - the gap filled", "", "no"],
+     "59.97", "a trade back to or below 59.97 - the gap filled", "", "no",
+     "NONE", "no"],
 ]
 
 buf = io.StringIO()
@@ -209,7 +210,6 @@ def md_with_bottom_line_after_tldr(text: str) -> str:
 
 MUTATIONS = []
 
-
 def mutation(name):
     def deco(fn):
         MUTATIONS.append((name, fn))
@@ -278,6 +278,21 @@ def m9(t, c):
 def m10(t, c):
     head = ",".join(CSV_COLUMNS) + "\n"
     return t, c.replace(head, head.replace("key_level,", ""), 1)
+
+
+@mutation("a row's driver_class is outside the fixed vocabulary")
+def m21(t, c):
+    return t, c.replace("SECTOR-BETA", "MADE-UP-CLASS")
+
+
+@mutation("a row's driver_anchor is not yes/no")
+def m22(t, c):
+    return t, c.replace("SECTOR-BETA,no", "SECTOR-BETA,maybe")
+
+
+@mutation("a row with has_news=no carries a class other than NONE")
+def m23(t, c):
+    return t, c.replace(",NONE,no", ",EARNINGS-CUT,no")
 
 
 @mutation("the CSV header carries a date-named column")
