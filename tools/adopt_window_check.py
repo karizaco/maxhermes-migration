@@ -135,7 +135,11 @@ def extract_facts(text):
         return None
     sec = m.group(0)
     out = re.search(r"--out\s+(\S+)", sec)
-    name = re.search(r"--name\s+(\S+)", sec)
+    # The --name value may be QUOTED (e.g. --name "us_stocks_in_play_$SLOT"). Keep the
+    # quotes out of the captured value: the template substitutes {NAME} straight into a
+    # FILENAME, so a captured quote would land as a literal quote character in the marker
+    # path -- a marker written to a name the auditor's regex can never match.
+    name = re.search(r'--name\s+"?([^"\s]+)"?', sec)
     label = re.search(r'--label\s+["\']([^"\']+)["\']', sec)
     nn = re.search(r"--nn\s+(\d+)", sec)
     # Match either the old reply line or the new one, so an already-canonical
@@ -170,6 +174,22 @@ def trailing_newlines(section):
     return m.group(0) if m else "\n"
 
 
+def already_migrated(text):
+    """True when this prompt's window check already calls the ONE shared script.
+
+    The tool's job is the MIGRATION: replace a hand-typed inline holiday list with a
+    fetch of cloud-prompts/_shared/window_check.sh. A prompt that already fetches that
+    script has nothing left to migrate, and its block has since been edited by hand
+    (the reply format, the $SLOT note, the re-wrapped prose). Re-rendering it from a
+    template cannot reproduce those edits, so it must be left alone.
+    """
+    m = re.search(r"## WINDOW CHECK.*?(?=\n## )", text, re.S)
+    if not m:
+        return False
+    sec = m.group(0)
+    return "window_check.sh" in sec and "WINDOW_CHECK_V2" in sec
+
+
 def render(facts, fname):
     mh = MARKET_HOURS.get(fname, "")
     if facts["has_clock"] and not mh:
@@ -202,6 +222,18 @@ def main():
         if not facts:
             skipped += 1
             print(f"  skip   {fname} (no inlined window check)")
+            continue
+        if already_migrated(text):
+            # IDEMPOTENCE: this prompt already calls the ONE shared window_check.sh.
+            # The migration this tool exists to perform is DONE for it, so rewriting its
+            # block can only take the fleet BACKWARDS -- the template's prose is older
+            # than what the fleet actually runs, so --apply would revert 20 live prompts
+            # (measured 2026-11-10) to a wording the platform no longer uses, and would
+            # also mangle #17's quoted --name into a literal quote inside the marker
+            # FILENAME. A migration tool that rewrites an already-migrated file is a
+            # tool that can undo the fleet. Skip it, and say so.
+            skipped += 1
+            print(f"  skip   {fname} (already calls the shared window_check.sh)")
             continue
         new_sec = render(facts, fname)
         new_text, n = re.subn(r"## WINDOW CHECK.*?(?=\n## )", lambda _m: new_sec,
