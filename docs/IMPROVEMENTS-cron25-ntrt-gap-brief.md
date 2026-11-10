@@ -752,3 +752,112 @@ branch at all. Two candidate hardenings, for whoever owns `push_artifact.sh`:
 - `ntrt/2026-11-09.md` and `ntrt/2026-11-09.csv` fetched from **both** branches via the GitHub
   contents API → byte-identical to the local files on both.
 - `check_ntrt_artifact.py` re-run after the amendment: `CONTRACT OK — contract: 16/16`.
+
+---
+
+## 21. The skill published `contract: 16/16` while the checker ran **17** checks — HIGH (2026-11-10)
+
+Found on the **2026-11-10** 09:00 ET fire (Mode B screener fallback), while assembling the reply.
+
+**Defect.** `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` §9 instructed the run to publish
+`contract: 16/16` and listed "the sixteen checks". The checker behind the
+`NTRT_CONTRACT_CHECK_V2` marker — the one the run-time fetch demands, and the one on `main`
+today — has `CONTRACT_CHECKS = 17`, and `check_reply()` FAILS unless the reply publishes
+`17/17`:
+
+```python
+if int(m.group(1)) != total or int(m.group(2)) != total:   # total = CONTRACT_CHECKS = 17
+```
+
+The missing seventeenth is `YESTERDAY`, which arrived with §13 on 2026-11-05. §20's verification
+note at the end of this file still reads `CONTRACT OK — contract: 16/16`, so the checker gained
+its seventeenth check **after** that run and the skill was never updated with it.
+
+**Why it matters.** A run that follows the skill literally publishes `contract: 16/16`, fails the
+REPLY check with every artifact check green, and is then pushed toward either pasting the
+failure into the brief or quietly skipping the reply check — both of which the skill forbids
+elsewhere. The failure is silent until the reply line is written.
+
+**Fixed in the skill** (this run): publish `17/17`, list `YESTERDAY` as the seventeenth check,
+and state the rule that generalises — **publish the number the checker prints**, never a number
+carried in prose. The count lives in one place (the checker) and the skill follows it.
+
+**Verified 2026-11-10.** `grep -n "CONTRACT_CHECKS" tools/check_ntrt_artifact.py` → `17`;
+the fetched checker printed `CONTRACT OK — contract: 17/17 (ntrt-artifact-v4)`; the same run's
+`--reply /workspace/reply.md` printed `ok [REPLY] the reply publishes contract: 17/17`.
+
+**Do-not list (unchanged by this finding).**
+- Do NOT edit `tools/check_ntrt_artifact.py` to make the skill's number true — the checker is
+  the source of truth and the skill is the copy that drifted.
+- Do NOT change the deployed cron prompt for this; the contract count lives in the run-time
+  fetched skill, so the fix lands on the next fire with no `cron_update` and no prompt drift.
+
+---
+
+## 22. The 09:25 delta-pull window can be missed by the routine's OWN latency — MEDIUM (2026-11-10)
+
+**Defect.** §12 framed the delta pull as a thing to do "at ~09:25 ET" and said to skip it if
+"the clock ran past 09:25". On a 50-name catalyst run the artifact work itself (lookups, CSV
+build, contract check) can carry the wall clock past that target — on 2026-11-10 the pull
+landed at **09:32 ET**, two minutes after the open, and the old rule said "skip it".
+
+**Measured.** TradingView kept serving the last pre-market print for a short while after the
+open, so the 09:32 pull still carried pre-market information and produced **16 movement flags**
+the 09:03 pull alone could not show:
+
+| Name | 09:03 pull | 09:32 pull | Note |
+|---|---|---|---|
+| PXLW | +18.9% | **+38.3%** | Meta VR certification partnership re-rated the name |
+| CISS | +14.3% | **+23.4%** | driver still unconfirmed for this ticker |
+| APPS | −23.0% | **−26.8%** | the beat-and-raise contradiction got worse |
+| IHRT | −34.2% | **−37.9%** | |
+| SECZ | +29.3% | **+26.0%** | gave back part of the acquisition pop |
+| PEPG | +118.5% | **+127.2%** | below the floor — watchlist only |
+| SMX | +107.3% | **+93.8%** | below the floor |
+| BW | +4.8% | — | **left the screen** (crossed back under 3%) |
+| NFGC | −3.9% | — | **left the screen** (crossed back under 3%) |
+
+**Fixed in the skill:** the window is a target, not a gate. Take a late pull if the network
+allows, use it for flags only, and **state the actual pull time in Flags**, because a pull taken
+after the open may already include the opening trade.
+
+---
+
+## 23. The 08:30 pre-open tape came back SHORT and with no source URLs — OBSERVATION (2026-11-10)
+
+`preopen-feed/2026-11-10-0830.jsonl` returned **49 rows** (8 Pipeworx with `ref`, 29
+StockTwits, 12 scanner) and covered only 6 of the 50 published names — APPS, QBTS, SECZ, SENS,
+TTD, WYFI. **All six carried `conf: high` but NO `ref`**, so §11's rule ("use the tape's `why`
+only when it carries a `ref` URL") forbade publishing any of them. Every published catalyst was
+confirmed by an independent search instead, and the run counted the tape as a degraded source
+(`degraded_sources: 1` / `errors: 1`).
+
+This belongs to cron #92's side of the house, but the routine-level lesson is now recorded in
+§11: a short tape is not a screen, and a tape with no `ref` cannot be published at all.
+
+---
+
+## 24. Screen shape on a normal tape day — BASELINE for the next fire (2026-11-10)
+
+- **650 names** at ≥3% gap (198 up, 452 down). The pull was complete: `totalCount` matched the
+  rows returned on BOTH sides.
+- Only **127** of 650 cleared 5% of 30-day ADV; **30** also cleared the $200M floor (23 down,
+  7 up). The gap between "650 names on the screen" and "30 tradeable names" is the single
+  number the TL;DR has to carry.
+- The day's biggest mover (**PEPG +118.5%**) and the day's largest decliner (**LICN −80.4%**)
+  were BOTH below the $200M floor. The §10 watchlist is not a formality — it carried the
+  extremes on this tape, and `SUBFLOOR` would have failed a run that stayed quiet.
+- The prior Tier-A board (`daily-screens/2026-11-06/tier-a.csv`, data date 2026-11-05) had
+  **zero** overlap with this morning's screen. That is a normal outcome of two different jobs,
+  not a finding about either list.
+- **Four names moved against their own headline**: TTD (−6.6%) and APPS (−23.0%) on headline
+  beats, UONEK (+15.4%) and TTEC (+19.7%) on misses. The TTD and APPS prints were cross-checked
+  against Yahoo's pre-market bars ($13.85-13.99 and $8.61-8.80) — the drops were real, not a
+  stale-screener artefact. §5's "move contradicts the fundamental" flag earned its place.
+
+**Verification performed (2026-11-10).**
+- `python3 tools/check_ntrt_artifact.py --md ntrt/2026-11-10.md --csv ntrt/2026-11-10.csv
+  --reply reply.md` → `CONTRACT OK — contract: 17/17 (ntrt-artifact-v4)`, exit 0.
+- `sh push_artifact.sh --out ntrt --add ntrt/2026-11-10.md --add ntrt/2026-11-10.csv
+  --branch main --nn 25 --msg "cron 25 ntrt-gap-brief-daily 2026-11-10"` → `push: ok (attempt 1)`;
+  `verify_delivery.sh` → `DELIVERY: ok` for BOTH paths on `origin/main`.
