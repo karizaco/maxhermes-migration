@@ -322,6 +322,25 @@ def main():
         results.append((FAIL, f"deploy_prompts.py has {len(dp.TASKS)} entries for "
                               f"{len(ground)} ground-truth routines"))
 
+    # The TASKS map carries a SCHEDULE as well as a task_id, and a stale schedule
+    # there is SILENT: --emit would hand the next deployer a schedule the live
+    # scheduler no longer uses. Measured 2026-11-10: #08's row still said
+    # "30 8 * * 1-5" a day after #08 moved to 08:34 ET to get off the 08:30 slot
+    # where #26 and #92a fire -- a deploy from that row would have re-collided the
+    # three routines in one minute that cost the fleet a whole morning.
+    # The ground truth is the record of what the schedule IS; this asserts the
+    # deploy map agrees with it, so a moved routine cannot leave a landmine behind.
+    stale_sched = []
+    for name, entry in dp.TASKS.items():
+        want = ground.get(name, {}).get("schedule")
+        if want and entry[1] != want:
+            stale_sched.append(f"{name}: map={entry[1]} ground truth={want}")
+    if not stale_sched:
+        results.append((PASS, "every deploy_prompts.py schedule agrees with the ground truth"))
+    else:
+        results.append((FAIL, "deploy_prompts.py schedules differ from the ground truth -- "
+                              + "; ".join(stale_sched)))
+
     # every routine must have a spec contract, and every contract's marker must
     # still be in the repo -- a contract that points at a missing marker is a
     # contract nobody can satisfy

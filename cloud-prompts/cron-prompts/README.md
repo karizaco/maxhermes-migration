@@ -28,9 +28,9 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 02 | asia-pre-market-reactions | `30 6 * * 1-5` | Mon-Fri | 10645 | `asia-pre-market/{date}.md` |
 | 90 | delivery-auditor | `0 7 * * *` | every day | 14002 | `_audit/status.json` (audit/status branch) |
 | 15 | earnings-reaction-scanner | `0 8 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reactions.md` |
-| 08 | stock-screener-pre-market-gapper | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` |
 | 26 | agentic-pre-market-brief | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market.md` |
 | 92a | preopen-catalyst-capture-0830 | `30 8 * * 1-5` | Mon-Fri | 10645 | — |
+| 08 | stock-screener-pre-market-gapper | `34 8 * * 1-5` | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` |
 | 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10645 | `ntrt/{date}.md` |
 | 26b | agentic-pre-market-brief-refresh-0920 | `20 9 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market-refresh.md` |
 | 07 | stock-screener-focus-rvol-09:45 | `45 9 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
@@ -40,7 +40,7 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 13 | macro-calendar-midweek | `0 14 * * 3` | Wed | 10636 | `macro-calendar/{date}-midweek.md` |
 | 06 | stock-screener-pattern-study-backlog | `0 15 * * 6` | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` |
 | 14 | macro-calendar-week-ahead | `0 15 * * 0` | Sun | 10636 | `macro-calendar/{date}-week-ahead.md` |
-| 04 | reversal-bullish-3:55 | `55 15 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3:55.md` |
+| 04 | reversal-bullish-3:55 | `55 15 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/reversal-bullish-3_55.md` |
 | 20 | eod-watchlist-csv-snapshot | `0 16 * * 1-5` | Mon-Fri | 10638 | `us-eod/{date}.csv` |
 | 05 | eod-international-daily | `30 16 * * 1-5` | Mon-Fri | 10638 | `international-eod/{date}/` |
 | 16 | unusual-options-flow-daily | `35 16 * * 1-5` | Mon-Fri | 13832 | `options-flow/{date}.md` |

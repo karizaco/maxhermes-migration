@@ -8,6 +8,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 
 | Document | What it is |
 |---|---|
+| [`BUGREPORT-2026-11-10-deploy-registry-and-prompt-drift.md`](BUGREPORT-2026-11-10-deploy-registry-and-prompt-drift.md) | Bug report — the deploy registry carried a stale schedule, and #08's deployed prompt was 5 bytes off the repo — **Found by:** cron #91 (schedule-drift-guard), daily 04:05 ET check of 2026-11-10. |
 | [`BUGREPORT-gui-schedule-corruption.md`](BUGREPORT-gui-schedule-corruption.md) | Bug report — web GUI save silently corrupts a scheduled task's day-of-week field — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
 | [`BUGREPORT-minimax-2056-reset-time-dropped.md`](BUGREPORT-minimax-2056-reset-time-dropped.md) | Bug report — the Token Plan 2056 error drops the window's reset time, so a blocked fire cannot say when it recovers — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
 | [`BUGREPORT-windows-invalid-filenames.md`](BUGREPORT-windows-invalid-filenames.md) | BUGREPORT — Windows-invalid filenames in the outputs repo — **Date:** 2026-11-08 |
