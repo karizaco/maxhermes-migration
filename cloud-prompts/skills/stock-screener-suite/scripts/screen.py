@@ -1490,6 +1490,17 @@ class Candidate:
     convergence_score: int = 0
     n_stylists: int = 0
     flags: dict[str, bool] = field(default_factory=dict)
+    # The FRESH book (the cron day's own settled bar) and the T+1 cross-check
+    # book (shibui's newest ingested session) are kept APART. `origins` is the
+    # T+1 book, `fresh_origins` is the cron-day book, and `data_as_of` says
+    # WHICH session the row describes — the ambiguity that made the
+    # 2026-11-09 artifact read as "today's screen" when every metric was
+    # Friday's.
+    fresh_origins: list[str] = field(default_factory=list)
+    data_as_of: str = ""
+    source: str = ""
+    extension: dict[str, Any] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
 
 
 # Map origin labels (already namespaced "<stylist>_<subquery>" in SQL output
@@ -1522,6 +1533,12 @@ _STYLIST_FROM_ORIGIN = {
     "TV_volume_breakout": "jeff_sun",   # Jeff Sun's volume proxy
     "jeff_sun_canslim": "jeff_sun",
     "H_hernandez_theme": "hernandez",
+    # The FRESH (cron-day settled bar) book. Same stylist buckets as their
+    # shibui counterparts, so a name that hits the fresh breakout AND the T+1
+    # peoplewish screen is still TWO stylists, not four.
+    "A_tv_breakout_4pct": "stockbee",
+    "B_tv_ep9m": "stockbee",
+    "D_tv_gap_10pct": "qullamaggie",
 }
 
 # The five stylist buckets, for validation and for the summary line.
@@ -1533,14 +1550,39 @@ def tier_candidates(
     prefilter_symbols: set[str],
     volume_breakout_results: list[dict],
     canslim_results: list[dict],
+    fresh_results: list[dict] | None = None,
+    extension_map: dict[str, dict] | None = None,
+    quality_map: dict[str, dict] | None = None,
+    fresh_data_as_of: str = "",
+    t1_data_as_of: str = "",
 ) -> dict[str, Candidate]:
-    """Merge per-stylist results into a single Candidate map keyed by symbol."""
+    """Merge per-stylist results into a single Candidate map keyed by symbol.
+
+    Two books are merged and kept apart:
+      * the T+1 book (`sweep_results` + the TV/CANSLIM rows) — shibui's newest
+        ingested session, which at an 18:30 ET fire is the PREVIOUS session;
+      * the FRESH book (`fresh_results`) — the cron day's own settled bar.
+
+    Every candidate publishes `data_as_of` and `source`, so no consumer can
+    inherit the "which session is this?" ambiguity that the 2026-11-09
+    artifact carried.
+    """
     out: dict[str, Candidate] = {}
 
     def add(symbol: str, origin: str, data: dict) -> None:
         if symbol not in out:
             out[symbol] = Candidate(symbol=symbol)
         out[symbol].origins.append(origin)
+        out[symbol].data.update(data)
+
+    def add_fresh(symbol: str, origin: str, data: dict) -> None:
+        if symbol not in out:
+            out[symbol] = Candidate(symbol=symbol)
+        # Origins are DEDUPED inside a book: the same screen can report a name
+        # twice across pages, and a duplicated origin would inflate the
+        # convergence score.
+        if origin not in out[symbol].fresh_origins:
+            out[symbol].fresh_origins.append(origin)
         out[symbol].data.update(data)
 
     for row in sweep_results:
@@ -1559,11 +1601,34 @@ def tier_candidates(
         if sym:
             add(sym, "jeff_sun_canslim", row)
 
+    for row in fresh_results or []:
+        sym = row.get("symbol") or row.get("ticker")
+        if sym:
+            add_fresh(sym, row.get("origin", "fresh"), row)
+
     for c in out.values():
-        c.convergence_score = len(set(c.origins))
-        # Count unique stylists (collapse Stockbee's A/B into one bucket).
-        c.n_stylists = len({_STYLIST_FROM_ORIGIN.get(o, o) for o in c.origins})
+        t1_origins = set(c.origins)
+        fresh_origins = set(c.fresh_origins)
+        all_origins = t1_origins | fresh_origins
+        c.convergence_score = len(all_origins)
+        # Count unique STYLISTS across BOTH books (collapse Stockbee's A/B into
+        # one bucket). One stylist's two screens cannot masquerade as two
+        # independent opinions.
+        c.n_stylists = len({_STYLIST_FROM_ORIGIN.get(o, o) for o in all_origins})
         c.flags = _compute_skip_flags(c.data)
+        if fresh_origins and t1_origins:
+            c.source = "fresh+t1"
+            c.data_as_of = fresh_data_as_of or t1_data_as_of
+        elif fresh_origins:
+            c.source = "fresh"
+            c.data_as_of = fresh_data_as_of
+        else:
+            c.source = "t1"
+            c.data_as_of = t1_data_as_of
+        if extension_map and c.symbol in extension_map:
+            c.extension = extension_map[c.symbol]
+        if quality_map and c.symbol in quality_map:
+            c.quality = quality_map[c.symbol]
     return out
 
 
@@ -1772,14 +1837,57 @@ def write_csv(path: Path, rows: list[dict]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_per_stylist_markdown(path: Path, label: str, candidates: dict[str, Candidate]) -> None:
-    lines = [f"# {label}", "", f"Generated {date_cls.today().isoformat()}", "", f"Count: {len(candidates)}", "", "| Symbol | Stylists | Origins | Flags | Velocity | ADR% | Notes |", "|---|---|---|---|---|---|---|"]
+def write_per_stylist_markdown(
+    path: Path,
+    label: str,
+    candidates: dict[str, Candidate],
+    screen_data_as_of: str = "",
+    fresh_data_as_of: str = "",
+    fresh_universe: str = "",
+) -> None:
+    """One stylist's book.
+
+    The header carries the DATA DATES. Cron #07 reads the line
+    `Screen data_date: <date> (shibui T+1)` out of focus.md and reports
+    `lag_sessions` from it — the line was NEVER written by this writer, so
+    #07 had to infer the date from the folder name. It is written here, in the
+    exact form #07 expects, plus the FRESH book's own date.
+
+    The table gains two columns: `Ext` (the extension label) and `Quality`
+    (the valuation/quality flags). Both are LABELS — nothing is dropped from
+    the book because it trips a rule.
+    """
+    lines = [
+        f"# {label}",
+        "",
+        f"Generated {date_cls.today().isoformat()}",
+        "",
+    ]
+    if screen_data_as_of:
+        lines.append(f"Screen data_date: {screen_data_as_of} (shibui T+1)")
+    if fresh_data_as_of:
+        lines.append(f"Screen fresh_data_date: {fresh_data_as_of} (cron-day settled bar)")
+    if fresh_universe:
+        lines.append(f"Screen fresh_universe: {fresh_universe}")
+    lines += [
+        "",
+        f"Count: {len(candidates)}",
+        "",
+        "| Symbol | Stylists | Origins | Flags | Ext | Quality | Velocity | ADR% | Notes |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
     for sym, c in sorted(candidates.items()):
         flags = ", ".join(k for k, v in c.flags.items() if v) or "—"
+        ext = "EXTENDED" if c.extension.get("extended") else "—"
+        quality = ", ".join(c.quality.get("quality_flags", [])) or "—"
+        origins = sorted(set(c.origins) | set(c.fresh_origins))
+        notes = f"{', '.join(origins)}"
+        if c.source:
+            notes = f"{notes} [{c.source} {c.data_as_of}]"
         lines.append(
-            f"| {sym} | {c.n_stylists} | {c.convergence_score} | {flags} | "
+            f"| {sym} | {c.n_stylists} | {c.convergence_score} | {flags} | {ext} | {quality} | "
             f"{c.data.get('velocity_14d', '')} | {c.data.get('adr_pct_20d', c.data.get('adr_pct', ''))} | "
-            f"{', '.join(sorted(set(c.origins)))} |"
+            f"{notes} |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1792,11 +1900,31 @@ def write_summary(
     long_cands: list,
     reversal: list,
     coverage: dict[str, dict] | None = None,
+    tier_a_fresh: dict | None = None,
+    tier_a_extended: dict | None = None,
+    fresh_data_as_of: str = "",
+    t1_data_as_of: str = "",
+    quality_flagged: list | None = None,
+    quality_map: dict | None = None,
 ) -> None:
+    tier_a_fresh = tier_a_fresh or {}
+    tier_a_extended = tier_a_extended or {}
+    quality_flagged = quality_flagged or []
+    quality_map = quality_map or {}
     lines = [
         "# Daily sweep summary",
         "",
         f"Generated {date_cls.today().isoformat()}",
+        "",
+    ]
+    if t1_data_as_of:
+        lines.append(f"> **shibui T+1**: the T+1 book is for **{t1_data_as_of}** (shibui's newest ingested session).")
+    if fresh_data_as_of:
+        lines.append(
+            f"> **Fresh book**: the cron-day settled bar is **{fresh_data_as_of}** — the primary book. "
+            "Every row in `_results.json` carries `data_as_of` and `source`."
+        )
+    lines += [
         "",
         "## Regime",
         "",
@@ -1831,9 +1959,46 @@ def write_summary(
         "",
     ]
     for sym, c in sorted(tier_a.items()):
-        lines.append(f"- **{sym}** (stylists: {c.n_stylists}, origins: {c.convergence_score}, sources: {', '.join(sorted(set(c.origins)))})")
+        ext = " EXTENDED" if c.extension.get("extended") else ""
+        q = (" · quality: " + ", ".join(c.quality.get("quality_flags", []))) if c.quality.get("quality_flags") else ""
+        origins = ", ".join(sorted(set(c.origins) | set(c.fresh_origins)))
+        lines.append(f"- **{sym}** (stylists: {c.n_stylists}, origins: {c.convergence_score}, sources: {origins}) [{c.source} {c.data_as_of}]{ext}{q}")
     if not tier_a:
         lines.append("- (none)")
+
+    lines += [
+        "",
+        f"## Tier-A — FRESH vs EXTENDED: {len(tier_a_fresh)} fresh / {len(tier_a_extended)} extended",
+        "",
+        "`extended` is a LABEL (ATR% > 5, RSI > 75, > 15% above its 20-DMA, or 3+ consecutive up sessions) "
+        "with its reasons published. Nothing is dropped from the book.",
+        "",
+    ]
+    if tier_a_fresh:
+        lines.append("**Fresh (not extended):** " + ", ".join(sorted(tier_a_fresh)))
+    else:
+        lines.append("**Fresh (not extended):** (none)")
+    if tier_a_extended:
+        lines.append("")
+        lines.append("**Extended:** " + ", ".join(sorted(tier_a_extended)))
+    else:
+        lines.append("")
+        lines.append("**Extended:** (none)")
+
+    if quality_flagged:
+        lines += [
+            "",
+            f"## Valuation / quality overlay: {len(quality_flagged)} candidates carry a flag",
+            "",
+            "A NULL is a flag, never a pass: no reported earnings is itself a risk marker. "
+            "See `daily-sweep.md` for the per-name reasons.",
+            "",
+        ]
+        for sym in quality_flagged[:40]:
+            q = quality_map.get(sym, {})
+            lines.append(f"- **{sym}** — {', '.join(q.get('quality_flags', []))}")
+        if len(quality_flagged) > 40:
+            lines.append(f"- … and {len(quality_flagged) - 40} more (full list in `_results.json`)")
 
     lines += [
         "",
@@ -1954,6 +2119,49 @@ def cmd_consume(args: argparse.Namespace) -> int:
             + data.get("sweep_peoplewish", [])
         )
 
+    # --- The FRESH book (the cron day's own settled bar) ---------------------
+    # `tools/daily_sweep_engines.py tv-sweep` writes it. It is the PRIMARY
+    # book: the artifact must describe the session the trader just saw. The
+    # shibui T+1 book above stays as the cross-check, and every row publishes
+    # which session it describes.
+    fresh_book: dict = {}
+    fresh_path = getattr(args, "fresh_book", None)
+    if fresh_path:
+        fp = Path(fresh_path)
+        if not fp.exists():
+            print(f"fresh-book file not found: {fp}", file=sys.stderr)
+            return 2
+        fresh_book = json.loads(fp.read_text())
+    fresh_rows: list[dict] = []
+    fresh_data_as_of = fresh_book.get("data_as_of", "")
+    fresh_universe = ""
+    for origin, branch in (fresh_book.get("branches") or {}).items():
+        for row in branch.get("rows", []):
+            row = dict(row)
+            row.setdefault("origin", origin)
+            row["_source"] = "tv_settled"
+            row["data_as_of"] = fresh_data_as_of
+            fresh_rows.append(row)
+    if fresh_book.get("universe"):
+        fresh_universe = (
+            f"{fresh_book['universe'].get('count')} names "
+            f"({fresh_book['universe'].get('filter', '')})"
+        )
+    extension_map = fresh_book.get("extension") or {}
+
+    # --- The valuation / quality overlay -------------------------------------
+    overlay: dict = {}
+    overlay_path = getattr(args, "overlay", None)
+    if overlay_path:
+        op = Path(overlay_path)
+        if not op.exists():
+            print(f"overlay file not found: {op}", file=sys.stderr)
+            return 2
+        overlay = json.loads(op.read_text())
+    quality_map = (overlay.get("symbols") or {}) if overlay else {}
+
+    t1_data_as_of = data.get("data_as_of", "")
+
     # --- Coverage assertion -------------------------------------------------
     # Every shibui sweep row carries `rows_passing`: the number of names that
     # passed ITS branch's filter, computed inside the branch before any cap
@@ -2000,14 +2208,25 @@ def cmd_consume(args: argparse.Namespace) -> int:
     atr_extensions = data.get("atr_extensions", {})
     reversal_rows = data.get("reversal_bullish", [])
 
-    candidates = tier_candidates(sweep_rows, prefilter_symbols, volume_breakout_rows, canslim_rows)
+    candidates = tier_candidates(
+        sweep_rows, prefilter_symbols, volume_breakout_rows, canslim_rows,
+        fresh_results=fresh_rows,
+        extension_map=extension_map,
+        quality_map=quality_map,
+        fresh_data_as_of=fresh_data_as_of,
+        t1_data_as_of=t1_data_as_of,
+    )
+
+    def _all(c) -> set[str]:
+        """Every origin a candidate carries, across BOTH books."""
+        return set(c.origins) | set(c.fresh_origins)
 
     # Stylist groupings
-    stockbee_syms = {s for s, c in candidates.items() if any(o.startswith("A_stockbee") or o.startswith("B_stockbee") or o.startswith("K_stockbee") for o in c.origins)}
-    qullamaggie_syms = {s for s, c in candidates.items() if any(o.startswith("C_qullamaggie") or o.startswith("D_qullamaggie") or o.startswith("E_qullamaggie") or o.startswith("F_qullamaggie") for o in c.origins)}
-    sun_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" or o == "TV_volume_breakout" for o in c.origins)}
-    ariel_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" for o in c.origins)}  # CANSLIM is the proxy; refine via sector ETF
-    peoplewish_syms = {s for s, c in candidates.items() if any(o.startswith("G_peoplewish") for o in c.origins)}
+    stockbee_syms = {s for s, c in candidates.items() if any(o.startswith("A_stockbee") or o.startswith("B_stockbee") or o.startswith("K_stockbee") or o.startswith("A_tv_") or o.startswith("B_tv_") for o in _all(c))}
+    qullamaggie_syms = {s for s, c in candidates.items() if any(o.startswith("C_qullamaggie") or o.startswith("D_qullamaggie") or o.startswith("E_qullamaggie") or o.startswith("F_qullamaggie") or o.startswith("D_tv_") for o in _all(c))}
+    sun_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" or o == "TV_volume_breakout" for o in _all(c))}
+    ariel_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" for o in _all(c))}  # CANSLIM is the proxy; refine via sector ETF
+    peoplewish_syms = {s for s, c in candidates.items() if any(o.startswith("G_peoplewish") for o in _all(c))}
 
     short_cands = sorted({s for s, c in candidates.items() if any(o.startswith("E_qullamaggie_5d_gainers") for o in c.origins)})
     long_reversal_cands = sorted({s for s, c in candidates.items() if any(o.startswith("F_qullamaggie_5d_losers") for o in c.origins)})
@@ -2015,22 +2234,37 @@ def cmd_consume(args: argparse.Namespace) -> int:
     focus = select_focus(candidates)
     tier_a = select_tier_a(focus)
 
+    # The FRESH / EXTENDED split of Tier-A. `extended` is a LABEL with reasons
+    # (see tools/daily_sweep_engines.py EXTENSION_RULES); nothing is dropped
+    # from the book, because a book that silently loses its most-covered names
+    # is how the 2026-11-09 artifact's own caveat got ignored.
+    tier_a_fresh = {s: c for s, c in tier_a.items() if not c.extension.get("extended")}
+    tier_a_extended = {s: c for s, c in tier_a.items() if c.extension.get("extended")}
+    quality_flagged = sorted(
+        s for s, c in candidates.items() if c.quality.get("quality_flags")
+    )
+
     regime = compute_regime(breadth, vix, vix3m)
 
     out_dir = vault_dir(args.date, Path(args.vault) if args.vault else DEFAULT_VAULT)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Per-stylist Markdown
-    write_per_stylist_markdown(out_dir / "stockbee.md", "Stockbee — Pradeep Bonde", {s: candidates[s] for s in stockbee_syms})
-    write_per_stylist_markdown(out_dir / "qullamaggie.md", "Qullamàgi — Kristjan Kullamägi", {s: candidates[s] for s in qullamaggie_syms})
-    write_per_stylist_markdown(out_dir / "jeff-sun.md", "Jeff Sun, CFTe", {s: candidates[s] for s in sun_syms})
-    write_per_stylist_markdown(out_dir / "ariel-hernandez.md", "Ariel Hernandez", {s: candidates[s] for s in ariel_syms})
-    write_per_stylist_markdown(out_dir / "peoplewish.md", "peoplewish — Alec Riffle", {s: candidates[s] for s in peoplewish_syms})
+    write_per_stylist_markdown(out_dir / "stockbee.md", "Stockbee — Pradeep Bonde", {s: candidates[s] for s in stockbee_syms}, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "qullamaggie.md", "Qullamàgi — Kristjan Kullamägi", {s: candidates[s] for s in qullamaggie_syms}, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "jeff-sun.md", "Jeff Sun, CFTe", {s: candidates[s] for s in sun_syms}, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "ariel-hernandez.md", "Ariel Hernandez", {s: candidates[s] for s in ariel_syms}, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "peoplewish.md", "peoplewish — Alec Riffle", {s: candidates[s] for s in peoplewish_syms}, t1_data_as_of, fresh_data_as_of, fresh_universe)
 
     # Merged tiers
-    write_per_stylist_markdown(out_dir / "master.md", "Master (union, deduped)", candidates)
-    write_per_stylist_markdown(out_dir / "focus.md", f"Focus (appears in ≥{FOCUS_THRESHOLD_STYLISTS} stylists OR top-5 velocity)", focus)
-    write_per_stylist_markdown(out_dir / "tier-a.md", f"Tier-A (appears in ≥{TIER_A_THRESHOLD_STYLISTS} stylists)", tier_a)
+    write_per_stylist_markdown(out_dir / "master.md", "Master (union, deduped)", candidates, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "focus.md", f"Focus (appears in ≥{FOCUS_THRESHOLD_STYLISTS} stylists OR top-5 velocity)", focus, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "tier-a.md", f"Tier-A (appears in ≥{TIER_A_THRESHOLD_STYLISTS} stylists)", tier_a, t1_data_as_of, fresh_data_as_of, fresh_universe)
+
+    # The FRESH / EXTENDED split of Tier-A — the answer to "which of these are
+    # already extended?". BOTH lists are published; NEITHER replaces the other.
+    write_per_stylist_markdown(out_dir / "tier-a-fresh.md", f"Tier-A — FRESH (≥{TIER_A_THRESHOLD_STYLISTS} stylists, not extended)", tier_a_fresh, t1_data_as_of, fresh_data_as_of, fresh_universe)
+    write_per_stylist_markdown(out_dir / "tier-a-extended.md", f"Tier-A — EXTENDED (≥{TIER_A_THRESHOLD_STYLISTS} stylists, extended)", tier_a_extended, t1_data_as_of, fresh_data_as_of, fresh_universe)
 
     # Parabolic sub-screens. Each row carries an explicit `_source` so the
     # next-day Agent can see whether a tier was populated from Tier-1 MCP
@@ -2083,14 +2317,45 @@ def cmd_consume(args: argparse.Namespace) -> int:
         "focus": sorted(focus),
         "short_candidates": short_cands,
         "long_reversal_candidates": long_reversal_cands,
+        # --- The two books, and which session every row describes -----------
+        "fresh_data_as_of": fresh_data_as_of,
+        "t1_data_as_of": t1_data_as_of,
+        "fresh_universe": fresh_universe,
+        "fresh_branches": {
+            origin: {
+                "rows_passing": branch.get("rows_passing"),
+                "rows_kept": len(branch.get("rows", [])),
+                "data_as_of": fresh_data_as_of,
+                "source": "tradingview_scanner",
+            }
+            for origin, branch in (fresh_book.get("branches") or {}).items()
+        },
+        "tier_a_fresh": sorted(tier_a_fresh),
+        "tier_a_extended": sorted(tier_a_extended),
+        "counts_extended": {
+            "tier_a_fresh": len(tier_a_fresh),
+            "tier_a_extended": len(tier_a_extended),
+            "candidates_extended": sum(
+                1 for c in candidates.values() if c.extension.get("extended")
+            ),
+            "quality_flagged": len(quality_flagged),
+        },
+        "quality_flagged": quality_flagged,
         "candidates": [
             {
                 "symbol": sym,
                 "origins": c.origins,
-                "stylists": sorted({_STYLIST_FROM_ORIGIN.get(o, o) for o in c.origins}),
+                "fresh_origins": c.fresh_origins,
+                "data_as_of": c.data_as_of,
+                "source": c.source,
+                "stylists": sorted(
+                    {_STYLIST_FROM_ORIGIN.get(o, o) for o in (set(c.origins) | set(c.fresh_origins))}
+                ),
                 "n_stylists": c.n_stylists,
                 "convergence_score": c.convergence_score,
                 "flags": {k: v for k, v in c.flags.items() if v},
+                "extension": c.extension,
+                "quality": c.quality,
                 "data": c.data,
             }
             for sym, c in sorted(candidates.items())
@@ -2108,7 +2373,13 @@ def cmd_consume(args: argparse.Namespace) -> int:
     }, indent=2))
 
     # Summary
-    write_summary(out_dir / "_summary.md", regime, tier_a, short_cands, long_reversal_cands, reversal_rows, coverage)
+    write_summary(
+        out_dir / "_summary.md", regime, tier_a, short_cands, long_reversal_cands,
+        reversal_rows, coverage,
+        tier_a_fresh=tier_a_fresh, tier_a_extended=tier_a_extended,
+        fresh_data_as_of=fresh_data_as_of, t1_data_as_of=t1_data_as_of,
+        quality_flagged=quality_flagged, quality_map=quality_map,
+    )
 
     if dry_run:
         # Undo every write we just did. Cleaner than branching every path:
@@ -2189,6 +2460,10 @@ def main(argv: list[str] | None = None) -> int:
     cons_p = sub.add_parser("consume", help="apply tiering + write outputs from MCP results JSON")
     cons_p.add_argument("--in", dest="in_path", required=True)
     cons_p.add_argument("--date", required=True)
+    cons_p.add_argument("--fresh-book", default=None,
+        help="Path to the tools/daily_sweep_engines.py tv-sweep output — the cron-day settled-bar book.")
+    cons_p.add_argument("--overlay", default=None,
+        help="Path to the tools/daily_sweep_engines.py overlay output — the valuation/quality overlay.")
     cons_p.add_argument("--dry-run", dest="dry_run", action="store_true",
                        help="compute tiering/regime and print what would be written, but DO NOT create any files")
     cons_p.add_argument("--vault", default=None,

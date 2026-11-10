@@ -435,6 +435,91 @@ def main(argv: list[str] | None = None) -> int:
         failures += 1
         lines.append(f"  {FAIL}  GUARD cap signature check raised {type(e).__name__}: {e}")
 
+    # --- GUARD 7: the FRESH book merges, and every row says which session ----
+    # The 2026-11-09 artifact published a book whose every metric was the
+    # PREVIOUS session while it was read as "today's screen". A candidate must
+    # carry `data_as_of` and `source`, and a name that is ONLY in the fresh
+    # book must still reach the book.
+    try:
+        fresh_rows = [
+            {"origin": "A_tv_breakout_4pct", "symbol": "FRESH1", "close": 10.0, "change_pct": 9.0},
+            {"origin": "B_tv_ep9m", "symbol": "FRESH1", "close": 10.0, "volume": 9_000_000},
+            {"origin": "A_tv_breakout_4pct", "symbol": "BOTH1", "close": 10.0, "change_pct": 9.0},
+        ]
+        ext = {
+            "FRESH1": {"extended": True, "extension_reasons": ["RSI > 75 (80.0)"],
+                       "extension_hits": ["rsi"], "extension_count": 1},
+            "BOTH1": {"extended": False, "extension_reasons": [], "extension_hits": [], "extension_count": 0},
+        }
+        qual = {
+            "BOTH1": {"quality_flags": ["trailing_pe", "free_cash_flow_yield"],
+                      "quality_reasons": ["trailing P/E > 50 (120.59)", "negative free cash flow"],
+                      "quality_clean": False},
+        }
+        cands = screen.tier_candidates(
+            [{"origin": "A_stockbee_4pct", "symbol": "BOTH1", "rows_passing": 1}],
+            set(), [], [], fresh_results=fresh_rows, extension_map=ext, quality_map=qual,
+            fresh_data_as_of="2026-11-09", t1_data_as_of="2026-11-06",
+        )
+        ok_fresh = "FRESH1" in cands
+        ok_both = "BOTH1" in cands
+        ok_dates = (
+            cands["FRESH1"].data_as_of == "2026-11-09"
+            and cands["FRESH1"].source == "fresh"
+            and cands["BOTH1"].data_as_of == "2026-11-09"
+            and cands["BOTH1"].source == "fresh+t1"
+            and cands["BOTH1"].origins == ["A_stockbee_4pct"]
+        )
+        ok_stylists = cands["BOTH1"].n_stylists == 1  # one stylist, two screens
+        ok_quality = cands["BOTH1"].quality.get("quality_flags") == ["trailing_pe", "free_cash_flow_yield"]
+        failures += (0 if (ok_fresh and ok_both and ok_dates and ok_stylists and ok_quality) else 1)
+        lines.append(
+            f"  {PASS if (ok_fresh and ok_both and ok_dates and ok_stylists and ok_quality) else FAIL}  "
+            f"GUARD the fresh book merges and every row publishes data_as_of + source"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD fresh-book merge raised {type(e).__name__}: {e}")
+
+    # --- GUARD 8: the extension label SPLITS the book, it never drops it -----
+    try:
+        cands = screen.tier_candidates(
+            [{"origin": "A_stockbee_4pct", "symbol": f"S{i}", "rows_passing": 3} for i in range(3)],
+            set(), [], [], extension_map={"S0": {"extended": True}, "S1": {"extended": False}},
+        )
+        ok = len(cands) == 3
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD an extension label never removes a name from the book"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD extension-label check raised {type(e).__name__}: {e}")
+
+    # --- GUARD 9: the header line cron #07 reads is actually written ---------
+    # Cron #07 reads `Screen data_date: <date> (shibui T+1)` out of focus.md
+    # and reports lag_sessions from it. The writer never emitted that line, so
+    # #07 had to infer the date from the folder name.
+    try:
+        with tempfile.TemporaryDirectory() as _tmp:
+            _out = Path(_tmp) / "focus.md"
+            screen.write_per_stylist_markdown(
+                _out, "Focus", {}, screen_data_as_of="2026-11-06",
+                fresh_data_as_of="2026-11-09", fresh_universe="3828 names",
+            )
+            _text = _out.read_text()
+        ok = (
+            "Screen data_date: 2026-11-06 (shibui T+1)" in _text
+            and "Screen fresh_data_date: 2026-11-09 (cron-day settled bar)" in _text
+        )
+        failures += (0 if ok else 1)
+        lines.append(
+            f"  {PASS if ok else FAIL}  GUARD the focus.md header publishes both data dates"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD focus.md header check raised {type(e).__name__}: {e}")
+
     # Final summary
     if not args.quiet or failures:
         print("\n".join(lines))
