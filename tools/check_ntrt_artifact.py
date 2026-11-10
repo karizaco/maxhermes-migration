@@ -60,7 +60,7 @@ import re
 import sys
 
 CONTRACT_VERSION = "ntrt-artifact-v4"
-CONTRACT_CHECKS = 16
+CONTRACT_CHECKS = 17
 
 # The capability marker the run-time fetch demands. An OLDER copy of this script
 # is still published on the mirrors, and it checks fewer rules - so a fetch that
@@ -79,6 +79,7 @@ NOISE_PCT_ADV = 1.0       # noise when pct_of_adv is empty or < 1
 REQUIRED_SECTIONS = [
     ("tldr", "TL;DR"),
     ("marketbackdrop", "Market backdrop"),
+    ("yesterdaysshortlist", "Yesterday's short list"),
     ("worthyourattention", "Worth your attention"),
     ("widerscreen", "Wider screen"),
     ("flags", "Flags"),
@@ -395,6 +396,45 @@ def check_section_empty(lines, sections):
             problems.append(f"'{label}' has one line that is not a 'nothing to report' note")
     record("SECTION_EMPTY", problems,
            "every section has content, or says in one line that it has none")
+
+
+def check_yesterday(lines, sections, tables):
+    """Yesterday's Tier-A names were looked up, and each has one of three statuses.
+
+    A missing board is a one-line note, not an invented list. A present board
+    is a table whose status cell is exactly gapping, under the line, or not in
+    the feed. Any other word is a guess, and a guess is a failure.
+    """
+    problems = []
+    span = find_span(sections, "yesterdaysshortlist")
+    if not span:
+        problems.append("the Yesterday's short list section is missing")
+        record("YESTERDAY", problems, "")
+        return
+    body = "\n".join(body_of(lines, span))
+    if re.search(r"no tier-a board was published", body, re.I):
+        record("YESTERDAY", [], "the prior short list was not published, and the section says so")
+        return
+    allowed = {"gapping", "under the line", "not in the feed"}
+    found = False
+    for t in tables:
+        if t["section"] != "yesterdaysshortlist":
+            continue
+        status_i = header_index(t["headers"], "status")
+        if status_i is None:
+            continue
+        found = True
+        for row in t["rows"]:
+            cell = row.get(t["headers"][status_i], "").strip().lower()
+            if cell not in allowed:
+                problems.append(
+                    "a yesterday-list status is %r — it must be gapping, "
+                    "under the line, or not in the feed" % cell)
+                break
+    if not found:
+        problems.append("the section has no status table and does not say the prior board was missing")
+    record("YESTERDAY", problems,
+           "yesterday's short list was looked up, and every status is one of the three words")
 
 
 def check_no_catalysts(sections):
@@ -1042,6 +1082,7 @@ def main():
     check_gate(tables, idx, act_names, wide_names, also_names)
     check_also_cleared(tables, idx, act_names, wide_names, lines, subsections, subfloor_names)
     check_fourcell(tables, idx, act_names, wide_names, lines, subsections)
+    check_yesterday(lines, sections, tables)
 
     print()
     failed = [n for n, good in RESULTS if not good]

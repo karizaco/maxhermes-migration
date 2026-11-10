@@ -86,6 +86,7 @@ are unchanged. What v4 adds:
 <mode banner: 2 lines>
 ## TL;DR
 ## Market backdrop
+## Yesterday's short list
 ## Worth your attention
 ## Wider screen
 ## Flags
@@ -113,6 +114,10 @@ are unchanged. What v4 adds:
   release). 3–6 lines. This is context that changes how every gap in the brief should be read,
   so it must not be demoted into a caveat list. If the tape's moves are macro-driven, say so
   here — otherwise the reader will read every name as idiosyncratic when it is not.
+- **`## Yesterday's short list`** — a follow-up, not a second gap table. See §13.
+  The evening sweep's Tier-A names are a different job from this morning's
+  gappers. This section asks, for each of those names, whether this morning's
+  own screen had it. It does not rank them and it does not repeat a catalyst.
 - **`## Worth your attention`** — the actionable set. **Two tables, gap-down then gap-up.**
   See §2. It ends with two subsections: **`### Also cleared the gate`** — the names the
   table's cap left out, listed so nothing is dropped silently (§2) — and the
@@ -434,6 +439,57 @@ bug as the REITs: a universe filter that silently deletes the biggest mover.)
   `catalyst` column (§4), unless the pre-open tape (§11) supplied a driver for that name.
 - The watchlist holds **at most 5 rows per direction**, and the checker enforces it: a
   watchlist that grows is a second screen.
+
+### 13. Yesterday's short list — look it up, do not hope it overlaps
+
+The 18:30 sweep publishes a short Tier-A list. This brief publishes who is
+gapping this morning. Those are different jobs. A name is on both only if it
+was a setup yesterday and is also moving today. Do not treat a zero overlap as
+a finding about either list. Do the follow-up on purpose.
+
+**Whose list.** The last `daily-screens/<date>/tier-a.csv` on
+`karizaco/minimax-cloud-outputs` `main` whose date is strictly before this
+brief's fire date. Walk back at most five weekdays. Fetch it the same way §11
+fetches the pre-open tape, contents API first. If no file comes back, the
+section is one line: `No Tier-A board was published before this morning.` Do
+not invent names.
+
+**What to ask of each name.** Look the ticker up in the CSV this run just
+wrote. That is this morning's full screen, not the markdown triage.
+
+| This morning | When |
+|---|---|
+| `gapping` | the name is in the CSV and the absolute pre-market change is at least 3 |
+| `under the line` | the name is in the CSV and the print is under 3% either way |
+| `not in the feed` | the name is not in the CSV |
+
+`not in the feed` is not a flat. It means this morning's screen did not quote
+the name. Say that in one sentence above the table, so a blank is not read as
+a zero.
+
+**Format.** One table, after `## Market backdrop` and before
+`## Worth your attention`:
+
+```
+## Yesterday's short list
+
+Prior board: `2026-11-05` (`daily-screens/2026-11-05/tier-a.csv`), 6 names.
+Each name was looked up in this morning's full screen. This row does not
+repeat a catalyst. If the name also cleared today's gate, the tables below
+still carry that row.
+
+| Ticker | This morning | Status |
+|---|---|---|
+| DUOL | +4.2 | gapping |
+| KD | — | not in the feed |
+```
+
+The status cell is exactly one of `gapping`, `under the line`, `not in the feed`.
+No other word. The checker reads that column (`YESTERDAY`).
+
+This table is a follow-up, not a listing of today's gappers. It carries no Why
+column. It is not part of the one-table rule for today's screen: a name may
+appear here and also in `## Worth your attention`.
 
 ### 11. The pre-open catalyst tape — look here FIRST
 
