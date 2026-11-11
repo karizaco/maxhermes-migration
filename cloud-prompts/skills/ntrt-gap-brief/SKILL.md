@@ -552,6 +552,16 @@ done
 - **The tape's price is a second opinion, not the price of record.** It was pulled at 08:30 and
   the screen at ~09:04; the same name can differ by several points. The **screener's** number is
   what the brief publishes. A gap between the two is a **movement flag** (§12), not a correction.
+- **Check the tape's `pct` is a pre-market gap BEFORE you treat it as one.** Measured on the
+  2026-11-09 and 2026-11-10 tapes: every priced row carried the **last completed session's**
+  close and change, not the current session's pre-market print (14 of 14 testable rows exact
+  against daily closes — IRTC -30.70 at the Nov 6 close of 90.22, while IRTC's actual Nov 9
+  pre-market was +0.86%). The same tapes also collapsed to ~50 rows, under the ~120-row
+  regression band. So a tape row's `pct` may be **yesterday's move**: publishing it as today's
+  gap would put the wrong day on the tape. **Before using a tape row's number, sanity-check it
+  against the screener's own `premarket_change` for the same ticker** — if they disagree by
+  roughly a session's worth of move, the tape row is a settled close. Treat the tape as a
+  **catalyst lead only** and count it as a degraded source; never publish a tape number as a gap.
 - **The tape also names the below-the-floor movers** (§10) — use it for the watchlist's `Note`
   column where it has a driver.
 
