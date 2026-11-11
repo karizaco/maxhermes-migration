@@ -541,15 +541,43 @@ independent readings settle it:
 
 **The second pass and the 1-minute final bar agree (48/48 sampled names); the quote service's
 `regularMarketPrice` disagrees on 3 of those 4** — it is a last-trade quote, not the 16:00 ET
-auction print. So: **take the close from the settled daily bar, keep the LATER history pass,
-and cross-check against the 1-minute final bar — not against the quote price.** The quote
-service remains the source for the market cap, the trailing P/E and the dividend-adjusted
-prior close, which is what `--quote-prev` needs.
+auction print. So: **keep the LATER history pass and cross-check against the 1-minute final
+bar — not against the quote price.** The quote service remains the source for the market cap,
+the trailing P/E and the dividend-adjusted prior close, which is what `--quote-prev` needs.
+
+**CORRECTED 2026-11-11 — the close comes from the VENUE'S SETTLED PRINT, not the vendor's
+daily bar.** "Take the close from the settled daily bar" above holds for LIQUID names and is
+WRONG for thin ones, where the bar holds a **pre-auction print**:
+
+- The archive's own `us-eod/2026-11-10.csv` carries HAIN's 11-10 close as **0.135** — which is
+  **Nasdaq's consolidated record** (`/historical`) — while **Yahoo's daily bar for that same
+  session says 0.14**. The archive is on the venue's basis; the vendor's bar is the outlier.
+- On 2026-11-11 the venue's settled print (`api.nasdaq.com/api/quote/{SYM}/info` →
+  `secondaryData.lastSalePrice`, stamped "Closed at 4:00 PM ET") and Yahoo's settled daily
+  bar agree within 0.01% on **2,652 of 4,774** rows, within 0.1% on **3,847**, and differ by
+  **0.5% or more on 314 rows (14 above 5%)** — MDBH 1.51 vs 1.7195, TVGN 5.47 vs 6.00,
+  VRM 6.45 vs 6.99. Yahoo's bar holds a pre-auction print on those names.
+- **CNBC/CTA corroborates the venue**: its `last`, when stamped `16:00:00-05:00`, equals the
+  venue's print on every sampled name with a material gap (TVGN 5.47, VRM 6.45, HFBL 22.76,
+  MDBH 1.51). CNBC's `last` is the last trade **including the extended session**, so it is the
+  close only when it is stamped exactly 16:00:00 — the ETFs came back stamped 16:10/16:15,
+  i.e. after-hours prints.
+- **Yahoo's 1-minute synthetic final bar is NOT the close on thin names**: it is `O=H=L=C`
+  with volume 0, but on those names it carries the session's HIGH or LOW (TVGN 6.00 = the
+  day's high), not the close. It agrees with the published close on 3,847 of 4,762 names —
+  a cross-check, not a price source.
+
+**So: the US file's close is the venue's settled print**, with the vendor's daily bar as the
+cross-check and as the SERIES for the derived columns. A row whose session bar the vendor
+does not publish still gets the venue's close (72 rows on 2026-11-11); a row with no print
+anywhere keeps empty price cells (45 rows) rather than a borrowed price. The derived columns
+are computed from the vendor's series with the session bar's close REPLACED by the venue's
+print, so one row carries one price.
 
 **And the vendor's own EOD tables lag the session.** `shibui` carried no `2026-11-09` row in
 `stock_quotes` (its latest was `2026-11-06`), so the session prices cannot come from the
-vendor — they come from the settled daily bar, while the vendor supplies the universe, the
-carrier caps, the floats and the GICS sectors.
+vendor — they come from the **venue's settled print**, while the vendor supplies the
+universe, the carrier caps, the floats and the GICS sectors.
 
 ## 3. `data_quality` — a per-row flag, so a consumer can trust a row
 
@@ -684,16 +712,36 @@ publishing nothing: the consumer cannot tell which shape it is holding.
 Then, in order:
 
 ```bash
-# 1. the universe + the vendor's carrier rows and public floats (keyset, sequential)
+# 0. the venue's settled print for the universe (THE CLOSE OF RECORD) + the vendor's carrier
+#    rows and public floats (keyset, sequential). The base assembly is a published script:
+#    scripts/build_eod_base.py (marker EOD_BASE_V1), with the two helpers below.
+python3 <venue_sweep>.py <tickers.json> /workspace/work/venue_info.json     # Nasdaq /info
 python3 /workspace/eod_scripts/fetch_eod_vendor_refs.py <universe.json> /workspace/work/vendor_refs.json
 
-# 2. ONE history pull per symbol (a year of daily bars serves the session AND the derived columns)
+# 1. ONE history pull per symbol (a year of daily bars serves the session AND the derived columns)
 python3 /workspace/eod_scripts/fetch_eod_history.py --symbols <symbols.csv> \
-    --out /workspace/work/history.jsonl --session <YYYY-MM-DD> --threads 24
+    --out /workspace/work/history_p1.jsonl --session <YYYY-MM-DD> --threads 24
+# ... a SECOND pull ~30 minutes later: the bar keeps drifting for ~40 minutes after the close
+python3 /workspace/eod_scripts/fetch_eod_history.py --symbols <symbols.csv> \
+    --out /workspace/work/history_p2.jsonl --session <YYYY-MM-DD> --threads 24
+
+# 1b. merge the two passes (the later wins) and put the venue's print into the session bar
+python3 /workspace/eod_scripts/merge_eod_history.py \
+    /workspace/work/history_p1.jsonl /workspace/work/history_p2.jsonl \
+    /workspace/work/history_merged.jsonl
+python3 /workspace/eod_scripts/patch_eod_session_closes.py \
+    /workspace/work/history_merged.jsonl /workspace/work/venue_info.json \
+    /workspace/work/history_patched.jsonl <YYYY-MM-DD>
+
+# 1c. the BASE assembly — it owns the numeric format (4 sig figs, integers) and the price source
+python3 /workspace/eod_scripts/build_eod_base.py <YYYY-MM-DD> <PRIOR-YYYY-MM-DD> \
+    /workspace/work/vendor_refs.json /workspace/work/history_patched.jsonl \
+    /workspace/work/quote_batch.json /workspace/work/base.csv \
+    /workspace/work/cnbc.json /workspace/work/venue_info.json <PRIOR-CSV>
 
 # 3. derive the columns, the flags, the carrier map and the manifest
-python3 /workspace/eod_scripts/eod_derive.py --base <base.csv> \
-    --history /workspace/work/history.jsonl --vendor /workspace/work/vendor_refs.json \
+python3 /workspace/eod_scripts/eod_derive.py --base /workspace/work/base.csv \
+    --history /workspace/work/history_patched.jsonl --vendor /workspace/work/vendor_refs.json \
     --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.csv --manifest /workspace/work/manifest.json
 
 # 4. build the report FROM the published CSV (never hand-written)
