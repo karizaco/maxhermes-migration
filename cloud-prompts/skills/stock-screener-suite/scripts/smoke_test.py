@@ -520,6 +520,47 @@ def main(argv: list[str] | None = None) -> int:
         failures += 1
         lines.append(f"  {FAIL}  GUARD focus.md header check raised {type(e).__name__}: {e}")
 
+    # --- GUARD: the ADR enrichment filters the RIGHT column ------------------
+    # `shibui.stock_quotes.symbol` is VENUE-SUFFIXED (`AAPL.NASDAQ`); the bare
+    # ticker is `q.ticker`. Filtering `q.symbol IN ('AAPL', ...)` matches nothing
+    # and returns ZERO ROWS SILENTLY — which is exactly what the old emitter did,
+    # so the ADR% column was empty on every candidate of every run (found
+    # 2026-11-10). This guard fails if the filter ever goes back to `q.symbol`.
+    try:
+        _adr = screen.emit_adr_enrichment_sql(["AAPL", "MSFT", "NVDA"])
+        _ok = (
+            "q.ticker IN (" in _adr
+            and "q.symbol IN (" not in _adr
+            and "ticker AS symbol" in _adr
+        )
+        failures += (0 if _ok else 1)
+        lines.append(
+            f"  {PASS if _ok else FAIL}  GUARD the ADR enrichment filters q.ticker, not the "
+            f"venue-suffixed q.symbol"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD ADR enrichment column check raised {type(e).__name__}: {e}")
+
+    # --- GUARD: the ADR enrichment is REACHABLE from the CLI ------------------
+    # `emit-sql adr_enrichment` existed as a function but was never exposed on the
+    # CLI (the kind's `choices` list omitted it and `--symbols` was never
+    # registered), so it could not be run at all.
+    try:
+        _proc = subprocess.run(
+            [sys.executable, str(_SCRIPT_DIR / "screen.py"), "emit-sql",
+             "adr_enrichment", "--symbols", "AAPL,MSFT"],
+            capture_output=True, text=True,
+        )
+        _ok = _proc.returncode == 0 and "q.ticker IN ('AAPL', 'MSFT')" in _proc.stdout
+        failures += (0 if _ok else 1)
+        lines.append(
+            f"  {PASS if _ok else FAIL}  GUARD emit-sql adr_enrichment is reachable on the CLI"
+        )
+    except Exception as e:
+        failures += 1
+        lines.append(f"  {FAIL}  GUARD ADR enrichment CLI check raised {type(e).__name__}: {e}")
+
     # Final summary
     if not args.quiet or failures:
         print("\n".join(lines))

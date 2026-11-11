@@ -597,3 +597,118 @@ ls daily-screens/<date>/tier-a-fresh.md daily-screens/<date>/tier-a-extended.md
 
 On the 2026-11-09 data the fresh book reproduces the 25 names the T+1 book missed, the Tier-A split reads
 0 fresh / 6 extended, and KRMN arrives carrying five valuation/quality flags.
+
+---
+
+## 14. Fourth pass (2026-11-10): the first fire on the dual book, and a silent-zero defect in the skill's own ADR emitter
+
+**Triggered by:** the 2026-11-10 18:30 ET fire — the first run to execute §4.5's dual book end to end.
+The sweep itself was clean (`rows_kept == rows_passing` on 9/9 branches, `totalCount` asserted on every
+scanner call, 40/40 agreement between the TradingView settled close and the bridge quote). Two things
+were found along the way that belong in the repo, not in a chat reply.
+
+### 14.1 `emit_adr_enrichment_sql()` filters the WRONG COLUMN and returns zero rows — silently
+
+**The defect.** The emitter builds
+
+```sql
+FROM shibui.stock_quotes q
+WHERE q.symbol IN ('AAPL', 'MSFT', ...)
+```
+
+but `shibui.stock_quotes.symbol` is **venue-suffixed** (`AAPL.NASDAQ`); the bare ticker is
+`q.ticker`. So the emitted query matches **nothing** and returns `[]` — with a zero exit code and no
+error. The skill's own data-source section already warns about exactly this:
+
+> `stock_quotes.symbol` is venue-suffixed (`AAPL.NASDAQ`); `stock_quotes.ticker` is bare (`AAPL`).
+> An `IN` filter on the wrong column returns **zero rows silently**.
+
+The emitter is the very thing that warning is about. It was found on 2026-11-10 because the ADR%
+column came back empty for **every chunk**, and the run's own candidate counts made it visible.
+
+**Why it matters more than a normal bug.** ADR% is the published metric behind the peoplewish screen
+and appears on every candidate row. A silently-empty enrichment does not raise — it just makes the
+column blank on 1,000+ rows, which reads as "the data was unavailable" rather than "the query was
+wrong". That is the same failure class as the per-branch `LIMIT` and the nested `_regime.json`: a
+defect that is indistinguishable from a quiet tape.
+
+**The fix (repo, not run time).** Filter on `q.ticker` and project `ticker AS symbol`:
+
+```sql
+FROM shibui.stock_quotes q
+WHERE q.ticker IN (...)
+...
+SELECT ticker AS symbol, ROUND(adr_pct_20d::NUMERIC, 2) AS adr_pct_20d
+```
+
+**Also fixed:** `cmd_emit_sql` never exposed the `adr_enrichment` kind on the CLI — the `kind`
+argument's `choices` list omitted it, and `args.symbols` was never registered, so
+`python screen.py emit-sql adr_enrichment SYM1,SYM2` could not be run at all. The emitter existed, was
+correct in shape, and was **unreachable**. Both the `choices` list and a `--symbols` argument are
+needed.
+
+**The 2026-11-10 run worked around it at run time** (same query, `q.ticker`) and got **1174 of 1174**
+candidates enriched. The emitter itself is still wrong in the repo and needs this fix.
+
+### 14.2 The shibui 200-row ceiling applies to the ADR enrichment too — chunk at 150
+
+The ADR query returns one row per symbol, so a 400-symbol chunk returns 400 rows and is rejected by
+shibui's server-side ceiling with a 400 error. The sweep's own branch pagination caps at 200 per
+query, which is safe there because a branch is paged with `OFFSET`; the enrichment is a single
+uncapped `IN` list, so it must be chunked **below** the ceiling. 150 per chunk returned exactly 150
+rows on 7 of 8 chunks and 124 on the last — 1174 of 1174 candidates.
+
+**The rule to publish:** the ADR enrichment is 1 shibui call per **≤150** symbols, not per 500 as its
+docstring suggests. The docstring's "capped at ~500 symbols per call" is wrong by a factor of three
+and was written before the server-side ceiling was enforced on non-paginated queries.
+
+### 14.3 What the 2026-11-10 run produced (the dual book's first real book)
+
+| Metric | Value |
+|---|---|
+| Candidates | 1,356 (1,070 T+1-only · 258 fresh+t1 · 28 fresh-only) |
+| Fresh book | 286 names on the 2026-11-10 settled bar (4 branches, `totalCount` asserted) |
+| T+1 book | 9 branches, **1,446 rows**, every one `rows_kept == rows_passing` |
+| Focus / Tier-A | 12 / 4 (pool 4, not truncated) |
+| Tier-A extension split | **0 fresh / 4 extended** — FRVO, PRAX, QXO, WRBY all in the 99th percentile of the $10B+ sub-universe for distance above their 20-DMA |
+| Quality overlay | 361 `pass` · 684 `fail` · 129 `unknown` (a disclosed missing P/E, never a silent pass) |
+| Breadth | 62.03% above the 20-DMA on 1,114 names · A/D 428/678/8 (ratio 0.63) · divergence +22.0 pp BROAD |
+| VIX / VIX3M | 19.46 / 20.64 (ratio 0.9428), two Cboe pulls identical |
+| `late_cycle` | false — the extreme is RSP at +2.82%; **QQQ at −6.20% below its 50-DMA is the weak leg** |
+
+### 14.4 The Hernandez branch is worth running again — it is a real stylist, not a proxy
+
+The 2026-11-09 run carried `ariel-hernandez.md` as the **CANSLIM proxy** (the tiering code's
+fallback: `ariel_syms` is populated from `jeff_sun_canslim`), so the hernandez bucket was empty and
+the theme → group → leaders funnel did not run. The 2026-11-10 run built it properly — the top
+themes by composite 1M/3M/6M RS (**XLV** health care +54.7, **IBB** biotech +42.8, **XRT** retail
++28.1) mapped to their **GICS buckets via shibui's `general_info`** (not a hand-maintained table),
+with the leaders inside those buckets (1M RS > 15, market cap > $2B): **159 names**, 88 in the
+XLV/health-care bucket and 71 in XRT/consumer-discretionary. PRAX and WRBY both reach Tier-A partly
+on it.
+
+**The lesson:** a stylist bucket that is silently populated by a proxy screen is not the same screen.
+`n_stylists` counts it either way, so the tiering looks identical while the underlying signal is not
+the one the stylist published. The proxy is a fallback, not the screen.
+
+### 14.5 `focus.csv` must ship — the resolver needs the dated close column
+
+Cron #08's `premarket_universe.py` resolves the denominator close **by date** from the sweep's
+`focus.csv` (`close_<YYYY-MM-DD>` columns), and falls back to `focus.md` + `_results.json` when the
+CSV is absent. The 2026-11-09 sweep shipped `focus.md` and **no `focus.csv`**, so the resolver had to
+reconstruct the universe from the markdown and take the close from independent sources.
+
+The 2026-11-10 sweep ships `focus.csv` with the full resolver-facing schema — `symbol`, `stylists`,
+`origins`, `source`, `data_as_of`, `data_date`, `screen_close_resolved`, `chg_pct_resolved`,
+`today_close`, `today_change`, `today_volume`, **and the dated `close_2026-11-10` /
+`close_2026-11-09` columns** — plus `master.csv` and `tier-a.csv`. `screen_close_resolved` is
+deliberately the **T+1 screen date** (2026-11-09) and `today_close` the **cron-day settled close**
+(2026-11-10): picking the wrong one shifts a gap by up to 10%, and the resolver asserts the choice.
+
+### 14.6 The VIX pair needs the `prev_day_close` field, not `previous_day_close`
+
+The Cboe delayed-quote CDN's payload carries `prev_day_close`. A reader that asks for
+`previous_day_close` gets `null` and silently publishes an empty "prior close" column — the same
+class of defect as §14.1, one field away. The 2026-11-10 breadth read publishes VIX 19.46 (prior
+19.92) and VIX3M 20.64 (prior 20.85) from `prev_day_close`, with the two pulls 20 s apart compared
+for equality and published as `vix_stable: true`.

@@ -989,11 +989,22 @@ def emit_adr_enrichment_sql(symbols: list[str]) -> str:
     This fills in `adr_pct_20d` for EVERY candidate — not just the ones
     that peoplewish/qullamaggie happened to emit it for. Stockbee-only
     candidates (which never compute ADR% in their own SQL) also get the
-    value. Cost: 1 shibui MCP call per cron run.
+    value. Cost: 1 shibui MCP call per chunk.
 
     `symbols` may be empty; the SQL then returns no rows. Pass at least the
-    sweep+TV-screen symbol set, capped at ~500 symbols per call (shibui IN
-    clause works fine at that scale; >1000 starts to get expensive).
+    sweep+TV-screen symbol set.
+
+    TWO CONSTRAINTS, both measured on 2026-11-10:
+
+    1. **The filter is on `q.ticker`, NOT `q.symbol`.** `shibui.stock_quotes.symbol`
+       is VENUE-SUFFIXED (`AAPL.NASDAQ`); the bare ticker is `q.ticker`. Filtering
+       `q.symbol IN ('AAPL', ...)` matches nothing and returns ZERO ROWS SILENTLY —
+       the exact trap the skill's own data-source section warns about. The old
+       emitter did that, so its ADR% column was empty on every row of every run.
+    2. **Chunk at <= 150 symbols per call.** The query returns one row per symbol,
+       so it hits shibui's server-side 200-row ceiling on a larger chunk and is
+       REJECTED with a 400. (The sweep's own branch pagination is safe at 200
+       because a branch is paged with OFFSET; this is one uncapped IN list.)
     """
     if not symbols:
         return "-- adr_enrichment: empty symbol list, nothing to compute"
@@ -1001,20 +1012,20 @@ def emit_adr_enrichment_sql(symbols: list[str]) -> str:
     return f"""
 -- ADR% enrichment: 20-day average daily range as % of close, for {len(symbols)} candidate symbols
 WITH hist AS (
-  SELECT q.symbol, q.date, q.high, q.low, q.close,
+  SELECT q.ticker, q.date, q.high, q.low, q.close,
          AVG((q.high - q.low) / NULLIF(q.close, 0)) OVER (
-           PARTITION BY q.symbol ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+           PARTITION BY q.ticker ORDER BY q.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
          ) * 100 AS adr_pct_20d,
-         ROW_NUMBER() OVER (PARTITION BY q.symbol ORDER BY q.date DESC) AS rn
+         ROW_NUMBER() OVER (PARTITION BY q.ticker ORDER BY q.date DESC) AS rn
   FROM shibui.stock_quotes q
-  WHERE q.symbol IN ({sym_list})
+  WHERE q.ticker IN ({sym_list})
     AND q.exchange IN ('NYSE','NASDAQ','AMEX')
     AND q.date >= (CURRENT_DATE - INTERVAL '45 days')
 )
-SELECT symbol, ROUND(adr_pct_20d::NUMERIC, 2) AS adr_pct_20d
+SELECT ticker AS symbol, ROUND(adr_pct_20d::NUMERIC, 2) AS adr_pct_20d
 FROM hist
 WHERE rn = 1
-ORDER BY symbol
+ORDER BY ticker
 """.strip()
 
 
@@ -2454,8 +2465,11 @@ def main(argv: list[str] | None = None) -> int:
     cache_p.add_argument("--vault", default=None, help="Vault root that holds <date>/ directories")
 
     sql_p = sub.add_parser("emit-sql", help="emit a single shibui SQL string")
-    sql_p.add_argument("kind", choices=["prefilter", "sweep", "sweep_stockbee", "sweep_qullamaggie", "sweep_peoplewish", "breadth", "reversal_bullish", "weekly", "resolve_date"])
-    sql_p.add_argument("date")
+    sql_p.add_argument("kind", choices=["prefilter", "sweep", "sweep_stockbee", "sweep_qullamaggie", "sweep_peoplewish", "breadth", "reversal_bullish", "weekly", "resolve_date", "adr_enrichment"])
+    sql_p.add_argument("date", nargs="?", default=None,
+                       help="the session date (YYYY-MM-DD); for 'adr_enrichment' use --symbols instead")
+    sql_p.add_argument("--symbols", default=None,
+                       help="comma-separated ticker list; only used by the 'adr_enrichment' kind")
 
     cons_p = sub.add_parser("consume", help="apply tiering + write outputs from MCP results JSON")
     cons_p.add_argument("--in", dest="in_path", required=True)
