@@ -45,7 +45,18 @@ Losers, same test: **23 of 175 named (13%)**, 60 CSV-only, **81 absent (46%)**.
 
 ## Which filter did the damage — the correction
 
-The Nov 9 post-mortem blamed **Gate B** (the $100M market-cap floor). Across seven sessions Gate B was the **least** damaging of the three filters: only **0–1 names per session** failed it outright, because the day&rsquo;s top-25 median market cap ran **$19M–$793M** and the movers sit mostly below $100M but above nothing.
+The Nov 9 post-mortem blamed **Gate B** (the $100M market-cap floor) for burying the movers. The scan floor and the table cap were the dominant filters &mdash; but **Gate B was not the innocent bystander it first appeared**, and the first version of this document understated it. Recomputing the gate flags directly from each published CSV (the first pass had an indentation bug in the tally that only tested the last row of each list) gives the true cost:
+
+| Gate outcome, 175 top regular-session gainers | Names | Share |
+|---|---|---|
+| **failed both gates** | 21 | 12% |
+| **failed Gate A only** (liquidity: pre-market volume < 100,000, or cap < $200m with < 10,000 shares) | 25 | 14% |
+| **failed Gate B only** (market cap < $100m) | 12 | 7% |
+| **passed both** | 43 | 25% |
+
+**58 of the day's 175 top gainers (33%) failed at least one gate &mdash; and the gate-failing movers moved exactly as far as the gate-passing ones** (median session move **+26.75%** vs **+26.05%**). The gates were not excluding junk. They were excluding a third of the day's best movers, and then filing the rest in a thin-tape block that was itself truncated to 12 rows.
+
+What actually cost the coverage:
 
 What actually cost the coverage:
 
@@ -53,7 +64,7 @@ What actually cost the coverage:
 |---|---|---|
 | **The ±3% scan floor** (`premarket_change in_range [3,1000]`) | **45 of the 74 absent names had a pre-market gap inside ±3%**; a **±15% floor would have swept up 62 of 74 (84%)** | the screen could only ever find names that had *already* moved — exactly the population that is not left to find |
 | **The top-25 table cap** | **59 of 175** top gainers were in the CSV, un-named, every session | the data was published; the *table* was not |
-| **Gate B** | 0–1 of 25 per session | Gate B&rsquo;s real damage was subtler: it pushed names into a thin-tape block that was itself **truncated to 12 rows**. On Nov 6 ten top-25 gainers failed the cap and **only one** of them was printed. |
+| **Gate A and Gate B together** | **58 of 175 (33%)** of the day's top gainers failed at least one gate | The gate-failing movers were as strong as the gate-passing ones (+26.75% vs +26.05% median), so the gates were excluding a third of the day's best movers. On Nov 6 ten top-25 gainers failed Gate B and **only one** of them reached the published thin-tape list. |
 | **The 08:36 pull** | 2 of 74 absent names had **no pre-market print at all** | plus CDT on Nov 6, which finished pre-market **+61.94% on 5.16m shares after the 08:36 pull** |
 
 ## The picks were good
@@ -79,7 +90,7 @@ Median regular-session move of the names the brief **named**, against the market
 | Widen the scan floor (±3% → ±15%) | catches 62 of 74 absent names (84%) | **supported** |
 | Second pull at 09:25 ET, merged with the 08:36 pull | catches the 2-of-74 no-print cases plus the post-08:36 prints | **supported** |
 | Publish the un-named residual pool | gap-ordered residual = **+4.63%** median (named picks +6.26%, market ~+0.2%) | **supported** |
-| Gate B: demote from filter to label | barely cost coverage; stop truncating the thin-tape block | **refine** |
+| Gate A and Gate B: demote from filter to label (on a second tier) | 33% of the day's top movers failed a gate and moved just as far | **supported** |
 | **Re-rank by pre-market relative volume** | **worse on 6 of 7 sessions** (Nov 6: −8.65% vs +12.74%; Nov 4: +1.12% vs +16.07%). Residual pool ordered by %ADV = **−4.05%**; by raw pre-market volume = **−4.97%**; by gap = **+4.63%** | **RETRACTED** |
 | Keep the gap screen for the downside only | corr(gap, close-to-close) positive every day (0.39–0.85); corr(gap, after-the-open) near zero or negative on 6 of 7 | **supported** |
 
@@ -90,6 +101,27 @@ Median regular-session move of the names the brief **named**, against the market
 - **The pre-market CSV schema evolved inside the week**: 14 columns on Nov 2 → 15 on Nov 3 → 16 on Nov 4 → the pinned 21 on Nov 5+. The Nov 2–4 files still carry the **date-named** close columns (`fri_2026_10_30_close`, `nov_2_2026_close`) that the v2 contract removed — the defect §C3 was written to kill was live for three sessions after the contract landed.
 - **Cron #20&rsquo;s settled file carries ≈4,890 of the scanner&rsquo;s ≈6,094 names**, and it drops foreign-domiciled ADRs (TSM, ARM, IREN, NBIS were absent on Nov 5). Any "market-wide" ranking built on it alone is over a smaller universe than the screener sees.
 - **The %ADV and gap cohorts differ in kind, not just degree.** The residual, un-named pool contains names the brief&rsquo;s own gates had *passed* — it is not a junk pool. It is the day&rsquo;s extreme tail that the table never printed.
+
+## The recommendation: keep the gates, but split the artifact in two
+
+**Tier 1 - the setups. Keep the gates, keep the gap ranking, keep the levels.** This tier has measured alpha: the named picks beat the market's median move on 6 of 7 sessions, and Gate A is doing real work (it stops a +/-20% print on 100 shares from reaching a headline table). Nothing here should change.
+
+**Tier 2 - the tail. Gates demoted to labels; a wider universe; a second pull; a direction-agnostic ranking.** Three requirements, each measured:
+
+1. **Demote the gates to labels.** A name that failed Gate B is marked *sub-$100m / thin*, not dropped. 58 of 175 movers failed a gate and performed identically to the ones that passed.
+2. **Merge the two pulls.** Cron #26b's 09:20 ET refresh already exists and it works: on Nov 9 it surfaced **TLS (+48.8%)** and on Nov 10 **SGLY (+25.4%)** - both absent from the 08:36 pull - and it added 18 and 5 names respectively that closed up >=10%. The refresh is a separate artifact today; it should feed the brief's coverage tier.
+3. **Rank the tier by |gap|, not by gap.** A gap-ranked table files *gapped-down-then-ran* names under "losers" - GOGO was -1.10% pre-market and closed +71.52%. The tail tier must be direction-agnostic or it will systematically misfile the day's biggest winners.
+
+### The honest limit on coverage - what widening the universe cannot buy
+
+The 74 absent top-25 gainers were **not discoverable before the open by any signal a pre-market routine can read**:
+
+- **45 of them had a pre-market gap inside +/-3%** - so a wider floor would have *fetched* them (a +/-15% floor catches 62 of 74, 84%).
+- **Only 2 had any pre-market print at all**, and **none had a catalyst**: **0 of 74** appear in cron #19's earnings roster or cron #15's reactions file on any of the seven sessions. They were not earnings names - they were idiosyncratic squeezes with no pre-open footprint.
+
+So expanding the universe is **necessary but not sufficient**. It fetches candidates; it does not identify winners, because the only pre-open signal these names had was "nothing". A pre-market brief cannot name them, and an artifact that implied it could would be lying. What the routine *can* do is fetch them, catch the ones that print late, and stop discarding the third of the movers its own gates reject.
+
+A candidate ranking for the tail tier was tested and **does not work**: names with a pre-market print but a gap inside +/-3% ("quiet but printing") returned a median of **+1.82%** across the sessions - better than the market on three, negative on two - and it returns 140 names on some days, so it dilutes rather than identifies. It is a watchlist, not a signal.
 
 ## Cross-check against a sibling session's finding
 
