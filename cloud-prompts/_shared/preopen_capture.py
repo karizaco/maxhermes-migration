@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-10.1
+CAPTURE_SCRIPT_VERSION: 2026-11-11.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -34,6 +34,38 @@ worst pre-open loser would never get a catalyst.
 **Prices always come from calls 2 and 3.** Calls 1, 4 and 5 explain; they never price.
 A percentage that disagrees with the movers scan by more than 2pp is marked
 `unverified`.
+
+THE PRE-MARKET PRINT - WHY CALL 6 EXISTS
+-----------------------------------------
+Calls 2 and 3 (top_movers) are Yahoo's PREDEFINED SCREENER over the last COMPLETED
+REGULAR SESSION. Before the open, that session is the PREVIOUS day, so those calls
+returned FRIDAY's movers with FRIDAY's closes, and the tape published them as if they
+were this morning's pre-market.
+
+Measured on the 2026-11-09 08:30 tape: 14 of 14 testable priced rows were EXACTLY the
+previous session's close and the previous session's move (IRTC -30.70% at 90.22, from
+130.19 on Nov 5 to 90.22 on Nov 6). TradingView's own pre-market for IRTC that morning
+was +0.86% at 91.00. The tape was reporting Friday's move as if it were Monday's
+pre-market, and the 2026-11-09 commit that "fixed" the tape then read its own output as
+Monday's decliners.
+
+So call 6 asks the TRADINGVIEW SCANNER for the CURRENT session's pre-market print
+(`premarket_change` / `premarket_close`) for the names the tape carries, and the tape's
+`pct` and `price` come from THAT. The movers scan (calls 2 and 3) still decides WHICH
+names are on the tape; the scanner supplies the number that belongs to the session the
+tape is about.
+
+Two rules follow, and both are about not inventing a number:
+  * A name the scanner does not carry has NO pre-market print. It keeps `pct`/`price`
+    NULL and is published as a narrative row (`src: stocktwits`), exactly like a
+    trending-only name. It DID NOT trade pre-market, and that is the honest result.
+  * The grounded-call budget is spent on the biggest movers by THIS session's |%|, not
+    by the previous session's. Otherwise the budget would buy catalysts for yesterday's
+    movers and today's would never get one.
+
+The tape's row shape is a CONTRACT with cron #17, so this changes no key: `pct` and
+`price` are populated from the scanner instead of the movers scan, and nothing else about
+a row changes.
 
 THE STALENESS GATE - WHY THIS FILE NOW CARRIES A DATE
 -----------------------------------------------------
@@ -257,6 +289,58 @@ def call_trending():
     return {"rows": [r for r in rows if r["ticker"]]}
 
 
+def call_scanner_premarket(tickers):
+    """The CURRENT session's pre-market print for these tickers.
+
+    The TradingView scanner carries `premarket_change` and `premarket_close`: the move
+    and the print of the session that is ABOUT TO OPEN. This is the only source in the
+    fleet that answers "what is this name doing right now" before the bell - Yahoo's
+    quote fields (and therefore the movers scan) carry the LAST COMPLETED SESSION's
+    close and move until the open.
+
+    One POST for the whole candidate set, zipped BY COLUMN NAME so a reordered or
+    shortened column list cannot put a price into a percent column. A ticker the
+    scanner does not carry is simply ABSENT from the result - the caller must treat
+    that as "no pre-market print", never as a zero.
+    """
+    syms = [t for t in tickers if t]
+    if not syms:
+        return {"rows": {}, "error": "no tickers"}
+    cols = ["name", "description", "premarket_change", "premarket_close",
+            "premarket_volume", "exchange"]
+    body = {"filter": [{"left": "type", "operation": "equal", "right": "stock"},
+                       {"left": "name", "operation": "in_range", "right": syms}],
+            "columns": cols, "range": [0, len(syms) + 5]}
+    req = urllib.request.Request(
+        "https://scanner.tradingview.com/america/scan",
+        data=json.dumps(body).encode(),
+        headers={**UA, "Content-Type": "application/json"})
+    try:
+        res = json.loads(urllib.request.urlopen(req, timeout=45).read())
+    except Exception as exc:
+        return {"rows": {}, "error": f"scanner_failed: {str(exc)[:120]}"}
+    out = {}
+    for row in res.get("data") or []:
+        d = row.get("d") or []
+        if len(d) < len(cols):
+            continue
+        rec = dict(zip(cols, d))
+        t = (rec.get("name") or "").upper()
+        if not t:
+            continue
+        try:
+            pm_chg = float(rec.get("premarket_change"))
+            pm_px = float(rec.get("premarket_close"))
+        except (TypeError, ValueError):
+            # No pre-market print for this name (it never traded pre-market). That is
+            # a fact, and it is published as a NULL number, never as 0.
+            continue
+        out[t] = {"pct": pm_chg, "price": pm_px,
+                   "volume": rec.get("premarket_volume"),
+                   "name": rec.get("description"), "exchange": rec.get("exchange")}
+    return {"rows": out, "total": len(out), "requested": len(syms)}
+
+
 def call_top_movers(category="gainers", limit=40):
     """Ground-truth prices for the movers."""
     out = rpc(PACK_MARKET, "top_movers", {"category": category, "limit": limit}, prefer=["movers"])
@@ -453,6 +537,29 @@ def build(date_str, checkpoint, top_n=8):
             seen.add(tk)
             candidates.append(tk)
 
+    # THE PRE-MARKET PRINT. The movers scan (calls 2 and 3) ranks by the last COMPLETED
+    # session's move, so before the open it names YESTERDAY's movers and carries
+    # YESTERDAY's closes. The tape is about the session that is about to open, so the
+    # numbers come from the scanner's `premarket_*` columns for THIS session.
+    #
+    # One call for the whole candidate set. A name the scanner does not carry has NO
+    # pre-market print, and the tape must not invent one: it keeps a NULL number and is
+    # published as a narrative row, exactly like a trending-only name.
+    pm = call_scanner_premarket(candidates)
+    pm_rows = pm.get("rows") or {}
+    pm_error = pm.get("error")
+    priced_now = sum(1 for tk in candidates if tk in pm_rows)
+
+    # Re-order the candidates by THIS session's absolute pre-market move. The
+    # grounded-call budget is finite and is spent in this order, so the order must follow
+    # the session the tape is about: ranked by the movers scan's move (the last COMPLETED
+    # session's), the budget would go to the previous session's biggest movers and
+    # today's would never get a catalyst. Names with no pre-market print keep their place
+    # after every priced name - they are narrative rows, and a narrative row does not
+    # compete for a grounded call.
+    if pm_rows:
+        candidates.sort(key=lambda tk: (-abs((pm_rows.get(tk) or {}).get("pct") or 0), tk))
+
     rows = []
     stale_dropped = []          # names whose catalyst was rejected as too old
     grounded_budget = top_n
@@ -464,31 +571,61 @@ def build(date_str, checkpoint, top_n=8):
         # ONE capture instant per row: it stamps the row AND bounds the article
         # search, so a catalyst can never post-date the record that carries it.
         row_dt = datetime.datetime.now(_et())
-        rec = {
-            "ts": row_dt.isoformat(timespec="seconds"),
-            "src": "scanner" if mv else "stocktwits",
-            "ticker": tk,
-            "name": (mv or {}).get("name") or (trr or {}).get("name"),
-            "pct": (mv or {}).get("change_pct"),
-            "price": (mv or {}).get("price"),
-            "cat": infer_cat((trr or {}).get("why")),
-            "why": (trr or {}).get("why"),
-            "ref": None,
-            "conf": "high" if trr and trr.get("why") else "low",
-            "trending_ts": (trr or {}).get("ts"),
-            "trending_score": (trr or {}).get("score"),
-            "volume": (mv or {}).get("volume"),
-            "exchange": (mv or {}).get("exchange"),
-            # WHEN the catalyst broke, and the article it came from. Both are null
-            # until a grounded catalyst is dated; see resolve_news_date().
-            "news_date": None,
-            "news_url": None,
-        }
+        # THIS session's pre-market print. `pm` is the only source of a pre-market
+        # number, so a row without one carries NO number - it is a narrative row, never a
+        # mover carrying yesterday's close.
+        pr = pm_rows.get(tk)
+        if pr:
+            rec = {
+                "ts": row_dt.isoformat(timespec="seconds"),
+                "src": "scanner",
+                "ticker": tk,
+                "name": pr.get("name") or (mv or {}).get("name") or (trr or {}).get("name"),
+                "pct": pr.get("pct"),
+                "price": pr.get("price"),
+                "cat": infer_cat((trr or {}).get("why")),
+                "why": (trr or {}).get("why"),
+                "ref": None,
+                "conf": "high" if trr and trr.get("why") else "low",
+                "trending_ts": (trr or {}).get("ts"),
+                "trending_score": (trr or {}).get("score"),
+                "volume": pr.get("volume"),
+                "exchange": pr.get("exchange"),
+                # WHEN the catalyst broke, and the article it came from. Both are null
+                # until a grounded catalyst is dated; see resolve_news_date().
+                "news_date": None,
+                "news_url": None,
+            }
+        else:
+            # NO pre-market print for this name. It did not trade before the open, so
+            # there is no number to publish. The row keeps its narrative (if any) and
+            # carries no number at all - never the previous session's close.
+            rec = {
+                "ts": row_dt.isoformat(timespec="seconds"),
+                "src": "stocktwits",
+                "ticker": tk,
+                "name": (mv or {}).get("name") or (trr or {}).get("name"),
+                "pct": None,
+                "price": None,
+                "cat": infer_cat((trr or {}).get("why")),
+                "why": (trr or {}).get("why"),
+                "ref": None,
+                "conf": "low",
+                "trending_ts": (trr or {}).get("ts"),
+                "trending_score": (trr or {}).get("score"),
+                "volume": None,
+                "exchange": (mv or {}).get("exchange"),
+                "news_date": None,
+                "news_url": None,
+            }
         # A mover with no trending reason: ask the grounded router for one, then DATE
         # it. The router is good at "what happened" and blind to "when" - so every
         # answer it gives is age-checked against the provider's own stamps before it
         # is allowed onto the tape.
-        if mv and not rec["why"] and grounded_budget > 0:
+        # A grounded catalyst is only worth a call for a row that HAS a number: the
+        # catalyst explains a MOVE, and a row with no pre-market print has no move to
+        # explain. It also keeps `src` honest - a pipeworx row carries a price.
+        if pr and not rec["why"] and grounded_budget > 0:
             grounded_budget -= 1
             g = call_grounded(tk, rec["name"])
             if g.get("answer") and not g.get("refusal"):
@@ -515,6 +652,8 @@ def build(date_str, checkpoint, top_n=8):
                     rec["ref"] = None
                     rec["cat"] = "other"
                     rec["conf"] = "low"
+                    # The row keeps its price and loses only the cause. It was priced
+                    # from the scanner, so "scanner" is still its true provenance.
                     rec["src"] = "scanner"
                     rec["grounded_tool"] = None
                     rec["news_date"] = None
@@ -527,8 +666,14 @@ def build(date_str, checkpoint, top_n=8):
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
             "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
+            # How many rows carry THIS session's pre-market print, and how many are
+            # narrative-only because the name did not trade pre-market.
+            "premarket_priced": priced_now,
+            "premarket_unprinted": len(candidates) - priced_now,
+            "premarket_error": pm_error,
             "stale_dropped": stale_dropped,
-            "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error")) if e]}
+            "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
+                                   pm_error) if e]}
 
 
 def main():
@@ -575,7 +720,9 @@ def main():
 
     if args.dry_run:
         print(f"# dry run — {len(res['rows'])} rows, movers={res['mover_count']}, "
-              f"trending={res['trending_count']}, as_of={res.get('as_of')}")
+              f"trending={res['trending_count']}, as_of={res.get('as_of')}, "
+              f"premarket_priced={res.get('premarket_priced')}, "
+              f"premarket_unprinted={res.get('premarket_unprinted')}")
         print(body)
         return 0
 
@@ -599,6 +746,8 @@ def main():
           f"(movers scan: {res.get('gainers')} up + {res.get('losers')} down, "
           f"{res['mover_count']} names, "
           f"trending={res['trending_count']}, "
+          f"premarket_priced={res.get('premarket_priced')}, "
+          f"premarket_unprinted={res.get('premarket_unprinted')}, "
           f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
           f"errors={len(res.get('errors') or [])})")
     return 0

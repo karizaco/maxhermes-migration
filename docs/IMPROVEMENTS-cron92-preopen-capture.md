@@ -300,3 +300,79 @@ On the 2026-11-09 and 2026-11-10 tapes that count is arithmetically fine but **s
 misleading**: the `pct` values are prior-session moves, so the digest's "biggest movers" board
 ranks Friday, not Monday. The digest should label the column it is sorting by
 (`prior session` vs `pre-market`), so a reader cannot mistake one for the other.
+
+---
+
+## 2026-11-11 — the capture now PRICES the tape from the current session's pre-market print (PRODUCER FIX APPLIED)
+
+The finding above (the tape's `pct`/`price` being the LAST COMPLETED SESSION's move) is now
+**fixed at the producer**, in `cloud-prompts/_shared/preopen_capture.py`, together with the
+procedure (`preopen-capture.md`), the checker (`tools/check_preopen_checkpoint.py`) and the
+contract test (`tools/test_preopen_checkpoint_contract.py`).
+
+**Why the movers scan could not be the price source.** `market-recap`'s `top_movers` is Yahoo's
+**predefined screener over the last completed regular session**, and the pack's own `get_quotes`
+note says so: *"closed" means price is the last close*. Before the open, that session is the
+PREVIOUS day. Measured against the 2026-11-09 08:30 tape: **14 of 14 testable priced rows were
+exactly the previous session's close and move** (IRTC -30.70% at 90.22, from 130.19 on Nov 5 to
+90.22 on Nov 6; DKNG -21.30% at 18.51), while **TradingView's own pre-market for IRTC that
+morning was +0.86% at 91.00**. The tape was publishing Friday's move as if it were Monday's
+pre-market, and the 2026-11-09 commit that "fixed" the tape then read its own output as
+Monday's three worst decliners.
+
+**The fix.** The movers scan still decides **which names** are on the tape; the **number** now
+comes from the TradingView scanner's `premarket_change` / `premarket_close`, which are the only
+pre-market print in the fleet. One POST covers the whole candidate set, zipped **by column
+name** so a reordered column list cannot put a price into a percent column.
+
+**Two rules that follow, both about not inventing a number:**
+- A name the scanner does not carry has **no pre-market print**. It keeps `pct`/`price` NULL and
+  is published as a narrative row (`src: stocktwits`) — the same shape as a trending-only name.
+  It did not trade pre-market, and that is the honest result. A row with no number is never
+  relabelled `scanner`, which the checker reads as "has a price".
+- The **grounded-call budget** is now spent on the biggest movers by **this session's** |%|.
+  Ranked by the movers scan's move, the budget would buy catalysts for yesterday's movers and
+  today's would never get one. The grounded call also only fires for a row that HAS a number —
+  a catalyst explains a move, and a row with no pre-market print has no move to explain.
+
+**The tape's row shape is unchanged** (it is a contract with cron #17): the same 10 contract
+keys and the same 7 provenance extras. `pct` and `price` are populated from the scanner instead
+of the movers scan, and nothing else about a row changes.
+
+**The checker now enforces it** (`tools/check_preopen_checkpoint.py`): the script must read
+`premarket_change`/`premarket_close`, must call the scanner, the row's `pct`/`price` must come
+from the pre-market print, and a row without a print must be published as a narrative row. The
+procedure must demand the `2026-11-11` script, and the procedure's fetch ladder greps for that
+version so a **stale cached copy of the old script cannot win the ladder** (the fetch ladder is
+the reason the marker moved).
+
+**A new fault-injection case** (30/30, was 29/29): *"a capture script that prices from the last
+completed session is caught"* — it mutates the row's `pct` back to the movers scan's
+`change_pct` and asserts the checker rejects it. The old defect is now a **regression that fails
+the build**, not a subtle semantic drift.
+
+**Verification performed (2026-11-11).**
+- `tools/check_preopen_checkpoint.py` → **PASSED all 61 checks** on the real files.
+- `tools/test_preopen_checkpoint_contract.py` → **30/30 cases behaved as required**, including
+  the new case, which is confirmed to BITE (the mutated script is rejected).
+- A live `--dry-run` of the patched script: rows carried the scanner's pre-market print
+  (AAON +13.97% @ 71.65, EQPT -8.02% @ 14.91), the run report published
+  `premarket_priced` / `premarket_unprinted`, and a name with no pre-market print came back
+  with `pct: null` and `src: stocktwits` — never yesterday's close.
+- The scanner's numbers were cross-checked against a direct scanner pull for the same tickers:
+  **exact** on both the percent and the price.
+
+**The rule this exposes.** *A gate leg, a "ground truth" field or a headline number is only
+correct if it is measured at the instant the artifact is about.* The movers scan was a perfectly
+good source of *which names moved*; it was silently the wrong source of *how much they moved*,
+because "the day's top movers" resolves to the last COMPLETED session before the open. The
+same shape of bug as the $200M floor in cron #25's brief (a market cap measured at the last
+close, gating a pre-market print) — one in the producer, one in the consumer, the same mistake.
+
+**Do-not list.**
+- Do NOT go back to pricing the tape from `top_movers`; that is the defect, and the checker
+  now fails on it.
+- Do NOT publish a prior-session close for a name with no pre-market print. A NULL number is
+  the answer; a stale number is a lie.
+- Do NOT spend the grounded-call budget on the movers scan's ranking — that ranking is the
+  previous session's.

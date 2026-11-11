@@ -161,8 +161,9 @@ def check_procedure(path):
     # 8. the procedure demands the DATED capture script and states the gate. Without
     # these the procedure could keep asking for the 2026-11-09 script, which publishes
     # a ten-month-old press release as this morning's cause.
-    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-10", t) is not None,
-          "the procedure demands the 2026-11-10 capture script (the one that DATES catalysts)")
+    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-11", t) is not None,
+          "the procedure demands the 2026-11-11 capture script (the one that PRICES the "
+          "tape from the current session's pre-market print)")
     check("news_date" in t and "news_url" in t,
           "the procedure states that every catalyst carries a date and a source article")
     check("stale" in norm(t),
@@ -197,6 +198,20 @@ def check_script(path):
     # publish a stale one, and the tape's date field becomes decoration.
     check("resolve_news_date" in t and '"news_date"' in t,
           "the script dates every catalyst (resolve_news_date -> news_date)")
+    # THE PRICE SOURCE. `top_movers` is a screener over the LAST COMPLETED session, so
+    # before the open it returns yesterday's closes. The tape must take its price from
+    # the scanner's premarket_* columns, and a name with no pre-market print must carry
+    # NO number rather than yesterday's close.
+    check("premarket_change" in t and "premarket_close" in t,
+          "the script reads the scanner's premarket_change/premarket_close for the tape's price")
+    check("call_scanner_premarket" in t,
+          "the script calls the scanner for the current session's pre-market print")
+    check(re.search(r'"pct":\s*pr\.get\("pct"\)', t) is not None,
+          "the tape row's pct comes from the pre-market print, not from the movers scan")
+    check(re.search(r'"price":\s*pr\.get\("price"\)', t) is not None,
+          "the tape row's price comes from the pre-market print")
+    check(re.search(r'"src":\s*"stocktwits"', t) is not None,
+          "a row with no pre-market print is published as a narrative row")
     check("polygon_io_news" in t,
           "the script reaches the article feed for the catalyst's publication date")
     m = re.search(r"CATALYST_MAX_AGE_DAYS\s*=\s*(\d+)", t)

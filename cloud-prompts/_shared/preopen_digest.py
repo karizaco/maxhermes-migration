@@ -186,8 +186,9 @@ def main():
     ap.add_argument("--slot", required=True)
     ap.add_argument("--scan-note", default=(
         "one movers scan in BOTH directions (pipeworx top_movers gainers + losers as DISJOINT "
-        "halves, liquidity floor price>=$1 and $vol>=$1M) and one stocktwits trending snapshot; "
-        "prices come only from the movers scan, one snapshot, one row per ticker"))
+        "halves, liquidity floor price>=$1 and $vol>=$1M), one stocktwits trending snapshot and "
+        "one TradingView scanner pull for THIS session's pre-market print; prices come only from "
+        "the scanner, one snapshot, one row per ticker"))
     a = ap.parse_args()
     rows = []
     bad = 0

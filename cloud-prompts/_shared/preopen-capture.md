@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-10.1
+PROCEDURE_VERSION: 2026-11-11.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -33,9 +33,10 @@ for U in \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_capture.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_capture.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  # 2026-11-10 is the version that DATES every catalyst and gates it on age. An
-  # older copy still accepts a ten-month-old press release as this morning's cause.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-10' "$S.tmp" 2>/dev/null; then
+  # 2026-11-11 is the version that prices the tape from the CURRENT session's
+  # pre-market print. An older copy still carries the PREVIOUS session's closes, which
+  # is the defect this version fixes.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-11' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -115,21 +116,39 @@ sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.jsonl --branc
 
 ## WHAT THE SCRIPT DOES (for the reply, not for reimplementation)
 
-Five Pipeworx gateway calls, each with one job:
+Five Pipeworx gateway calls plus one TradingView scanner POST, each with one job:
 
 | Call | Pack | Job |
 |---|---|---|
 | `trending_symbols` | `stocktwits` | candidates + a natural-language reason + a `summary_at` timestamp for each. Live retail/WSB chatter — the X signal. |
-| `top_movers` (gainers) | `market-recap` | **ground truth**: price, %chg, volume. Prices always come from here. |
-| `top_movers` (losers) | `market-recap` | the same ground truth for the other direction. |
+| `top_movers` (gainers) | `market-recap` | **which names** moved: the movers universe, in one direction. |
+| `top_movers` (losers) | `market-recap` | the same universe for the other direction. |
 | `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence and confidence, for movers the first call did not cover. It does **not** say WHEN the news broke. |
 | `polygon_io_news` | `polygon-io` | the article feed, straight from the provider: `published_utc`, `article_url`, title and description. This is where the catalyst gets its DATE. |
+| TradingView scanner | direct POST | **the PRICE**: this session's `premarket_change` and `premarket_close` for every name on the tape. |
 
 **Both directions are mandatory.** The gainers and losers halves are DISJOINT (a name cannot be
 both a top gainer and a top loser), so merging them can never put two prices on one record.
 A gainers-only scan is not a pre-open tape: measured 2026-11-09 it missed IRTC -30.7%,
 DKNG -21.3% and AXON -18.2% — the day's three worst decliners. The grounded-call budget is
 spent on the biggest movers by |%|, so a decliner competes with a gainer for its catalyst.
+
+**Prices come from the SCANNER, not from the movers scan — and this is not optional.**
+`top_movers` is Yahoo's predefined screener over the LAST COMPLETED REGULAR SESSION, so
+before the open it returns YESTERDAY's movers carrying YESTERDAY's closes. Measured on the
+2026-11-09 08:30 tape, 14 of 14 testable priced rows were exactly the previous session's
+close and move (IRTC -30.70% at 90.22, from 130.19 on Nov 5 to 90.22 on Nov 6), while
+TradingView's own pre-market for IRTC that morning was +0.86% at 91.00. The tape was
+publishing Friday's move as if it were Monday's pre-market.
+
+So the movers scan decides WHICH names are on the tape, and the scanner supplies the NUMBER
+that belongs to the session the tape is about. Two rules follow:
+  * A name the scanner does not carry has **no pre-market print**. It keeps `pct`/`price`
+    NULL and is published as a narrative row (`src: stocktwits`) — it did not trade
+    pre-market, and the tape must not invent a number for it.
+  * The grounded-call budget is spent on the biggest movers by **this session's** |%|.
+    Ranked by the movers scan's move, the budget would buy catalysts for yesterday's
+    movers and today's would never get one.
 
 **Prices are never taken from the narrative calls.** The script also drops a grounded answer
 that merely restates the price move, and drops one whose source was a filing index rather than

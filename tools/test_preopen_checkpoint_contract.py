@@ -309,9 +309,22 @@ def m_no_losers_call(repo, tape, digest):
     return True
 
 
+def m_prices_from_the_movers_scan(repo, tape, digest):
+    """The capture prices the tape from the LAST COMPLETED session again.
+
+    Measured 2026-11-09: 14 of 14 testable priced rows carried the previous session's
+    close and move (IRTC -30.70% at 90.22) while TradingView's own pre-market for IRTC
+    that morning was +0.86% at 91.00. A tape that prices itself from yesterday is the
+    defect, and the checker must catch a script that goes back to it.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, '"pct": pr.get("pct"),', '"pct": (mv or {}).get("change_pct"),')
+    return True
+
+
 def m_no_version_marker(repo, tape, digest):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
-    mutate(p, "CAPTURE_SCRIPT_VERSION: 2026-11-10.1", "CAPTURE_SCRIPT_VERSION:")
+    mutate(p, "CAPTURE_SCRIPT_VERSION: 2026-11-11.1", "CAPTURE_SCRIPT_VERSION:")
     return True
 
 
@@ -420,6 +433,8 @@ CASES = [
     ("a procedure that does not state BOTH directions is caught", False, m_no_both_directions),
     ("a capture script that appends instead of replacing is caught", False, m_append_instead_of_replace),
     ("a capture script with no losers call is caught", False, m_no_losers_call),
+    ("a capture script that prices from the last completed session is caught", False,
+     m_prices_from_the_movers_scan),
     ("a capture script with no version marker is caught", False, m_no_version_marker),
     ("a capture script with no slot guard is caught", False, m_slot_guard_removed),
     ("a catalyst dated outside the window is caught", False, m_stale_news_date),
