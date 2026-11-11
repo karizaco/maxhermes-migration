@@ -455,3 +455,55 @@ This matters more than it looks, because the marker is now STRICT: a ladder that
 the 2026-11-11.2 script does not silently run the old one, it fails closed with
 `capture script fetch FAILED — write nothing`. A rate-limited authoritative source would
 therefore have cost the 09:50 checkpoint its tape.
+
+---
+
+## 2026-11-11 09:50 ET — `verify_delivery.sh` reported a DELIVERED artifact as LOST
+
+**The defect.** The 09:50 checkpoint's tape and digest were on `origin/main` — proven twice
+over: the contents API returned a blob whose SHA-256 matched the local file byte for byte
+(`b1d24cd591434746…` / `5909d9bb3ed38a38…`), and `git cat-file -e origin/main:<path>`
+succeeded from a real checkout. `verify_delivery.sh` nevertheless printed:
+
+```
+DELIVERY: FAILED (origin/main:preopen-feed/2026-11-11-0950.jsonl NOT found)
+```
+
+**The cause was the VIEW, not the artifact.** The script does `cd "${REPO_DIR:-/workspace}"`
+and then `git cat-file -e origin/$BRANCH:$PATH_`. In the Cloud sandbox `/workspace` is **not**
+a git checkout, so the `cd` succeeded, every `git` command failed, and the script reported a
+missing FILE. It could not tell "the artifact is absent" from "I have no checkout to look in
+with" — and the second case produces the same output as the first. A false `DELIVERY: FAILED`
+is the same class of failure as a false success: it tells cron #90's triage that a file that
+IS on the branch was lost.
+
+A second, related hole in the same script: the fetch was a bare
+`git fetch origin "$BRANCH"`, which updates `FETCH_HEAD` but does **not** advance
+`refs/remotes/origin/$BRANCH` in a shallow clone. The `cat-file` check then read a STALE
+remote-tracking ref and reported an absent artifact for a branch it simply had not caught up
+with. `push_artifact.sh` already fetches with an explicit refspec for exactly this reason
+(`RUNTIME-CONTRACT.md` §5d); the verifier did not.
+
+**The fix (in the verifier, not in the prompt).**
+
+1. Fetch with the explicit refspec `+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH`, so the
+   remote-tracking ref actually advances.
+2. Treat a missing git view as **"cannot tell"**, not "absent": the script now checks
+   `git rev-parse --git-dir` and only believes a `cat-file` result when it really has a
+   checkout with the branch resolved.
+3. When the git view cannot see the path, ask the **GitHub contents API** — authoritative and
+   never CDN-cached — before reporting absence. `GITHUB_API_BASE` overrides the host (the
+   test points it at a local stub).
+4. A genuinely absent artifact is still `DELIVERY: FAILED`, exit 1. The fix must not make the
+   verifier vacuously true, so the test asserts that case too.
+
+**The guard bites.** `tools/test_verify_delivery_contract.py` is hermetic (a local bare repo
+stands in for the remote; a local HTTP server stands in for the API) and covers seven cases:
+no git view, a git view with no `origin/<branch>` ref, the normal case, the genuinely-absent
+case, and — as fault injection — a mutation of the script back to the old logic, which must
+reproduce the false `DELIVERY: FAILED`. 7/7 as required.
+
+**Why this belongs in the repo and not in the prompt.** The procedure's step 4 calls
+`verify_delivery.sh` with no `REPO_DIR`, so every routine in the fleet inherited the false
+failure. Fixing the shared helper fixes every routine at once — and no `cron_update` is
+needed, because the helper is fetched at RUN time.

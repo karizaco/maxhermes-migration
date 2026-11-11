@@ -74,20 +74,77 @@ if [ "$PATH_ORIG" != "$PATH_" ]; then
   echo "verify_delivery: windows-sanitize: '$PATH_ORIG' -> '$PATH_'"
 fi
 
-cd "${REPO_DIR:-/workspace}" 2>/dev/null || { echo "DELIVERY: FAILED (no repo dir)"; exit 1; }
-git fetch -q origin "$BRANCH" 2>/dev/null || true
+REPO_DIR_EFF="${REPO_DIR:-/workspace}"
+API_BASE="${GITHUB_API_BASE:-https://api.github.com}"
 
-# Prefer the sanitized path; if absent, try the pre-sanitize form (historical colon names).
-if git cat-file -e "origin/$BRANCH:$PATH_" 2>/dev/null; then
-  :
-elif [ "$PATH_ORIG" != "$PATH_" ] && git cat-file -e "origin/$BRANCH:$PATH_ORIG" 2>/dev/null; then
-  PATH_="$PATH_ORIG"
-  echo "verify_delivery: found historical path origin/$BRANCH:$PATH_"
-else
-  echo "DELIVERY: FAILED (origin/$BRANCH:$PATH_ NOT found)"
+# THE CONTENTS API IS AUTHORITATIVE AND IS NOT CDN-CACHED.
+# It can answer the presence question on its own, and it is the ONLY source that works
+# when there is no usable git view at all. A missing VIEW must never be reported as a
+# missing ARTIFACT: this script's whole purpose is to stop a lost artifact from being
+# reported as delivered, but a false "NOT found" is the same failure in the other
+# direction - it tells the fleet a file that IS on the branch was lost.
+# Measured 2026-11-11 09:50 ET (cron #92b): /workspace is not a git checkout in this
+# sandbox, so `git cat-file -e origin/main:<path>` could never succeed, and the run
+# reported "DELIVERY: FAILED" for a tape the contents API AND the git blob API both
+# proved present on main, byte-identical to the local copy.
+#
+# Exit codes: 0 = present, 1 = absent, 2 = no token (cannot ask).
+api_present() {  # $1 = repo-relative path
+  [ -n "${GITHUB_TOKEN:-}" ] || return 2
+  curl -sL --max-time 25 -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    "$API_BASE/repos/$REPO/contents/$1?ref=$BRANCH" 2>/dev/null \
+  | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+sys.exit(0 if isinstance(d,dict) and d.get("sha") else 1)
+' 2>/dev/null
+}
+
+GIT_VIEW_OK=0
+if cd "$REPO_DIR_EFF" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1; then
+  # Fetch with an EXPLICIT refspec. A bare `git fetch origin <branch>` updates FETCH_HEAD
+  # but does NOT advance refs/remotes/origin/<branch> in a shallow clone, so the cat-file
+  # below would read a STALE ref and report an artifact that is ON the branch as absent.
+  git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || \
+    git fetch -q origin "$BRANCH" 2>/dev/null || true
+  git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null 2>&1 && GIT_VIEW_OK=1
+fi
+
+PATH_FOUND=""
+if [ "$GIT_VIEW_OK" = "1" ]; then
+  # Prefer the sanitized path; if absent, try the pre-sanitize form (historical colon names).
+  if git cat-file -e "origin/$BRANCH:$PATH_" 2>/dev/null; then
+    PATH_FOUND="$PATH_"
+  elif [ "$PATH_ORIG" != "$PATH_" ] && git cat-file -e "origin/$BRANCH:$PATH_ORIG" 2>/dev/null; then
+    PATH_FOUND="$PATH_ORIG"
+    echo "verify_delivery: found historical path origin/$BRANCH:$PATH_FOUND"
+  fi
+fi
+
+if [ -z "$PATH_FOUND" ]; then
+  # The git view did not see it. Ask the AUTHORITATIVE source before calling it absent.
+  if api_present "$PATH_"; then
+    PATH_FOUND="$PATH_"
+    echo "verify_delivery: present via the contents API (the git view could not see the branch)"
+  elif [ "$PATH_ORIG" != "$PATH_" ] && api_present "$PATH_ORIG"; then
+    PATH_FOUND="$PATH_ORIG"
+    echo "verify_delivery: found historical path via the contents API: $PATH_FOUND"
+  fi
+fi
+
+if [ -z "$PATH_FOUND" ]; then
+  if [ "$GIT_VIEW_OK" != "1" ]; then
+    echo "DELIVERY: FAILED (no git view at $REPO_DIR_EFF, and the contents API does not have $REPO/$BRANCH:$PATH_)"
+  else
+    echo "DELIVERY: FAILED (origin/$BRANCH:$PATH_ NOT found)"
+  fi
   exit 1
 fi
-echo "DELIVERY: ok (origin/$BRANCH:$PATH_ present)"
+echo "DELIVERY: ok (origin/$BRANCH:$PATH_FOUND present)"
 
 # ---------------------------------------------------------------------------------------------
 # Optional: is the artifact ATTRIBUTABLE to a routine?
@@ -107,7 +164,7 @@ if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
       --data-urlencode "path=$PATH_" \
       --data-urlencode "sha=$BRANCH" \
       --data-urlencode "per_page=1" \
-      "https://api.github.com/repos/$REPO/commits" 2>/dev/null \
+      "$API_BASE/repos/$REPO/commits" 2>/dev/null \
     | python3 -c '
 import json,sys
 try:
