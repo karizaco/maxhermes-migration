@@ -1929,6 +1929,26 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
 - **Do NOT write "crosses from < 1 to > 3".** That was the old time-scaled projection metric
   (`rvol_projected_eod`), retired on 2026-11-04 in favour of the time-of-day-normalised
   `rvol_tod_normalised`; the numbers are not comparable and the 3x bar no longer exists.
+- **PRE-FLIGHT — the TradingView scanner's request shape (measured 2026-11-11).** The scanner is
+  healthy; the request SHAPE is what breaks. Three `sort` forms exist and only one works:
+  - `"sort": [{"column": X, "order": "asc"}]` — **an ARRAY — returns HTTP 400**
+    (`{"totalCount":0,"error":"json parse error","data":null}`). Even `"sort": []` 400s. This is
+    the form TradingView's public docs show, so it is the one you reach for from memory; it is
+    simply not what this API accepts. **Never send `sort` as an array.**
+  - `"sort": {"column": X, "order": "asc"}` — object with the WRONG keys — returns **HTTP 200 and
+    silently returns UNSORTED rows**. This is the dangerous one: no error, wrong data.
+  - `"sort": {"sortBy": X, "sortOrder": "asc"}` — the repo's canonical keys — returns **HTTP 200 and
+    sorts correctly**. Use this, or omit `sort` entirely.
+  - Column names are NOT the problem: `relative_volume_10d_calc`, `market_cap_basic`,
+    `premarket_volume` and `exchange` all return 200 together.
+  - A server-side `filter` with a LIST `right` is a **400 `Expected one value, passed 2`** — the
+    `in` operation does not take multiple values. Pull the universe and filter LOCALLY.
+  - **`range` is a page size and the API truncates silently.** `range:[0,20000]` returned 20,000
+    rows while `totalCount` read **20,271** — 271 names dropped, no error. **`totalCount` must equal
+    the rows returned**; if it does not, the pull is truncated and the missing slice must be pulled.
+    A truncated pull is a failed pull: report it, do not publish it.
+  - Full evidence and the per-market verification: `docs/IMPROVEMENTS-cron07-focus-rvol.md` and
+    `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §2a-bis.
 
 ### 8. Hook into existing briefs
 

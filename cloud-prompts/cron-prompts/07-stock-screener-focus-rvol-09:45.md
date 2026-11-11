@@ -258,6 +258,25 @@ Working path, in order:
   its volume is still 0. Keeping it UNDERSTATES session volume. Drop every bar whose timestamp is
   later than the last COMPLETED 5-minute bar, and say in the artifact that you did.
 
+**A THIRD RECIPE, MEASURED 2026-11-11 — the TradingView scanner's `sort` SHAPE (this one bites hard).**
+The scanner is healthy; what fails is the request SHAPE. There are three `sort` forms and only one
+works, so do not reach for the shape you remember from TradingView's public docs:
+- `"sort": [{"column": X, "order": "asc"}]` — an ARRAY — returns **HTTP 400**
+  `{"totalCount":0,"error":"json parse error","data":null}`. Even `"sort": []` 400s. **Never send
+  `sort` as an array.** Omit `sort` entirely if you do not need an order.
+- `"sort": {"column": X, "order": "asc"}` — an object with the WRONG keys — returns **HTTP 200 and
+  silently returns UNSORTED rows**. No error, wrong data — the worst outcome of the three.
+- `"sort": {"sortBy": X, "sortOrder": "asc"}` — the repo's canonical keys — returns **HTTP 200 and
+  sorts correctly**. Verified on /america, /japan, /korea, /taiwan, /hongkong and /crypto.
+Column names are NOT the problem: `relative_volume_10d_calc`, `market_cap_basic`,
+`premarket_volume` and `exchange` all return 200 together.
+Also: **`range` is a page size and the API truncates SILENTLY.** `range:[0,20000]` returned 20,000
+rows while `totalCount` read 20,271 — 271 names dropped with no error. **`totalCount` must equal
+the rows returned**; if it does not, the pull is truncated and the missing slice must be pulled.
+A truncated pull is a failed pull: report it, do not publish it.
+Evidence: `docs/IMPROVEMENTS-cron07-focus-rvol.md` and `cloud-prompts/_shared/RUNTIME-CONTRACT.md`
+section 2a-bis in karizaco/maxhermes-migration.
+
 Record the data timestamp for every symbol from the payload. A symbol with no intraday bars yet gets
 no_intraday_bars - never silently substitute a daily value.
 

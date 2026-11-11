@@ -194,6 +194,54 @@ Dollar volume is understated by the same factor, which also shifts the within-ti
 | **SEC EDGAR 8-K Atom** | `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={10DIGITS}&type=8-K&output=atom` | **200 OK** — CIK must be zero-padded to 10 digits. **Also requires the contact-style User-Agent** (403 otherwise). |
 | `connector__github__*` | GitHub connector | **200 OK** — authorized as `karizaco` |
 
+#### 2a-bis. The TradingView scanner's REQUEST SHAPE — three `sort` forms, two of them broken (measured 2026-11-11)
+
+The scanner is **healthy**; what fails is the *shape* of the request. This is fleet-wide, so it
+lives here rather than in one routine's prompt. Full evidence:
+`docs/IMPROVEMENTS-cron07-focus-rvol.md`.
+
+**ONE `sort` key works. Two of them fail, and one of those fails SILENTLY.**
+
+| `sort` value | HTTP | effect |
+|---|---|---|
+| `[{"column": "close", "order": "asc"}]` — **array** | **400** `{"totalCount":0,"error":"json parse error","data":null}` | request never runs. Even `"sort": []` 400s. **The array form is what TradingView's public docs show**, so it is the one an agent reaches for from memory — it is simply not what this API accepts. |
+| `{"column": "close", "order": "asc"}` — object, **wrong keys** | **200** | **silently ignored — the rows come back UNSORTED.** The worst of the three: no error, wrong data. |
+| `{"sortBy": "close", "sortOrder": "asc"}` — object, **the repo's keys** | **200** | **sorts correctly** (verified monotonic asc AND desc). This is the canonical shape in `relvol_screen.py:112`, `tools/daily_sweep_engines.py:157` and `stock-screener-suite/SKILL.md:1089`. |
+
+- **Never send `sort` as an array.** Omit `sort` entirely if you do not need an order.
+- **Never "tidy" `sortBy`/`sortOrder` into `column`/`order`** — that converts a working sort into a
+  silent one. Cron #16 and cron #09 depend on the sort ACTUALLY working.
+- Verified identically on `/america`, `/japan`, `/korea`, `/taiwan`, `/hongkong` and `/crypto`.
+- **Column names are not the problem.** Eight columns (`relative_volume_10d_calc`,
+  `market_cap_basic`, `premarket_volume`, `exchange`, …) all returned 200 together.
+
+**Two more 400s with DIFFERENT error strings — read the message, it names the cause:**
+
+- **400 `Expected one value, passed 2`** — a `filter` whose `right` is a LIST. The `in` operation
+  does not accept multiple values on this endpoint: `{"left":"name","operation":"in","right":["AAPL","MSFT"]}`
+  is rejected (as is `{"left":"type","operation":"in","right":[...]}`). **Filter locally after the
+  pull** — do not express a symbol list as a server-side `in` filter.
+- **400 on `in_range`** — it needs BOTH `right` and `second_right`; a single value is a 400.
+- **400 on a date column** — use `greater`/`less` with epoch seconds on a **whole-hour boundary**
+  (`1793959200` works, `1793959199` does not).
+- The payload key is **`filter`** (singular); `filters` is silently ignored and returns everything.
+
+**`range` is a PAGE SIZE, and the API truncates without saying so.** `range:[0,20000]` against the
+US universe returned exactly 20,000 rows while `totalCount` read **20,271** — 271 names dropped,
+no error, and with no effective sort the dropped slice is arbitrary. **`totalCount` is the true
+total**, so the completeness check is: **`totalCount` must equal the rows returned**; if it does not,
+the pull is truncated and the missing slice must be pulled. Same defect class as cron #25's
+`range:[0,600]` and cron #26's `range:[0,5000]` (which dropped Infineon, SoftBank, Petrobras).
+**A pull whose `totalCount` exceeds its rows is a FAILED pull, and must be reported, not published.**
+
+**A working body:**
+
+```json
+{"columns": ["name", "close", "volume", "average_volume_10d_calc"],
+ "range": [0, 20000],
+ "sort": {"sortBy": "name", "sortOrder": "asc"}}
+```
+
 #### Secondary sources — re-measured 2026-11-02
 
 These are the tier-3/4 endpoints the source ladder in every prompt relies on. They were carried in a
