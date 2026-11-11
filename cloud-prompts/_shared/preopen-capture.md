@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-11.2
+PROCEDURE_VERSION: 2026-11-11.3
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -27,12 +27,27 @@ from one that faded, and to attribute the move.
 # >17 minutes after a push while jsDelivr was fresh). Require the CAPABILITY MARKER,
 # not just a non-empty body: an older script silently ignores the flags below, and a
 # stale copy would run the gainers-only scan that misses the biggest decliners.
+#
+# AUTHENTICATE the fetch when a token is present. The unauthenticated contents API
+# allows 60 requests/hour per egress IP, and this sandbox's egress is SHARED with
+# every other routine - so an anonymous call to the AUTHORITATIVE source fails on
+# rate limit, and the ladder silently falls through to the CDN copies that can be
+# stale. Measured 2026-11-11 08:30 ET: the unauthenticated contents call returned no
+# marker at all and the ladder only reached the fresh script through
+# raw.githubusercontent. An empty token must NOT be sent (GitHub answers a malformed
+# Authorization header with 401, which would break a fetch that worked anonymously),
+# so the header is added only when the token is set.
 S=/workspace/preopen_capture.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen_capture.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_capture.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_capture.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  fi
   # 2026-11-11.2 is the version that prices the tape from the CURRENT session's
   # pre-market print AND age-checks the PUBLISHED catalyst date, not only the
   # provider's newest article. 2026-11-11.1 dated the tape from the previous
@@ -50,7 +65,12 @@ for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/preopen_digest.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_digest.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_digest.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$D.tmp" "$U" 2>/dev/null
+  fi
   if grep -q 'PREOPEN_DIGEST_V1' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi

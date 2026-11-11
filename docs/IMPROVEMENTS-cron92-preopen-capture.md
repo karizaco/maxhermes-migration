@@ -435,3 +435,23 @@ cached 2026-11-11.1 copy cannot win the ladder and reintroduce the defect.
 - Do NOT gate on `freshest` alone and publish `nd` unchecked — the two are different dates.
 - Do NOT repair this in the renderer. The tape is what cron #17 reads; the wrong date has to
   never enter it.
+
+### The ladder that had to deliver the fix
+
+The procedure's script fetch calls the GitHub contents API — the authoritative, non-CDN-cached
+source — **anonymously**, so it inherits the unauthenticated API's 60 requests/hour per egress
+IP, and this sandbox's egress is shared with every other routine. Measured on the 2026-11-11
+08:30 ET fire: the unauthenticated contents call returned **no marker at all**, so the ladder
+fell through to the CDN copies, and only reached the fresh script through
+raw.githubusercontent. The contents API answers the same request correctly when the token is
+sent.
+
+The procedure (`preopen-capture.md`, `PROCEDURE_VERSION: 2026-11-11.3`) now sends
+`Authorization: Bearer ${GITHUB_TOKEN}` on both ladders **when the token is set** — an empty
+token is never sent, because GitHub answers a malformed Authorization header with 401 and
+would break a fetch that had worked anonymously.
+
+This matters more than it looks, because the marker is now STRICT: a ladder that cannot reach
+the 2026-11-11.2 script does not silently run the old one, it fails closed with
+`capture script fetch FAILED — write nothing`. A rate-limited authoritative source would
+therefore have cost the 09:50 checkpoint its tape.
