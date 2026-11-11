@@ -637,6 +637,39 @@ it. On 2026-11-10 the 13,401-byte deploy of #08 was pasted twice; the first past
 **byte-identical**, the second came back with that one character changed and the **same
 length**. Nothing short of the hash would have noticed.
 
+### 5d. `git add -A` can stage FEWER files than you edited — verify the commit's file list
+
+Measured 2026-11-11: a session edited four files (a doc, the RUNTIME-CONTRACT, the suite SKILL
+and the #07 prompt), ran `git add -A`, committed with a message that named all four, and pushed.
+The commit contained **only the doc**. `git status` afterwards showed the other three as
+unmodified-in-worktree-but-unstaged — they were in the working tree, the index never got them, and
+nothing errored. The push succeeded, the commit looked right, and **three of the four changes
+silently did not exist on the remote**.
+
+**Why it matters.** A commit message is a claim, not a record. The failure mode is invisible:
+`git push` exits 0, the commit looks sensible, and the next session fetches a file that is three
+edits behind.
+
+**What to do.**
+1. **Stage EXPLICIT PATHS** — `git add -- <path> <path>`, never `git add -A` for a multi-file
+   change. (The prompt-push script's "never `git add -A`" rule is about not staging the whole
+   tree; this is the same instinct applied to a multi-file commit.)
+2. **Read `git diff --cached --stat` BEFORE committing** and confirm it lists every file you
+   edited.
+3. **Read `git show --stat` AFTER committing** and confirm the commit contains them. This is the
+   check that would have caught it.
+4. **A filename containing a colon breaks `git show HEAD:<path>`** — `git show` treats the colon
+   as the rev/path separator, so it can silently resolve to the WRONG (older) blob. Cron #07's
+   prompt is `cloud-prompts/cron-prompts/07-stock-screener-focus-rvol-09:45.md` and
+   `git show HEAD:cloud-prompts/cron-prompts/07-stock-screener-focus-rvol-09:45.md` returned the
+   PREVIOUS version's bytes with no error. Use instead:
+   `B=$(git ls-tree HEAD <dir> | grep <name> | awk '{print $3}'); git cat-file -p $B | sha256sum`
+   — `ls-tree` is not colon-ambiguous.
+5. **Verify the pushed blob through the GIT BLOB API, not the contents API**:
+   `GET /git/blobs/<sha>` returns the exact bytes of that blob and is never CDN-cached. The
+   contents API can serve a stale blob, and a stale blob looks exactly like a commit that never
+   happened.
+
 ### 5b. Another session may be editing the same file — resolve by content, not by base
 
 The same 2026-11-06 push hit a conflict on `docs/IMPROVEMENTS-cron05-eod-international.md`,
