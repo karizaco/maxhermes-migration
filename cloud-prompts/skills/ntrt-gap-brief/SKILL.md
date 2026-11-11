@@ -592,16 +592,17 @@ done
 - **The tape's price is a second opinion, not the price of record.** It was pulled at 08:30 and
   the screen at ~09:04; the same name can differ by several points. The **screener's** number is
   what the brief publishes. A gap between the two is a **movement flag** (§12), not a correction.
-- **Check the tape's `pct` is a pre-market gap BEFORE you treat it as one.** Measured on the
-  2026-11-09 and 2026-11-10 tapes: every priced row carried the **last completed session's**
-  close and change, not the current session's pre-market print (14 of 14 testable rows exact
-  against daily closes — IRTC -30.70 at the Nov 6 close of 90.22, while IRTC's actual Nov 9
-  pre-market was +0.86%). The same tapes also collapsed to ~50 rows, under the ~120-row
-  regression band. So a tape row's `pct` may be **yesterday's move**: publishing it as today's
-  gap would put the wrong day on the tape. **Before using a tape row's number, sanity-check it
-  against the screener's own `premarket_change` for the same ticker** — if they disagree by
-  roughly a session's worth of move, the tape row is a settled close. Treat the tape as a
-  **catalyst lead only** and count it as a degraded source; never publish a tape number as a gap.
+- **The tape is priced from the CURRENT session's pre-market print — verify, then use.** The
+  producer fixed this on 2026-11-11: the capture now takes each row's `pct`/`price` from the
+  scanner's `premarket_change`/`premarket_close` for the session being captured, and a name with
+  no pre-market print is published with a NULL number rather than yesterday's close. (Before
+  that fix, the 2026-11-09 and 2026-11-10 tapes carried the **last completed session's** close
+  and change — 14 of 14 testable rows exact against daily closes, IRTC -30.70 at the Nov 6 close
+  of 90.22, while IRTC's actual Nov 9 pre-market was +0.86%.) **Still sanity-check a tape row's
+  `pct` against the screener's own `premarket_change` for the same ticker** — if they disagree
+  by roughly a session's worth of move, the tape row is a settled close, so treat it as a
+  **catalyst lead only** and count the tape as a degraded source. When they agree, the tape's
+  number is the current session's pre-market gap and may be used as one.
 - **The tape also names the below-the-floor movers** (§10) — use it for the watchlist's `Note`
   column where it has a driver.
 

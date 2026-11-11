@@ -966,15 +966,36 @@ the screener's own `premarket_change` for the same ticker before treating it as 
 treats the tape as a catalyst lead only. The skill is fetched at RUN time, so this lands on
 the next fire with **no `cron_update` and no prompt drift**.
 
-**The producer-side fix belongs to cron #92** (the capture script asserts nothing about which
-session its numbers belong to). Not applied here — cron #92 has an active session and owns
-that file.
+**The producer-side fix is now APPLIED (2026-11-11).** It landed in cron #92's own files —
+`cloud-prompts/_shared/preopen_capture.py` (the capture), `preopen-capture.md` (the procedure),
+`tools/check_preopen_checkpoint.py` (the checker) and `tools/test_preopen_checkpoint_contract.py`
+(the contract test) — after cron #92's session finished, and it is recorded in full in
+`docs/IMPROVEMENTS-cron92-preopen-capture.md` under *"the capture now PRICES the tape from the
+current session's pre-market print"*.
 
-**Do-not list (unchanged by this finding).**
+**The mechanism, briefly.** The movers scan (`market-recap`'s `top_movers`) is Yahoo's
+predefined screener over the **last completed regular session** — the pack's own `get_quotes`
+note says so: *"closed" means price is the last close*. Before the open, that session is the
+previous day. So the movers scan still decides **which names** are on the tape, and the
+**number** now comes from the TradingView scanner's `premarket_change`/`premarket_close`. A
+name with no pre-market print keeps `pct`/`price` NULL and is published as a narrative row
+(`src: stocktwits`) — never yesterday's close. The tape's row shape is unchanged (a contract
+with cron #17). Cron #92's checker now enforces the price source, and a new fault-injection case
+(30/30, was 29/29) fails the build if a script prices from the last completed session again.
+
+**So the consumer-side mitigation in §11 becomes belt-and-braces.** The tape is now correct at
+the source: its `pct` IS the current session's pre-market print. The §11 sanity check (compare a
+tape row's `pct` against the screener's own `premarket_change` for the same ticker) stays as the
+consumer's own guard, but it should now PASS rather than flag the tape as degraded.
+
+**Do-not list (updated by this fix).**
 - Do NOT edit `cloud-prompts/_shared/preopen_capture.py` or `preopen_checkpoint.py` from this
-  routine.
+  routine. (The fix above was made after cron #92's session finished, with that routine's own
+  checker and contract test updated in the same commit; a routine still must not reach into it.)
 - Do NOT change the tape's expected size band to accommodate a 50-row tape: the band describes
   a HEALTHY tape, and a 50-row tape is a defect to fix at the producer.
+- Do NOT treat the tape as a degraded source any more. It is priced from the current session's
+  pre-market print at the source; the §11 sanity check should now PASS.
 
 ---
 
