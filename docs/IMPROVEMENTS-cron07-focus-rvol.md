@@ -37,26 +37,53 @@ that does not check the body reports "no bars for this symbol" — which, under 
 
 ---
 
-## 2. TradingView's scanner returns **HTTP 400** when the body carries a `sort` key
+## 2. The TradingView scanner has THREE `sort` shapes, and only one of them works
 
-**The trap.** The prompt's recipe — `columns` plus `range: [0, 20000]`, filter locally — works. Add
-a `sort` block to the same body and the endpoint answers **HTTP 400 Bad Request**. The minimal body
-that works is:
+**Corrected 2026-11-11.** The first version of this note claimed the scanner "400s when the body
+carries a `sort` key" and that "any column the endpoint does not recognise also 400s the whole
+request". **Both claims were wrong**, and this note replaces them. The columns are fine — all
+eight returned 200. Only the *shape* of the `sort` value matters:
 
-```json
-{"columns": ["name", "close", "volume", "average_volume_10d_calc"], "range": [0, 20000]}
-```
+| `sort` value in the body | HTTP | what it actually does |
+|---|---|---|
+| `[{"column": "close", "order": "asc"}]` — **an array** | **400** `{"totalCount":0,"error":"json parse error","data":null}` | nothing — the request never runs. Even `"sort": []` 400s. |
+| `{"column": "close", "order": "asc"}` — object, **wrong keys** | **200** | **silently IGNORED** — the rows come back unsorted, with no error and no warning. |
+| `{"sortBy": "close", "sortOrder": "asc"}` — object, **the repo's keys** | **200** | **sorts correctly** (verified monotonic on `close` asc and desc) |
 
-**Why it matters.** `sort` is the obvious thing to add to get a deterministic ordering, and the
-column list is also tempting to enrich (`premarket_volume`, `market_cap_basic`, …). **Any column
-the endpoint does not recognise also 400s the whole request**, not just that column — so one
-exotic column silently kills the denominator for the whole universe.
+The array form is the shape published in TradingView's own public docs, so it is the one an agent
+reaches for from memory. The repo's canonical form is `{"sortBy": …, "sortOrder": …}` — see
+`relvol_screen.py:112`, `tools/daily_sweep_engines.py:157`,
+`cloud-prompts/skills/stock-screener-suite/SKILL.md:1089`.
 
-**What to do.** Keep the body minimal and add columns only after a minimal call has succeeded. Also
-note `range: [0, 20000]` returns exactly 20,000 rows — that is the request cap, so the pull is
-truncated at the cap rather than covering the whole market. For a symbol list this does not matter
-(all 12 universe names were present), but a universe-wide filter would silently lose names beyond
-the cap. Filter locally and assert the names you expect are present.
+**Why it matters.** The middle row is the dangerous one: `{"column","order"}` is accepted with
+HTTP 200 and produces **unsorted** data, so a routine that thinks it ordered by `volume` and reads
+the first N rows as "the top N" is silently reading an arbitrary N. Cron #16's `relvol_screen.py`
+and cron #09's fresh book both rely on the sort actually working — they are correct today **because
+they use the `sortBy`/`sortOrder` keys**, and a well-meaning "cleanup" that rewrites that key pair
+to the documented-looking `column`/`order` pair would break them invisibly.
+
+**Verified across every market endpoint** — the array form is rejected identically on
+`/america/scan`, `/japan/scan`, `/korea/scan`, `/taiwan/scan`, `/hongkong/scan` and `/crypto/scan`.
+
+**The other scanner 400, with a different message.** A `filter` whose `right` is a list is
+rejected: `{"left":"name","operation":"in","right":["AAPL","MSFT"]}` returns
+**400 `Expected one value, passed 2`**. The `in` operation does not accept multiple values on this
+endpoint — filter locally instead. (The repo already records this for `type`/`in` in
+`cloud-prompts/skills/earnings-reminder/SKILL.md`, measured 2026-11-06, and cron #07's prompt has
+carried the `name`/`in` version since 2026-11-02.) Note the **different error string**: "json parse
+error" means a malformed request shape, "Expected one value" means a rejected filter value.
+
+**`range` is a page size and the API truncates silently.** `range: [0, 20000]` against the US
+universe returned exactly 20,000 rows while `totalCount` read **20,271** — **271 names were
+dropped without any error**, and with no effective sort the dropped slice is arbitrary. The API
+reports the true total in `totalCount`, so the completeness check is: **`totalCount` must equal the
+rows returned**; if it does not, the pull is truncated and the missing slice must be pulled. This is
+the same defect class as cron #25's `range:[0,600]` (one gainer away from a dropped name) and
+cron #26's `range:[0,5000]` (which dropped Infineon, SoftBank and Petrobras).
+
+**What to do.** Use `{"sortBy": …, "sortOrder": …}` or omit `sort` entirely; never send an array.
+Do not filter server-side with `in` — pull and filter locally. Always compare `totalCount` with
+the rows returned. And never "tidy" the `sortBy`/`sortOrder` keys into `column`/`order`.
 
 ---
 
