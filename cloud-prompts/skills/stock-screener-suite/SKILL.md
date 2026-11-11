@@ -2109,12 +2109,12 @@ For full schema + SQL rules, see `references/filters.md`.
 | 0. Cache check | 0 | local file read | — |
 | 0.4 SQL lint | 0 | offline, no MCP | — |
 | 1. Pre-filter | 1 | shibui SQL | — |
-| 2a. Sweep SQL | 8 + paging | **one query per branch**, uncapped, paged 200 rows at a time | per-style Finviz URL (one per style) |
-| 2b. TV screens | 3 | one parallel batch (CANSLIM + sector ETF + volume breakout) | per-screen Finviz URL |
-| 3. Breadth | 3 | one parallel batch (shibui SQL + VIX/VIX3M + sector RS) | Finviz groups + yahoo quote page |
+| 2a. Sweep SQL | 8 + paging | **one query per branch**, uncapped, paged 200 rows at a time | TV scanner (server-side filters) |
+| 2b. TV screens | 3 | one parallel batch (CANSLIM + sector ETF + volume breakout) | TV scanner |
+| 3. Breadth | 3 | one parallel batch (shibui SQL + VIX/VIX3M + sector RS) | TV scanner + yahoo quote page |
 | 2.5 Same-day prints | 1 batched | one Nasdaq `/info` request per candidate, 12 at a time | skip — the sweep stands without it |
-| 4. Reversal bullish | 1 | shibui SQL inline with the 15:55 entry alert | `finviz_reversal_bullish()` |
-| 5. Pre-market gapper | **1 (batched)** | `finviz_premarket_gap_url(tickers)` → one `web_fetch` | per-ticker `stock_extended_hours` |
+| 4. Reversal bullish | 1 | shibui SQL inline with the 15:55 entry alert | TV scanner (the candle gates need bars, not a screener) |
+| 5. Pre-market gapper | **1 (batched)** | TV scanner `premarket_*` columns | `scripts/premarket_pull.py` |
 | 6. Live RVOL rerank | **1 (batched)** | `stock_prices` with comma-separated `EXCHANGE:SYMBOL` list | per-ticker `coin_analysis` |
 | **Base sweep + live** | **~16 + 2 live** (8 branch calls + ~1 page each) | | |
 
@@ -2133,16 +2133,23 @@ TV calls + 20 shibui calls + 24 per-ticker live = **~85 MCP calls vs ~18 here**.
 See `references/fallbacks.md` for the full decision matrix. Short version:
 
 1. **MCP** — primary, fastest, most structured.
-2. **Finviz GET screener** (`web_fetch`) — free, no auth, ~200 rows per query. URL builders
-   in `scripts/screen.py` (`finviz_bonde_4pct()`, `finviz_peoplewish()`, …) and the
-   `finviz-url <kind>` subcommand. **In the Cloud runtime Finviz is behind a Cloudflare
-   challenge (HTTP 403 from both `curl` and `web_fetch`), so this rung is unavailable
-   there — go to rung 3.**
-3. **TradingView scanner API** (`POST https://scanner.tradingview.com/america/scan`) —
+2. **TradingView scanner API** (`POST https://scanner.tradingview.com/america/scan`) —
    no auth, no rate limit, and one call returns every schema field the skill needs
    (close/open/high/low/volume/change/market_cap_basic/exchange/sector/Perf.1M/3M/6M).
    It is also *richer* than the MCP wrapper, adding `premarket_volume`,
-   `average_volume_10d_calc` and `relative_volume_10d_calc`.
+   `average_volume_10d_calc` and `relative_volume_10d_calc`. **Its filters run
+   SERVER-side**, which is what makes it the screener of record in the Cloud runtime.
+3. **Nasdaq / CBOE** — official same-day prints and index levels (CBOE needs `curl -L`).
+4. **Yahoo quote page** — last resort; the JSON endpoints are 429 from this egress.
+
+**Finviz is NOT in the chain.** It is behind a Cloudflare managed challenge from this runtime —
+and since 2026-11-07 the diagnosis is TWO independent walls: the challenge script is served from
+an **IPv6-only** hostname and this sandbox has **no IPv6**, AND our datacenter ASN is flagged.
+Even the **paid ELITE API** is challenged pre-auth. The URL builders still live in
+`scripts/screen.py` (`finviz_bonde_4pct()`, `finviz_peoplewish()`, …) and the `finviz-url <kind>`
+subcommand still works — they are for a local-Mavis run or a clean-egress relay. **Do not plan a
+Cloud run around them.** Full evidence: `references/fallbacks.md` §4 and
+`_shared/RUNTIME-CONTRACT.md` §2e-bis.
 4. **Nasdaq public quote API** (`api.nasdaq.com/api/quote/{SYM}/info`) — the official
    4:00 PM close, the same-day print column and the market cap.
 5. **CBOE delayed-quote CDN** (`cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json`) —
@@ -2220,7 +2227,7 @@ screen cannot be judged, only believed.
 - `references/filters.md` — exact filter expressions for each sub-screen
 - `references/crons.md` — cron definitions (prompt + schedule + agent_name)
 - `references/tiering.md` — Master / Stalk / Focus logic + skip-rule flags
-- `references/fallbacks.md` — full fallback chain (MCP → Finviz → TV scanner → Nasdaq → CBOE → Yahoo HTML)
+- `references/fallbacks.md` — full fallback chain (MCP → TV scanner → Nasdaq → CBOE → Yahoo page; Finviz retired — §4)
 - `references/agent-output-shape.md` — the JSON shape `consume` expects
 - `scripts/sql_lint.py` — offline structural lint for the SQL this skill emits
 - `scripts/smoke_test.py` — the offline check to run before merging a change

@@ -29,10 +29,16 @@ Fallback chain
 --------------
 When an MCP call returns error / rate_limited / timeout, the Agent falls back:
   tier 1: MCP (primary, default)
-  tier 2: Finviz GET screener (web_fetch, see references/fallbacks.md)
-  tier 3: TradingView symbol-search JSON (web_fetch)
+  tier 2: TradingView scanner API (POST https://scanner.tradingview.com/america/scan)
+          -- its filters run SERVER-side, which is what makes it the screener of record
+  tier 3: Nasdaq / CBOE (official prints, index levels)
   tier 4: Yahoo Finance quote page HTML (web_fetch, last resort)
-The functions in this module generate the URLs for tier 2.
+
+Finviz used to be tier 2. It is NOT reachable from the Cloud runtime: a Cloudflare managed
+challenge served from an IPv6-ONLY hostname (this sandbox has no IPv6) plus a flagged datacenter
+ASN, and the paid ELITE API is challenged pre-auth too. The finviz_* URL builders below are
+kept for a local-Mavis run or a clean-egress relay -- they are not a Cloud rung. See
+references/fallbacks.md section 4 and _shared/RUNTIME-CONTRACT.md section 2e-bis.
 """
 
 from __future__ import annotations
@@ -247,10 +253,12 @@ def cache_status(date: str, root: Path = DEFAULT_VAULT) -> dict:
 # Tier-2 fallback: Finviz URL builders
 # ---------------------------------------------------------------------------
 #
-# When MCP returns rate_limit / timeout / error, the Agent should:
-#   1. Build the Finviz URL via one of these functions
-#   2. web_fetch the URL
-#   3. Parse the HTML via parse_finviz_table()
+# These build Finviz screener URLs and parse its HTML table.
+#
+# In the CLOUD runtime these are NOT a fallback rung -- Finviz answers a Cloudflare
+# challenge (see the module docstring). Use the TradingView scanner instead: it filters
+# SERVER-side, which is what made Finviz worth reaching for in the first place.
+# Keep these for a local-Mavis run or a clean-egress relay.
 #
 # See references/fallbacks.md for the full decision matrix.
 
