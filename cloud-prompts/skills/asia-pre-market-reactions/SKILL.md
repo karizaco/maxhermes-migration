@@ -989,6 +989,19 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.6 - 2026-11-11.** Three defects closed. (1) **The catalyst-cap contradiction**: the hard rule
+  "capped at 4" could not coexist with the v1.5 `Top 3 real events` rule "never pad with unsourced
+  rows" plus its machine assertion of exactly three items - a day with two sourced catalysts had no
+  legal composition. The cap now carries ONE explicit exception (a single additional lookup,
+  disclosed in the caveats and in the footer's `catalyst_lookups=`), because padding the events list is
+  worse than one extra call. (2) **Tiers are now evaluated on the PUBLISHED (rounded, 2dp)
+  percentage**: `TSE:2222`'s raw `-4.003938299967181` tiered into `JP_REACTION` as a float while the
+  cell reads `-4.00%`; the threshold test now runs on `round(abs(change), 2)`. (3) **Index % source
+  conflicts are now a published trap, not a caveat**: the bridge's stale `previous_close` printed
+  `^TWII` +6.23% and `^HSI` -0.54% against the chart's +3.62% and -0.98%, and Investing.com printed
+  the TAIEX at +3.11% while six same-day Taiwanese sources printed 44,257.15 and +3.62% - the skill now
+  says to cross-check the close LEVEL against two independent same-day press closes before publishing
+  and to record the conflict in `## Flags`.
 - **v1.5 - 2026-11-10.** The brief grew a `## What matters today` section directly under the
   TL;DR, carrying **two lists of three**: *Top 3 real events* (published rows with a sourced,
   company-specific catalyst - never padded with unsourced rows) and *Top 3 artifact traps* (the
