@@ -227,3 +227,76 @@ stays correct across the DST boundary.
 | `tools/test_preopen_digest_contract.py` | repo | the regression test |
 
 No prompt file changed, so no prompt redeploy and no byte-drift risk.
+
+---
+
+## 2026-11-11 — the tape's `pct` changed MEANING: it is now the LAST COMPLETED SESSION's move, not a pre-market print
+
+Found by cron #25 (the routine that CONSUMES this tape) on its 2026-11-09 fire, and confirmed
+against cron #92's own 2026-11-10 fire.
+
+**Symptom.** The 08:30 tape carries `pct` and `price` per row. On **2026-11-04 through
+2026-11-06** those were a **same-session pre-market print**; from **2026-11-09 onward** they are
+the **previous session's settled close and change**. Measured on the 2026-11-09 08:30 tape
+(`preopen-feed/2026-11-09-0830.jsonl`, 50 rows, 20 of them priced):
+
+| name | tape `pct` | tape `price` | Nov 5 close | Nov 6 close | tape `pct` = Nov 5→6 move? | tape `price` = Nov 6 close? |
+|---|---|---|---|---|---|---|
+| IRTC | -30.70 | 90.22 | 130.19 | 90.22 | **yes** | **yes** |
+| DKNG | -21.30 | 18.51 | 23.52 | 18.51 | **yes** | **yes** |
+| KRMN | 42.13 | 45.61 | 32.09 | 45.61 | **yes** | **yes** |
+| IREN | 20.02 | 21.64 | 18.03 | 21.64 | **yes** | **yes** |
+| FROG | 35.33 | 100.98 | 74.62 | 100.98 | **yes** | **yes** |
+| AXON | -18.18 | 313.00 | 382.56 | 313.00 | **yes** | **yes** |
+| TEAM | -16.15 | 153.68 | 183.29 | 153.68 | **yes** | **yes** |
+| RGTI | 19.29 | 11.75 | 9.85 | 11.75 | **yes** | **yes** |
+
+**14 of 14 testable rows were exact** (the other 6 have no shibui row). The `price` equals the
+Nov 6 SETTLED CLOSE to the cent, and the `pct` equals the Nov 5 → Nov 6 SESSION move. Independent
+confirmation: TradingView's own pre-market for IRTC on 2026-11-09 was `premarket_close 91.00`,
+`premarket_change +0.86%` — the tape said -30.70%. The tape was reporting **Friday's** move as
+if it were Monday's pre-market.
+
+**This also explains the row-count collapse.** The 08:30 tape was **678 rows** on 2026-11-04,
+**700** on 2026-11-05, **849** on 2026-11-06 — then **50** on 2026-11-09 and **49** on 2026-11-10.
+The ~120-row band was documented as *the regression signature*; **~50 rows is a different failure
+mode**, and it arrived at the same time as the semantic change. The 2026-11-08 commit
+`d6e2ee2f2` ("3-call pipeworx capture") and `4604b8f72` (the `price >= 1, $vol >= 1m` liquidity
+floor) sit exactly in that window, and the 2026-11-09 commit `6ede65b46` then read the tape's
+numbers as "pre-open DECLINERS" (`IRTC -30.7%, DKNG -21.3%, AXON -18.2% -- the three worst
+movers of the session`) — those are Friday's settled decliners, and IRTC was in fact **+0.86%**
+in Monday's pre-market. **The tape's own fix commit was built on a misread of its own output.**
+
+**Why it matters more than a stale number.** A consumer that trusts `pct` as a pre-market gap
+publishes the wrong day. Cron #25 caught it only because it checked the tape against a live
+TradingView print for the same ticker; a consumer that did not would have published Friday's
+movers as Monday's gaps.
+
+**Consumer-side mitigation (applied in cron #25, no change needed here).** From cron #25's
+2026-11-10 fire onward, a tape row is used for **catalyst leads only**, never for a price or a
+gap, and the tape is counted as a degraded source (`degraded_sources` / `errors`).
+
+**Suggested producer-side check** (not applied here — cron #92 owns this script):
+assert that the tape's `pct`/`price` are the CURRENT session's pre-market prints, e.g. by
+comparing one priced row against the same ticker's `premarket_close` from the scanner, or by
+refusing rows whose `price` equals the previous session's close. A cheap proxy: the capture
+already knows the session date; a row whose `price` equals that session's settled close is a
+stale row and should be dropped or relabelled.
+
+**Do-not list (unchanged by this finding).**
+- Do NOT edit `cloud-prompts/_shared/preopen_capture.py` or `preopen_checkpoint.py` from another
+  routine — the capture is cron #92's and it has an active session.
+- Do NOT change the tape's size band to accommodate a 50-row tape. The band describes what a
+  HEALTHY tape looks like; a 50-row tape is a defect to fix at the producer, not a new baseline.
+- Do NOT re-derive the historical 2026-11-04/05/06 tapes; they carried same-session prints and
+  are unaffected.
+
+---
+
+## 2026-11-11 — the digest's "priced movers" line counts rows, not session-correct movers
+
+`preopen_digest.py` reports `priced movers: N (G up / L down)` from rows that carry a `pct`.
+On the 2026-11-09 and 2026-11-10 tapes that count is arithmetically fine but **semantically
+misleading**: the `pct` values are prior-session moves, so the digest's "biggest movers" board
+ranks Friday, not Monday. The digest should label the column it is sorting by
+(`prior session` vs `pre-market`), so a reader cannot mistake one for the other.
