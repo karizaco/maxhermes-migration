@@ -185,7 +185,12 @@ writes.
 1. bridge `market-recap` → `get_quotes` (batch quotes, `previous_close`, `change_pct`, `volume`,
    `as_of`, `market_state`). Not rate-limited. **This is the quote source of record.**
 2. TradingView scanner `POST https://scanner.tradingview.com/america/scan` — movers, RVol,
-   `premarket_volume`, `halted`, `market_cap_basic`.
+   `premarket_volume`, `halted`, `market_cap_basic`. **Build the body with the VALIDATED CLIENT
+   `_shared/tv_scan.py`** (fetch ladder in RUNTIME-CONTRACT §2a-bis): the scanner has three
+   `sort` shapes and only `{"sortBy": ..., "sortOrder": ...}` works — an ARRAY sort 400s and
+   `{"column","order"}` returns 200 with UNSORTED rows. `tv_scan.py validate` refuses a bad
+   body before it is sent, `scan` checks the pull for truncation, `diagnose` names the cause of
+   a failure.
 3. Yahoo JSON — **availability varies by egress** (429 from one cron session, 200 from another on
    the same day). Try it; on 429/401 fall through. `quoteSummary`/`options` need the crumb.
 4. Nasdaq API, SEC EDGAR (needs a contact-style User-Agent), CoinGecko, Frankfurter, Treasury CSV.

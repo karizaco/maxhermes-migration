@@ -1949,6 +1949,12 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
     A truncated pull is a failed pull: report it, do not publish it.
   - Full evidence and the per-market verification: `docs/IMPROVEMENTS-cron07-focus-rvol.md` and
     `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §2a-bis.
+  - **THERE IS A VALIDATED CLIENT — `_shared/tv_scan.py` (capability marker `TV_SCAN_V1`).** Use
+    it instead of hand-building a body: `validate` refuses a bad shape BEFORE it is sent
+    (exit 1, nothing sent), `scan` validates, posts and checks the pull for truncation
+    (exit 3 = truncated), `diagnose` names the cause of a failure from its error string. The
+    fetch ladder and the usage are in RUNTIME-CONTRACT §2a-bis. The repo lint
+    `tools/test_tv_scan_contract.py` proves no repo caller SHIPS a poisoned body.
 
 ### 8. Hook into existing briefs
 

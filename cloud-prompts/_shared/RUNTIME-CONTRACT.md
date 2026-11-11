@@ -234,6 +234,54 @@ the pull is truncated and the missing slice must be pulled. Same defect class as
 `range:[0,600]` and cron #26's `range:[0,5000]` (which dropped Infineon, SoftBank, Petrobras).
 **A pull whose `totalCount` exceeds its rows is a FAILED pull, and must be reported, not published.**
 
+**There is a VALIDATED CLIENT — use it instead of hand-building a body.**
+
+```bash
+# --- fetch the VALIDATED scanner client (run-time fetch: fixes land with no redeploy) ---
+# The scanner has THREE `sort` shapes and only ONE works. Two of them fail, and one of
+# those fails SILENTLY (200 with unsorted rows). This helper REFUSES a bad body before it
+# is sent, diagnoses a failure by its error string, and catches a silently truncated pull.
+# The capability marker is mandatory: an older copy without it must not win the download.
+D=/workspace/tv_scan.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/tv_scan.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/tv_scan.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/tv_scan.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && grep -q 'TV_SCAN_V1' "$D.tmp" 2>/dev/null; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] || echo "tv_scan.py fetch FAILED - hand-build the body ONLY with sortBy/sortOrder"
+```
+
+**Use it like this:**
+
+```bash
+# 1. write the body to a file, then VALIDATE it (sends nothing, exits 1 on a bad shape)
+cat > /workspace/tv_body.json <<'JSON'
+{"columns": ["name", "close", "volume", "average_volume_10d_calc"],
+ "range": [0, 20000],
+ "sort": {"sortBy": "name", "sortOrder": "asc"}}
+JSON
+python3 /workspace/tv_scan.py validate --body /workspace/tv_body.json || exit 1
+
+# 2. scan with it - it validates, posts, and checks completeness (exit 3 = truncated pull)
+python3 /workspace/tv_scan.py scan --body /workspace/tv_body.json --out /workspace/tv_rows.json
+
+# 3. when a call DOES fail, name the cause from the error string
+python3 /workspace/tv_scan.py diagnose --status 400 --error-body /workspace/tv_err.json
+```
+
+**The fleet-wide lint.** `python3 tools/test_tv_scan_contract.py` (40 checks) proves the
+validator refuses every bad shape, the scan path diagnoses a failed response and catches a
+truncated pull (against a local HTTP stub - no external network), AND that **no file in this
+repo SHIPS a poisoned scanner body**. A file that shows a bad shape to warn about it is
+recognised as documentation, not a shipping caller. Run it before you touch any scanner caller.
+
 **A working body:**
 
 ```json
