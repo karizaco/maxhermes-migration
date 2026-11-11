@@ -198,6 +198,15 @@ def check_script(path):
     # publish a stale one, and the tape's date field becomes decoration.
     check("resolve_news_date" in t and '"news_date"' in t,
           "the script dates every catalyst (resolve_news_date -> news_date)")
+    # THE PUBLISHED DATE IS AGE-CHECKED IN ITS OWN RIGHT. The gate reads the provider's
+    # NEWEST article (freshest), but the tape publishes the MATCHED article's stamp, and
+    # the match is textual - it can land on a months-old article from the same company.
+    # Measured 2026-11-11 08:30 ET: NOVT carried a catalyst dated 2026-02-22 (262 days
+    # old) while the provider held a fresh Novanta article, so the board would have dated
+    # a pre-open catalyst to the previous fiscal year. The published stamp must be checked
+    # against the window itself, not only the newest article behind it.
+    check(re.search(r"_parse_iso\(\s*nd\s*\)", t) is not None,
+          "the script age-checks the PUBLISHED date (the matched article), not only the newest")
     # THE PRICE SOURCE. `top_movers` is a screener over the LAST COMPLETED session, so
     # before the open it returns yesterday's closes. The tape must take its price from
     # the scanner's premarket_* columns, and a name with no pre-market print must carry

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-11.1
+CAPTURE_SCRIPT_VERSION: 2026-11-11.2
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -660,8 +660,27 @@ def build(date_str, checkpoint, top_n=8):
                     rec["news_url"] = None
                     stale_dropped.append(tk)
                 else:
-                    rec["news_date"] = nd
-                    rec["news_url"] = nurl
+                    # The gate above proved the provider HOLDS something newer than the
+                    # window for this company. It did NOT prove that the article this
+                    # answer matched IS that newer thing: the match is textual, so it can
+                    # land on a months-old article from the same company. Publishing that
+                    # stamp as "when it broke" is the ARWR defect in a new costume -
+                    # measured 2026-11-11 08:30 ET, NOVT carried a catalyst dated
+                    # 2026-02-22 (262 days old) while the provider held a fresh article
+                    # for Novanta, so the board would have dated a pre-open catalyst to
+                    # the previous fiscal year. A date we cannot vouch for is not a
+                    # date: keep the cause, drop the stamp, demote the confidence.
+                    nd_dt = _parse_iso(nd) if nd else None
+                    stale_match = (nd_dt is not None and
+                                   (row_dt.date() - nd_dt.date()).days
+                                   > CATALYST_MAX_AGE_DAYS)
+                    if stale_match:
+                        rec["news_date"] = None
+                        rec["news_url"] = None
+                        rec["conf"] = "low"
+                    else:
+                        rec["news_date"] = nd
+                        rec["news_url"] = nurl
         rows.append(rec)
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),

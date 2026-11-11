@@ -376,3 +376,62 @@ close, gating a pre-market print) — one in the producer, one in the consumer, 
   the answer; a stale number is a lie.
 - Do NOT spend the grounded-call budget on the movers scan's ranking — that ranking is the
   previous session's.
+
+## 2026-11-11 — the tape published a catalyst dated 262 days ago (the gate and the published stamp were two different dates)
+
+### The defect
+
+The 2026-11-11 08:30 ET capture's own checker failed one rule:
+
+```
+FAIL  no catalyst is dated outside the 4-day window (got [('NOVT', '2026-02-22T07:25:32Z', '262d old')])
+```
+
+`NOVT` (Novanta) carried a grounded catalyst dated **2026-02-22** — eight months before the
+tape it was published on. The board's **When it broke** column would have dated a pre-open
+catalyst to the previous fiscal year. This is the ARWR defect (a January press release
+presented as a fresh cause) wearing different clothes.
+
+### Why it survived the gate
+
+The staleness gate and the published stamp were **two different dates**:
+
+* the GATE read `freshest` — the provider's NEWEST dated article for that company;
+* the TAPE published `nd` — the date of the article the answer **textually matched**.
+
+The match is token overlap, so it can land on a months-old article from the same company
+while the provider holds a fresh one. For Novanta the provider DID hold a fresh article, so
+`freshest` passed the gate — and the tape published the matched article's 2026-02-22 stamp,
+which nothing had checked. Rule 1 ("stale ⇒ dropped") never fired because the provider was
+not stale; rule 2 ("undated ⇒ demoted") never fired because a date *had* resolved. The two
+published rules left a third case uncovered: **a resolved date that is outside the window.**
+
+### The fix (in the PRODUCER)
+
+`cloud-prompts/_shared/preopen_capture.py` (`CAPTURE_SCRIPT_VERSION: 2026-11-11.2`) now
+age-checks the **published** date in its own right. A matched article outside the window
+yields `news_date: null`, `news_url: null` and `conf: low` — the cause survives (the
+provider's fresh article makes it plausible) but the stamp is not published. The procedure
+(`preopen-capture.md`, `PROCEDURE_VERSION: 2026-11-11.2`) states the third rule.
+
+`tools/check_preopen_checkpoint.py` gained the matching script-level assertion, and
+`tools/test_preopen_checkpoint_contract.py` gained the fault-injection case that removes the
+published-date check and requires the checker to fail — **31/31 cases**.
+
+The procedure's script fetch now demands `CAPTURE_SCRIPT_VERSION: 2026-11-11.2`, so a
+cached 2026-11-11.1 copy cannot win the ladder and reintroduce the defect.
+
+### Evidence
+
+* `python3 tools/check_preopen_checkpoint.py --repo . --tape <tape> --digest <digest> --slot 0830`
+  → `PASSED all 94 checks` on the re-captured tape; the pre-fix tape failed this one rule.
+* `python3 tools/test_preopen_checkpoint_contract.py` → `31/31 cases behaved as required`
+  (30/30 before this change).
+
+### Do-not list
+
+- Do NOT publish a `news_date` the checker would reject: every date on the tape must be
+  inside `CATALYST_MAX_AGE_DAYS`.
+- Do NOT gate on `freshest` alone and publish `nd` unchecked — the two are different dates.
+- Do NOT repair this in the renderer. The tape is what cron #17 reads; the wrong date has to
+  never enter it.

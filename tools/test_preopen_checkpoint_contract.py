@@ -413,6 +413,21 @@ def m_board_ignores_news_date(repo, tape, digest):
     return True
 
 
+def m_published_date_not_age_checked(repo, tape, digest):
+    """The script stops age-checking the PUBLISHED catalyst date.
+
+    Measured 2026-11-11 08:30 ET: NOVT carried a catalyst dated 2026-02-22 (262 days
+    old). The gate read the provider's NEWEST article, but the tape published the
+    MATCHED article's stamp and that stamp was never checked. This mutation points the
+    published-date check back at `freshest` - the defect - and the checker must catch
+    the script, not just the tape.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "_parse_iso(nd) if nd else None",
+           "_parse_iso(freshest) if freshest else None")
+    return True
+
+
 CASES = [
     # (name, expect_pass, mutator)
     ("a conforming tape + board passes the checker", True, None),
@@ -444,6 +459,8 @@ CASES = [
     ("a capture script with no staleness gate is caught", False, m_no_staleness_gate),
     ("a capture script whose staleness window drifted from the checker's is caught", False, m_stale_window_drift),
     ("a renderer that ignores news_date is caught", False, m_board_ignores_news_date),
+    ("a capture script that does not age-check the PUBLISHED date is caught", False,
+     m_published_date_not_age_checked),
 ]
 
 

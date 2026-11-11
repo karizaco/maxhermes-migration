@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-11.1
+PROCEDURE_VERSION: 2026-11-11.2
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -33,10 +33,12 @@ for U in \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/preopen_capture.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/preopen_capture.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  # 2026-11-11 is the version that prices the tape from the CURRENT session's
-  # pre-market print. An older copy still carries the PREVIOUS session's closes, which
-  # is the defect this version fixes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-11' "$S.tmp" 2>/dev/null; then
+  # 2026-11-11.2 is the version that prices the tape from the CURRENT session's
+  # pre-market print AND age-checks the PUBLISHED catalyst date, not only the
+  # provider's newest article. 2026-11-11.1 dated the tape from the previous
+  # session's closes, and it published a matched article's stamp without checking
+  # that stamp was inside the window - both are defects this version fixes.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-11.2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -180,6 +182,17 @@ and the capture applies two rules:
 2. **UNDATED ⇒ DEMOTED, NOT DROPPED.** If no date could be resolved at all, the catalyst is
    kept but demoted to `conf: low` with `news_date: null`. An undated cause is a weaker
    claim, not a false one.
+3. **A MATCH OUTSIDE THE WINDOW ⇒ THE STAMP IS DROPPED, THE CAUSE IS KEPT.** Rule 1 asks the
+   provider for its NEWEST dated article and rule 2 asks whether ANY date resolved, but the
+   tape publishes a third thing: the date of the article the answer TEXTUALLY matched. That
+   match can land on a months-old article from the same company while the provider holds a
+   fresh one — measured 2026-11-11 08:30 ET, NOVT carried a catalyst dated **2026-02-22**
+   (262 days old) because the match picked that article, even though Novanta's feed held
+   something newer. A published stamp outside the window is a cause dated to the wrong year,
+   so the stamp (and its URL) is dropped and the row is demoted to `conf: low` with
+   `news_date: null`; the cause itself survives, because the provider's fresh article makes
+   it plausible. Never publish a `news_date` the checker would reject: `tools/check_preopen_checkpoint.py`
+   asserts that no row's date is outside `CATALYST_MAX_AGE_DAYS`.
 
 The gate reads the provider's newest article for the name rather than the article that best
 matches the answer, because the router reads the same provider: if the newest thing it holds
