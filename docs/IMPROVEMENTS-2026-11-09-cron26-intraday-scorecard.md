@@ -112,3 +112,13 @@ Each traces to a specific miss above. **Nothing has been applied.**
 
 Either way, check `git diff --stat` after regenerating before committing — a one-row addition that shows "39 insertions, 38 deletions" is a line-ending flip, not a content change.
 
+
+---
+
+## CORRECTION — 2026-11-11
+
+**Superseded in part by [`IMPROVEMENTS-2026-11-11-cron26-seven-session-scorecard.md`](IMPROVEMENTS-2026-11-11-cron26-seven-session-scorecard.md).**
+
+Scored across seven sessions (2026-11-02 to 2026-11-10), the claim in this document that **Gate B** was the filter burying the day's movers does not hold: Gate B excluded only 0-1 names per session. The binding filter was the **+/-3% pre-market scan floor** (45 of the 74 absent names had a pre-market gap inside +/-3%; a +/-15% floor catches 84% of them), followed by the **top-25 table cap** (59 of 175 top gainers were in the CSV and never named).
+
+The other correction: the proposal to **rank by relative volume** is **retracted**. Tested across seven sessions it produced a worse median session move than the gap ranking on 6 of 7 sessions, and ordering the residual un-named pool by %ADV gives -4.05% against +4.63% for ordering the same pool by gap.
