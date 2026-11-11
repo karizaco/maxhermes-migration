@@ -899,27 +899,38 @@ every run of every routine that gates on market cap inherits it. It is invisible
 artifact because the numbers are self-consistent — the cap column and the gap column come from
 the same row and look right.
 
-**Fixed in this artifact (2026-11-11 amendment).** The two names are flagged explicitly in
-`## Flags` (the published cap, the PM print, the implied PM-time cap, and the fact that SOC's
-screener share count of 191.9M even predates the 16.1M ATM shares it sold in Q3), and
-`## Method` states that the floor is tested on a last-close figure. **No published number
-changed** — the gate is still the gate the contract defines, and moving SOC and ZURA out of the
-actionable table would contradict the CSV the checker validates.
+**RESOLVED — the fix IS applied (2026-11-11, amendment 3).** The rule this exposes has been
+adopted: the brief now publishes the market cap **AT THE PRE-MARKET PRINT** and tests the $200M
+floor against that number, so the price, the cap and the gate in one row all describe the same
+instant. See §28 for the mechanism, the effect on the 2026-11-09 artifact, and the two do-nots
+below — **both of which were WRONG about the reason, and are corrected here**.
 
-**The rule this exposes, for the next contract revision (NOT applied here).** A pre-market
-screen should gate on the cap **at the print**, or on a floor with enough slack that a
-name's own gap cannot flip it. The screener gives `market_cap_basic` on the last close and
-`premarket_close`; a PM-time cap is `market_cap_basic / prev_close × premarket_close`, and
-the share count is recoverable that way (validated above to within 0.01%). That is a change to
-§2/§10 and to the checker's `gate_state()`, so it belongs to the contract owner — **not** to a
-routine, and not to this fire.
+The correction matters, because the reason is the whole trick. This section originally
+concluded that the fix "belongs to the contract owner — not to a routine, and not to this fire",
+because changing the gate's market-cap leg was thought to mean changing the **checker's**
+`gate_state()`. It does not. The checker reads the gate out of the **CSV's `mkt_cap_usd`
+column** (`gate_state()` → `c = num(row.get("mkt_cap_usd"))`), so publishing the print-time cap
+in that column changes what the gate tests **without touching the checker at all** — and
+`check_subfloor()` derives the below-the-floor set from the same column, so the watchlist stays
+coherent automatically. The gate semantics live in the DATA, not in the checker.
 
-**Do-not list (unchanged by this finding).**
-- Do NOT change the gate's market-cap leg in a routine run — the checker validates the gate
+**Do-not list (CORRECTED 2026-11-11 — the reasons were wrong).**
+- ~~Do NOT change the gate's market-cap leg in a routine run — the checker validates the gate
   against the CSV's `mkt_cap_usd`, and a routine that changed the semantics would fail its own
-  contract check.
-- Do NOT publish a recomputed PM-time cap in the `mkt_cap_usd` column: the checker compares the
-  markdown's rendering against that column's value, so the two must stay the screener's number.
+  contract check.~~ **WRONG REASON.** The checker validates the gate against the CSV's
+  `mkt_cap_usd` — which is exactly why publishing the print-time cap there changes the gate
+  coherently instead of failing the check. What is still true: **the contract that says what the
+  column MEANS lives in the SKILL (§2/§3/§4/§10), and a change to it is a contract change, so it
+  must land in the skill — not silently in one artifact.** That is what was done: the skill was
+  amended in the same session, so the rule lands on the next fire with no `cron_update`.
+- ~~Do NOT publish a recomputed PM-time cap in the `mkt_cap_usd` column: the checker compares the
+  markdown's rendering against that column's value, so the two must stay the screener's number.~~
+  **WRONG REASON.** The checker compares the markdown's rendering against **that column's
+  value** (`MKTCAP_FORMAT` → `want = fmt_mktcap(num(row.get("mkt_cap_usd")))`) — it is an
+  MD-vs-CSV self-consistency check, NOT an MD-vs-screener check. Publishing a derived
+  print-time cap in the column is therefore fine **provided the markdown renders that same
+  number**, which it does (both are generated from it). The column's *meaning* still had to be
+  written down in the skill, because a downstream consumer reads the column, not the skill.
 
 **Verification performed (2026-11-11).**
 - `cap / prev_close` equals the known share count within 0.01% on ZURA and NVDA (two
@@ -927,6 +938,8 @@ routine, and not to this fire.
 - PM-time caps computed for all 20 actionable names: SOC and ZURA fall below $200M; IFRX, PALI
   and PYXS (not actionable) would rise above it.
 - `check_ntrt_artifact.py` re-run after the amendment: `CONTRACT OK — contract: 17/17`.
+- Re-run after the print-time-cap fix (§28): `CONTRACT OK — contract: 17/17`, and the
+  `SUBFLOOR` check **demanded** the move rather than allowing it — see §28.
 
 ---
 
@@ -1019,3 +1032,131 @@ that window.
   `--reply` → `ok [REPLY] the reply publishes contract: 17/17`.
 - `push_artifact.sh` → `push: ok`; `verify_delivery.sh` → `DELIVERY: ok` for BOTH the `.md`
   and the `.csv`; `master` mirror fast-forwarded in the same push.
+
+---
+
+## 28. The $200M floor is now tested on the cap AT THE PRINT — FIXED (2026-11-11)
+
+The fix §25 identified, applied to the **2026-11-09** artifact and to the skill.
+
+**The mechanism, and why it needed no checker change.** The gate's market-cap leg is not
+implemented in the checker; the checker *reads* it out of the CSV's `mkt_cap_usd` column:
+
+```python
+# tools/check_ntrt_artifact.py
+c = num(row.get("mkt_cap_usd"))
+cap_ok = c is not None and c >= GATE_MKT_CAP
+```
+
+So publishing the **print-time** cap in that column changes what the gate tests, and
+`check_subfloor()` — which derives the below-the-floor set from the *same* column — stays
+coherent for free. `MKTCAP_FORMAT` compares the markdown's rendering against that column's
+value, so the markdown must render the print-time cap too (it does: both are generated from
+it). **The gate semantics live in the data, not in the checker.** The contract that says what
+the column MEANS was amended in the skill at the same time (§2 the gate, §3 the derivation,
+§4 the CSV column, §10 the floor basis) — so the rule lands on the next fire with **no
+`cron_update` and no prompt drift**.
+
+**The derivation.** `share count = market_cap_basic / prior_close`, then
+`cap at the print = share count × premarket_close`. The share count is recovered, not assumed:
+validated against known counts to **0.000%** on ZURA (implied 96,325,420 vs a known 96.33M) and
+NVDA (implied 24,099,999,921 vs a known 24.0999B). Where the screener's own count is itself
+stale the artifact says so: SOC's implied 191.9M predates the 16.1M ATM shares it sold in Q3,
+so its true 207.98M count gives ~$83M rather than ~$77M — **both below the floor, so the gate
+outcome does not depend on it**.
+
+**What changed in the 2026-11-09 artifact.** SOC (~$77M at the print) and ZURA (~$125M) fell
+below the floor on their print-time caps, so both moved out of `## Worth your attention` and into
+`### Below the $200M floor` — the day's two largest decliners, which is where the floor's own
+rule puts them. The actionable set went **20 → 18**, the universe **40 → 38**, and PARA/RCT
+dropped out of the watchlist's five slots to make room. The CSV's `mkt_cap_usd` for all 606 rows
+is now the print-time cap.
+
+**The checker did not merely permit this — it REQUIRED it.** With the print-time cap in the
+column, `check_subfloor()` computes the below-floor set from that column and finds SOC at
+-79.3%, a bigger mover than the actionable table's own biggest (CECO, +40.7%). The rule is
+"the floor must not hide the day's biggest mover", so **the watchlist MUST publish SOC** — a
+version of this artifact that kept SOC in the actionable table on a stale cap would have
+FAILED the check. The contract caught the defect on its own once the data was honest.
+
+**The mirror-image case was measured too** and changes nothing: IFRX (~$205M at the print),
+PALI and PYXS would clear the floor on a print-time cap, but none clears the 5%-of-ADV leg, so
+none is added — the floor is not the binding constraint for them.
+
+**Why this was not a rewrite of a delivered artifact.** The fleet's rule is that an artifact of
+record is not retrofitted to a later contract (§27 of this doc; the 2026-11-06 brief keeps
+`$0M`). **This artifact is the exception** for the same reason as before: it was being amended
+anyway for a factual correction (§27), and **a half-amended artifact — a manifest describing a
+cap basis the CSV no longer uses — is worse than either version**. The change is a *factual*
+correction of published numbers, not a retrofit to a newer rule: the price, the cap and the gate
+in one row now describe one instant, which is what the artifact always claimed to be doing.
+The 2026-11-10 artifact is **not** rewritten: it is an artifact of record, and the new rule
+applies from the next fire.
+
+**Verification performed (2026-11-11).**
+- The checker fetched fresh from `origin/main` (`CONTRACT_CHECKS = 17`) →
+  `CONTRACT OK — contract: 17/17 (ntrt-artifact-v4)`, with `--reply` →
+  `ok [REPLY] the reply publishes contract: 17/17`.
+- `SUBFLOOR` → `ok ... the below-the-floor watchlist publishes 10 name(s), all below the $200M
+  floor, in the CSV and nowhere else`; `GATE` → `ok ... (18)`; `FOURCELL` → `ok ... (18 tradeable
+  / 0 no driver / 14 missed / 6 noise)`.
+- The share-count derivation re-checked independently of the builder (ZURA and NVDA exact to
+  0.000%; SOC's count confirmed stale and its true-count cap also below the floor).
+- The reply's own counts re-derived from the artifact: **48 published names** (18 actionable + 20
+  wider + 10 watchlist), 10 in `### Signal` → **38 further published names**; `errors: 2` for the
+  two degraded sources.
+- `push_artifact.sh` → `push: ok`; the remote bytes for BOTH the `.md` and the `.csv` compared
+  against the local files on `origin/main` **and** `origin/master` → identical; both branches at
+  `8dce938`.
+
+**The rule this exposes.** *A gate leg is only as good as the instant its input is measured at.*
+A screener's market cap is a last-close figure, so a pre-market screen that quotes a pre-market
+price and gates on that cap is mixing two instants — and the mix is invisible because both
+numbers come from the same row and look plausible. When a brief publishes a price, every
+size, value and ratio in the same row must describe **that** instant.
+
+**Do-not list.**
+- Do NOT test a floor on a number measured at a different instant than the one published.
+- Do NOT change the checker to accommodate an artifact whose data is wrong — the data is what
+  changed here, and the checker then enforced the fix.
+
+---
+
+## 29. The 2026-11-10 artifact carries the same latent defect — NOT rewritten (2026-11-11)
+
+While applying §28's fix, the same measurement was run against the **already-delivered
+2026-11-10** artifact, to size the defect rather than treat it as a one-off.
+
+Seven names in that artifact flip their floor status on a print-time cap:
+
+| name | gap | cap at the last close | cap at the print | flip |
+|---|---|---|---|---|
+| MVST | -57.9% | $238.3M (passes) | **$99.9M** | passes → **fails** |
+| FF | -33.1% | $222.4M (passes) | **$148.7M** | passes → **fails** |
+| GRRR | -4.3% | $206.8M (passes) | $198.0M | passes → fails |
+| VELO | -4.2% | $200.3M (passes) | $191.9M | passes → fails |
+| ABAT | -3.5% | $204.0M (passes) | $196.8M | passes → fails |
+| TII | -3.5% | $200.9M (passes) | $194.0M | passes → fails |
+| PEPG | +118.5% | $165.5M (fails) | $361.5M | fails → passes |
+
+**This artifact is NOT rewritten.** It is an artifact of record and it was not being amended for
+any other reason; §27's rule applies in full — the new basis applies from the next fire. The
+table above is recorded so the defect's scope is known, not so it can be silently corrected.
+
+**The scope, stated plainly.** The defect is not rare and it is not limited to the 2026-11-09
+fire: it is a property of **every** fire of this routine that gates on market cap, because the
+screener always reports a last-close cap. It bites hardest exactly where it matters most — on
+the names that gapped most. Five of the seven are names sitting **within a few percent of the
+$200M line** (GRRR, VELO, ABAT, TII all within 5%), which is what a floor with no slack does:
+a name's own move flips it across the line, and on a stale cap it can flip the wrong way.
+
+**The rule this exposes.** *A floor with no slack is a floor that a name's own move can flip —
+so the basis of the number the floor reads has to be stated, and the number has to be measured
+at the instant the brief publishes.* That is now §2/§3/§4/§10 of the skill.
+
+**Do-not list.**
+- Do NOT rewrite the 2026-11-10 artifact to the new basis — it is an artifact of record.
+- Do NOT widen the floor's slack instead of fixing its basis: a lower floor would hide more
+  names, and the defect is the *instant*, not the threshold.
+
+---
