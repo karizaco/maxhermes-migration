@@ -91,6 +91,24 @@ Median regular-session move of the names the brief **named**, against the market
 - **Cron #20&rsquo;s settled file carries ≈4,890 of the scanner&rsquo;s ≈6,094 names**, and it drops foreign-domiciled ADRs (TSM, ARM, IREN, NBIS were absent on Nov 5). Any "market-wide" ranking built on it alone is over a smaller universe than the screener sees.
 - **The %ADV and gap cohorts differ in kind, not just degree.** The residual, un-named pool contains names the brief&rsquo;s own gates had *passed* — it is not a junk pool. It is the day&rsquo;s extreme tail that the table never printed.
 
+## Cross-check against a sibling session's finding
+
+A concurrent session found a real defect on the 2026-11-09 fire: for `VISN` the scanner's `close` was wrong while its `premarket_change` was right, so the published row carried a prior close that did not reconcile with its own gap (`docs/IMPROVEMENTS-2026-11-09-cron26-scanner-close-reconciliation.md`). The fix — reconciling the gap against its own denominator — landed in the skill spec on their commit.
+
+**I ran that test against all seven published artifacts** (reconstruct the prior close from the pre-market print and the gap, compare with the published prior close, tolerance = the CSV's own 2dp rounding band):
+
+| Session | Rows checked | Non-reconciling |
+|---|---|---|
+| 2026-11-02 | 427 | 1 (DMLP, 3.05% off) |
+| 2026-11-03 | 1,230 | **0** |
+| 2026-11-04 | 791 | **0** |
+| 2026-11-05 | 708 | 5 (incl. XXII, a 5,700% mismatch worth a look) |
+| 2026-11-06 | 696 | **0** |
+| 2026-11-09 | 931 | **0** |
+| 2026-11-10 | 506 | 1 (LICN, 7.26% off) |
+
+**The 2026-11-06 artifact — the one the Nov 9 post-mortem was based on — carries none of it**, so that analysis stands. The failures elsewhere are 1–5 rows per session and are not what produced the misses analysed here: the misses are a *coverage* problem (names never fetched), not a *data-quality* problem (names fetched with a wrong prior close).
+
 ## What is NOT changed
 
 No prompt, no skill spec, no scanner filter, no gate, no table. The five items above are proposals with the measurement attached, for the team to decide.
