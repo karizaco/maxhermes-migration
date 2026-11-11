@@ -38,6 +38,7 @@ ARTIFACTS = {
  "13-macro-calendar-midweek": ("macro-calendar/{date}-midweek.md", "macro-calendar", "-midweek.md"),
  "14-macro-calendar-week-ahead": ("macro-calendar/{date}-week-ahead.md", "macro-calendar", "-week-ahead.md"),
  "15-earnings-reaction-scanner": ("earnings/{date}-reactions.md", "earnings", "-reactions.md"),
+ "15b-earnings-reaction-settlement": ("earnings/{date}-reactions-settled.md", "earnings", "-reactions-settled.md"),
  "16-unusual-options-flow-daily": ("options-flow/{date}.md", "options-flow", ".md"),
  "17-us-stocks-in-play": ("us-stocks-in-play/{date}.md", "us-stocks-in-play", ".md"),
  "19-earnings-reminder-daily": ("earnings/{date}-reminders.md", "earnings", "-reminders.md"),
@@ -61,7 +62,10 @@ TOLERANCE = {"01-weekly-mcp-health-check":7, "13-macro-calendar-midweek":7,
 # positive. Keep this in sync with the NOT_YET_FIRED list in cron #90's prompt.
 NOT_YET_FIRED = {"22-weekly-market-recap-preview": "2026-11-01",
                  "14-macro-calendar-week-ahead": "2026-11-01",
-                 "17-us-stocks-in-play-open": "2026-11-05"}
+                 "17-us-stocks-in-play-open": "2026-11-05",
+                 # cron #15b's first fire is 2026-11-11 12:15 ET; before it has
+                 # run, an absent settlement artifact is EXPECTED, not stale.
+                 "15b-earnings-reaction-settlement": "2026-11-11"}
 
 # A routine whose schedule fires MORE THAN ONCE A DAY publishes more than one artifact.
 # #17 (us-stocks-in-play) fires at 09:50 ET (the `open` slot) and 15:50 ET (the `preclose`
@@ -128,6 +132,28 @@ def last_delivered(files, routine, name_re=None):
             if best is None or d > best: best = d
     return best
 
+def _not_yet(first_fire, as_of, hh, mm):
+    """True while the routine has NOT yet had a scheduled chance to fire.
+
+    A first fire in the future is the obvious case. A first fire that is TODAY
+    at a slot time which has not arrived yet is the SAME case: the roster is
+    regenerated in the morning, and a routine whose first fire is at 12:15 ET
+    has not run yet - calling it stale is a false alarm on the very day it
+    starts.
+    """
+    if not first_fire:
+        return False
+    if as_of < first_fire:
+        return True
+    if as_of > first_fire:
+        return False
+    try:
+        now = datetime.datetime.now(ET)
+        return (now.hour, now.minute) < (int(hh), int(mm))
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", required=True, help="JSON: list of cron_read tasks, or {name: {...}}")
@@ -192,7 +218,7 @@ def main():
                            - datetime.date.fromisoformat(last)).days
                 tol = TOLERANCE.get(label, TOLERANCE.get(routine, 5))
                 first_fire = NOT_YET_FIRED.get(label)
-                not_yet_fired = bool(first_fire) and as_of < first_fire
+                not_yet_fired = bool(first_fire) and _not_yet(first_fire, as_of, h, parts[0])
                 if exempt or not_yet_fired:
                     stale = None
                 else:
@@ -214,7 +240,7 @@ def main():
             age = (datetime.date.fromisoformat(as_of) - datetime.date.fromisoformat(last)).days
         tol = TOLERANCE.get(routine, 5)
         first_fire = NOT_YET_FIRED.get(routine)
-        not_yet_fired = bool(first_fire) and as_of < first_fire
+        not_yet_fired = bool(first_fire) and _not_yet(first_fire, as_of, hh, parts[0])
         if exempt or not_yet_fired:
             stale = None
         else:

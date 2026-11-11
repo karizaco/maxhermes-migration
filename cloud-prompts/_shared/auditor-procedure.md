@@ -447,7 +447,7 @@ cd /workspace/.audit
 # instance is a SEPARATE historical gap (a lost push race) and is not a stale finding.
 # VERIFICATION DEADLINE: if macro-calendar/2026-11-01-week-ahead.md is absent after
 # 2026-11-01 16:00 ET, that IS this failure mode recurring and must be escalated.
-NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01 91-schedule-drift-guard:2026-11-03 92a-preopen-catalyst-capture:2026-11-03 92b-preopen-catalyst-capture:2026-11-03 17-us-stocks-in-play-open:2026-11-05"
+NOT_YET_FIRED="22-weekly-market-recap-preview:2026-11-01 14-macro-calendar-week-ahead:2026-11-01 91-schedule-drift-guard:2026-11-03 92a-preopen-catalyst-capture:2026-11-03 92b-preopen-catalyst-capture:2026-11-03 17-us-stocks-in-play-open:2026-11-05 15b-earnings-reaction-settlement:2026-11-11"
 for entry in \
   "01-weekly-mcp-health-check|^mcp-health/[0-9]{4}-W[0-9]{2}\.md$|7" \
   "02-asia-pre-market-reactions|^asia-pre-market/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$|5" \
