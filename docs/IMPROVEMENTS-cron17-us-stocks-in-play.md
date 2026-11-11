@@ -386,3 +386,46 @@ and a published pace or RVol carries the date of the denominator it was computed
 per-symbol: it measured **0.856** on 2026-11-05 and **0.9168** on 2026-11-09, so a global
 constant applied to either day would be wrong for a large part of the universe. A constant
 is not a shortcut here; it is a wrong number.
+
+## The open slot's tier boundaries are a CALIBRATION, and the 2026-11-10 board measures them exactly (2026-11-11)
+
+Measured on the 2026-11-10 open board's own candidates CSV (531 rows) while rebuilding the
+2026-11-11 open board. Four things the spec does not state outright, and one of them is a drift.
+
+**1. The TECH_WATCH / Tier B boundary is `pace`, not turnover.** Every one of that board's 270
+TECH_WATCH rows has `pace >= 1.00` (minimum exactly 1.00) and **0 of its 230 Tier B rows reaches
+1.00** (maximum exactly 1.00). So TECH_WATCH = "traded on size" and Tier B = "the same move on
+below-normal volume". Turnover does NOT separate them: TECH_WATCH runs all the way down to the
+$0.5m floor and Tier B reaches $146m. The 2026-11-11 board reproduced this rule exactly and got
+239 / 263, in the same proportion as 270 / 230.
+
+**2. The Tier A pace bar drifted between the spec and the board.** The spec says the open slot's
+Tier A bar is `pace >= 1.5` ("the bar is 1.5x, not 2.0x"), but the 2026-11-10 board's Tier A rows
+have a **minimum pace of 2.01** and its Soft-A rows **top out at 1.49** — that board used 2.0.
+On 2026-11-11 the board followed the SPEC (1.5), which moved **PBR and PBR.A from Soft-A to
+Tier A**. A reader diffing the two boards sees a tier change that is a threshold change, not a
+tape change. **Name the bar in the board's Method section** — 2026-11-11 does.
+
+**3. A catalyst-free name does not belong in Soft-A.** Soft-A is a MATERIAL SAME-SESSION catalyst
+with a soft pace. Three big catalyst-free names (ORCL, GEV, TTD) printed at pace 1.13-1.30 on
+2026-11-11, which the rule above puts in TECH_WATCH (pace >= 1.0). The first draft of that board
+put them in Soft-A and the published table then contradicted its own heading ("material
+same-session catalyst" over three rows whose reason reads "no same-session company catalyst
+located"). They were moved to TECH_WATCH and the tier published as **0 names** with the reason
+stated. An empty tier is a legitimate outcome; a tier whose heading contradicts its rows is not.
+
+**4. On a one-catalyst day, the concentration IS the finding.** 516 names cleared the 09:50
+trigger and most of them were a single print (CoreWeave's Q3) expressed 516 ways. The board has
+to say that in the headline — "the breadth is not 516 independent stories" — because 239
+TECH_WATCH rows otherwise read as 239 separate calls.
+
+**Also measured: the intraday gap reconstruction is looser than the settled one.** On 2026-11-11
+the 5-minute reconstruction's gap agreed with the scanner's native `gap` column to a **median
+0.12pp, p90 1.02pp** over 516 names (the spec quotes 0.003pp / p90 0.43pp for the settled
+pre-close case). Publish the reconstructed gap alongside the reconstructed price so one row
+describes one instant, and do not mix the scanner's gap with the rebuilt price.
+
+**Also: the halts and shares-outstanding columns were null on EVERY row** of the 2026-11-11
+scan (13,380 symbols), so the halt state was not measurable and the low-float rule could not be
+evaluated at all. Both are disclosed as degraded sources; neither may be turned into a count or
+a flag.
