@@ -44,6 +44,17 @@ REQUIRED_SECTIONS = [
     "US — QUIET one-liners",
     "EU/UK — Headline table",
     "AU (ASX) — Headline table",
+    "APAC/Gulf — Headline table",
+    "Source health",
+    "Audit line",
+]
+# The 12:15 ET settlement pass publishes a DIFFERENT artifact: the EU/UK
+# session has closed, so the rows are republished with their settled close and
+# move. It has no US section - at 12:15 ET the US session is OPEN, and
+# publishing a live intraday price as a close would be a fabricated settle.
+SETTLE_SECTIONS = [
+    "TL;DR",
+    "EU/UK — Settled table",
     "Source health",
     "Audit line",
 ]
@@ -52,6 +63,24 @@ FORBIDDEN_SECTIONS = ["Catalysts"]
 REQUIRED_COLUMNS = ["ref_close_source", "ref_close_asof", "us_tradeable",
                     "move_vs_avg_daily"]
 
+# Tables whose rows must carry a `Settle` cell (live | settled) - the row says
+# whether its move is finished. A live row's move is a mid-session snapshot.
+SETTLE_TABLES = {"EU/UK — Headline table", "AU (ASX) — Headline table",
+                 "APAC/Gulf — Headline table", "EU/UK — Settled table"}
+SETTLE_VALUES = {"live", "settled"}
+
+# A catalyst cell that says the lookup was NOT performed. Such a row must
+# carry NO verdict - the 2026-11-05 EU run published "N" beside "catalyst
+# lookup not performed", a false verdict on 10% of that run's researched rows.
+NO_RESEARCH_MARKERS = ("no catalyst lookup", "pending catalyst lookup",
+                       "not performed", "outside the per-run budget",
+                       "lookup not performed", "no lookup performed")
+
+# Rows per market in the EU/UK and APAC/Gulf tables. Without the cap the EU
+# table was 28% Sweden over nine runs while Belgium and Greece never appeared.
+EU_MARKET_CAP = 4
+APAC_MARKET_CAP = 3
+
 # Column headers as they appear in the artifact. The header cell is matched
 # loosely so a renderer may pad it ("Ref asof", "ref_close_asof", ...).
 COLUMN_PATTERNS = {
@@ -59,6 +88,13 @@ COLUMN_PATTERNS = {
     "ref_close_asof": r"^ref asof$|^ref_close_asof$|^ref asof \(.*\)$",
     "us_tradeable": r"^us tradeable$|^us_tradeable$|^us tradeable \(.*\)$",
     "move_vs_avg_daily": r"^move vs avg daily$|^move_vs_avg_daily$",
+    "settle": r"^settle$|^settle state$|^session state$",
+    "move_at_scan": r"^move @08:00$|^move at 08:00$|^scan move$",
+    "delta_vs_scan": r"^Δ vs scan$|^delta vs scan$|^vs scan$",
+    "market": r"^market$|^market \(.*\)$",
+    "session_asof": r"^session asof$|^session_asof$|^session \(.*\)$",
+    "catalyst": r"^catalyst$|^catalyst \(.*\)$",
+    "earn": r"^earn$|^earn \(.*\)$|^earnings-driven$|^earnings driven$",
 }
 
 # The NYSE holidays, the only exchange calendar carried here: the US
@@ -75,6 +111,8 @@ TABLE_VENUE = {
     "US — QUIET one-liners": "US",
     "EU/UK — Headline table": "EU",
     "AU (ASX) — Headline table": "AU",
+    "APAC/Gulf — Headline table": "APAC",
+    "EU/UK — Settled table": "EU",
 }
 
 
@@ -131,7 +169,7 @@ def min_ref_date(scan_date, venue):
     if venue == "US":
         s1 = prior_session_date(scan_date, "US")
         return prior_session_date(s1, "US") if s1 else None
-    if venue == "AU":
+    if venue in ("AU", "APAC"):
         # BUG FIXED 2026-11-09. This used to be
         #   prior_session_date(scan_date - 1 day, "AU")
         # which walks the SESSION calendar but forgets the one-day stamp
@@ -144,9 +182,11 @@ def min_ref_date(scan_date, venue):
         # 25 of 25 ASX rows failed on the 2026-11-09 run (VNT's base close
         # 5.73 is the Friday Nov 6 ASX close, labelled 2026-11-05 by its
         # 18:00 ET stamp - the value was right, the floor was wrong).
-        # The base session is the ASX session before the scan date; its
-        # label is one calendar day earlier.
-        base = prior_session_date(scan_date, "AU")
+        # The base session is the ASX/APAC session before the scan date; its
+        # label is one calendar day earlier. (India and Saudi Arabia are the
+        # exceptions - their sessions open AFTER midnight ET, so their label
+        # IS the session date; the looser floor covers both.)
+        base = prior_session_date(scan_date, venue)
         if not base:
             return None
         try:
@@ -157,8 +197,47 @@ def min_ref_date(scan_date, venue):
     return prior_session_date(scan_date, venue)
 
 
+def row_ref_floor(session_asof, venue):
+    """The oldest base label a row with this session label may carry.
+
+    A foreign row publishes the session it reports (`Session asof`) and the
+    base it is measured against (`Ref asof`). The base must be the session
+    IMMEDIATELY before the row's OWN session - not the session before the
+    scan date. A venue whose screener feed lags a session (Poland on
+    2026-11-11 reported the Nov 10 session while the rest of the world
+    reported Nov 11) would otherwise be flagged as stale for carrying an
+    honest base.
+
+    THE LABEL CONVENTION DIFFERS BY VENUE, and it is the reason this is
+    per-row. Yahoo stamps a daily bar at the session OPEN in the venue's local
+    time, so:
+      * EU/UK venues open AFTER midnight ET (London 03:00 ET), so the bar's
+        ET date IS the session date;
+      * ASX and the Asian venues open the EVENING BEFORE, 19:00-22:45 ET, so
+        the bar's ET date is the session date MINUS one day;
+      * and the MOST RECENT bar of a just-closed session is stamped at its
+        actual close (00:13 ET for ASX), so its ET date is the session date.
+    The floor therefore shifts by one day for AU/APAC. Measured 2026-11-11:
+    an ASX row reported session 2026-11-11 with base 2026-11-09 (a 2-day
+    label gap), an Indian row session 2026-11-10 with base 2026-11-08.
+    """
+    try:
+        s = datetime.datetime.strptime(session_asof, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    prev = prior_session_date(s.isoformat(), venue)
+    if not prev:
+        return None
+    if venue in ("AU", "APAC"):
+        try:
+            prev = (datetime.datetime.strptime(prev, "%Y-%m-%d").date()
+                    - datetime.timedelta(days=1)).isoformat()
+        except Exception:
+            return None
+    return prev
+
+
 def scan_date_of(text):
-    """The artifact's own date, from the H1."""
     m = re.search(r"^#\s+Earnings reaction scanner\s*[—-]\s*(\d{4}-\d{2}-\d{2})",
                   text, re.M)
     return m.group(1) if m else None
@@ -216,11 +295,15 @@ def check(path, reply_text=None):
 
     # ---- SECTIONS ------------------------------------------------------
     sections = parse_sections(text)
+    # The scan artifact and the 12:15 ET settlement artifact have different
+    # skeletons; which one this is decides the required sections.
+    is_settlement = "EU/UK — Settled table" in sections
+    req_sections = SETTLE_SECTIONS if is_settlement else REQUIRED_SECTIONS
     order = [s for s in sections if s not in FORBIDDEN_SECTIONS]
-    missing = [s for s in REQUIRED_SECTIONS if s not in sections]
+    missing = [s for s in req_sections if s not in sections]
     if missing:
         failures.append(f"SECTIONS: missing {missing}")
-    present = [s for s in REQUIRED_SECTIONS if s in sections]
+    present = [s for s in req_sections if s in sections]
     if present != sorted(present, key=lambda s: order.index(s) if s in order else 0):
         failures.append(f"SECTIONS: out of order (found {present})")
     for bad in FORBIDDEN_SECTIONS:
@@ -231,10 +314,19 @@ def check(path, reply_text=None):
     if CONTRACT not in text:
         failures.append(f"SECTIONS: the artifact does not carry the capability marker "
                         f"`{CONTRACT}`")
+    if is_settlement:
+        # The settlement pass publishes NO US rows: at 12:15 ET the US session
+        # is open, and a live intraday price presented as a close would be a
+        # fabricated settle.
+        for s in ("US — Headline table", "US — QUIET one-liners"):
+            if s in sections:
+                failures.append(f"SECTIONS: the settlement artifact carries a `{s}` "
+                                f"section - the US session is OPEN at 12:15 ET, so a "
+                                f"live intraday price must never be published as a close")
 
     # ---- every published row ------------------------------------------
     published = []          # (section, table_index, header, row_cells)
-    for title in REQUIRED_SECTIONS:
+    for title in req_sections:
         if title not in sections or title not in TABLE_VENUE:
             continue
         for ti, (header, rows) in enumerate(parse_tables(sections[title])):
@@ -258,6 +350,55 @@ def check(path, reply_text=None):
         if not cells or not cells[0].strip():
             failures.append(f"COLUMNS: {tag} — the ticker cell is empty")
 
+    # ---- SETTLE — the row says whether its move is finished -------------
+    for title, ti, header, cells, ri in published:
+        if title not in SETTLE_TABLES:
+            continue
+        tag = f"{title} row {ri}"
+        idx = column_index(header, "settle")
+        if idx is None:
+            failures.append(f"SETTLE: {tag} — the table has no `settle` column, so the "
+                            f"row does not say whether its move is finished")
+            continue
+        val = cells[idx].strip().lower() if idx < len(cells) else ""
+        if val not in SETTLE_VALUES:
+            failures.append(f"SETTLE: {tag} — the `settle` cell is {val!r}, expected "
+                            f"'live' or 'settled'")
+
+    # ---- VERDICT — a verdict requires research --------------------------
+    for title, ti, header, cells, ri in published:
+        cat_idx = column_index(header, "catalyst")
+        earn_idx = column_index(header, "earn")
+        if cat_idx is None or earn_idx is None:
+            continue
+        cat = cells[cat_idx].strip() if cat_idx < len(cells) else ""
+        earn = cells[earn_idx].strip() if earn_idx < len(cells) else ""
+        if earn in ("Y", "N") and any(m in cat.lower() for m in NO_RESEARCH_MARKERS):
+            failures.append(
+                f"VERDICT: {title} row {ri} — the row publishes the verdict {earn!r} "
+                f"beside a catalyst cell that says the lookup was not performed "
+                f"({cat!r}); an unresearched row must carry no verdict")
+
+    # ---- MARKETS — the per-market cap ----------------------------------
+    for title, cap in (("EU/UK — Headline table", EU_MARKET_CAP),
+                       ("APAC/Gulf — Headline table", APAC_MARKET_CAP)):
+        if title not in sections:
+            continue
+        counts = {}
+        for ti, (header, rows) in enumerate(parse_tables(sections[title])):
+            mkt_idx = column_index(header, "market")
+            if mkt_idx is None:
+                continue
+            for ri, cells in enumerate(rows):
+                if mkt_idx < len(cells):
+                    m = cells[mkt_idx].strip()
+                    counts[m] = counts.get(m, 0) + 1
+        for m, n in counts.items():
+            if n > cap:
+                failures.append(f"MARKETS: {title} — the market {m!r} has {n} rows, "
+                                f"over the {cap}-row per-market cap (the table must be a "
+                                f"market census, not one market's index)")
+
     # ---- REFCLOSE ------------------------------------------------------
     scan_d = scan_date_of(text)
     if not scan_d:
@@ -273,7 +414,24 @@ def check(path, reply_text=None):
                             f"({asof!r})")
             continue
         venue = TABLE_VENUE.get(title, "US")
-        floor = min_ref_date(scan_d, venue)
+        if venue == "US":
+            # The US passes always report the latest completed session, so the
+            # table-level floor is the right test.
+            floor = min_ref_date(scan_d, venue)
+        else:
+            # A FOREIGN row publishes the session it reports (`Session asof`),
+            # so its base must be the session immediately before THAT session.
+            # The table-level floor would flag an honest row whose venue feed
+            # lags a session (Poland on 2026-11-11 reported the Nov 10 session
+            # while the rest of the world reported Nov 11).
+            sess_idx = column_index(header, "session_asof")
+            sess = cells[sess_idx].strip() if (sess_idx is not None and sess_idx < len(cells)) else ""
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", sess):
+                failures.append(f"REFCLOSE: {title} row {ri} — the row does not publish "
+                                f"the session it reports (`Session asof` = {sess!r}), so "
+                                f"its base cannot be checked")
+                continue
+            floor = row_ref_floor(sess, venue)
         if floor and asof < floor:
             failures.append(f"REFCLOSE: {title} row {ri} — the reference close {asof} is "
                             f"older than the previous session {floor}")

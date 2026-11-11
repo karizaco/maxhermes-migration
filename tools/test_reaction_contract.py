@@ -276,15 +276,21 @@ CONFORMING_ARTIFACT = """# Earnings reaction scanner — 2026-11-05
 
 ## EU/UK — Headline table
 
-| Ticker | Market | Venue | Close | Chg % | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | US tradeable | Last earnings | Earn | Catalyst |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| TMV | germany | XETR | 12.40 | -27.18 | EUR | 6.2x | 42.90 | yahoo_chart_daily | 2026-11-04 | ADR (OTC:TMVWY) | 2026-11-03 (2d ago) | Y | TeamViewer Q3 published; FY26 revenue guide cut to -1%/-2% cc |
+| Ticker | Market | Venue | Close | Chg % | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | Session asof | Settle | US tradeable | Last earnings | Earn | Catalyst |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| TMV | germany | XETR | 12.40 | -27.18 | EUR | 6.2x | 42.90 | yahoo_chart_daily | 2026-11-04 | 2026-11-05 | live | ADR (OTC:TMVWY) | 2026-11-03 (2d ago) | Y | TeamViewer Q3 published; FY26 revenue guide cut to -1%/-2% cc |
 
 ## AU (ASX) — Headline table
 
-| Ticker | Venue | Close | Chg % | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | US tradeable | Last earnings | Earn | Catalyst |
+| Ticker | Venue | Close | Chg % | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | Session asof | Settle | US tradeable | Last earnings | Earn | Catalyst |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| QAN | ASX | 9.36 | 6.36 | AUD | 2.1x | 8.80 | yahoo_chart_daily | 2026-11-04 | ADR (OTC:QABSY) | 2026-10-29 (7d ago) | N | Not earnings. Brent -7.63% on US-Iran peace progress |
+| QAN | ASX | 9.36 | 6.36 | AUD | 2.1x | 8.80 | yahoo_chart_daily | 2026-11-04 | 2026-11-05 | settled | ADR (OTC:QABSY) | 2026-10-29 (7d ago) | N | Not earnings. Brent -7.63% on US-Iran peace progress |
+
+## APAC/Gulf — Headline table
+
+| Ticker | Market | Venue | Close | Chg % | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | Session asof | Settle | US tradeable | Last earnings | Earn | Catalyst |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| THG | thailand | SET | 2.10 | 8.40 | THB | 3.1x | 1.94 | yahoo_chart_daily | 2026-11-04 | 2026-11-05 | settled | none | 2026-11-03 (2d ago) | Y | Thai group Q3 results published Nov 4 |
 
 ## Source health
 
@@ -306,7 +312,6 @@ CONFORMING_ARTIFACT = """# Earnings reaction scanner — 2026-11-05
 """
 
 CONFORMING_REPLY = """### Signal
-
 - HLMN -4.65% pre-market, 1.6x its own average daily move.
 
 ### Method & caveats
@@ -321,6 +326,46 @@ CONFORMING_REPLY = """### Signal
 
 - push: ok
 - errors: 2
+"""
+
+# ------------------------------------------------- the settlement artifact
+# The 12:15 ET settlement pass publishes a DIFFERENT artifact: the EU/UK
+# session has closed, so the same rows carry their SETTLED close and move,
+# beside the 08:00 ET scan move. It has NO US section - at 12:15 ET the US
+# session is OPEN, so a live intraday price must never be published as a
+# close.
+CONFORMING_SETTLE_ARTIFACT = """# Earnings reaction scanner — 2026-11-11 (EU settlement pass)
+
+- Cron: `15 12 * * 1-5` America/New_York (weekdays, 12:15 ET)
+- Fire time (ET): 2026-11-11 12:16:04 Tue
+- Run type: `settlement_pass` — the EU/UK session has closed, so the same rows
+  as the 08:00 ET scan are republished with their SETTLED close and move.
+- artifact_contract: REACTION_ARTIFACT_V2
+- morning_artifact: earnings/2026-11-11-reactions.md
+- Status: `ok`
+
+## TL;DR
+
+- 2 EU/UK rows republished with their SETTLED close and move.
+
+## EU/UK — Settled table
+
+| Ticker | Market | Venue | Close | Chg % | Move @08:00 | Δ vs scan | Currency | Move vs avg daily | Ref close | Ref source | Ref asof | Session asof | Settle | US tradeable | Last earnings | Earn | Catalyst |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| TMV | germany | XETR | 11.90 | -25.60 | -27.18 | +1.58 | EUR | 5.7x | 42.90 | yahoo_chart_daily | 2026-11-10 | 2026-11-11 | settled | ADR (OTC:TMVWY) | 2026-11-03 (2d ago) | Y | TeamViewer Q3 published; FY26 revenue guide cut |
+| KNO | uk | LSE | 1084.49 | -11.83 | -12.40 | +0.57 | GBX | 9.2x | 1230.00 | yahoo_chart_daily | 2026-11-10 | 2026-11-11 | settled | none | 2026-11-11 (0d ago) | Y | H1 FY26 interim results Nov 11: revenue +37%, gross margin down to 43.1% |
+
+## Source health
+
+- scanner_calls: 34 | scanner_errors: 0
+- pipeline_version: 2026-11-11.1
+- rows_dropped_stale_ref: 0 (rows whose screener-implied reference close disagreed with Yahoo's by more than 0.5%; they are dropped, not published)
+- degraded_sources: 0
+  (none - every source answered for every published row)
+
+## Audit line
+
+`earnings-reaction mode=settle target=earnings-reactions:2026-11-11 eu_rows=2 scan_matched=2 scan_to_settle_median_pp=1.08 catalyst_lookups=2 rows_dropped_stale_ref=0 degraded_sources=0`
 """
 
 
@@ -346,12 +391,17 @@ def _monday_artifact():
     # US rows: the reported session is Friday Nov 6, so the base is Thu Nov 5.
     t = t.replace("| yahoo_chart_daily | 2026-11-04 | US-listed |",
                   "| yahoo_chart_daily | 2026-11-05 | US-listed |")
-    # EU row: the EU session is LIVE on the scan date, so its base is Fri Nov 6.
-    t = t.replace("| yahoo_chart_daily | 2026-11-04 | ADR (OTC:TMVWY) |",
-                  "| yahoo_chart_daily | 2026-11-06 | ADR (OTC:TMVWY) |")
-    # AU row: the Friday Nov 6 session, labelled 2026-11-05 by its ET stamp.
-    t = t.replace("| yahoo_chart_daily | 2026-11-04 | ADR (OTC:QABSY) |",
-                  "| yahoo_chart_daily | 2026-11-05 | ADR (OTC:QABSY) |")
+    # EU row: the EU session is LIVE on the scan date (it opens 03:00 ET, so
+    # its base carries the Friday Nov 6 SESSION date), so its base is Nov 6.
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | 2026-11-05 | live | ADR (OTC:TMVWY) |",
+                  "| yahoo_chart_daily | 2026-11-06 | 2026-11-09 | live | ADR (OTC:TMVWY) |")
+    # AU row: the Friday Nov 6 ASX session, labelled 2026-11-05 by its ET stamp.
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | 2026-11-05 | settled | ADR (OTC:QABSY) |",
+                  "| yahoo_chart_daily | 2026-11-05 | 2026-11-06 | settled | ADR (OTC:QABSY) |")
+    # APAC row: the Nov 6 session, labelled 2026-11-05 by its ET stamp (most
+    # APAC venues open the evening before, ET).
+    t = t.replace("| yahoo_chart_daily | 2026-11-04 | 2026-11-05 | settled | none | 2026-11-03 (2d ago) | Y |",
+                  "| yahoo_chart_daily | 2026-11-05 | 2026-11-06 | settled | none | 2026-11-03 (2d ago) | Y |")
     t = t.replace("earnings-reactions:2026-11-05", "earnings-reactions:2026-11-09")
     return t
 
@@ -393,9 +443,13 @@ def test_monday_au_floor():
 
     # And the gate must still BITE: rolling the AU base back one session
     # (the 2026-11-04 stale-reference class) must be rejected.
+    # The AU/APAC floor tolerates ONE session of label ambiguity (the same
+    # session date can carry a label of D or D-1 depending on whether the bar
+    # was stamped at its open or at its close), so the fault that the gate
+    # MUST catch is a base rolled back TWO sessions.
     stale = MONDAY_ARTIFACT.replace(
-        "| yahoo_chart_daily | 2026-11-05 | ADR (OTC:QABSY) |",
-        "| yahoo_chart_daily | 2026-11-04 | ADR (OTC:QABSY) |")
+        "| yahoo_chart_daily | 2026-11-05 | 2026-11-06 | settled | ADR (OTC:QABSY) |",
+        "| yahoo_chart_daily | 2026-11-02 | 2026-11-06 | settled | ADR (OTC:QABSY) |")
     if stale == MONDAY_ARTIFACT:
         bad("B2-au-fault", "the AU fault mutation is a NO-OP — it would report a "
                            "false 'NOT CAUGHT'")
@@ -406,7 +460,84 @@ def test_monday_au_floor():
                            "was rolled back one session")
     else:
         ok("B2 the checker rejects a Monday artifact whose AU base was rolled "
+           "back two sessions")
+
+    # The EU floor is EXACT (the EU venues open after midnight ET, so the bar's
+    # ET date IS the session date), so a one-session rollback must be caught.
+    stale_eu = MONDAY_ARTIFACT.replace(
+        "| yahoo_chart_daily | 2026-11-06 | 2026-11-09 | live | ADR (OTC:TMVWY) |",
+        "| yahoo_chart_daily | 2026-11-05 | 2026-11-09 | live | ADR (OTC:TMVWY) |")
+    if stale_eu == MONDAY_ARTIFACT:
+        bad("B2-eu-fault", "the EU fault mutation is a NO-OP - it would report a "
+                           "false 'NOT CAUGHT'")
+        return
+    rc, out = run_checker(stale_eu)
+    if rc == 0:
+        bad("B2-eu-fault", "the checker ACCEPTED a Monday artifact whose EU base "
+                           "was rolled back one session")
+    else:
+        ok("B2 the checker rejects a Monday artifact whose EU base was rolled "
            "back one session")
+
+
+def test_checker_accepts_settlement():
+    """The 12:15 ET settlement artifact has its own skeleton and must pass."""
+    rc, out = run_checker(CONFORMING_SETTLE_ARTIFACT)
+    if rc != 0:
+        bad("B3-settlement", f"the checker rejected a conforming settlement artifact "
+                             f"(exit {rc}):\n{out}")
+    else:
+        ok("B3 the checker accepts the settlement artifact")
+
+
+def test_settlement_and_verdict_gates():
+    """The new gates must bite, and the settlement shape must be enforced."""
+    cases = [
+        ("C-settle-column-missing",
+         lambda t: t.replace("| 2026-11-10 | 2026-11-11 | settled | ADR (OTC:TMVWY) |",
+                             "| 2026-11-10 | 2026-11-11 | ADR (OTC:TMVWY) |"),
+         "the settlement table lost its `settle` column"),
+        ("C-settle-value-invalid",
+         lambda t: t.replace("| 2026-11-10 | 2026-11-11 | settled | ADR (OTC:TMVWY) |",
+                             "| 2026-11-10 | 2026-11-11 | maybe | ADR (OTC:TMVWY) |"),
+         "a row's settlement state is neither live nor settled"),
+        ("C-verdict-without-research",
+         lambda t: t.replace("| Y | TeamViewer Q3 published; FY26 revenue guide cut |",
+                             "| N | catalyst lookup not performed (the run's budget went elsewhere) |"),
+         "a row published a verdict beside a catalyst cell that says the lookup was "
+         "not performed"),
+        ("C-market-cap",
+         lambda t: t.replace(
+             "| KNO | uk | LSE | 1084.49 | -11.83 |",
+             "| KNO2 | uk | LSE | 1084.49 | -11.83 |"
+             "| KNO3 | uk | LSE | 1084.49 | -11.83 |"
+             "| KNO4 | uk | LSE | 1084.49 | -11.83 |"
+             "| KNO5 | uk | LSE | 1084.49 | -11.83 |"),
+         "one market took more rows than the per-market cap allows"),
+        ("C-settlement-with-us-section",
+         lambda t: t.replace("## EU/UK — Settled table",
+                             "## US — Headline table\n\n"
+                             "| Ticker | Venue | Close | Chg % | Pre-mkt % | Post-mkt % | Move vs avg daily | Ref close | Ref source | Ref asof | US tradeable | Last earnings | Tag | Earn | Catalyst |\n"
+                             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+                             "| X | NASDAQ | 1.00 | 1.00 | — | — | 1.0x | 1.00 | yahoo_chart_daily | 2026-11-04 | US-listed | 2026-11-03 (1d ago) | PRE_GAP | N | no fresh catalyst found |\n\n"
+                             "## EU/UK — Settled table"),
+         "the settlement artifact published a US section (the US session is open at 12:15 ET)"),
+    ]
+    tmpdir = tempfile.mkdtemp()
+    try:
+        for name, mutate, desc in cases:
+            text = mutate(CONFORMING_SETTLE_ARTIFACT)
+            if text == CONFORMING_SETTLE_ARTIFACT:
+                bad(name, f"the mutation is a NO-OP ({desc}) - it would report a false "
+                          f"'NOT CAUGHT'")
+                continue
+            rc, out = run_checker(text, tmpdir=tmpdir)
+            if rc == 0:
+                bad(name, f"the checker ACCEPTED a broken artifact ({desc})")
+            else:
+                ok(f"{name} the checker rejects: {desc}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def run_checker(artifact_text, reply_text=None, tmpdir=None):
@@ -529,6 +660,10 @@ def main():
 
     print("B2. the AU reference-close floor (the 2026-11-09 Monday regression)")
     test_monday_au_floor()
+
+    print("B3. the settlement artifact and the new gates")
+    test_checker_accepts_settlement()
+    test_settlement_and_verdict_gates()
 
     print("C. fault injection — the checker must bite")
     test_checker_bites()

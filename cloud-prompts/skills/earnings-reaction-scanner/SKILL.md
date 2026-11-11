@@ -53,13 +53,14 @@ fetches this file at RUN time. A change here lands on the next fire with no
 ```
 # Earnings reaction scanner — YYYY-MM-DD
 <front matter: cron, fire time, run type, source, method, artifact_contract,
- ref_close_source, status>
+ ref_close_source, settlement_state, status>
 ## TL;DR
 ## Actionable read
 ## US — Headline table
 ## US — QUIET one-liners
 ## EU/UK — Headline table
 ## AU (ASX) — Headline table
+## APAC/Gulf — Headline table
 ## Source health
 ## Audit line
 ```
@@ -67,6 +68,9 @@ fetches this file at RUN time. A change here lands on the next fire with no
 **There is no `## Catalysts` section.** The catalyst rides in the last column of
 its row (the one-table rule, below). A separate catalysts section duplicates the
 tables and lets a name appear twice.
+
+**The settlement pass is a DIFFERENT artifact** (a second slot, 12:15 ET) with
+its own skeleton — see "The settlement pass" below.
 
 ### The one-table rule — each name appears EXACTLY ONCE
 
@@ -92,12 +96,33 @@ Every published row of every table (including the QUIET one-liners) carries:
 | `Ref asof` | the DATE of that close |
 | `US tradeable` | `US-listed` / `US-listed (ADR)` / `ADR (VENUE:TICKER)` / `none` |
 | `Move vs avg daily` | the reaction ÷ the name's own mean absolute daily move over its last 20 completed sessions (`n/a` when it cannot be derived) |
+| `Settle` | `live` or `settled` — **on every foreign row** (EU/UK, AU, APAC/Gulf) |
 
 `Move vs avg daily` is the point of the actionable layer: a −27% move in a name
 that averages ±3% is a different event from a −8% move in a name that averages
 ±7%. `US tradeable` is what makes a foreign row actionable: a Euronext or
 Swedish ticker a US reader cannot buy is `none`, and an ADR carries its US
 ticker.
+
+### `Settle` — the row says whether its move is finished
+
+`Settle` is `live` when the row's session bar is an **in-progress** bar and
+`settled` when it is a **completed** session. It is derived from the same
+Yahoo bar resolution that validates the reference close, so it is a
+**measurement, not an assumption**.
+
+**Why it exists.** The 08:00 ET fire happens while the EU/UK cash session is
+still open (it closes 11:30 ET in winter, 10:30 ET in summer), so the EU/UK
+`Close` and `Chg %` are a **mid-session snapshot**, not the session's result.
+Measured against each session's settled close over the 2026-11-05/06/09 runs:
+the median EU row finished **0.9–2.1pp** away from its printed move, the worst
+**12.7pp**, and roughly **half** the rows were more than 1pp off. The row now
+says so, and the 12:15 ET settlement pass publishes where those moves closed.
+
+The AU and APAC/Gulf rows read `settled` — those sessions close before the
+08:00 ET fire (ASX 00:00 ET, India 05:00, Thailand 04:30, Indonesia 04:00,
+Singapore 04:00, China 02:00, New Zealand 22:45 the previous day, Saudi
+Arabia 07:00).
 
 ### The reference close is resolved FIRST, and it is a hard gate
 
@@ -168,6 +193,42 @@ catalyst_lookups=<n> bod=<n> rows_dropped_stale_ref=<n> degraded_sources=<n>`
 
 ### The catalyst catalog file
 
+The catalog file is the agent's input; the pipeline READS it and MERGES each
+ticker into that row's last column. It is never overwritten by a re-run, so a
+re-run never wipes the research.
+
+| Column | Rule |
+|---|---|
+| `Ticker` | the ticker, exactly as the artifact prints it |
+| `Region` | `US` / `EU` / `AU` / `APAC/Gulf` |
+| `Catalyst` | the sourced headline, or `no fresh catalyst found` |
+| `Earnings-driven` | `Y`, `N`, or **empty** |
+
+**The verdict follows the RESEARCH.** Fill `Y`/`N` ONLY for a ticker you
+actually researched, and fill `N` only when the research found a cause that is
+NOT earnings. **A ticker you did not research leaves the cell EMPTY** — the
+pipeline publishes `—` for it, and the checker rejects a published `N` beside a
+catalyst cell that says the lookup was not performed. The 2026-11-05 EU run
+published `N` next to "catalyst lookup not performed": a false verdict on 10%
+of that run's researched EU rows.
+
+**`no fresh catalyst found` IS a verdict** — it means the lookup ran and found
+nothing earnings-related, so `N` is correct there.
+
+**The lookup targets are chosen by the pipeline, and they are chosen from the
+NEXT-report date.** The screener's `earnings_release_date` (the LAST report)
+lags badly — on 2026-11-05 it read 2025-02-13 for a name that reported the
+previous day, and 2026-08-06 for a name that reported that morning — so
+"last earnings within 7 days" is **not** a usable earnings test on a foreign
+row. `earnings_release_next_date` (the NEXT scheduled report) is the reliable
+half of the field, so for EU/UK, AU and APAC/Gulf the pipeline aims the
+lookups at the names **due to report soonest** (within 14 days), breaking ties
+by the size of the move.
+
+**Budget: 5 US + 3 EU + 2 AU + 3 APAC/Gulf = 13 lookups per run.** The US
+lookups keep their own rule (the first 3 `AMC_REACTION` rows, then the biggest
+`PRE_GAP` rows).
+
 The agent writes `catalog/catalysts/<date>.md` — one markdown table,
 `| Ticker | Region | Catalyst | Earnings-driven |`. The pipeline **merges each
 row into that ticker's row in the artifact** and never emits a separate
@@ -177,8 +238,82 @@ is missing says so honestly: `pending catalyst lookup` (it is inside the
 per-run budget) or `no catalyst lookup (outside the per-run budget)`.
 **Never fabricate a catalyst** — `no fresh catalyst found` is a valid cell.
 
-The per-run budget is 5 US + 3 EU + 2 AU = 10 lookups, and the ticker list is
-`earnings/<date>-catalyst-targets.json`.
+The per-run budget is 5 US + 3 EU + 2 AU + 3 APAC/Gulf = 13 lookups, and the
+ticker list is `earnings/<date>-catalyst-targets.json`.
+
+### The per-market cap
+
+The EU/UK table (and the APAC/Gulf table) carry **at most 4 rows per market**
+(3 for APAC/Gulf). Without it the table was not a market census: over nine runs
+Sweden supplied **73 of 264 EU rows (28%)** while **Belgium and Greece never
+appeared once**, and a 2.6% mover in Spain, Italy or Portugal never reached the
+page. The per-market count is published in source health
+(`rows_per_market`), so the thinness of the coverage is visible rather than
+implied.
+
+### The APAC/Gulf section
+
+A fifth pass covers the markets that close BEFORE the 08:00 ET fire, so their
+rows are settled and need no live-session caveat: **India, Thailand,
+Indonesia, China, Singapore, New Zealand, Saudi Arabia**. The UAE is **not**
+included — its session closes at 08:00–09:00 ET, i.e. live at the fire.
+
+The screener market slugs are `india`, `thailand`, `indonesia`, `china`,
+`singapore`, `newzealand` and **`ksa`** (NOT `saudiarabia` — that slug 404s).
+The Yahoo suffix follows the **venue**, not the market: `.NS`/`.BO` (NSE/BSE),
+`.SS`/`.SZ` (Shanghai/Shenzhen), `.BK`, `.JK`, `.SI`, `.NZ`, `.SR`. One suffix
+per market would silently resolve half the rows — and a row whose reference
+close cannot be resolved is DROPPED by the hard gate.
+
+The market-cap floor is the ASX floor (**$500M**), not the EU $1B one: most
+APAC earnings action sits below $1B. The section is capped at 25 rows and 3
+rows per market.
+
+**Japan, Taiwan, Hong Kong and Korea are NOT added here.** The `asia-pre-market-reactions`
+routine (06:30 ET) already owns those four; publishing them twice creates two
+truths for the same name.
+
+### The settlement pass — the second slot (12:15 ET)
+
+The 08:00 ET scan publishes the EU/UK session **mid-flight**, so its EU move is
+a snapshot taken minutes after the reaction started. The settlement pass
+republishes the same rows with their **settled** close and move, and carries the
+morning's move beside each row, so the routine measures its own live snapshot
+instead of asking the reader to trust it.
+
+| | |
+|---|---|
+| Slot | `15 12 * * 1-5` America/New_York (12:15 ET — 45 min after the winter close, 1h45m after the summer close) |
+| Task | `15b-earnings-reaction-settlement` |
+| Artifact | `earnings/<date>-reactions-settled.md` |
+| Pipeline | the same file, run with `--mode settle` |
+
+**Skeleton** (its own shape — the checker accepts both):
+
+```
+# Earnings reaction scanner — YYYY-MM-DD (EU settlement pass)
+<front matter: cron, fire time, run type: settlement_pass, source, method,
+ artifact_contract, morning_artifact, status>
+## TL;DR
+## EU/UK — Settled table
+## Source health
+## Audit line
+```
+
+**The settled table** carries: Ticker, Market, Venue, Close, Chg %, **Move
+@08:00**, **Δ vs scan**, Currency, Move vs avg daily, Ref close, Ref source,
+Ref asof, Settle, US tradeable, Last earnings, Earn, Catalyst.
+
+**No US rows.** At 12:15 ET the US cash session is OPEN, so the screener's
+`close` and `change` for a US name are live intraday values — publishing them
+as a session close would be a fabricated settle. The US passes are skipped
+entirely in settlement mode.
+
+**The `scan_to_settle` line in source health is the point of the whole pass**:
+how many rows matched the morning scan, the median and maximum drift between
+the scan move and the settled move, and how many moved more than 1pp. That is
+the routine's own measurement of how much a mid-session snapshot can be
+trusted.
 
 ### The checker
 
@@ -360,15 +495,22 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 
 13. **Write markdown** — the **ARTIFACT FORMAT CONTRACT v2** above is
     authoritative; the skeleton is fixed:
-    1. **TL;DR** (≤5 lines): how many AMC reactions, pre-market gaps, EU reactions, ASX reactions, biggest mover across all sections. Note EU/AU earnings detection limitation.
+    1. **TL;DR** (≤5 lines): how many AMC reactions, pre-market gaps, EU reactions, ASX reactions, APAC/Gulf reactions, biggest mover across all sections, and how many EU rows are live vs settled. Note the EU/AU/APAC earnings-detection limitation.
     2. **Actionable read**: move vs the name's own history, US-listed vs foreign-only, and the one not-yet-fully-priced hypothesis per region.
     3. **US — Headline table:** ticker, venue, close, change %, pre-market %, post-market %, move vs avg daily, ref close, ref source, ref asof, US tradeable, last earnings, tag, earnings-driven, catalyst.
     4. **US — QUIET one-liners** (cap 15 lines), same required columns.
-    5. **EU/UK — Headline table:** ticker, market, venue, close, change %, currency, move vs avg daily, ref close, ref source, ref asof, US tradeable, last earnings, earnings-driven, catalyst.
+    5. **EU/UK — Headline table:** ticker, market, venue, close, change %, currency, move vs avg daily, ref close, ref source, ref asof, **settle**, US tradeable, last earnings, earnings-driven, catalyst.
     6. **AU (ASX) — Headline table:** same, without the market column.
-    7. **Source health:** call counts, the reference-close result, `rows_dropped_stale_ref`, the pre-market check, dedup stats, `degraded_sources: <n>` with one numbered entry per degraded source.
-    8. **Audit line:** the fixed `earnings-reaction target=…` line, including `rows_dropped_stale_ref` and `degraded_sources`.
+    7. **APAC/Gulf — Headline table:** same as the EU/UK table (with the market column).
+    8. **Source health:** call counts, the reference-close result, `rows_dropped_stale_ref`, the pre-market check, dedup stats, the settlement-state summary, the per-market row counts, `degraded_sources: <n>` with one numbered entry per degraded source.
+    9. **Audit line:** the fixed `earnings-reaction target=…` line, including `apac_reactions`, `rows_dropped_stale_ref` and `degraded_sources`.
     **No `## Catalysts` section** — the catalyst is the last column of its row.
+
+14. **The settlement pass (12:15 ET, second slot).** Run the same pipeline with
+    `--mode settle`. It republishes the EU/UK rows with their settled close and
+    move, adds `Move @08:00` and `Δ vs scan` from the morning artifact, and
+    publishes the `scan_to_settle` drift summary. It publishes **no US rows**
+    (the US session is open at 12:15 ET). See "The settlement pass" above.
 
 ## Hard rules
 - Read-only. No trade ideas.
@@ -376,6 +518,9 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 - **The reference close is a hard gate**, resolved before the tables are built. A row that fails it is dropped AND counted (`rows_dropped_stale_ref`).
 - **Session selection is by DATE and order, never by a modal time-of-day** — a DST boundary shifts the ET stamp of the same session by an hour.
 - **The reply's `errors:` count equals the artifact's `degraded_sources` count** — one entry per degraded source.
+- **A row says whether its move is finished** (`Settle`). A live EU/UK move is a mid-session snapshot; the settlement pass publishes where it closed.
+- **A verdict requires research.** `Y`/`N` only for a researched row; an unresearched row publishes `—`.
+- **Never publish a live intraday price as a close** — that is why the settlement pass skips the US.
 - Don't fabricate catalyst headlines — if the relevant call returns nothing, write "no fresh catalyst found" and move on.
 - Always show both pre- and post-market % for US when both present.
 - EU threshold (2.5%) > US pre-market threshold (2%) — live session is noisier than extended hours.

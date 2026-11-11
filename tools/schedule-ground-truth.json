@@ -73,6 +73,11 @@
       "timezone": "America/New_York",
       "session_mode": "new"
     },
+    "15b-earnings-reaction-settlement.md": {
+      "schedule": "15 12 * * 1-5",
+      "timezone": "America/New_York",
+      "session_mode": "new"
+    },
     "16-unusual-options-flow-daily.md": {
       "schedule": "35 16 * * 1-5",
       "timezone": "America/New_York",
@@ -211,6 +216,11 @@
         "spec_path": "cloud-prompts/skills/earnings-reaction-scanner/SKILL.md",
         "bundle": "cloud-prompts/skills/earnings-reaction-scanner",
         "marker": "REACTION_ARTIFACT_V2"
+      },
+      "15b-earnings-reaction-settlement.md": {
+        "spec_path": "cloud-prompts/skills/earnings-reaction-scanner/SKILL.md",
+        "bundle": "cloud-prompts/skills/earnings-reaction-scanner",
+        "marker": "The settlement pass"
       },
       "16-unusual-options-flow-daily.md": {
         "spec_path": "cloud-prompts/skills/unusual-options-flow-daily/SKILL.md",
