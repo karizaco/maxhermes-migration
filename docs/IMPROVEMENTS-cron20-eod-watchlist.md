@@ -226,3 +226,70 @@ base assembly (formatted) → `eod_derive.py` → `build_eod_report.py` → the 
 trailing P/Es, 4,527 GICS sectors, 120 rows with no session bar, 29/29 assertions passed, and
 the formatter reproduced 100,037 of 100,037 numeric strings of the 2026-11-06 file
 byte-for-byte.
+
+---
+
+## 10. The close of record is the VENUE's settled print, not the vendor's daily bar (2026-11-11)
+
+Written by the 2026-11-11 fire. The skill's §2c said "take the close from the settled daily
+bar". That holds for LIQUID names and is wrong for thin ones, and the archive itself proves
+which side is right.
+
+**The evidence.**
+
+1. **The archive is already on the venue's basis.** `us-eod/2026-11-10.csv` carries HAIN's
+   11-10 close as **0.135**. Nasdaq's own consolidated record for that session
+   (`/historical`) says **0.135** — and Yahoo's daily bar for the same session says **0.14**.
+   Two independent reads say 0.135; only the vendor's bar dissents.
+2. **The gap is material on today's tape.** The venue's settled print
+   (`api.nasdaq.com/api/quote/{SYM}/info` → `secondaryData.lastSalePrice`, stamped
+   "Closed at 4:00 PM ET") and Yahoo's settled daily bar agree within 0.01% on **2,652 of
+   4,774** rows, within 0.1% on **3,847**, within 0.5% on **4,460**, and differ by **0.5% or
+   more on 314 rows (14 above 5%)**: MDBH 1.51 vs 1.7195, APUS 2.11 vs 2.36, TVGN 5.47 vs
+   6.00, VRM 6.45 vs 6.99.
+3. **CNBC/CTA corroborates the venue**, not the bar: its `last`, stamped `16:00:00-05:00`,
+   equals the venue's print on every sampled name with a material gap (MDBH 1.51, TVGN 5.47,
+   VRM 6.45, HFBL 22.76). **CNBC's `last` is the last trade including the extended session** —
+   it is the close only when the stamp is exactly 16:00:00 (the ETFs came back stamped
+   16:10/16:15 = after-hours prints). That is the trap: read the stamp, not the price.
+4. **Yahoo's 1-minute synthetic final bar is not the close on thin names.** It is `O=H=L=C`
+   with volume 0, but on those names it carries the session's HIGH or LOW (TVGN 6.00 = the
+   day's high, against a 5.47 close). It agrees with the published close on 3,847 of 4,762
+   names — a cross-check, not a price source. (The skill's §2c claim that it agrees 48/48 was
+   measured on liquid names, where the last trade before the bell ≈ the auction print.)
+
+**The rule now in the skill.** The US file's close is the **venue's settled print**; the
+vendor's daily bar is the cross-check and the SERIES for the derived columns. The session
+bar's close is replaced by the venue's print before the derived columns are computed, so one
+row carries one price. A row whose session bar the vendor does not publish still gets the
+venue's close (72 rows on 2026-11-11); a row with no print anywhere keeps empty price cells
+(45 rows) — never a borrowed price.
+
+**Three traps this run also found.**
+
+- **The range must be the range that brackets the published close.** With the venue's close
+  as the price, the vendor's daily bar brackets it on only ~4,364 of 4,774 rows; 410 rows
+  take their high/low from the venue's day range (`RANGE_ADJUSTED`) and 18 publish NO range
+  at all (`HIGH_LOW_UNAVAILABLE`) because neither the bar nor the venue's range brackets
+  their close. A close is never published outside its own range.
+- **The base assembly owns the numeric format, and the derive stage copies it verbatim.**
+  A base that hands over raw floats publishes `close = 1.2400000095367432` and every other
+  assertion still passes. The published scripts now do the formatting, and
+  `tools/check_eod_artifact.py` asserts every numeric cell byte-for-byte.
+- **The bar drifts for ~40 minutes after the close.** The 16:05 ET pass and the 16:35 ET
+  pass changed the session close on **1,957 of 4,907** names. Two passes, later wins.
+
+**Result:** 4,891 rows, 4,846 settled closes (4,812 from the venue's print, 34 from the
+settled bar), 4,828 published ranges, 4,735 populated caps, 2,920 trailing P/Es, 4,521 GICS
+sectors, 117 rows with no session bar, 29/29 assertions passed, and the formatter reproduced
+every numeric string of the 2026-11-10 file byte-for-byte.
+
+**Also published in this session** (the base assembly had no repo script — it was
+re-improvised at every fire):
+
+- `scripts/build_eod_base.py` (marker `EOD_BASE_V1`) — the base assembly: the numeric
+  format, the price source, the range rule, the carrier-cap rescale.
+- `scripts/merge_eod_history.py` — merges the two history passes, the later winning.
+- `scripts/patch_eod_session_closes.py` — puts the venue's settled print into the session bar
+  before the derived columns are computed.
+
