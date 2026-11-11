@@ -83,12 +83,42 @@ ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not chan
    ^RUT, ^VIX, ^VXN, ^NDX, ^SOX`) and ETF proxies via the same call (`SPY, QQQ, IWM, DIA, RSP,
    SMH, GLD, TLT`). The **participation read** (§5.5) comes from cron #20's CSV; the
    **cap-weight penalty and its 5-day history** (§5.6) come from the bridge `price_history`.
+   - **Assert `as_of` on EVERY index row, not only on the futures rows.** The stale-settlement
+     trap below was measured on a FUTURES row, but the same failure exists on the indices:
+     measured 2026-11-10, the bridge returned **^VXN with `as_of` 2026-11-09T21:00Z and a
+     -14.84% change** while every other index row carried 2026-11-10. Publishing that as
+     today's Nasdaq-volatility move would have been a fabricated statement — and the checker
+     does not validate numbers, so it would have shipped clean. **A row whose `as_of` is not
+     the fire date is the PRIOR session's reading.** Publish it as such, say so in the same
+     table, and count it in `degraded_sources:`.
 3. **Sector rotation.** Rank the top 3 / bottom 3 sectors from the universe's `sector` column
    (cap-weighted % change and the median), and cross-check 1–2 representative tickers per
    sector against the bridge `get_quotes`.
    - **De-duplicate share classes before you weight.** Compute the cap-weighted return on one
      row per `cap_source_symbol` (Alphabet A+C, Berkshire A+B and the JPMorgan preferred lines
      each carry a full parent cap), and drop rows flagged `EX_DISTRIBUTION` — cron #20's rule.
+   - **The de-duplication rule is necessary but NOT sufficient — cron #20's CSV carries three
+     more flags that each silently corrupt a cap-weighted column** (all measured 2026-11-10 on
+     `us-eod/2026-11-10.csv`, 4,893 rows):
+     - **`CAP_CARRIED` rows carry the PARENT's cap and their OWN share class's move.** GOOG and
+       GOOGL both carry $3.515T (GOOG's own move -0.38%, GOOGL's -0.25%); BRK-A and BRK-B both
+       carry $1.258T (BRK-A +2.60%, BRK-B +1.40%). **Which row you keep changes the sector's
+       cap-weighted return**, so keep the row whose `data_quality` does NOT contain
+       `CAP_CARRIED` (the primary listing, which carries that class's own move) and let the
+       carrier row go.
+     - **241 rows carry `NO_CAP`.** They cannot be cap-weighted — exclude them from every
+       cap-weighted column and from the denominator (they still belong in the unweighted
+       participation read).
+     - **105 rows carry `NO_SECTOR`** (only 19 of them priced). They are a bucket, not a sector.
+       If you rank sectors including that bucket it lands at -0.32% and **displaces Utilities
+       (-0.24%) from the bottom three**. Exclude it and say so in the coverage note.
+   - **Assert that every cap-weighted sector return is inside ±20% before you publish it.**
+     De-duplicating on `cap_source_symbol` is what stops a **doubled parent cap** from
+     inflating both the denominator and the move: with Berkshire counted twice, Financials'
+     cap-weighted return printed **+28.2%** instead of +0.28% on 2026-11-10. That is not a
+     subtle wrongness — and the checker does not validate numbers, so the artifact would have
+     shipped clean. Assert the range; a cap-weighted sector return outside ±20% is a
+     computation bug, not a market event.
    - **Cross-check each sector row against its ETF, and publish the gap.** When the cap-weighted
      return and the sector ETF disagree by more than ~0.5pp, the gap is a constituent effect and
      not a rotation: on 2026-11-06 SpaceX ($1.82T cap, +8.6%) was +1.82pp of Industrials' +2.38%

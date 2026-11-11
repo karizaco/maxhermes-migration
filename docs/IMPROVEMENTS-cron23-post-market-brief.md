@@ -262,3 +262,85 @@ Fetch the spec; the 2026-11-06 rules (futures `as_of` assertion, the no-floor di
 the CBOE date caveat, the sector de-duplication and ETF cross-check, the one-ticker wording
 trap) are already in it. The checker is still the gate — and on 2026-11-06 it caught a single
 word, which is the argument for keeping it.
+
+---
+
+## 5.0 The 2026-11-10 fire — a stale index row and three more universe flags
+
+Fire date 2026-11-10, 22:30 ET, artifact `daily-briefs/2026-11-10-post-market.md`. Two findings
+this run would have shipped clean without a human reading the numbers.
+
+### 5.1 ^VXN came back as the PRIOR session — the stale-settlement trap is not futures-only
+
+The skill tells you to assert `as_of` on every **futures** row (measured 2026-11-06: the rows
+carried the 16:59:59 ET settlement five and a half hours after the close). The same failure
+exists on the **indices** and nothing warned about it. Measured 2026-11-10, one bridge
+`get_quotes` call returned:
+
+| symbol | as_of | change |
+|---|---|---|
+| ^GSPC, ^IXIC, ^DJI, ^RUT, ^VIX, ^NDX, ^SOX, SPY, QQQ, IWM, DIA, RSP, SMH, GLD, TLT | 2026-11-10 | correct for the session |
+| **^VXN** | **2026-11-09T21:00:00Z** | **-14.84%** |
+
+The VXN row was the 9 November close. Published as "Nasdaq volatility fell 14.84%" it would
+have been a fabricated statement about a day in which the Nasdaq fell 0.74%. **The checker does
+not validate numbers** — `check_postmarket_brief.py` asserts structure, labels and level cells,
+so an impossible number sails through it.
+
+The rule, now in the skill spec: **read `as_of` on every row of every quote batch, indices
+included. A row whose `as_of` is not the fire date is the prior session's reading — publish it
+as such, mark it in the same table, and count it in `degraded_sources:`.** This run published
+VXN 28.97 as the 9 November close with the stale stamp visible in the table, and counted it as
+degraded source #2.
+
+### 5.2 De-duplicating share classes is necessary but NOT sufficient — cron #20's CSV has three more flags
+
+The 2026-11-06 rule (drop `EX_DISTRIBUTION`, one row per `cap_source_symbol`) is not enough on
+its own. `us-eod/2026-11-10.csv` (4,893 rows, 4,521 after de-duplication) carries three further
+`data_quality` flags that each corrupt a cap-weighted column in a way the checker cannot see:
+
+- **`CAP_CARRIED` — the parent's cap, the class's own move.** GOOG and GOOGL each carry
+  $3.515T; GOOG's own move was -0.3776% and GOOGL's -0.2499%. BRK-A and BRK-B each carry
+  $1.258T; BRK-A +2.596% and BRK-B +1.398%. **Which row you keep changes the sector number.**
+  This run kept the primary listing (the row without `CAP_CARRIED`), so Financials carried
+  Berkshire at +1.398% (+0.17pp of contribution) rather than BRK-A's +2.596%.
+- **`NO_CAP` — 241 rows.** They cannot be cap-weighted; exclude them from every cap-weighted
+  column and from its denominator. They still belong in the unweighted participation read.
+- **`NO_SECTOR` — 105 rows, 19 of them priced.** A bucket, not a sector. Ranking it alongside
+  the sectors puts it at -0.316% and **displaces Utilities (-0.244%) from the bottom three** —
+  a silently different top/bottom-three table.
+
+### 5.3 The bug that is invisible because it is absurd: a doubled parent cap
+
+With Berkshire counted twice, Financials' cap-weighted return prints **+28.2%** instead of
++0.28% — the parent's $1.258T is in the denominator twice AND its move is counted twice. The
+same run, with the no-sector bucket left in, would have printed Utilities in the wrong place.
+
+The generalisable rule, now in the skill spec: **assert that every cap-weighted sector return
+is inside ±20% before publishing it.** Outside that range it is a computation bug, not a market
+event — and it is exactly the class of error that passes the checker clean, because the checker
+asserts structure, not numbers. (The same sanity instinct caught a stray `x100` in the
+contribution formula on this fire, which would have printed Information Technology at -130.6%
+instead of -1.31%.)
+
+### 5.4 The participation read, for the next run's baseline
+
+| metric | 2026-11-06 | 2026-11-10 |
+|---|---|---|
+| `advancers` / `decliners` / `unchanged` | 2,667 / 2,030 / 28 (4,725 usable) | **1,608 / 2,818 / 6** (4,432 usable) |
+| `median_name_move_pct` | +0.236% | **-0.53%** |
+| `cap_weight_penalty_bp` | +69 | **-34** |
+| `liquid_adv_dec_ratio` (cap > $2B) | 868 : 910 = 0.954 | **702 : 909 = 0.772** (n = 1,611) |
+
+The `cap_weight_penalty_bp` series continues: -124, +63, -20, -152, +69, **-34** for
+2026-11-02 → 2026-11-10. A NEGATIVE reading means the cap-weighted index LAGGED the
+equal-weight one — a mega-cap-led SELL-OFF, the mirror image of the +63 case on 2026-11-03.
+The sign must be published, not just the magnitude.
+
+### 5.5 The next fire
+
+Fetch the spec. The 2026-11-06 rules (futures `as_of`, the no-floor disclosure pull, the CBOE
+date caveat, the ETF cross-check, the one-ticker wording trap) and the 2026-11-10 rules (the
+`as_of` assertion on EVERY index row, the `CAP_CARRIED` / `NO_CAP` / `NO_SECTOR` handling, the
+±20% assertion on cap-weighted sector returns) are all in it. The checker is still the gate —
+and it is not a number check, so the ±20% assertion is the run's own arithmetic self-test.
