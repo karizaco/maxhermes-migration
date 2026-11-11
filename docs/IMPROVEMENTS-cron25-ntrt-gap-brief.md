@@ -861,3 +861,161 @@ This belongs to cron #92's side of the house, but the routine-level lesson is no
 - `sh push_artifact.sh --out ntrt --add ntrt/2026-11-10.md --add ntrt/2026-11-10.csv
   --branch main --nn 25 --msg "cron 25 ntrt-gap-brief-daily 2026-11-10"` → `push: ok (attempt 1)`;
   `verify_delivery.sh` → `DELIVERY: ok` for BOTH paths on `origin/main`.
+
+---
+
+## 25. The published market cap is a LAST-CLOSE figure, so the $200M floor is tested on a stale cap — HIGH (2026-11-11)
+
+Found on the **2026-11-09** fire of cron #25, while auditing what the brief's own numbers meant.
+
+**The mechanism.** The screener's `market_cap_basic` is computed on the **last regular close**,
+not on the pre-market print. Verified by dividing the published cap by the prior close, which
+returns the share count to within 0.01% on two independent names:
+
+| name | published cap | prior close | implied shares | known shares | match |
+|---|---|---|---|---|---|
+| ZURA | $393,970,968 | $4.09 | 96,325,420 | 96.33M (stockanalysis) | yes |
+| NVDA | $4,498,023,985,291 | $186.64 | 24,099,999,921 | 24.0999B | yes |
+
+So for **every name that has gapped, the published cap is stale by the move itself** — and the
+$200M gate leg is applied to that pre-move number.
+
+**Why it bites the gate.** Two names in the actionable table clear the floor only on a number
+their own move invalidated:
+
+| name | published cap | PM print | implied PM-time cap | floor |
+|---|---|---|---|---|
+| SOC | $370M | $0.40 | **~$83M** (208.0M shares per its own 8-K) | would FAIL |
+| ZURA | $394M | $1.30 | **~$125M** (96.3M shares) | would FAIL |
+
+SOC is the day's largest actionable decliner and ZURA the second — and both are in
+`## Worth your attention` **only because the cap was measured before the collapse**. A floor
+tested on a stale cap is a floor that can be passed by the very move it is supposed to filter.
+The mirror-image case also exists: **IFRX ($192M published / ~$205M at the print), PALI and
+PYXS** were excluded by the floor and would clear it on a print-time cap.
+
+**Why this is not a one-off.** The screener is the primary source and this is how it reports;
+every run of every routine that gates on market cap inherits it. It is invisible in the
+artifact because the numbers are self-consistent — the cap column and the gap column come from
+the same row and look right.
+
+**Fixed in this artifact (2026-11-11 amendment).** The two names are flagged explicitly in
+`## Flags` (the published cap, the PM print, the implied PM-time cap, and the fact that SOC's
+screener share count of 191.9M even predates the 16.1M ATM shares it sold in Q3), and
+`## Method` states that the floor is tested on a last-close figure. **No published number
+changed** — the gate is still the gate the contract defines, and moving SOC and ZURA out of the
+actionable table would contradict the CSV the checker validates.
+
+**The rule this exposes, for the next contract revision (NOT applied here).** A pre-market
+screen should gate on the cap **at the print**, or on a floor with enough slack that a
+name's own gap cannot flip it. The screener gives `market_cap_basic` on the last close and
+`premarket_close`; a PM-time cap is `market_cap_basic / prev_close × premarket_close`, and
+the share count is recoverable that way (validated above to within 0.01%). That is a change to
+§2/§10 and to the checker's `gate_state()`, so it belongs to the contract owner — **not** to a
+routine, and not to this fire.
+
+**Do-not list (unchanged by this finding).**
+- Do NOT change the gate's market-cap leg in a routine run — the checker validates the gate
+  against the CSV's `mkt_cap_usd`, and a routine that changed the semantics would fail its own
+  contract check.
+- Do NOT publish a recomputed PM-time cap in the `mkt_cap_usd` column: the checker compares the
+  markdown's rendering against that column's value, so the two must stay the screener's number.
+
+**Verification performed (2026-11-11).**
+- `cap / prev_close` equals the known share count within 0.01% on ZURA and NVDA (two
+  independent sources for the share counts).
+- PM-time caps computed for all 20 actionable names: SOC and ZURA fall below $200M; IFRX, PALI
+  and PYXS (not actionable) would rise above it.
+- `check_ntrt_artifact.py` re-run after the amendment: `CONTRACT OK — contract: 17/17`.
+
+---
+
+## 26. The tape's `pct` is the LAST COMPLETED SESSION's move, not a pre-market print — HIGH (2026-11-11)
+
+Recorded on **cron #92's** doc (`docs/IMPROVEMENTS-cron92-preopen-capture.md`) because the tape
+is cron #92's product; this entry is the consumer-side record.
+
+**The trap.** From the 2026-11-09 and 2026-11-10 tapes, every priced row carries the previous
+session's settled close and its session change. Verified: **14 of 14 testable rows exact**
+against daily closes (IRTC -30.70 at the Nov 6 close of 90.22; DKNG -21.30 at 18.51; KRMN
++42.13 at 45.61; and 11 more), while TradingView's actual Nov 9 pre-market for IRTC was
+**+0.86%**. The tapes also collapsed to **50 and 49 rows** against 678/700/849 on Nov 4-6 —
+below the ~120-row regression band, so this is a *different* failure mode from the documented
+one.
+
+**Why it is dangerous for this routine.** §11 told the consumer that the tape "carries, per
+name: the pre-market print", and that a tape-vs-screen gap is a **movement flag** (§12). If the
+tape's `pct` is yesterday's move, that guidance produces a bogus 30-point "movement flag" —
+and a consumer that trusts the tape publishes yesterday's movers as today's gaps.
+
+**Fixed in the skill (2026-11-11).** §11 now says to **sanity-check a tape row's `pct` against
+the screener's own `premarket_change` for the same ticker before treating it as a gap**, and
+treats the tape as a catalyst lead only. The skill is fetched at RUN time, so this lands on
+the next fire with **no `cron_update` and no prompt drift**.
+
+**The producer-side fix belongs to cron #92** (the capture script asserts nothing about which
+session its numbers belong to). Not applied here — cron #92 has an active session and owns
+that file.
+
+**Do-not list (unchanged by this finding).**
+- Do NOT edit `cloud-prompts/_shared/preopen_capture.py` or `preopen_checkpoint.py` from this
+  routine.
+- Do NOT change the tape's expected size band to accommodate a 50-row tape: the band describes
+  a HEALTHY tape, and a 50-row tape is a defect to fix at the producer.
+
+---
+
+## 27. Two defects in MY OWN reply, and a contract count that had moved under the artifact — HIGH (2026-11-11)
+
+Found by re-checking the 2026-11-09 reply against the artifact while auditing the fire.
+
+**1. The reply's name count was wrong.** It said "30 further published names". The artifact
+publishes **50** names (20 actionable + 20 wider + 10 below-the-floor) and the `### Signal`
+list showed **10**, so the correct figure is **40**. It was wrong twice over: the count, and the
+breakdown that attributed the unshown names to the wrong buckets. **Fixed** — and the rule
+generalises: *count the artifact's own published names, do not recount from memory.*
+
+**2. `errors: 0` was a lie, and the artifact published no `degraded_sources:` count.** The
+reply claimed a clean run while two sources had degraded — the ntrt backend (HTTP 000) and the
+tape above. The `## DELIVERY` block in `PROMPT-BLOCKS.md` says the reply's `errors:` counts
+SOURCE failures that degraded the artifact, and that when the artifact publishes a
+`degraded_sources:` count the two MUST be equal. **Fixed**: the artifact now publishes
+`degraded_sources: 2` (both sources named, neither changed a published number) and the reply
+says `errors: 2`.
+
+**3. The artifact's contract count had moved under it.** A concurrent session changed cron #25's
+contract on 2026-11-10: the checker gained a 17th check (`YESTERDAY`, with §13's "Yesterday's
+short list" section) and the skill was corrected from 16/16 to 17/17. My 2026-11-09 amendment
+was verified against the **16-check** checker it had fetched hours earlier, so it passed its
+own contract while **failing today's** — three checks short (missing the new section, and the
+reply's `contract: 16/16` against a checker that wants `17/17`).
+
+**Fixed.** The artifact now carries the `## Yesterday's short list` section (the last Tier-A
+board strictly before the fire date — `daily-screens/2026-11-06/tier-a.csv`, 8 names, data date
+2026-11-05 — each name looked up in this morning's own screen), and the reply publishes
+`contract: 17/17`. Re-verified against the checker fetched **now**:
+`CONTRACT OK — contract: 17/17 (ntrt-artifact-v4)`.
+
+**The rule this exposes.** A contract is not a number in prose — it is whatever the checker
+says TODAY. A run that verifies against a checker fetched at the start of a long turn, and
+publishes hours later, can be holding a **stale contract**: the check passed and the artifact
+still fails. So: **fetch the checker again immediately before the final push, run it against
+the final bytes, and publish the count it prints** — not the count that was true when the run
+started. The 2026-11-09 fire took ~32 minutes of wall clock; a contract can change inside
+that window.
+
+**Do-not list (unchanged by this finding).**
+- Do NOT retrofit a published artifact to a contract it was never written against (the
+  2026-11-06 artifact of record still fails today's 17-check checker, and the fleet's
+  convention is that the artifact of record is not rewritten — §20 of this doc, and the
+  `<$1M` rule in §3, are the precedents). **This artifact is the exception** because it was
+  being AMENDED anyway for a factual correction, and a half-amended artifact is worse than
+  either version.
+- Do NOT edit the checker to make an artifact pass.
+
+**Verification performed (2026-11-11).**
+- The checker fetched from `main` at amendment time (`tools/check_ntrt_artifact.py`,
+  `CONTRACT_CHECKS = 17`) → `CONTRACT OK — contract: 17/17 (ntrt-artifact-v4)` with
+  `--reply` → `ok [REPLY] the reply publishes contract: 17/17`.
+- `push_artifact.sh` → `push: ok`; `verify_delivery.sh` → `DELIVERY: ok` for BOTH the `.md`
+  and the `.csv`; `master` mirror fast-forwarded in the same push.
