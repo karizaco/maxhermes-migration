@@ -306,6 +306,12 @@ artifact.
    - `HK_NOTABLE` = 2-4% → one-liner
    - All markets: below 2% → not surfaced (closed session noise)
 
+   **Evaluate every tier on the PUBLISHED (rounded, 2dp) percentage, never on the raw float.**
+   Measured 2026-11-11: `TSE:2222` carries a raw change of `-4.003938299967181`, which is `> 4`
+   as a float and would tier into `JP_REACTION` — but the published cell reads `-4.00%`, which is a
+   NOTABLE name by the reader's eye. Use `round(abs(change), 2)` for the threshold test so the tier
+   always matches the number that is actually printed.
+
 6. **Per-ticker catalyst lookup (cap 4 calls total — top 1 REACTION per market).** For the top reaction per market (highest |change %|):
    - **Primary:** `mcp__yahoo-finance__get_market_news(ticker, count=5)` using the yahoo suffix format (`.T`, `.TW`, `.HK`, `.KS`).
    - **Fallback if yahoo returns nothing:** `mcp__tradingview-advanced__combined_analysis(symbol, exchange, timeframe=1D)` for TWSE/hkex only — skip for TSE/KRX (returns INVALID_EXCHANGE).
@@ -521,6 +527,15 @@ correct.
 - The index % changes and the 5-session % changes come from the **chart API's bars**, not from the
   bridge: the bridge's `previous_close` is one session stale for `^TWII` and `^HSI` (measured
   2026-11-10).
+
+  Measured again on 2026-11-11: the bridge printed `^TWII` **+6.23%** and `^HSI` **-0.54%** against the
+  chart's **+3.62%** and **-0.98%**. A third-party quote page can be wrong too — Investing.com printed
+  the TAIEX at **+3.11%** while six same-day Taiwanese sources (Focus Taiwan/CNA, Taiwan News,
+  ETtoday, NOWnews, FTNN, Capital Futures) all printed **44,257.15** and **+3.62%**. So when a
+  secondary source disagrees with the chart bars by more than 0.6%: check the close LEVEL against at
+  least two independent same-day press closes before publishing, publish the chart-derived number,
+  and record the conflict in `## Flags` — a source conflict about a headline index number is a trap
+  the reader will hit, not a caveat to bury.
 
 This column is what stops a one-day number from being over-read: on 2026-11-10 the KOSPI's
 **+4.39%** was a bounce inside a **-7.25%** five-session drawdown, while the Hang Seng's **+0.44%**
@@ -738,7 +753,13 @@ PY
 - **The chat reply's country blocks are contiguous** and in the order Japan, Korea, Taiwan, Hong Kong, each with its session date. Never interleave countries.
 - Always use the regional primary listing (TSE > NASDAQ ADRs for JP; HKEX > NYSE ADRs for HK; etc.).
 - **Each market caps at 30 rows** (15 up + 15 down). Larger markets (Japan) will fill up; smaller ones (KR, TW) will have fewer rows naturally.
-- **Total catalyst calls capped at 4** (one per market) — preserves budget for future expansion.
+- Total catalyst calls capped at 4 (one per market) — preserves budget for future expansion.
+  **One exception (measured 2026-11-11):** if the `## What matters today` block cannot otherwise
+  carry three *sourced* catalysts, ONE additional lookup is permitted — and the run must disclose
+  the deviation in `## Method, source health & caveats` and carry the true total in the audit
+  footer's `catalyst_lookups=`. The v1.5 sourced-events block and this cap were written at
+  different times and contradict each other; the resolution is to spend the extra call and SAY SO,
+  never to pad the events list with unsourced rows to stay inside the cap.
 - **Coverage gap detector (SECONDARY)** — for each screener call, if `total_count < 5` AND the market should be open, log `_warn=empty_screener_<market>` to source health. This catches the `south_korea` → 0 bug class without changing the screener params. **It is NOT the holiday detector** — a closed market returns the PRIOR session's rows, not zero. Market status comes from the index session date; see *Market-status detection — DATE PROVENANCE*.
 - Do NOT expand to additional Asian markets (China, India, Vietnam, Indonesia, Philippines, Singapore) without verifying screener coverage first.
 - **KRX caveat:** Korean stocks have daily price limits (typically ±15% for KOSPI, ±30% for KOSDAQ). Limit-move closes often produce data anomalies in `change_percent`. Use combined_analysis news to spot genuine earnings moves vs limit-driven non-fundamental moves; tag the latter as `KR_LIMIT_MOVE`.
