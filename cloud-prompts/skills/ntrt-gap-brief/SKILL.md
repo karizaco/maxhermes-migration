@@ -147,6 +147,16 @@ five; that is the failure this rule exists to prevent.
   universe floor, and because it is part of the GATE (not a filter hidden inside the scanner
   query) the names it excludes can be published in the §10 watchlist without counting as
   gate-passers.
+- **The cap is measured AT THE PRE-MARKET PRINT** (§3) — the same instant as the price the
+  row publishes. The screener's `market_cap_basic` is a **last-close** figure, so for any name
+  that has gapped it is stale *by the move itself*, and a row quoting a pre-market print
+  beside a last-close cap is internally incoherent: the reader cannot divide one by the other
+  and get a share count. Derive the cap at the print (share count × print) and **test the
+  floor against that number**. Measured 2026-11-09: SOC was published at a $370M cap and ZURA
+  at $394M, and both cleared the floor on a pre-move number — at the print they are ~$77M and
+  ~$125M, so under the correct basis both are below the floor and belong in the §10
+  watchlist, where the day's extreme belongs. A floor tested on a stale cap lets a sub-$200M
+  shell sit in the tradeable table.
 - **Within each direction**, sort by **absolute gap descending** — biggest move first, so the
   reader's eye lands on the most consequential name first.
 - **The table is capped at 20 names per direction.** A tape can put 40 names on one side (the
@@ -197,6 +207,20 @@ Never publish 4-decimal prices (`9.8719`) or 3-decimal percentages in the markdo
 keeps extra decimals only on the one computed ratio (`pct_of_adv`); every quoted price is the
 same 2 dp in both files, so a reader can match a row across the markdown and the CSV by eye.
 
+**Measure the market cap AT THE PRE-MARKET PRINT.** The screener publishes a last-close
+market cap, so derive the cap at the price the brief actually quotes: recover the share count
+as `mkt_cap_basic / prior_close` and multiply by the premarket print. This is the same
+"derive it, never take it from the screener's column" rule `prev_close` already follows (§4) —
+the screener's `close` column is the live intraday price after the open, and its
+`market_cap_basic` is the cap at the last close, which for a gapped name is a different
+instant than the one the row publishes. **Validate the recovered share count against a known
+one before trusting it** (2026-11-09: ZURA implied 96,325,420 against a known 96.33M, NVDA
+24,099,999,921 against a known 24.0999B — both exact to 0.01%), and where the screener's own
+share count is itself stale, say so in Flags (SOC's implied 191.9M predates the 16.1M ATM
+shares it sold in Q3; the true 207.98M gives ~$83M rather than ~$77M — both below the floor,
+so the gate outcome does not depend on it). **One number per field, one source per field:**
+the price, the cap and the gate in a row must all describe the same instant.
+
 **Scale the market cap to its own unit.** `$4937.50B` is unreadable, and a mega-cap's cap is
 read in trillions. The rule is exact, because the checker enforces it: **no decimals under $1B
 (`$458M`), two decimals from $1B to $1T (`$200.97B`), two decimals above $1T (`$4.94T`)**.
@@ -231,6 +255,11 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
   its cell reads `watchlist (not checked)`** — never blank, so a consumer can tell "not found"
   from "not looked up". If the pre-open tape (§11) supplied a driver for that name, the cell
   carries that driver instead.
+- `mkt_cap_usd` — the market cap **at the pre-market print**, in dollars (§3), i.e. the
+  number the $200M floor is tested against. The screener's own `market_cap_basic` is a
+  last-close figure and is the WRONG instant for a pre-market brief; publish the derived
+  print-time cap so the CSV, the markdown's `Mkt cap` cell and the gate all agree. A cap the
+  screener does not publish at all is **empty**, never 0.
 - `prev_close` — the prior **regular** close, with its date in the column name avoided; the
   date is in the filename and in the markdown front matter. **Derive it, never take it from the
   screener's `close` column**: once the session is open that column is the live intraday price,
@@ -435,6 +464,13 @@ bug as the REITs: a universe filter that silently deletes the biggest mover.)
    | PARA | -88.6 | 330.8 | $2M | Below the floor; the biggest mover of the day |
    ```
 
+- **The floor is tested on the cap AT THE PRINT** (§3), the same instant as the published
+  price. So a name that gapped hard can FALL BELOW the floor on its print-time cap even
+  though it cleared it on the last close: measured 2026-11-09, SOC (~$77M at the print) and
+  ZURA (~$125M) both moved from the actionable table into this watchlist when the basis was
+  corrected. That is the floor working as intended — a $77M company is not a tradeable name,
+  and the watchlist is exactly where the day's extreme belongs. Publish them here rather than
+  leaving the gate on a stale number, and keep their sourced catalysts (see the note below).
 - **The watchlist is required when the floor hides the biggest mover.** If the largest |gap|
   among the below-the-floor names is bigger than the largest |gap| in the actionable table,
   the watchlist MUST be published — otherwise the floor has hidden the day's extreme. The
@@ -443,7 +479,11 @@ bug as the REITs: a universe filter that silently deletes the biggest mover.)
   candidates for the gate, so they do not belong in the "fails the gate" cell. The §8 caption
   states the checked universe; add the watchlist's size to it as a separate clause.
 - **No catalyst lookup for the watchlist.** Its CSV rows carry `watchlist (not checked)` in the
-  `catalyst` column (§4), unless the pre-open tape (§11) supplied a driver for that name.
+  `catalyst` column (§4), unless the pre-open tape (§11) supplied a driver for that name —
+  **or unless the name's catalyst was already sourced while it still cleared the floor** (the
+  2026-11-09 SOC and ZURA rows: sourced while actionable, then re-homed here by the
+  print-time cap, so they keep their sourced catalyst and the markdown says so). Never blank:
+  a consumer must be able to tell "not found" from "not looked up".
 - The watchlist holds **at most 5 rows per direction**, and the checker enforces it: a
   watchlist that grows is a second screen.
 
