@@ -344,3 +344,57 @@ date caveat, the ETF cross-check, the one-ticker wording trap) and the 2026-11-1
 `as_of` assertion on EVERY index row, the `CAP_CARRIED` / `NO_CAP` / `NO_SECTOR` handling, the
 ±20% assertion on cap-weighted sector returns) are all in it. The checker is still the gate —
 and it is not a number check, so the ±20% assertion is the run's own arithmetic self-test.
+
+### 5.6 The 2026-11-10 artifact was CORRECTED after delivery — both "degraded sources" were mine
+
+The 2026-11-10 brief shipped at 22:45 ET with `degraded_sources: 2`: the CBOE put/call read as
+"a session that cannot be dated", and the ^VXN row flagged as a stale 9 November session. Both
+turned out to be recoverable — and re-checking them on 2026-11-11 also surfaced a third error
+that no degraded-source label could have covered.
+
+**The CBOE page carries the date; the EXTRACTION dropped it.** The 2026-11-06 finding ("the
+embedded data carries no session date stamp") was an artefact of asking `web_fetch` to
+summarise the page: it returned the ratios and the volumes and silently omitted the fields.
+Fetched raw, the payload carries, next to the volume and ratio blocks:
+
+```
+"selectedDate":"2026-11-10","minDate":"2019-10-07","prevTradingDay":"2026-11-10"
+```
+
+`selectedDate` **is** the session stamp, and on 2026-11-10 it equals the fire date — so the
+published total put/call 0.95 (equity 0.77, index 1.02) was the 10 November session all along.
+The page also carries splits a summary never returned: ETP 1.04, SPX+SPXW+SPXO 1.11, XSP 0.98.
+Three parameter forms (`?date=`, `?selectedDate=`, a path segment) all returned the same
+server-rendered payload, so the page always serves the LATEST session — the one that just
+closed at the 22:30 fire.
+
+**^VXN was available from two dated places all along.** The bridge's `price_history` for `^VXN`
+returns the dated row for the fire date (2026-11-10 close 28.57, previous_close 28.97,
+daily_return_pct -1.381), and Cboe's own dated close file
+(`https://cdn.cboe.com/api/global/us_indices/daily_prices/VXN_History.csv`, columns
+`DATE,OPEN,HIGH,LOW,CLOSE`) gives the same 28.57 for 11/10/2026 and 28.97 for 11/09/2026 — two
+independent sources agreeing to the cent, plus the intraday high of 30.22 that the quote row
+never carried. The `get_quotes` row was the 9 November close **and** the 9 November move
+(-14.844% in `price_history` is exactly the -14.84% it carried), which is what identified it.
+
+**The third error was neither a source problem nor a stale row — it was arithmetic.** The brief
+said the VIX "went up 11% intraday". The VIX high of 21.61 is **+8.5%** against the 19.92 prior
+close; 11% was the high-low RANGE expressed against the prior close (21.61 → 19.29). Same
+number family, different denominator, and the sentence as written was false.
+
+**What the correction did.** The artifact was re-pushed in place at 01:47 ET on 2026-11-11 with
+the VXN row corrected to 28.57 / -1.38% (day high 30.22), the VIX sentence corrected to 8.5%,
+a correction note carrying the reason next to the corrected numbers, `degraded_sources:` set to
+0, and the reply's `errors:` set to 0 to match. The reading itself did not change: volatility
+spiked intraday and faded while the index fell — and with the true VXN in hand, that is now a
+statement about BOTH volatility indices instead of one plus a stale footnote.
+
+**The generalisable lesson, now in the skill spec.** A degraded source is often a **broken
+extraction**, not a broken source, and the fastest way to find out is to fetch the payload
+yourself and look for the fields a summariser would drop. The second lesson is that
+`get_quotes` is not uniformly dated **within one call**: on 2026-11-10 it returned the prior
+session's ^VXN while every other symbol in the same call was correct — so a per-row `as_of`
+assertion, and a dated read for the volatility indices, are not optional. The third is that a
+published percentage needs its denominator named: an intraday move against the prior close and
+an intraday range against the prior close are different claims, and the artifact's own numbers
+made the difference visible (21.61 high, 19.92 previous close, 19.46 close).

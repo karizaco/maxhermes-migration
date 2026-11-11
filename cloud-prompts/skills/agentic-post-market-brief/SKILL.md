@@ -155,10 +155,30 @@ ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not chan
 8. **Breadth & volatility.** VIX, VXN, the participation metrics (§5.5), and the put/call ratio
    from the CBOE daily statistics page. **Publish the total put/call as sourced; never invent a
    component split the sources disagree on.**
-   - The CBOE daily statistics page's embedded data carries **no session date stamp** (measured
-     2026-11-06). Publish the total as read, say that the session it describes cannot be dated
-     with certainty, and count it in `degraded_sources:` rather than asserting a session you did
-     not read.
+   - **Read a volatility index from the DATED history, not from the quote row.** Measured
+     2026-11-10, the bridge's `get_quotes` returned **^VXN with `as_of` 2026-11-09** — the prior
+     session's close and its -14.84% move — while every other index row carried 2026-11-10. The
+     correct 10 November VXN close was **28.57, -1.38%** (after a 30.22 intraday high), and it
+     was available all along from two places: the bridge's own **`price_history`** for `^VXN`
+     (which returns the dated row for the fire date) and **Cboe's own dated close file**,
+     `https://cdn.cboe.com/api/global/us_indices/daily_prices/VXN_History.csv`
+     (`DATE,OPEN,HIGH,LOW,CLOSE`, one row per session). The two agree to the cent. **Read the
+     volatility indices from `price_history` and cross-check the close against CBOE's dated
+     file** — and note that `get_quotes` can carry a prior session's row for a volatility index
+     while carrying the right one for every other symbol in the same call.
+   - **The CBOE daily statistics page DOES carry a session date stamp — read it from the
+     payload.** The earlier claim that the embedded data carries no date (measured 2026-11-06)
+     was an artefact of the EXTRACTION step, not of the source: `web_fetch` was asked to
+     summarise the page and returned the ratios without the fields. Fetch the page and read
+     them yourself — the payload carries `\"selectedDate\":\"YYYY-MM-DD\"` and
+     `\"prevTradingDay\":\"YYYY-MM-DD\"` next to the volume and ratio blocks. **Publish the
+     session date with the ratio, and assert it equals the fire date**; if it is an earlier
+     session (a holiday, or a day CBOE published late), say which session the number belongs to
+     and count it in `degraded_sources:`. The page always serves the LATEST session — a
+     `?date=` query parameter does not change the server-rendered payload (measured
+     2026-11-10: three parameter forms all returned the same `selectedDate`) — so the session
+     it shows at the 22:30 fire is the one that just closed. It also carries more splits than a
+     summary returns: total, index, equity, ETP, SPX+SPXW+SPXO and XSP.
 9. **Write the brief** following §5.3's spine exactly, with the level columns and the
    participation metrics.
 10. **Run the checker** (§5.9) on the artifact and on the saved reply, and fix whatever it
@@ -443,7 +463,17 @@ checker.
 - **Do not publish an after-hours percentage without its level columns.**
 - **Do not publish a put/call component split.** The total was sourced (0.87 on 2026-11-03); the
   components disagreed (0.56 vs 0.67) and the 2026-11-03 run correctly refused to invent one.
-  Publish both readings only if both are sourced, and say they differ.
+  Publish both readings only if both are sourced, and say they differ. (Splits from ONE payload
+  are fine — the 2026-11-11 page carried total 0.95, index 1.02 and equity 0.77, all from the
+  same object and reconciling with the total.)
+- **Do not publish a put/call without its session date.** The page carries `selectedDate`; read
+  it and publish it. "The session cannot be dated" is only true if you did not look.
+- **Do not publish a volatility index from a quote row you did not date-check.** `get_quotes`
+  returned the prior session's ^VXN on 2026-11-10 and every other symbol in the same call was
+  correct. Read ^VIX/^VXN from `price_history` and cross-check against CBOE's dated close file.
+- **Do not describe an intraday move against the wrong denominator.** "The index went up 11%
+  intraday" was the high-low RANGE against the prior close, not the move to the high (8.5%).
+  State which one you mean.
 - **Do not remove `## Open research queue`** — keep it, and carry its top item into the reply.
 - **Do not change the source ladder.** The bridge `market-recap` for closes/movers/macro/history,
   the TradingView scanner for breadth and extended hours, cron #20's CSV for the universe, web for
