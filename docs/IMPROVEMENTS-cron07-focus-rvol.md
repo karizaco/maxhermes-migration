@@ -186,3 +186,52 @@ they are the reason the caveat can be written without guessing.
   (minutes with no trade are not emitted); RHLD has a 09:45 print but only one neighbouring print
   (09:44). Absent minutes must be "no print", never "price 0" — and a lone neighbour is not enough
   to run a bad-tick test against.
+
+---
+
+## 2026-11-11 — the TradingView scanner's pagination can OVERLAP and still lose names (cron #07, 09:45 ET)
+
+Measured on the 2026-11-11 fire while pulling the `average_volume_10d_calc` denominator for the
+12-name focus roster. Two new traps, both of which fail **silently**.
+
+### 1. Two correct-looking slices can overlap, and `totalCount` will not catch it
+
+The documented rule is "`totalCount` must equal the rows returned; if it does not, the pull is
+truncated". That check passes a pull that is still missing names:
+
+| pull | rows returned | distinct `s` | union of the two | `totalCount` |
+|---|---:|---:|---:|---:|
+| `range:[0,20000]` then `range:[20000,20155]`, **no sort** | 20,000 + 155 | 20,000 + 155 | **20,001** | **20,155** |
+| `range:[0,10000]` then `range:[10000,20155]`, `sort {"sortBy":"name","sortOrder":"asc"}` | 10,000 + 10,155 | 10,000 + 10,155 | **20,155** | **20,155** |
+
+Without a sort, the scanner's default row order is **not stable between two requests**: the second
+slice returned 155 rows of which **154 were already in the first slice**, so the union covered only
+20,001 of the 20,155 symbols — 154 names missing, no error, and `totalCount` (20,155) vs the
+first slice's 20,000 was the only visible hint. The second pull in the table did not "fix" it
+either; with `range:[0,20000]` + `range:[20000,40000]` the API returned 20,000 rows again for the
+over-large end.
+
+**Rule: the completeness test is `len(set(s1) | set(s2)) == totalCount`, not `totalCount ==
+rows_returned`.** And the way to get disjoint pages is to **sort with the canonical keys** —
+`"sort": {"sortBy": "name", "sortOrder": "asc"}` — which makes the order deterministic and the two
+pages disjoint (0 overlap, union == `totalCount` == 20,155, verified). Note this is the SAME
+`sort` shape that the 2026-11-11 entry above already documents; what is new is that a sort is
+also the **pagination key**, not only an ordering convenience.
+
+### 2. The row key `s` is VENUE-PREFIXED — keying by it makes every US ticker "not found"
+
+The scanner's response row is `{"s": "NYSE:BW", "d": ["BW", "NYSE", avg10d, rvol, mcap]}`: the bare
+ticker is `d[0]`, while `s` carries the venue (`NYSE:`, `NASDAQ:`, `AMEX:`, `OTC:`). A pull indexed
+by `s` returns **12 of 12 US tickers missing** — and that looks exactly like "this ticker is not in
+the universe", which is a false negative that would quietly fall through to the fallback universe.
+
+**Rule: index the pull by `d[0]` (the bare name) and carry `d[1]` (the exchange) as a separate
+field.** Verify with a positive control (the 12 roster names present) before using the pull.
+
+### Both traps are invisible in the output
+
+A missing `average_volume_10d_calc` does not fail loudly - it becomes a `KeyError`/null denominator
+that either crashes the row or silently produces a wrong `daily_factor`. The 2026-11-11 run caught
+both because the pull was checked against `totalCount` **and** against the roster by name before
+the metric was computed. Keep both checks in the routine: they are cheap, and they are the only
+thing standing between a truncated denominator and a plausible-looking artifact.
