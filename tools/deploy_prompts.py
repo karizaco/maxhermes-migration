@@ -51,6 +51,11 @@ TASKS = {
     "13-macro-calendar-midweek.md":             ("457174550757502", "0 14 * * 3"),
     "14-macro-calendar-week-ahead.md":          ("457172664209611", "0 15 * * 0"),
     "15-earnings-reaction-scanner.md":          ("457570777166058", "0 8 * * 1-5"),
+    # Added 2026-11-11: the 12:15 ET settlement slot (cron #15b) was live on the
+    # scheduler but had NO row here, so --emit could not reach it and the harness
+    # could neither deploy nor byte-verify it. A routine with no row here is a
+    # routine the deploy harness cannot fix or prove.
+    "15b-earnings-reaction-settlement.md":      ("462188555329817", "15 12 * * 1-5"),
     "16-unusual-options-flow-daily.md":         ("457305357095000", "35 16 * * 1-5"),
     "17-us-stocks-in-play.md":                  ("457954144674016", "50 9,15 * * 1-5"),
     "19-earnings-reminder-daily.md":            ("457569978294401", "0 6 * * 1-5"),
