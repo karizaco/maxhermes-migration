@@ -130,3 +130,81 @@ violation.
 
 The skill is fetched at RUN time, so the next fire picks up the new format with no `cron_update`
 and no prompt drift. The deployed cron prompt was not touched.
+
+
+## 3. The 4-call catalyst cap contradicts the v1.5 sourced-events block
+
+The skill's hard rules say **"Total catalyst calls capped at 4 (one per market)"**. The v1.5
+`## What matters today` block says the `Top 3 real events` list may **never be padded with unsourced
+rows**, and the machine assertion for that block requires **exactly three items**. A day with only
+two sourced catalysts therefore has no legal composition: honour the cap and publish a list that
+cannot be filled, or fill it and break the cap.
+
+On the 2026-11-11 fire this was live: four per-market top-REACTION lookups produced **Dai-Dan**,
+**ISU Petasys** and (for the trap list) **Holy Stone / Korean Air preferred**, but the third
+*company event* the assertion demands — a third sourced, company-specific catalyst — needed one
+more lookup (Hamamatsu Photonics, TSE:6965 +14.66%, FY2026 results released 10 Nov 14:30 JST).
+
+**Resolution (in the skill, not the prompt):** the cap now carries one explicit exception — a
+single additional lookup is permitted when the sourced-events block cannot otherwise carry three
+sourced catalysts, and the run must disclose the deviation in `## Method, source health & caveats`
+and in the audit footer's `catalyst_lookups=`. Padding the events list with unsourced rows to stay
+inside the cap is worse than one extra lookup. The 2026-11-11 artifact published
+`catalyst_lookups=5` and said so in the caveats.
+
+## 4. Tier boundaries must be evaluated on the PUBLISHED (rounded) percentage
+
+`TSE:2222` (Kotobuki Spirits) carries a raw scanner change of `-4.003938299967181`. Tested as a
+float, `abs(change) > 4` is **true**, so the row tiers into `JP_REACTION` — while the published
+cell reads `-4.00%`, which the reader reads as a NOTABLE name by the skill's own 2-4% band. The
+tier and the printed number disagreed.
+
+The skill now requires the threshold test to run on `round(abs(change), 2)`, so the tier always
+matches the number that is actually printed. On the 2026-11-11 fire this moved one Japan row from
+the REACTION table to NOTABLE one-liners (reactions 74 → 73 of 93 published names).
+
+## 5. Index % conflicts: a stale bridge AND a wrong third-party quote page
+
+The skill already warned that the bridge's `previous_close` is one session stale for `^TWII` and
+`^HSI`. Measured again on 2026-11-11, the bridge printed `^TWII` **+6.23%** and `^HSI` **-0.54%**
+against the chart bars' **+3.62%** and **-0.98%**.
+
+New in this fire: a **third-party quote page can be wrong too**. Investing.com printed the TAIEX
+at **+3.11%** while six same-day Taiwanese sources — Focus Taiwan (CNA), Taiwan News, ETtoday,
+NOWnews, FTNN and Capital Futures — all printed the close as **44,257.15** and the move as
+**+3.62%** (a 1,545.23-point day, the sixth-largest single-day closing point gain in the index's
+history). The chart API was right; the bridge and Investing.com were both wrong, in opposite
+directions.
+
+The skill now says what to do when a secondary source disagrees with the chart bars by more than
+0.6%: check the close LEVEL against at least two independent same-day press closes before
+publishing, publish the chart-derived number, and record the conflict in `## Flags`. A conflict on
+a headline index number is a trap the reader will hit — it belongs in `### Top 3 artifact traps`
+(the 2026-11-11 artifact published it there), not buried in a caveat.
+
+### A note on the two numbers most likely to be misquoted
+
+The same fire produced the day's best trap material, and it is worth recording what made it
+misquotable:
+
+- **Korea's preferred lines.** `KRX:003495` (Korean Air preferred) traded **+24.51% early** and
+  closed **-24.77%** at KRW28,700 — a ~49pp intraday reversal after six limit-riding sessions,
+  driven by a stake/control contest (Hoban Group reached a 20.69% stake in Hanjin KAL's common)
+  and a KRX investment-warning designation that suspended trading on 10 Nov. `KRX:18064K`
+  (Hanjin KAL preferred) hit the daily limit early and closed -2.67%. **A preferred line and its
+  common line are separate securities** (`KRX:003495` vs `KRX:003490`, `KRX:18064K` vs
+  `KRX:180640`) — publishing both is correct, but a reader who adds them up double-counts one
+  issuer.
+- **Taiwan's limit cluster.** 14 of the 15 published Taiwan gainers closed at or within 0.24pp of
+  the +10% TWSE daily cap (only Asia Vital Components, +8.96%, was not limit-locked), and 6 of the
+  15 are TPEX listings rather than TWSE primary names. The percentage is the exchange's limit
+  price, not an independent re-rating.
+
+Both are published as `### Top 3 artifact traps` with the published number stated, so a reader
+who quotes the headline has the trap in front of them.
+
+---
+
+All three findings are in the **procedure the skill executes**, so they are fixed in the skill
+spec — which is fetched at RUN time, so they land on the next fire with no `cron_update` and no
+prompt drift. The deployed cron prompt was not touched.
