@@ -2029,6 +2029,28 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
     `totalCount` (exit 4). It writes rows keyed by the **bare** ticker. The
     fetch ladder and the usage are in RUNTIME-CONTRACT §2a-bis. The repo lint
     `tools/test_tv_scan_contract.py` (40 checks) proves no repo caller SHIPS a poisoned body.
+  - **THE THREE COLUMN DEFINITIONS, EXACTLY (fixed 2026-11-12).** The engine used to publish all
+    three wrong, and the 16-clause checker could not see it: `rvol_intraday_live` was a RATIO
+    divided by a SHARE COUNT (`rvol_now / tv_avg10d`, values like `3.92e-07`) — it is the
+    **cumulative session volume / `tv_avg10d`**; `rvol_prev` was a literal `"n/a"` — it is the
+    **same metric over the EARLIER CROSS-CHECK SNAPSHOT's window, against the prior-10 mean of
+    THAT window, on the same denominator**; and `rvol_trend` was measured against the PREVIOUS
+    SESSION — it is the **earlier-snapshot delta `rvol_now - rvol_prev`** (the session-over-session
+    delta is carried separately as `rvol_vs_prev_session`). The CSV also carries the audit
+    columns `session_vol` and `tv_avg10d`, so `rvol_intraday_live` is CHECKABLE, and
+    `tools/check_focus_rvol_artifact.py` now asserts it (C18), the cross-check (C19) and the
+    trend (C20). **A green gate means nothing about a column the gate does not assert.**
+  - **ONE VINTAGE PER ARTIFACT.** Yahoo's opening window KEEPS SETTLING after the bar closes:
+    two fetches of the same `interval=5m&range=1mo` 09:30-09:45 window returned different bytes
+    minutes apart on 2026-11-12 (DPC +6.3%, BW +2%, a thin name +42%). If two passes compute the
+    two halves of one row, they must share the SAME bytes — cache the raw chart responses (wrap
+    `focus_rvol_score._curl`, key on the URL) and let both passes read the cache. **A cache
+    mismatch means the passes did not share bytes; never loosen the tolerance to hide it.**
+  - **THE CBOE EARLIER SNAPSHOT.** `cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json` is
+    live and carries its OWN `last_trade_time` plus a cumulative regular-session `volume` (CDNL
+    read 1,550,507 at 09:38:22 against the 09:30 bar's 1,569,552 — 1.2% apart). Use its timestamp
+    to define the earlier window when it is EARLIER than the fire (`cross_check_source:
+    cboe_delayed`); otherwise truncate the same series at the 09:30 bar (`same_series_truncated`).
 
 ### 8. Hook into existing briefs
 
