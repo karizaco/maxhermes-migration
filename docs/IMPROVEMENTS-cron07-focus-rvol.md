@@ -356,3 +356,48 @@ against all three published sessions — each fails on exactly the clauses this 
 
 and the hermetic test proves the checker passes a compliant artifact and FAILS the broken shape,
 including the C6 trip.
+
+---
+
+## 2026-11-12 — the fix, deployed: TV_SCAN_V2, a targeted one-call pull, and a SET-based completeness check
+
+The two traps recorded above were fixed, not just documented. What changed, and where:
+
+| what | where | how it is enforced |
+|---|---|---|
+| `pull --names` — ONE targeted call for a known ticker list | `cloud-prompts/_shared/tv_scan.py` (`TV_SCAN_V2`) | asserts the coverage: a requested name that never comes back is `name-missing` (exit 4) |
+| `pull --body` — a universe pull, paged on a STABLE sort | same | asserts the pages are DISJOINT (`pages-overlap`) and their UNION equals `totalCount` (`pages-incomplete`), exit 4 |
+| bare-name keying (`d[0]`, not the venue-prefixed `s`) | same | `index_by_bare_name()`; both `pull` modes write a JSON object keyed by the bare ticker |
+| the fleet-wide completeness rule | `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §2a-bis | rewritten: `totalCount == rows` is NECESSARY BUT NOT SUFFICIENT |
+| the routine's own data path | `cloud-prompts/cron-prompts/07-stock-screener-focus-rvol-09:45.md` (deployed byte-exact, sha256 `7e60438291e1dfed…`, 40,221 B) | the prompt now teaches the targeted pull, the set test, the bare-name key and the `tv_scan.py` fetch |
+| the skill's pre-flight | `cloud-prompts/skills/stock-screener-suite/SKILL.md` §7 | fetched at RUN time — the change landed with no redeploy of the skill |
+| the regression guard | `tools/test_tv_scan_contract.py` | 40 checks (was 33): overlapping pages, an incomplete union, a missing name, the bare-name key, and the targeted body |
+
+**MEASURED, LIVE, 2026-11-12:**
+
+- **Targeted pull:** one POST with `filter [{"left":"name","operation":"in_range","right":[12 names]}]`
+  and `range [0, 17]` → HTTP 200, `totalCount` **12**, 12 rows, **one call**, exit 0. The same
+  roster through the universe pull costs 20,155 rows and 2 calls. `in_range` takes a LIST `right`
+  for a categorical column; only the `in` operation 400s on a list.
+- **Paged universe pull with a stable sort:** `range [0,20000]` then `[20000,40000]`, sorted by
+  `{"sortBy":"name","sortOrder":"asc"}` → 2 pages, union **20,356** == `totalCount` **20,356**,
+  1.07 s, exit 0. The same pull WITHOUT the sort returns 20,000 + 155 rows whose union is
+  20,001 — the 154-name hole.
+- **The prompt fetch:** the `TV_SCAN_V2` marker gates the download, so an older `tv_scan.py`
+  cannot win the race. The old marker is still present in the file, so a caller that demands
+  `TV_SCAN_V1` resolves to the NEW file; only a caller that demands `TV_SCAN_V2` is guaranteed
+  the new behaviour.
+
+**THE MCP QUESTION, ANSWERED.** No MCP-side change is warranted, and none was made. The bridge's
+packs are `tradier`, `fmp` and `market-recap` — **there is no TradingView pack** — so the scanner
+is reached over plain HTTPS and there is nothing to configure on the MCP side. The installable
+`tradingview-mcp` stdio server (73 tools) filters on an opaque vendor `min_score`, so it can
+never be a published criterion, and FMP's screener cannot supply `average_volume_10d_calc` with
+the same semantics — swapping the denominator would break the comparability of every prior
+artifact. The defect was never the MCP; it was the request shape, and the request shape now has
+a validated client that every routine can fetch at run time.
+
+**A NOTE FOR THE NEXT FIRE.** The deployed prompt now says to fetch `tv_scan.py` in STEP 1. If
+that fetch fails, the fallback is the hand-built body in the same block — but the ASSERTIONS
+(coverage, disjointness, union) are not optional. A pull that fails them is a failed pull:
+report it, do not publish it.
