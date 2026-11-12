@@ -1,6 +1,6 @@
 # Cloud Mavis Cron Prompts — index and operating notes
 
-**26 routines** (24 producers + the #90 auditor + the #91 drift guard), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
+**27 routines** (25 producers + the #90 auditor + the #91 drift guard), all owned by `Mavis`, all `America/New_York`, all `MiniMax-M3.1-Flash`,
 all `session.mode=new`. Day-of-week lives in the **scheduler** expression, so weekend fires cost
 nothing — no agent invocation is spent discovering it is a weekend.
 
@@ -29,13 +29,14 @@ nothing — no agent invocation is spent discovering it is a weekend.
 | 90 | delivery-auditor | `0 7 * * *` | every day | 14002 | `_audit/status.json` (audit/status branch) |
 | 15 | earnings-reaction-scanner | `0 8 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reactions.md` |
 | 26 | agentic-pre-market-brief | `30 8 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market.md` |
-| 92a | preopen-catalyst-capture-0830 | `30 8 * * 1-5` | Mon-Fri | 10645 | — |
+| 92a | preopen-catalyst-capture-0830 | `30 8 * * 1-5` | Mon-Fri | 10645 | `preopen-feed/{date}-0830.md` |
 | 08 | stock-screener-pre-market-gapper | `34 8 * * 1-5` | Mon-Fri | 10645 | `daily-screens/{date}/pre-market-gapper.md` |
 | 25 | ntrt-gap-brief-daily | `0 9 * * 1-5` | Mon-Fri | 10645 | `ntrt/{date}.md` |
 | 26b | agentic-pre-market-brief-refresh-0920 | `20 9 * * 1-5` | Mon-Fri | 10645 | `daily-briefs/{date}-pre-market-refresh.md` |
 | 07 | stock-screener-focus-rvol-09:45 | `45 9 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/focus-rvol-snapshot.md` |
-| 92b | preopen-catalyst-capture-0950 | `50 9 * * 1-5` | Mon-Fri | 10645 | — |
+| 92b | preopen-catalyst-capture-0950 | `50 9 * * 1-5` | Mon-Fri | 10645 | `preopen-feed/{date}-0950.md` |
 | 12 | cross-asset-correlation-snapshot | `0 10 * * 1-5` | Mon-Fri | 10636 | `cross-asset/{date}.md` |
+| 15b | earnings-reaction-settlement | `15 12 * * 1-5` | Mon-Fri | 13835 | `earnings/{date}-reactions-settled.md` |
 | 10 | stock-screener-breadth-snapshot | `0 14 * * 1-5` | Mon-Fri | 10635 | `daily-screens/{date}/breadth-snapshot.md` |
 | 13 | macro-calendar-midweek | `0 14 * * 3` | Wed | 10636 | `macro-calendar/{date}-midweek.md` |
 | 06 | stock-screener-pattern-study-backlog | `0 15 * * 6` | Sat | 10635 | `daily-screens/{date}/weekly-ipo.md` |

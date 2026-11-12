@@ -779,6 +779,40 @@ row in the deploy harness is a routine the harness cannot byte-verify.
 **If the detector cannot run** (fetch failed, parse error), say so once (`errors: 1`) and
 carry on with the roster table. Never report the fleet as clean because a check failed.
 
+### 4e-2 — DO THE FOUR COPIES OF THE ROSTER AGREE? (the `roster_copy_drift` check)
+
+The routine list is COPIED into four places, and a copy that drifts is a copy that lies:
+
+| # | Copy | What it is for |
+|---|---|---|
+| 1 | `tools/schedule-ground-truth.json` | the schedules of record |
+| 2 | this procedure's STEP 4 table | the auditor's roster |
+| 3 | `tools/deploy_prompts.py` | the deploy harness's task map |
+| 4 | `tools/gen_roster.py` `ARTIFACTS` | the roster/index GENERATOR — it renders the README index's Output column and `ROSTER.md` |
+
+The detector compares copy 1 against copies 2, 3 and 4 and reports every disagreement under
+`roster_copy_drift`. **Every entry it prints becomes a finding** — and it prints it in the gap
+format this audit already uses, so publish each line VERBATIM:
+
+    gap: <routine> ROSTER_DESYNC <copy> — cause=cron_update_failed age_h=0 — <detail>
+
+`roster_desync` and its cause `cron_update_failed` are already in the contract's `label_causes`,
+so a copy drift needs no new vocabulary and no change to the prompt's reply format.
+
+Measured 2026-11-12: cron #92's two pre-open slots were missing from copy 4 and from nothing
+else. The consequence was that the GENERATED README index published their Output column as
+"—", claiming two live routines write no artifact, while this table and the ground truth both
+knew they write `preopen-feed/`. The index stated something false and nothing caught it. The
+fix is to add the routine to the named copy; the check is what keeps them in step.
+
+The detector's exit code is **3** for copy drift and **1** for a roster gap — they are different
+findings and the codes are deliberately different, so nothing that reads "1 = a live routine is
+unmonitored" changes meaning. **Read the JSON, not the exit code**: `roster_gap` and
+`roster_copy_drift` are independent lists and both can be non-empty.
+
+If the detector reports drift, the finding is `errors: 0` only if the drift is itself the
+finding being published — a drift line WITH its cause is a finding, like any other.
+
 ## STEP 5 — CLASSIFY EVERY GAP
 
 Every routine ends in exactly one STATE. The four states that matter for the operator are
