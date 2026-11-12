@@ -26,6 +26,9 @@ WHAT IT ASSERTS
        ratio: relative screen, series book, wide book, Pass A.
     D. A rev-2 artifact leads with the relative screen — its section comes before the series book.
     E. With --reply: the reply's first line names the universe behind any ratio it quotes.
+    F. THE COLUMN CONTRACT (2026-11-12): the expiry date gets its OWN column. A contract table
+       must have an `Expiry` column, no cell may pack side + strike + date, and a contract
+       artifact must declare `column_contract: expiry-column-v1` in its front matter.
 """
 
 import argparse
@@ -42,6 +45,21 @@ TAGS = ("CALL", "PUT", "MIXED")
 # per-slice tags). Rewriting the October files is not this checker's job, and the October files
 # used a legacy convention: every slice row carried the OVERALL tag, not its own.
 CONTRACT_DATE = "2026-11-06"
+
+# The COLUMN CONTRACT date. From this date the artifact declares the column contract in its front
+# matter and every contract table gives the expiry date its own column. Artifacts published
+# before it are reported, not enforced — the 2026-11-11 contrast table packs side + strike + date
+# and stays on the record as it was published.
+COLUMN_CONTRACT_DATE = "2026-11-12"
+COLUMN_CONTRACT_ID = "expiry-column-v1"
+
+# A cell that packs the side, the strike and the date into one string. Two shapes are caught:
+# the middot form used in chat replies ("C 16.5 · 11-20") and the space form used in the old
+# contrast table ("NVDA P 175 2026-11-11"). A table cell only — prose may name a contract inline.
+PACKED_CONTRACT = re.compile(
+    r"\b[CP]\s+\d+(?:\.\d+)?\s*(?:[·•]|\|)\s*\d{2}-\d{2}"
+    r"|\b[CP]\s+\d+(?:\.\d+)?\s+\d{4}-\d{2}-\d{2}"
+)
 
 # front-matter keys that carry a (tag, ratio) pair
 FM_TAG_KEYS = ("bias", "series_book_bias", "series_book_economic_bias",
@@ -80,6 +98,12 @@ def ok(msg):
 def bad(msg):
     print(f"  FAIL  {msg}")
     return 1
+
+
+def note(msg):
+    """A pre-contract observation: reported, never a failure."""
+    print(f"  note  {msg}")
+    return 0
 
 
 def front_matter(text):
@@ -149,6 +173,82 @@ def declares_thresholds(text):
     """Does the artifact state the thresholds? Only then is every slice row's tag required to
     agree with its own ratio."""
     return bool(re.search(r"bias_tag_thresholds|Bias tag rule|bias thresholds", text, re.I))
+
+
+# A cell that is exactly side + strike ("C 16.5"). The DATE is what the user asked to have in its
+# own column; side + strike in one cell is a presentation choice, so this is the shape that makes
+# a table a CONTRACT table when it carries no separate Side column.
+CONTRACT_CELL = re.compile(r"^\s*[CP]\s+\d+(?:\.\d+)?\s*$")
+
+
+def split_row(line):
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    return [c.strip() for c in line.split("|")]
+
+
+def md_tables(text):
+    """Every markdown table in the text: (section_title, header_cells, [row_cells, ...])."""
+    out = []
+    section = ""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("#"):
+            section = ln.lstrip("# ").strip()
+        if (ln.strip().startswith("|") and i + 1 < len(lines)
+                and re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1])):
+            header = split_row(ln)
+            rows = []
+            j = i + 2
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                rows.append(split_row(lines[j]))
+                j += 1
+            out.append((section, header, rows))
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def check_column_contract(text, strict, label):
+    """F. The expiry date gets its OWN column.
+
+    A contract table must carry an `Expiry` column, no cell may pack side + strike + date, and
+    every row must have the same number of cells as its header (a packed cell is the usual way a
+    table silently loses its shape).
+    """
+    fails = 0
+    for section, header, rows in md_tables(text):
+        hdr = [h.lower() for h in header]
+        flat = [c for r in rows for c in r]
+        packed = [c for c in flat if PACKED_CONTRACT.search(c)]
+        contract_cells = [c for c in flat if CONTRACT_CELL.match(c)]
+        is_contract = ("side" in hdr) or bool(contract_cells)
+        is_contrast = section.lower().startswith("contrast")
+
+        if (is_contract or is_contrast) and "expiry" not in hdr:
+            msg = (f"{label}: the contract table in section {section!r} has no 'Expiry' column "
+                   f"(header: {header}) — the expiry date must have its own column")
+            fails += bad(msg) if strict else note(msg + " (pre-column-contract artifact)")
+        elif is_contract or is_contrast:
+            ok(f"{label}: {section!r} carries its own Expiry column")
+
+        for c in packed:
+            msg = (f"{label}: a cell packs side + strike + date: {c!r} — the expiry date must "
+                   f"have its own column")
+            fails += bad(msg) if strict else note(msg + " (pre-column-contract artifact)")
+
+        for r in rows:
+            if len(r) != len(header):
+                msg = (f"{label}: a row in section {section!r} has {len(r)} cells but the header "
+                       f"has {len(header)}: {r}")
+                fails += bad(msg) if strict else note(msg + " (pre-column-contract artifact)")
+    return fails
 
 
 def check_md(path):
@@ -259,14 +359,29 @@ def check_md(path):
                   f"pre-{CONTRACT_DATE}) — not enforced")
         else:
             fails += bad("front matter does not name the universe of the ratios it publishes")
+
+    # ---- F. the column contract ----
+    col_strict = bool(date) and date >= COLUMN_CONTRACT_DATE
+    if col_strict:
+        cc = fm_get(fm, "column_contract") or ""
+        if not cc.split()[0:1] == [COLUMN_CONTRACT_ID]:
+            fails += bad(f"front matter must declare 'column_contract: {COLUMN_CONTRACT_ID}' — "
+                         f"the engine that produced this artifact may predate the column contract")
+        else:
+            ok("front matter declares the column contract")
+    else:
+        print(f"  note  artifact date {date} predates the {COLUMN_CONTRACT_DATE} column contract — "
+              f"the column checks are reported, not enforced")
+    fails += check_column_contract(text, col_strict, path)
     return fails
 
 
-def check_reply(path):
+def check_reply(path, col_strict=True):
     fails = 0
     print(f"--- {path} (reply)")
     with open(path, encoding="utf-8") as fh:
-        lines = [ln.rstrip() for ln in fh.read().splitlines()]
+        text = fh.read()
+    lines = [ln.rstrip() for ln in text.splitlines()]
     first = next((ln for ln in lines if ln.strip()), "")
     if not first:
         return bad("the reply is empty")
@@ -277,6 +392,9 @@ def check_reply(path):
         ok("the reply's first line names a universe")
     if re.search(r"put\s*/\s*call|\bP/C\b", first, re.I) and not any(mk in low for mk in UNIVERSE_MARKERS):
         fails += bad("the reply's first line quotes a ratio without naming its universe")
+
+    # ---- F. the reply's contract table gives the expiry date its own column ----
+    fails += check_column_contract(text, col_strict, "reply")
     return fails
 
 
@@ -297,10 +415,23 @@ def main():
         sys.exit(2)
 
     fails = 0
+    dates = []
     for p in paths:
         fails += check_md(p)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                dates.append(artifact_date(fh.read(), p))
+        except OSError:
+            pass
     if args.reply:
-        fails += check_reply(args.reply)
+        # The reply is checked against the SAME column contract as the artifact it describes.
+        # Its date is the artifact's date; with no artifact, the reply is treated as current.
+        col_strict = True
+        for d in dates:
+            if d:
+                col_strict = d >= COLUMN_CONTRACT_DATE
+                break
+        fails += check_reply(args.reply, col_strict=col_strict)
 
     print()
     if fails:

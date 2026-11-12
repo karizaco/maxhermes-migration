@@ -25,6 +25,20 @@ RELVOL_SCREEN_V1 = 1
 # checks it, so it must stay exactly as it is. ENGINE_REV is the ADDITIONAL token a fetch must
 # demand, so a copy of this file from before rev 2 cannot win the ladder.
 ENGINE_REV = 2
+# COLUMN_CONTRACT — the LAYOUT contract of the published tables, introduced 2026-11-12 on the
+# user's request: the expiry date always gets its OWN column (ticker | side | strike | expiry),
+# never a packed cell ("C 16.5 · 11-20", "NVDA P 175 2026-11-11"). The leader tables already
+# followed it; the contrast table did not and now does.
+#
+# WHY ENGINE_REV STAYS 2: the deployed prompt's fetch ladder demands `ENGINE_REV=2` literally
+# (cloud-prompts/cron-prompts/16-unusual-options-flow-daily.md). A rev-3 file would be REJECTED by
+# that ladder on every URL, the engine would fall through to the legacy 8-name fallback, and the
+# headline relative screen would silently disappear from the fleet — a layout request must never
+# cost the headline. This change is purely additive and produces IDENTICAL NUMBERS, so a stale
+# rev-2 copy differs only in table layout; the checker (tools/check_options_flow_artifact.py,
+# clause F) catches that one-fire deviation instead of a marker. Bumping the rev requires a PROMPT
+# redeploy in the same change — do them together or not at all.
+COLUMN_CONTRACT = "expiry-column-v1"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
@@ -647,6 +661,8 @@ def main():
     W("cron: 16-unusual-options-flow-daily")
     W("method: RELATIVE volume screen (size-normalised) — HEADLINE; the legacy absolute series book is secondary")
     W(f"engine: relvol_screen.py v{RELVOL_SCREEN_V1} rev{ENGINE_REV}")
+    W(f"column_contract: {COLUMN_CONTRACT} — every contract table gives the expiry date its OWN "
+      f"column (ticker | side | strike | expiry); no cell packs side + strike + date")
     W(f"headline_metric: the relative-volume screen (own-history + peer ratio, size-normalised) — "
       f"NOT a put/call ratio")
     W(f"relative_screen_universe: top {args.universe} US names by cash volume (TradingView america scanner) "
@@ -742,14 +758,18 @@ def main():
           f"{(r['optint'] or 0)*100:.2f}% | {mfmt(r['mcap'])} |")
     W("")
     W("## Contrast — the absolute screen vs the relative screen\n")
-    W("| Rank | Absolute screen (top 10 by raw contract volume) | Relative screen (multi-day top 10) |")
-    W("|---|---|---|")
+    # The expiry date gets its OWN column on both sides. A packed cell ("NVDA P 175 2026-11-11")
+    # cannot be sorted, filtered or read on its own, and the two sides then cannot be compared
+    # cell by cell. This is the same column contract the leader tables above already follow.
+    W("| Rank | Abs ticker | Side | Strike | Expiry | Volume | Rel ticker | Side | Strike | Expiry | "
+      "Peer ratio | Share of expiry |")
+    W("|---|---|---|---|---|---|---|---|---|---|---|---|")
     a10, r10 = by_abs[:10], multi[:10]
     for i in range(min(len(a10), len(r10))):
         a, b = a10[i], r10[i]
-        W(f"| {i+1} | {a['sym']} {a['side']} {a['strike']:g} {a['expiry']} ({int(a['vol']):,} cts) | "
-          f"{b['sym']} {b['side']} {b['strike']:g} {b['expiry']} (peer {b['peer_ratio']:.0f}x, "
-          f"{b['expiry_share']*100:.0f}% of its expiry) |")
+        W(f"| {i+1} | {a['sym']} | {a['side']} | {a['strike']:g} | {a['expiry']} | {int(a['vol']):,} | "
+          f"{b['sym']} | {b['side']} | {b['strike']:g} | {b['expiry']} | {b['peer_ratio']:.0f}x | "
+          f"{b['expiry_share']*100:.0f}% |")
     W("")
     if min(len(a10), len(r10)) < 10:
         W(f"_Only {min(len(a10), len(r10))} rows were available on each side of this comparison._\n")

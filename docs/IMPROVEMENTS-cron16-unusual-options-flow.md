@@ -485,3 +485,71 @@ python3 /tmp/rv.py --date <D> --out /tmp/o.md --universe 60 --jobs 8 && grep -c 
 
 The engine is fetched at run time with a capability-marker check, so this fix reaches the next
 fire **with no `cron_update` and no prompt drift**.
+
+---
+
+## The column contract — the expiry date always gets its own column (2026-11-12)
+
+**Requested by the user on 2026-11-12**, reading the 2026-11-11 reply: the contract table packed
+the side, the strike and the date into one cell (`C 16.5 · 11-20`), and the date is the field
+that has to be compared, sorted and filtered. The request was to give the date its own column.
+
+### What was already right, and what was not
+
+| Table | Before | After |
+|---|---|---|
+| Artifact — relative leaders (multi-day) | `Ticker \| Side \| Strike \| Expiry \| DTE \| …` | **already correct** — unchanged |
+| Artifact — relative leaders (all expiries) | same | **already correct** — unchanged |
+| Artifact — series-book / Pass-A top 10 by V/OI | same | **already correct** — unchanged |
+| Artifact — **Contrast** (absolute vs relative) | `\| 1 \| NVDA P 175 2026-11-11 (346,309 cts) \| TE C 2.5 2026-11-13 (peer 22x, 91% of its expiry) \|` | **rebuilt**: `\| 1 \| NVDA \| P \| 175 \| 2026-11-11 \| 346,309 \| TE \| C \| 2.5 \| 2026-11-13 \| 22x \| 91% \|` |
+| **Chat reply** — the leaders table | `\| Ticker \| Contract \| Volume \| V/OI \| … \|` with `C 2.5 · 11-13` | **now**: `\| Ticker \| Side \| Strike \| Expiry \| Volume \| V/OI \| … \|` |
+
+The published 2026-11-11 artifact is left **as it was published** — a historical record is not
+rewritten. Its contrast table is therefore the last artifact in the series with packed cells, and
+the checker reports it as a note rather than a failure.
+
+### The change
+
+1. **`cloud-prompts/_shared/relvol_screen.py`** — the contrast table gets one column per field on
+   both sides. The engine also writes `column_contract: expiry-column-v1` into the front matter,
+   so the artifact declares which layout it was built with. **No number changed**: the composite
+   score, the rankings and every ratio are computed upstream of the renderer.
+2. **`cloud-prompts/skills/unusual-options-flow-daily/SKILL.md`** — a new *column contract*
+   section: the expiry date always has its own column, `C 16.5 · 11-20` and
+   `NVDA P 175 2026-11-11` are both wrong, and the reply's contract table is a table with
+   `Ticker | Side | Strike | Expiry` as its first four columns.
+3. **`tools/check_options_flow_artifact.py`** — clause **F** asserts the contract: a contract
+   table must have an `Expiry` column, no cell may pack side + strike + date, and every row must
+   have the same number of cells as its header. It runs on the artifact **and on the reply**
+   (`--reply`), which is where the breach actually was.
+4. **`tools/test_options_flow_contract.py`** (new) — the hermetic proof: a contract-shaped
+   artifact + reply pass, and **seven** mutations each fail (marker dropped, packed leader cell,
+   packed contrast cell, contrast table without an Expiry column, a short row, a packed reply
+   cell, and a pre-contract artifact that must be *reported* rather than failed).
+
+### WHY `ENGINE_REV` STAYS 2 — the trap this change walks past
+
+The deployed prompt's fetch ladder demands the literal string `ENGINE_REV=2`
+(`cloud-prompts/cron-prompts/16-unusual-options-flow-daily.md`). A rev-3 engine file would be
+**rejected on all three URLs**, the ladder would fall through to
+
+```
+relvol-engine: UNAVAILABLE - fall back to the legacy 8-name absolute method
+```
+
+and the **headline relative screen would silently disappear from the fleet** — a table-layout
+request costing the headline metric. The rev is therefore left at 2, and the change is additive:
+it produces identical numbers, so a stale rev-2 copy differs only in layout, which clause F
+catches on its own. **Bumping the rev requires a prompt redeploy in the same change
+(`tools/deploy_prompts.py` + SHA-256 verification) — do them together or not at all.**
+
+### How to verify
+
+```bash
+python3 tools/test_options_flow_contract.py            # 8/8
+python3 tools/check_options_flow_artifact.py --md options-flow/<date>.md --reply <reply.txt>
+grep -c 'column_contract: expiry-column-v1' <artifact>
+```
+
+A skill-spec change and a `_shared/` file change are both fetched at run time, so this reaches
+the next fire **with no `cron_update` and no prompt drift**.

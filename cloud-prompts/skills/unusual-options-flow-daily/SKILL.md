@@ -29,6 +29,27 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Unusual options flow — daily, ranked by RELATIVE volume
 
+## What changed on 2026-11-12, and why
+
+**The column contract: the expiry date always gets its OWN column.** Set by the user after
+reading the 2026-11-11 reply, whose contract table packed the side, the strike and the date into
+one cell (`C 16.5 · 11-20`). The date is the field a reader compares, sorts and filters on, so it
+belongs in a column of its own. Every contract table — in the artifact AND in the chat reply —
+now reads `Ticker | Side | Strike | Expiry | …`, and `C 16.5 · 11-20` / `NVDA P 175 2026-11-11`
+are both wrong.
+
+The artifact's leader tables already followed this; the **contrast** table did not and now does.
+The engine writes `column_contract: expiry-column-v1` into the front matter, and
+`tools/check_options_flow_artifact.py` clause **F** asserts the whole thing on both the artifact
+and the reply (`--reply`) — a packed cell fails the check, and the routine must run that check
+before it pushes. See *The column contract* below for the full rule and
+`docs/IMPROVEMENTS-cron16-unusual-options-flow.md` for the evidence.
+
+**No number changed and no prompt changed**, so this reaches the next fire with no
+`cron_update` and no byte-drift risk. `ENGINE_REV` deliberately stays 2 — the deployed prompt's
+fetch ladder demands that literal string, and a rev-3 engine would be rejected on every URL and
+silently demote the headline relative screen to the legacy 8-name fallback.
+
 ## What changed on 2026-11-06, and why
 
 **Three defects were fixed on 2026-11-06, all of them "the number was right, its MEANING was not".**
@@ -122,6 +143,9 @@ session's settled figure, so intraday V/OI is an upper bound). The routine still
   (prose opener → `### Signal` → `### Method & caveats` → `### Files` → `### Push / errors`).
   There is **no line cap**; long-form detail belongs in the artifact file. The
   "compact summary, top 5 only" rule is the local Mavis host's chat format, not Cloud's.
+- **The reply's contract table follows the COLUMN CONTRACT below: `Ticker | Side | Strike | Expiry`
+  as its first four columns. A packed `C 16.5 · 11-20` cell is a contract breach, not a style
+  choice, and the checker fails on it.** See *The column contract* below.
 
 ## THE ENGINE — fetch once, run it, do not re-implement it
 
@@ -279,6 +303,63 @@ the published series comparable, and it must not leak into the relative screen.
 10. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named.
 11. `## Caveats`.
 12. Audit line: `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed> method=relative`.
+
+### The column contract — the expiry date ALWAYS gets its own column
+
+**Set by the user on 2026-11-12.** Every table that names a contract — in the artifact AND in the
+chat reply — splits it into its own columns:
+
+```
+| Ticker | Side | Strike | Expiry | DTE | Volume | … |
+```
+
+**Never pack side + strike + date into one cell.** `C 16.5 · 11-20`, `NVDA P 175 2026-11-11` and
+`NVDA P 175 2026-11-11 (346,309 cts)` are all wrong. A packed cell cannot be sorted, filtered,
+compared cell-by-cell or read on its own, and it is the reason the two sides of a contrast table
+could not be lined up.
+
+- **Side** is its own cell: `C` or `P`.
+- **Strike** is its own cell: the number, formatted as the artifact formats it (`16.5`, `2.5`, `352.5`).
+- **Expiry** is its own cell: the ISO date `YYYY-MM-DD` in the artifact. In the chat reply
+  `MM-DD` is acceptable **only** because the year is the session year, and only in its own column.
+- **Volume** is its own cell, with the unit in the cell or the header — never appended to the
+  strike as `(346,309 cts)`.
+
+The artifact's leader tables already followed this contract; the **contrast** table did not and
+now does (engine rev 2 + `column_contract: expiry-column-v1`, 2026-11-12). The **chat reply's**
+contract table must follow it too — that is the one the reader actually scans.
+
+The reply table may drop columns it does not need (the reply is a summary, the artifact is the
+record), but it may NOT merge the four it keeps.
+
+### The chat reply's contract table
+
+The `### Signal` section carries the relative leaders. It is a **table, not a list of packed
+strings**, and its first four columns are always:
+
+| Ticker | Side | Strike | Expiry |
+|---|---|---|---|
+| TE | C | 2.5 | 2026-11-13 |
+| TTD | C | 16.5 | 2026-11-20 |
+
+Followed by the columns the story needs (volume, V/OI, peer ratio, share of expiry, own-history
+ratio). The reply may show fewer ROWS than the artifact — it shows the leaders and names the rest
+— but a merged contract cell is a contract breach, not a style choice.
+
+### Acceptance criteria for this routine's reply
+
+Run the checker before the push, not after:
+
+```bash
+python3 tools/check_options_flow_artifact.py --md options-flow/<date>.md --reply <reply.txt>
+```
+
+It asserts the bias tags against their own ratios, the universe behind every published ratio, the
+relative screen leading the artifact, and — since 2026-11-12 — **the column contract**: a separate
+`Expiry` column in the artifact's contract tables and in the reply's contract table, and no cell
+that packs side + strike + date. A breach prints as a `FAIL` line and exits 1. A reply that has
+been checked and passes is worth more than a reply that merely looks right.
+
 
 ### The front matter names the population of every ratio
 
