@@ -696,3 +696,132 @@ catalyst would have published a false cause for the largest mover in the book.
 its source and its ET timestamp; it is asserted as a catalyst only when the issuer's release or
 the wire confirms it. Where nothing is confirmed, the artifact says **"no catalyst confirmed in
 this run"** — which is what today's event book does for 8 of the 21 names.
+
+---
+
+## 2026-11-12 — RUN ANALYSIS: where the 5 minutes went, and what a better run looks like
+
+Measured from the 2026-11-12 08:34 ET fire (dispatch 08:34:11 ET, pushed 08:39:25 ET, 5.2 min
+end-to-end; `window_check.sh` `stall_min: 1`; 1 of 12 flagged — MARA −5.74%; checker 27/27).
+
+### The timeline (measured, not estimated)
+
+| phase | measured | notes |
+|---|---|---|
+| platform stall before the first tool call | **1 min** | `stall_min: 1` — under the 5-min threshold, so no stall error |
+| fetch ladder — 12 files, 177 KB of instruction | **~40 s** | `SKILL.md` 144,913 B + `PROMPT-BLOCKS.md` 31,782 B + 10 helpers; ~130 HTTP requests in the whole run, **48 of them tape pulls** |
+| MCP probe | ~10 s | `catalog_ok total=135 finance_tools=0`, `bridge_ok` |
+| universe resolver (`premarket-universe-v2`) | **~40 s** | 6/6 hard assertions OK, 12/12 closes confirmed |
+| tape pull (`premarket-artifact-v5`) | **41 s** | 48 tape pulls + 12 `/info` + 12 Cboe + 1 TV, 6-way parallel |
+| TradingView pulls (focus + event book) | ~20 s | 5 scans, **2 of them mine and wasted** (unfiltered) |
+| 5 web searches + 2 CoinGecko | **~70 s** | ~30 KB of page text ≈ 8k tokens — **more expensive than all the market data** |
+| artifact build | ~50 s | `build_artifact.py`, **19 KB of Python hand-written in the sandbox** |
+| checker + push + verify | ~60 s | worktree build copies the whole `daily-screens` tree (723 files) |
+
+### 1. The four-pull tape policy is 48 requests where 24 would do — and it is INERT against a stable cache
+
+Every one of the 48 tape responses carried a **cache-hit**, and **10 of the 12 symbols returned a
+SINGLE vintage across all four pulls** — the "newest internal timestamp wins" rule had nothing to
+choose from. Only PEPG served two vintages (08:19:13, 08:21:03) and the rule correctly took the
+newer one. Measured latency: **1.2–3.3 s per tape request** (2.2 s average), so 48 pulls ≈ 17.5 s
+of tape wall clock at 6-way parallelism; cutting to "pull while the vintage is still changing
+(min 2, max 4)" saves ~24 requests ≈ 9 s with **identical output**.
+
+Worse: the defence cannot see staleness, because here staleness is "**no new prints**", not "an old
+cached copy". The newest print at the moment of the pull was **14–24 minutes old** for 11 names and
+**86 minutes old for TNGX** (last print 07:09:31 ET). The artifact did not publish that lag.
+
+### 2. There is NO artifact renderer — the contract markdown is hand-written on every fire
+
+`premarket_pull.py` writes `_premarket-pull.json`, `premarket-pull.md` and the contract **CSV**,
+but **not** `pre-market-gapper.md`. SKILL.md §6.7's markdown skeleton is therefore authored by the
+agent, by hand, every fire. This run wrote a **19 KB builder** (`build_artifact.py`) that exists
+only in the sandbox and will be re-invented, differently, next time — the exact class of drift the
+contract exists to prevent, and the reason a hand-typed number is always a defect.
+
+**The fix (highest value in this document):** land `tools/render_premarket_artifact.py` in the
+repo, fetched at RUN time behind a capability marker (`premarket-render-v1`), fed by
+`_premarket-pull.json` + `_universe.json`. It owns the markdown, so the artifact becomes
+byte-reproducible, every number stays engine-owned, and ~50–90 s of agent authoring disappears
+from every fire.
+
+### 3. The Focus book structurally cannot contain the day's gappers — the event book must lead
+
+The Focus list is a **prior-day momentum screen**. On 2026-11-12 it contained **0** of the day's
+real movers (LUNR +11.5% on a pre-open Q3 beat, TTEK +11.1% on a post-close Q4 beat, NBIS −13.5%
+and CRWV −10.0% on Nvidia's CEO news) and produced **no positive gappers at all**. The artifact
+published the market-wide event book as an **appendix**; its headline was "1 of 12 flagged" while
+the tradable gap of the morning was LUNR +11.5%.
+
+**Fix:** make the market-wide ladder (≥8% / 4–8% / 2–4%) with catalysts the **primary** table and
+the Focus book the second table. Zero extra cost — the data was already pulled.
+
+### 4. Two fields that would have removed today's false positives and stale reads
+
+| field | why | cost |
+|---|---|---|
+| `driver_class` — `IDIOSYNCRATIC` / `CRYPTO_BETA` / `SECTOR_BETA` / `MARKET_BETA` | **MARA cleared the gate but is bitcoin beta** (BTC $72,574, −1.51%), and NBIS/CRWV are an index/news drag. A gap with a named driver is not a setup. | one rule per row + the driver already sourced from the wire |
+| `tape_lag_min` | the print behind each published gap was **14–24 min old** (TNGX: 86 min) and nothing in the artifact said so | zero extra calls (the timestamp is already in the record) |
+
+Also free: the sweep's own `focus.csv` carries `today_change` / `chg_pct_resolved` — **prior-session
+change** on every row tells the reader whether a gap is a continuation (AAON was +19.3% into the
+prior session) or a reversal. Zero extra calls.
+
+### 5. The instruction payload is the largest single lever
+
+The routine fetches **177 KB of instruction** (145 KB `SKILL.md` + 32 KB `PROMPT-BLOCKS.md`) to
+read **§6**. This run mitigated it by reading selectively (lines 1–1,380 were never read), but
+every fire rediscovers the section offsets by grep. **Fix:** publish
+`cloud-prompts/skills/stock-screener-suite/specs/premarket.md` (~15 KB: §6 + the constants + the
+checker's assertions) and point the prompt at it. 177 KB → ~50 KB, with no behaviour change.
+
+### 6. Smaller wins
+
+- **Cboe is fetched twice** (resolver + pull), 12 requests ≈ 4–5 s. The resolver's confirmation
+  data can ride along in the manifest, which the pull already reads.
+- **The searches cost more than the data**: 5 searches ≈ 70 s and ~8k tokens for 8 catalysts.
+  Three targeted queries (earnings-driven gainers / the AI complex / the crypto name) would do,
+  and any name whose only "catalyst" is a TV timestamp should be skipped.
+- **Two of the four TV scans were wasted** (mine, unfiltered): 79 up / 313 down, almost all penny
+  stocks and single-stock leveraged ETFs. The `type=stock` + `market_cap_basic > 200000000` filter
+  belongs in the spec (see the section above).
+
+### B. Errors, quality issues and connection problems on this fire
+
+1. **The 30-second tool timeout killed a bundled call.** `probe_mcp.py` + the resolver were run in
+   ONE bash call; the probe alone exceeds 30 s, so the call was killed and the resolver never ran.
+   The probe is healthy — `catalog_ok total=135 finance_tools=0` — when given 120 s. **A killed
+   call is a timeout, not a missing source**, and no two steps should share a 30 s call.
+2. **The tape endpoint is slow (1.2–3.3 s/request) and header-sensitive.** A bare request with
+   minimal headers returned **143 bytes** — an error envelope, HTTP 200 — while the helper's full
+   browser header set worked. The fleet rule "sanity-check the body, not the status" holds here.
+3. **The shared HTTP cache served all 48 pulls** (cache-hit on every one) and was stable, so the
+   fixed-N defence was inert on 10 of 12 names and could not see the 14–86 min print lag.
+4. **The known Nasdaq defects all fired and all were handled**: `secondaryData.lastSalePrice`
+   disagreed with the settled close on **3 of 12** names (BW 4.82 vs 4.84, TNGX 25.70 vs 25.73,
+   ZETA 37.76 vs 37.74) — rejected, and named in `## Flags`; GDYN's `primaryData` was a **quote**
+   (+8.46%) against a −0.58% tape — published as separate columns; TradingView's
+   `premarket_volume` **undercounted** (MARA 497,399 vs 732,319) — cross-check only.
+5. **TradingView `earnings_release_date` is a candidate catalyst, not a catalyst** (NBIS carried
+   2026-08-12 on a −13.5% earnings gap; several names carry a 10:30 ET stamp that is neither a
+   pre-open nor a post-close slot). 8 of the 21 event-book names were published as "no catalyst
+   confirmed in this run" — correct, but it must be a spec rule, not per-run judgement.
+6. **The contract CSV's `pm_high` / `pm_low` / `exec_notional` are formatted STRINGS** — a naive
+   `float()` raises while the checker passes (see the section above).
+7. **My own reply inaccuracy, caught:** the first draft said "delivered 08:56 ET, 22 min after the
+   08:34 fire". The pushed commit's `committer.date` is **13:39:25Z = 08:39:25 ET, 5 min**. Read
+   the push time from the pushed commit, never from the clock while writing.
+8. **No finance-source connection failures.** The MCP bridge answered (`bridge_ok`,
+`packs=tradier,fmp,market-recap`), and Nasdaq / Cboe / TradingView / CoinGecko all served. The
+only failures were (1) the tool timeout and (2) my own thin-header curl.
+
+### The five changes, in order of value
+
+1. Land **`tools/render_premarket_artifact.py`** — the contract markdown becomes engine-owned.
+2. Add **`tape_lag_min`**, **`driver_class`** and **`prior_session_change`** to the contract CSV,
+   and make the **market-wide ladder the primary table**.
+3. Replace the fixed 4-pull with **"pull while the vintage changes (min 2, max 4)"** + one
+   **spread re-pull** at ~09:15 ET (the spec's "across the run" intent), and publish the lag.
+4. Split §6 into **`specs/premarket.md`** so the routine fetches ~50 KB of instruction, not 177 KB.
+5. Put the **event-book filters** (`type=stock`, cap > $200M) and the **catalyst-confirmation rule**
+   in the spec, so neither depends on a run's judgement.
