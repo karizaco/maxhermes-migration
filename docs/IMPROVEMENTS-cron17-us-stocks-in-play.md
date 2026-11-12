@@ -429,3 +429,64 @@ describes one instant, and do not mix the scanner's gap with the rebuilt price.
 scan (13,380 symbols), so the halt state was not measurable and the low-float rule could not be
 evaluated at all. Both are disclosed as degraded sources; neither may be turned into a count or
 a flag.
+
+## 2026-11-12 (open slot) — Yahoo's 5-minute VOLUME field is corrupt on a minority of names, and it silently inflates `pace` by an order of magnitude
+
+**The defect.** The open slot's pace measure is the session volume to 09:50 divided by the trailing-10
+average. The numerator is built from Yahoo's 5-minute bars, and on a minority of names the intraday
+**volume** field carries impossible prints. Measured on the 2026-11-12 open fire:
+
+| Bar | Yahoo 5-minute volume | What it should be |
+|---|---|---|
+| NVDA 09:30 | **167,140,999** shares | ~3-4m |
+| NVDA 09:40 | **260,594,722** shares | ~3-4m |
+| NVDA 09:50 | **292,013,829** shares | ~3-4m |
+
+NVDA's **entire** session volume on Yahoo's own daily bar was 310,068,313 shares at 10:35 ET, and the
+scanner's live volume field said 183,522,926 at the pull. The four corrupt bars alone summed to
+786m shares — more than twice the whole session. Unrepaired, this published a **pace of 23.29** and a
+**$107.9bn** turnover to 09:50 for the largest name on the board. The true figure is a pace of
+**2.89** and **$13.4bn**. The error lands on the largest movers, which is exactly the set the board
+is about.
+
+**It is not only inflation.** On the prior session the same series summed to **243.9m** against a
+daily bar of **313.4m** for NVDA — a 0.78 factor against a measured population median of **0.866**
+(3,898 symbols measured, p10 0.713, p90 0.980). So the per-symbol volume-basis factor, which is
+measured on the PRIOR session, cannot repair a corrupt bar in the CURRENT session: the factor and the
+numerator come from different sessions.
+
+**Two other traps measured at the same time, both of which look like a working cross-check:**
+
+1. **The TradingView scanner's live `volume` column is STALE against the consolidated tape.** It said
+   183.5m for NVDA at 10:03 ET while Yahoo's daily bar read 310.1m at 10:35 ET, and it said 3.78m
+   for MU at 10:05 ET when the 5-minute series had already printed 6.85m by 09:57. Using it as the
+   session-volume bound flags 3,153 of 4,572 names as impossible. It is not a session total.
+2. **The 09:30 bar is systematically larger than the others** (it carries the opening-auction and
+   some pre-market flow): NVDA 40.7m on 2026-11-11 against 3.6-8.8m on every other bar. It is not
+   necessarily corrupt — but a bar carrying more than 8x the symbol's own median 5-minute bar volume
+   is, and that test catches the genuine corruption (NVDA 167m and 261m).
+
+**The repair (applied on the 2026-11-12 open board, and the rule for every future open fire):**
+
+1. Cap every 5-minute bar at **8x the symbol's own median RTH 5-minute bar volume** across the 10-day
+   window. A 5-minute bar cannot plausibly carry 8x the symbol's typical 5-minute volume.
+2. Put the session on the daily-bar basis with the per-symbol factor measured on the prior session
+   (polygon `grouped_daily`), exactly as the spec already requires.
+3. **Cross-check the survivors against Yahoo's own `interval=1d` bar** (one request per name — cheap:
+   527 survivors in 35 seconds). The daily bar is the physical bound: the volume to 09:50 cannot
+   exceed the session volume at pull time. If the 5-minute sum still exceeds it, rescale the session's
+   bars and flag the name.
+4. Use the daily bar's **official prior close** rather than the 5-minute reconstruction. On
+   2026-11-12 that corrected 21 of the 527 survivors by more than 0.5%.
+5. Publish the repaired names with a flag in the candidates CSV (`volume_prints_repaired`,
+   `volume_rescaled`) and name the defect in `## Source health`.
+
+**Why this matters for the contract.** The pace is published as a *screen*, but a 6x error on the
+board's largest name is not a screen error — it is a wrong number in the head of the table. The
+checker reconciles the pace against the published columns, so it cannot catch this: every published
+column was internally consistent and the arithmetic was wrong at the source.
+
+**Cross-check that worked and should stay:** the shared helper `_shared/preopen_feed.py`
+(`merge` mode) rebuilds the 09:30 open from the same bars and its gap agreed with this board's gap
+column to a **median of 0.02pp** across the 12 names cross-checked (NVDA -14.07 vs -14.07, NBIS -22.50
+vs -22.50, CRWV -16.25 vs -16.25, TWST -18.76 vs -18.76). The helper's `selftest` still prints 4 PASS.

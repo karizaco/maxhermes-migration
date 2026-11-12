@@ -211,6 +211,37 @@ the payload grows from ~5KB to ~38KB per symbol, but the per-request time is fla
 factor** — and the artifact says so, because the factor is the only thing holding the
 numerator and the denominator on one basis.
 
+**The 5-minute VOLUME field is corrupt on a minority of names — repair it before the pace
+is computed (measured 2026-11-12).** The factor above is measured on the PRIOR session, so
+it cannot repair a corrupt bar in the CURRENT session. On 2026-11-12 Nvidia's 09:30 bar
+carried **167,140,999** shares and its 09:40 bar **260,594,722**, against a daily-bar
+session volume of 310,068,313; unrepaired that published a **pace of 23.29** and a
+**$107.9bn** turnover to 09:50 on the largest name on the board, where the repaired
+figures are a **pace of 2.89** and **$13.4bn**. The error lands on the largest movers.
+
+1. **Cap every 5-minute bar at 8x the symbol's own median RTH 5-minute bar volume** across
+   the 10-day window. A 5-minute bar cannot plausibly carry 8x the symbol's typical
+   5-minute volume. (The 09:30 bar is legitimately larger — it carries the opening auction
+   and some pre-market flow — so the test must be a multiple of the symbol's own median,
+   not an absolute number.)
+2. **Cross-check every survivor against Yahoo's own `interval=1d` bar** — one request per
+   name, 527 survivors in 35 seconds. The daily bar is the physical bound: the volume to
+   09:50 cannot exceed the session volume at pull time. If the 5-minute sum still exceeds
+   it, rescale the session's bars and flag the name.
+3. **Take the prior close from the daily bar**, not from the 5-minute reconstruction — on
+   2026-11-12 that corrected 21 of the 527 survivors by more than 0.5%.
+4. **Flag the repaired names in the candidates CSV** (`volume_prints_repaired`,
+   `volume_rescaled`) and name the defect in `## Source health`.
+
+**Do NOT use the TradingView scanner's live `volume` column as the session-volume bound.**
+It is stale against the consolidated tape — on 2026-11-12 it read 183.5m for NVDA at
+10:03 ET while the daily bar read 310.1m at 10:35 ET — and it flags 3,153 of 4,572 names
+as impossible. The daily bar is the arbiter.
+
+The full evidence, and the measurement that the shared helper's 09:30 reconstruction agrees
+with the board's gap column to a median of 0.02pp, is in
+`docs/IMPROVEMENTS-cron17-us-stocks-in-play.md` (2026-11-12).
+
 **Publish these caveats with the pace numbers, every time:**
 - The opening share is **not stable** — its daily median moved between **10.77% and 16.49%** over
   the ten measured sessions. A pace reading of 2.0 is therefore roughly 1.8–2.3 on a different
