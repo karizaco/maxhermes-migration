@@ -48,8 +48,22 @@ ARTIFACTS = {
  "25-ntrt-gap-brief-daily": ("ntrt/{date}.md", "ntrt", ".md"),
  "26-agentic-pre-market-brief": ("daily-briefs/{date}-pre-market.md", "daily-briefs", "-pre-market.md"),
  "26b-agentic-pre-market-brief-refresh-0920": ("daily-briefs/{date}-pre-market-refresh.md", "daily-briefs", "-pre-market-refresh.md"),
+ # Added 2026-11-12: cron #92's two pre-open checkpoint slots were MISSING from this map,
+ # so the roster generator skipped them AND `cloud-prompts/cron-prompts/README.md` rendered
+ # their Output column as "—" — the index claimed they wrote nothing while the auditor's own
+ # roster table (STEP 4 of cloud-prompts/_shared/auditor-procedure.md) and the ground truth
+ # both knew they write preopen-feed/. The suffix tuples carry the SKIPPED marker too: a
+ # checkpoint that declines to run still leaves a trace, and counting it as a delivery keeps
+ # the staleness check from crying wolf on a routine that is behaving correctly.
+ "92a-preopen-catalyst-capture-0830": ("preopen-feed/{date}-0830.md", "preopen-feed",
+                                       ("-0830.md", "-0830.jsonl", "-0830.SKIPPED.md")),
+ "92b-preopen-catalyst-capture-0950": ("preopen-feed/{date}-0950.md", "preopen-feed",
+                                       ("-0950.md", "-0950.jsonl", "-0950.SKIPPED.md")),
  "90-delivery-auditor": ("_audit/status.json (audit/status branch)", "", "status.json"),
 }
+# Routines that legitimately produce NO artifact file, so no ARTIFACTS entry is possible.
+# gen_index.py carries its own NO_ARTIFACT map for the same reason; the two must agree.
+NO_ARTIFACT = {"91-schedule-drift-guard"}
 # weekly routines get a longer staleness tolerance
 # Mirrors cron #90's STEP 4b tolerances, which are the contract. A weekly routine fires every
 # 7 days and the audit runs daily, so its age oscillates 0..6 and 7 can never false-positive;
