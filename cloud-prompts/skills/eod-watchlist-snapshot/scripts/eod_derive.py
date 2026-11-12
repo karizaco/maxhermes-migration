@@ -105,7 +105,14 @@ BASE_COLUMNS = ["date", "ticker", "name", "open", "high", "low", "close", "volum
 DERIVED_COLUMNS = ["rel_volume", "pct_from_52w_high", "pct_from_52w_low",
                    "sma_20", "sma_50", "sma_200", "pct_vs_sma_50", "pct_vs_sma_200",
                    "atr_14", "atr_pct", "gap_pct", "avg_daily_dollar_volume",
-                   "float_shares", "market_cap_usd", "cap_source_symbol", "data_quality"]
+                   "float_shares", "market_cap_usd", "cap_source_symbol", "data_quality",
+                   "settle_status", "settle_round"]
+
+# The settle evidence travels with the base row and is copied verbatim: `settle_status` is a
+# CLOSED vocabulary, never empty, and it is the row's own statement of how its close was
+# settled - CONFIRMED (matched an independent reading), UNCONFIRMED (published without one),
+# NO_BAR (no session bar, so no close is published).
+SETTLE_VOCABULARY = ["CONFIRMED", "UNCONFIRMED", "NO_BAR"]
 
 OUT_COLUMNS = BASE_COLUMNS + DERIVED_COLUMNS
 
@@ -328,10 +335,12 @@ def main() -> int:
         base = list(csv.DictReader(fh))
     prior_session_close = {}
     prior_date = ""
+    prior_tickers: set[str] = set()
     if args.prior_csv:
         with open(args.prior_csv, newline="") as fh:
             for pr in csv.DictReader(fh):
                 prior_date = pr.get("date", "") or prior_date
+                prior_tickers.add(pr.get("ticker", ""))
                 if (pr.get("close") or "").strip():
                     prior_session_close[pr.get("ticker", "")] = float(pr["close"])
     quote_prev = {}
@@ -404,6 +413,9 @@ def main() -> int:
     for r in base:
         t = r["ticker"]
         row = {c: (r.get(c, "") or "") for c in BASE_COLUMNS}
+        # the settle evidence is carried verbatim from the base
+        row["settle_status"] = (r.get("settle_status") or "").strip()
+        row["settle_round"] = (r.get("settle_round") or "").strip()
         d = derive_one(hist.get(t, []), args.session)
 
         close = f(row["close"])
@@ -564,6 +576,20 @@ def main() -> int:
 
         rows_out.append(row)
 
+    # ---- the settle evidence, counted
+    settle_counts = {k: 0 for k in SETTLE_VOCABULARY}
+    settle_max_round = 0
+    for row in rows_out:
+        st = (row.get("settle_status") or "").strip()
+        if st in settle_counts:
+            settle_counts[st] += 1
+        else:
+            settle_counts["UNCONFIRMED"] += 1
+        try:
+            settle_max_round = max(settle_max_round, int(row.get("settle_round") or 0))
+        except (TypeError, ValueError):
+            pass
+
     with open(args.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=OUT_COLUMNS)
         w.writeheader()
@@ -614,6 +640,16 @@ def main() -> int:
                             "the quote service's prior close is dividend-adjusted there",
         "range_adjusted_rows": range_adjusted,
         "implied_shares_implausible": shares_implausible,
+        "universe_pulled": len(base),
+        "universe_written": len(rows_out),
+        "universe_added_vs_prior": sorted(set(r["ticker"] for r in rows_out) - prior_tickers),
+        "universe_removed_vs_prior": sorted(prior_tickers - set(r["ticker"] for r in rows_out)),
+        "settle_counts": settle_counts,
+        "settle_vocabulary": SETTLE_VOCABULARY,
+        "settle_confirmed_rows": settle_counts.get("CONFIRMED", 0),
+        "settle_unconfirmed_rows": settle_counts.get("UNCONFIRMED", 0),
+        "settle_no_bar_rows": settle_counts.get("NO_BAR", 0),
+        "settle_max_round": settle_max_round,
         "definitions": {
             "rel_volume": "session volume / mean(volume of the 30 sessions BEFORE the session)",
             "avg_daily_dollar_volume": "mean(close x volume) over the same 30 prior sessions",

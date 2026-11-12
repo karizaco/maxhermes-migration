@@ -34,9 +34,11 @@ OUT = sys.argv[6] if len(sys.argv) > 6 else "/workspace/work/base.csv"
 CNBC = sys.argv[7] if len(sys.argv) > 7 else "/workspace/work/cnbc.json"
 NASDAQ = sys.argv[8] if len(sys.argv) > 8 else "/workspace/work/nasdaq_info.json"
 PRIOR_CSV = sys.argv[9] if len(sys.argv) > 9 else "/workspace/work/2026-11-10.csv"
+SETTLE_MAP = sys.argv[10] if len(sys.argv) > 10 else "/workspace/work/settle_map.json"
 
 BASE_COLUMNS = ["date", "ticker", "name", "open", "high", "low", "close", "volume",
-                "change_pct", "market_cap", "pe_ratio", "sector", "currency", "exchange"]
+                "change_pct", "market_cap", "pe_ratio", "sector", "currency", "exchange",
+                "settle_status", "settle_round"]
 FULL_PRECISION_FROM = 100000
 
 
@@ -181,8 +183,9 @@ def main() -> int:
         fh = fl = ""
         if close is not None:
             cands = []
-            if sess is not None and sess[1] is not None and sess[2] is not None:
-                cands.append((sess[2], sess[1], "bar"))
+            if sess is not None and sess[2] is not None and sess[3] is not None:
+                # the bar's own high/low: sess = (ts, open, high, low, close, volume)
+                cands.append((sess[3], sess[2], "bar"))
             if nas.get("day_high") and nas.get("day_low"):
                 cands.append((nas["day_low"], nas["day_high"], "venue"))
             if q.get("dayHigh") is not None and q.get("dayLow") is not None:
@@ -216,35 +219,64 @@ def main() -> int:
                     row["open"] = op          # kept only when inside the session range
                 elif not fh:
                     row["open"] = op
-            if v is not None:
+            if v:
+                # a zero volume is "no print", and a missing value is EMPTY - never zero
                 row["volume"] = fmt_int(v)
                 stats["volume_from_bar"] += 1
+            else:
+                stats["volume_zero"] = stats.get("volume_zero", 0) + 1
         else:
             stats["no_bar"] += 1
 
-        # ---- market cap: the vendor's carrier row, rescaled onto this session
+        # ---- market cap: the vendor's carrier row, rescaled onto this session, with the
+        # issuer's SHARE COUNT corrected by an independent reading when the two disagree.
+        #
+        # The cap belongs to the ISSUER and is carried by the vendor's own row. The vendor's
+        # table lags the session (its rows are dated T+1), so the cap is brought onto the
+        # session's price basis by rescaling the vendor's own implied share count:
+        #     implied_shares = vendor_cap / prior_close;  cap = implied_shares * close
+        # That keeps `market_cap / close` exactly the issuer's share count on the published
+        # basis. Where a SECOND reading (the quote service's own market cap) disagrees with
+        # the vendor's share count by more than 25%, the second reading wins - the vendor's
+        # cap is off by orders of magnitude for ~300 micro-caps (measured 2026-11-04:
+        # XXII implied 222,773 shares against a real ~30M).
         cap = None
+        implied_shares = None
         vc = vcaps.get(t)
         if vc and vc.get("cap") is not None:
             cap = float(vc["cap"])
             stats["cap_vendor"] += 1
             cdate = vc.get("date")
             if cdate == SESSION:
-                pass
+                implied_shares = cap / close if close else None
             else:
                 base_close = prior_close.get(t)
                 if base_close is None and prior_bar is not None and prior_date == PRIOR_SESSION:
                     base_close = float(prior_bar[4])
                 if base_close and close and cdate == PRIOR_SESSION:
-                    cap = cap * (close / base_close)
+                    implied_shares = cap / base_close
+                    cap = implied_shares * close
                     stats["cap_rescaled"] += 1
                 else:
                     stats["cap_stale_basis"] += 1
-        else:
+                    cap = None
+        if implied_shares is None:
             mc = q.get("marketCap")
-            if mc and "-" not in t:        # never take a per-line cap from a class line
-                cap = float(mc)
+            qp_ = q.get("regularMarketPrice")
+            if mc and "-" not in t and qp_:     # never take a per-line cap from a class line
+                implied_shares = float(mc) / float(qp_)
+                cap = implied_shares * close if close else float(mc)
                 stats["cap_quote"] += 1
+        # the independent share-count reading
+        mc = q.get("marketCap")
+        qp_ = q.get("regularMarketPrice")
+        if mc and qp_ and implied_shares:
+            y_implied = float(mc) / float(qp_)
+            if y_implied > 0 and abs(implied_shares - y_implied) / y_implied > 0.25:
+                implied_shares = y_implied
+                cap = implied_shares * close if close else float(mc)
+                stats["cap_share_count_corrected"] = \
+                    stats.get("cap_share_count_corrected", 0) + 1
         if cap is None:
             stats["cap_empty"] += 1
         else:
@@ -271,15 +303,37 @@ def main() -> int:
 
         out_rows.append(row)
 
+    # ---- the settle evidence: every row states how its close was settled, and when it
+    # last moved. A row is never silently "presumed settled".
+    settle_map = {}
+    if os.path.exists(SETTLE_MAP):
+        blob = json.load(open(SETTLE_MAP))
+        settle_map = blob.get("symbols") or blob
+    counts = {"CONFIRMED": 0, "UNCONFIRMED": 0, "NO_BAR": 0}
+    for row in out_rows:
+        sm = settle_map.get(row["ticker"]) or {}
+        st = (sm.get("settle_status") or "").strip()
+        if st not in counts:
+            st = "NO_BAR" if not row["close"] else "UNCONFIRMED"
+        row["settle_status"] = st
+        row["settle_round"] = str(sm.get("settle_round", "") or "")
+        counts[st] += 1
+    stats["settle_confirmed"] = counts["CONFIRMED"]
+    stats["settle_unconfirmed"] = counts["UNCONFIRMED"]
+    stats["settle_no_bar"] = counts["NO_BAR"]
+
     with open(OUT, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=BASE_COLUMNS)
         w.writeheader()
         for row in out_rows:
-            w.writerow(row)
+            w.writerow({c: row.get(c, "") for c in BASE_COLUMNS})
 
     qp = {}
     for t, qq in quotes.items():
-        pc = qq.get("previousClose")
+        # Yahoo's v7 quote serves the adjusted prior close as `regularMarketPreviousClose`
+        # (`previousClose` comes back null); the bridge's market-recap serves `previous_close`
+        pc = qq.get("regularMarketPreviousClose") or qq.get("previousClose") \
+            or qq.get("previous_close")
         if pc:
             qp[t] = pc
     json.dump(qp, open(os.path.join(os.path.dirname(OUT) or ".", "quote_prev.json"), "w"))

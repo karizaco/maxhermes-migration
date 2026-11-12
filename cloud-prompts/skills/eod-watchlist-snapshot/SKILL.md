@@ -375,19 +375,27 @@ consumer could not tell an empty cell from a failed fetch.
 **This section is the contract for the US file.** It is fetched at RUN time, so an edit here
 lands with the next fire and needs no prompt redeploy.
 
-## 1. The schema — 30 columns, the first 14 unchanged
+## 1. The schema — 32 columns, the first 14 unchanged
 
 ```
 date,ticker,name,open,high,low,close,volume,change_pct,market_cap,pe_ratio,sector,currency,exchange,
 rel_volume,pct_from_52w_high,pct_from_52w_low,sma_20,sma_50,sma_200,pct_vs_sma_50,pct_vs_sma_200,
-atr_14,atr_pct,gap_pct,avg_daily_dollar_volume,float_shares,market_cap_usd,cap_source_symbol,data_quality
+atr_14,atr_pct,gap_pct,avg_daily_dollar_volume,float_shares,market_cap_usd,cap_source_symbol,data_quality,
+settle_status,settle_round
 ```
 
 - **The first 14 columns are the original session columns, in the original order.** A
   consumer that reads by position keeps working; the new columns are appended.
 - **State the column count in `## Method` whenever it differs from the previous session** —
-  the archive now holds 14-column and 30-column files, and a consumer must be able to tell
-  them apart without parsing the header.
+  the archive now holds 14-column, 30-column and 32-column files, and a consumer must be able
+  to tell them apart without parsing the header.
+- **`settle_status` and `settle_round` are the row's own statement of how its close was
+  settled** (added 2026-11-12, `EOD_SETTLE_V1`). `settle_status` is a closed vocabulary:
+  `CONFIRMED` (the published close was matched by an INDEPENDENT reading of the venue's
+  auction print), `UNCONFIRMED` (a close is published but no independent reading was
+  available for that line), `NO_BAR` (no session bar and no venue print — no close is
+  published). `settle_round` is the probe round in which the row's close last changed
+  (`0` = it never moved after the first pull). The cell is never empty.
 - The numeric rule is unchanged: 4 significant figures with the fractional trailing zeros
   stripped, except values ≥ 100000 which keep full precision; `volume`, `market_cap`,
   `market_cap_usd`, `avg_daily_dollar_volume` and `float_shares` are integers.
@@ -579,6 +587,83 @@ print, so one row carries one price.
 vendor — they come from the **venue's settled print**, while the vendor supplies the
 universe, the carrier caps, the floats and the GICS sectors.
 
+## 2d. The SETTLE LOOP — detect the feed's quiet instead of sleeping a fixed time (2026-11-12)
+
+**THE WALL IS A DATA-LATENCY WALL, AND IT IS MEASURED IN DRIFT, NOT IN MISSING BARS.**
+A symbol's session bar can EXIST and still be PROVISIONAL: the venue's print and the
+vendor's bar both keep moving after the close, per symbol, asynchronously.
+
+| measurement | result |
+|---|---|
+| 2026-11-10, a 16:05 ET pull vs a 16:42 ET pull | **1,531 of 4,794 session closes moved (31.9%)**, the largest by 8.45% |
+| 2026-11-11, a 16:15 ET pull vs a 16:47 ET pull | **142 of the 443 names that already had a session bar at 16:15 still moved (32.1%)** — BGMS -5.62%, APUS +4.89%, CRD-B -3.06% |
+| the drift rate across the whole 16:05→16:11 window | **FLAT at 29–35%** — pulling later inside that window bought nothing |
+| the LIQUID core at 16:12 ET | already final (the daily bar matched the 1-minute final bar on 39/40) |
+| the universe at 16:15 ET | 90.4% of a 490-name sample carried the session bar; the rest kept moving until ~16:45 |
+
+**So the wall is a THIN-NAME wall, and a fixed sleep is a guess.** The routine therefore
+**detects** the quiet instead of sleeping 40 minutes:
+
+```bash
+python3 /workspace/eod_scripts/fetch_eod_settled.py --symbols <symbols.csv> \
+    --session <YYYY-MM-DD> --out /workspace/work/history.jsonl \
+    --settle-map /workspace/work/settle_map.json \
+    --probe-size 300 --probe-interval 240 --max-rounds 12
+```
+
+- **PASS 1** is the whole universe, one year of daily bars (`range=1y`) — the derived
+  columns and the 30-session denominators all come out of it, and the session bar is its
+  last bar.
+- **THE PROBE LOOP** pulls a **stratified sample** every `--probe-interval` seconds: half
+  from the **LOWEST-liquidity names** (the thin names are where the drift and the big
+  relative moves live) and half at random, plus every symbol that moved in an earlier
+  round or still has no bar. The probe measures **two** things per symbol — the vendor's
+  session bar (`range=5d`: 1.6 KB against 24.1 KB for a year) **and the venue's settled
+  print**, which is the thing that gets published. A round is quiet only when BOTH are
+  unchanged.
+- **INVARIANT:** every symbol that ever changed is re-pulled every round until it stops
+  changing, so the published close is the latest value the feed ever showed.
+- The loop exits when a round is quiet AND the residue re-pull is quiet. `--max-rounds`
+  bounds the wait; the residue is then published as it stands and the artifact says so.
+
+**THE INDEPENDENT CONFIRMATION — a different feed, and the measured reason the obvious
+one is wrong.** The published close is the VENUE's settled print, so the independent reading
+must be a source that is not the venue. Measured on 2026-11-11: the **TradingView America
+scanner** (2 POST calls, ~20,350 lines, ~3 seconds) agrees with the **vendor's daily bar**
+on **4,497 of 4,526** rows (99.4%) and with the **venue's print** on only **67.8%** — TV
+corroborates the BAR, not the venue, so using it to confirm the published close would flag
+1,450 rows where the venue is right and the bar is wrong. **It is a cross-check of the
+vendor's bar, never a confirmation of the published close.**
+
+The confirmation is therefore **Yahoo's 1-minute FINAL bar** (`O=H=L=C`, volume 0) — a
+different feed, so an agreement is a real corroboration. On thin names that synthetic bar
+carries the session's HIGH or LOW rather than the close, so a disagreement there is
+EXPECTED: the row is published as **`UNCONFIRMED`**, never smoothed, and the counts are
+published in `## Coverage`.
+
+**CNBC/CTA is the fleet's third source but it is only usable INSIDE the session window:**
+outside it, `last_time` degrades to a DATE (`"2026-11-11"`) and the "stamped exactly
+16:00:00-05:00" test cannot be applied — and its `last` then carries a later print (MDBH
+1.72 against the venue's 1.51).
+
+**THE VENUE'S DAY RANGE IS WINDOW-BOUND.** The range that brackets the venue's close comes
+from `GET /api/quote/{SYM}/summary` → `summaryData.TodayHighLow` ("$1.7195/$1.5100"), and
+Nasdaq populates it only close to the session — **outside that window it returns `N/A` for
+the illiquid names**, which are exactly the names whose close needs it (the vendor's bar
+carries a pre-auction print there). So the range pass is **targeted**: it is pulled only for
+the rows whose close no candidate range brackets (605 rows on 2026-11-11, ~2 minutes), and it
+must run inside the window. A row whose range no source can supply publishes **empty**
+high/low and is flagged `HIGH_LOW_UNAVAILABLE` — never an invented range.
+
+**THE CAP IS PUBLISHED ON THE SESSION'S PRICE BASIS.** The vendor's cap table lags the
+session (its rows are dated T+1), so the issuer's **share count** is taken from the vendor's
+carrier row and multiplied by the published close:
+`implied_shares = vendor_cap / prior_close; cap = implied_shares * close`.
+Where a SECOND reading (the quote service's own market cap) disagrees with the vendor's
+share count by more than 25%, the second reading wins — the vendor's cap is off by orders of
+magnitude for ~300 micro-caps. `market_cap / close` is therefore exactly the issuer's share
+count on the published basis, which is the identity the checker asserts.
+
 ## 3. `data_quality` — a per-row flag, so a consumer can trust a row
 
 **A row is published with empty cells and NO marker only when the marker is `OK`.** An
@@ -665,7 +750,10 @@ USD, and the `currency` column says `USD` on every row.
   most consequential move, and the caveat that changes how to read the numbers. A fourth
   bullet is a defect.
 - **`## Coverage`** — the populated count AND the basis of every column, then the
-  per-flag counts of `data_quality`.
+  per-flag counts of `data_quality`, then **the universe assertion** (rows pulled vs rows
+  written, and the lines added/removed against the prior session — the vendor's country tag
+  is NULLABLE, so a silent delta is a universe change nobody can see) and **the settle
+  evidence** (how many rows are `CONFIRMED`, `UNCONFIRMED` and `NO_BAR`).
 - **`## Market read`** — a **table**, never prose: the index proxies with their closes and
   changes, the advance/decline counts, and the sector table (sector, average move, median
   move, names, up, down, the sector ETF and its move). At least six numeric rows.
@@ -673,7 +761,8 @@ USD, and the `currency` column says `USD` on every row.
   relative volume and the ATR% so the row carries its own context.
 - **`## Method & caveats`** — the column count, the market-cap currency and the conversion
   direction, the carrier rule and the dedupe warning, the `data_quality` vocabulary, every
-  derived-column definition, the range rule and the never-zero rule.
+  derived-column definition, the range rule and the never-zero rule, **the settle loop**
+  (how the close was settled and confirmed) and **the cap's published basis**.
 
 ## 7. The run-time fetch — the scripts, and the marker that keeps a stale copy out
 
@@ -684,21 +773,28 @@ The derive stage is a **script**, not prose, so the numbers cannot drift between
 # The CAPABILITY marker is mandatory: an OLDER copy of these scripts is still published
 # and it would silently write the 14-column file. The contents API is authoritative and
 # is NOT CDN-cached, so it is tried first.
+# Each file carries its OWN marker: EOD_SETTLE_V1 for the settle-stage scripts,
+# EOD_BASE_V1 for the base assembly, EOD_DERIVE_V2 for the derive/report stages.
 mkdir -p /workspace/eod_scripts
-for F in fetch_eod_history.py fetch_eod_vendor_refs.py eod_derive.py build_eod_report.py; do
+for SPEC in \
+  "fetch_eod_universe.py:EOD_SETTLE_V1" "fetch_eod_quotes.py:EOD_SETTLE_V1" \
+  "fetch_eod_settled.py:EOD_SETTLE_V1" "fetch_eod_venue.py:EOD_SETTLE_V1" \
+  "build_eod_base.py:EOD_BASE_V1" "patch_eod_session_closes.py:EOD_BASE_V1" \
+  "eod_derive.py:EOD_DERIVE_V2" "build_eod_report.py:EOD_DERIVE_V2" ; do
+  F=${SPEC%%:*}; MARK=${SPEC##*:}
   S=/workspace/eod_scripts/$F
   for U in \
     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F?ref=main" \
     "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F" \
     "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/eod-watchlist-snapshot/scripts/$F" ; do
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-    if [ -s "$S.tmp" ] && grep -q 'EOD_DERIVE_V2' "$S.tmp" 2>/dev/null; then
+    if [ -s "$S.tmp" ] && grep -q "$MARK" "$S.tmp" 2>/dev/null; then
       mv -f "$S.tmp" "$S"; break
     fi
     rm -f "$S.tmp"
   done
-  if [ ! -s "$S" ] || ! grep -q 'EOD_DERIVE_V2' "$S" 2>/dev/null; then
-    echo "eod-derive: UNAVAILABLE ($F has no version carrying the EOD_DERIVE_V2 marker)"
+  if [ ! -s "$S" ] || ! grep -q "$MARK" "$S" 2>/dev/null; then
+    echo "eod-derive: UNAVAILABLE ($F has no version carrying the $MARK marker)"
     echo "no derived columns; no push"
     exit 1
   fi
@@ -712,46 +808,66 @@ publishing nothing: the consumer cannot tell which shape it is holding.
 Then, in order:
 
 ```bash
-# 0. the venue's settled print for the universe (THE CLOSE OF RECORD) + the vendor's carrier
-#    rows and public floats (keyset, sequential). The base assembly is a published script:
-#    scripts/build_eod_base.py (marker EOD_BASE_V1), with the two helpers below.
-python3 <venue_sweep>.py <tickers.json> /workspace/work/venue_info.json     # Nasdaq /info
-python3 /workspace/eod_scripts/fetch_eod_vendor_refs.py <universe.json> /workspace/work/vendor_refs.json
+# 0. the US universe + the vendor's carrier rows, public floats, trailing P/E and GICS
+#    sector - ONE joined keyset sweep (~25 bridge calls instead of ~66; the bridge is
+#    metered per CALL, not per row)
+python3 /workspace/eod_scripts/fetch_eod_universe.py /workspace/work/vendor_sweep.jsonl \
+    /workspace/work/vendor_refs.json
 
-# 1. ONE history pull per symbol (a year of daily bars serves the session AND the derived columns)
-python3 /workspace/eod_scripts/fetch_eod_history.py --symbols <symbols.csv> \
-    --out /workspace/work/history_p1.jsonl --session <YYYY-MM-DD> --threads 24
-# ... a SECOND pull ~30 minutes later: the bar keeps drifting for ~40 minutes after the close
-python3 /workspace/eod_scripts/fetch_eod_history.py --symbols <symbols.csv> \
-    --out /workspace/work/history_p2.jsonl --session <YYYY-MM-DD> --threads 24
+# 1. the quote batch: the dividend/split-adjusted prior close (--quote-prev), the trailing
+#    P/E, and the market cap used as the SECOND reading on the issuer's share count
+python3 /workspace/eod_scripts/fetch_eod_quotes.py /workspace/work/symbols.csv \
+    /workspace/work/quote_batch.json
 
-# 1b. merge the two passes (the later wins) and put the venue's print into the session bar
-python3 /workspace/eod_scripts/merge_eod_history.py \
-    /workspace/work/history_p1.jsonl /workspace/work/history_p2.jsonl \
-    /workspace/work/history_merged.jsonl
+# 2. the price history + THE SETTLE PROBE LOOP. Pass 1 is the whole universe (a year of
+#    daily bars serves the session AND the derived columns); the loop then probes until
+#    the feed stops moving, and writes the settle map (the temporal evidence).
+python3 /workspace/eod_scripts/fetch_eod_settled.py --symbols /workspace/work/symbols.csv \
+    --session <YYYY-MM-DD> --out /workspace/work/history.jsonl \
+    --settle-map /workspace/work/settle_map.json \
+    --probe-size 300 --probe-interval 240 --max-rounds 12
+
+# 3. the venue's settled print (THE CLOSE OF RECORD) + the venue's day range (targeted) +
+#    the independent confirmation - the settle map is updated in place
+python3 /workspace/eod_scripts/fetch_eod_venue.py --symbols /workspace/work/symbols.csv \
+    --out /workspace/work/venue_info.json --settle-map /workspace/work/settle_map.json \
+    --history /workspace/work/history.jsonl --quotes /workspace/work/quote_batch.json \
+    --session <YYYY-MM-DD> --threads 96
+
+# 3b. put the venue's print into the session bar, so ONE row carries ONE price
 python3 /workspace/eod_scripts/patch_eod_session_closes.py \
-    /workspace/work/history_merged.jsonl /workspace/work/venue_info.json \
+    /workspace/work/history.jsonl /workspace/work/venue_info.json \
     /workspace/work/history_patched.jsonl <YYYY-MM-DD>
 
-# 1c. the BASE assembly — it owns the numeric format (4 sig figs, integers) and the price source
+# 4. the BASE assembly - it owns the numeric format and the price source
 python3 /workspace/eod_scripts/build_eod_base.py <YYYY-MM-DD> <PRIOR-YYYY-MM-DD> \
     /workspace/work/vendor_refs.json /workspace/work/history_patched.jsonl \
     /workspace/work/quote_batch.json /workspace/work/base.csv \
-    /workspace/work/cnbc.json /workspace/work/venue_info.json <PRIOR-CSV>
+    /workspace/work/cnbc.json /workspace/work/venue_info.json <PRIOR-CSV> \
+    /workspace/work/settle_map.json
 
-# 3. derive the columns, the flags, the carrier map and the manifest
+# 5. derive the columns, the flags, the carrier map and the manifest
 python3 /workspace/eod_scripts/eod_derive.py --base /workspace/work/base.csv \
     --history /workspace/work/history_patched.jsonl --vendor /workspace/work/vendor_refs.json \
-    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.csv --manifest /workspace/work/manifest.json
+    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.csv --manifest /workspace/work/manifest.json \
+    --prior-csv <PRIOR-CSV> --quote-prev /workspace/work/quote_prev.json
 
-# 4. build the report FROM the published CSV (never hand-written)
+# 6. build the report FROM the published CSV (never hand-written)
 python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<YYYY-MM-DD>.csv \
-    --manifest /workspace/work/manifest.json --history /workspace/work/history.jsonl \
+    --manifest /workspace/work/manifest.json --history /workspace/work/history_patched.jsonl \
     --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json>
 
-# 5. the assertions — the artifact is not finished until they pass
-python3 tools/check_eod_artifact.py --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md
+# 7. the assertions — the artifact is not finished until they pass
+python3 tools/check_eod_artifact.py --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md \
+    --prior-csv <PRIOR-CSV>
 ```
+
+**The settle contract has its own fault-injection test** — a checker that has never been
+observed FAILING is a claim, not a check:
+`python3 tools/test_eod_settle_contract.py` (8 cases: the valid artifact passes; an empty
+`settle_status`, an off-vocabulary `settle_status`, a `NO_BAR` row carrying a close, a
+non-integer `settle_round`, a report whose settle counts disagree with the CSV, and a
+report with no settle evidence are each rejected).
 
 **The checker is INDEPENDENT of the builder** — it re-implements the issuer-grouping rule
 instead of importing `eod_derive.py`, because a checker that shares code with the thing it

@@ -223,6 +223,8 @@ def main() -> int:
         ("avg_daily_dollar_volume", "avg_daily_dollar_volume", "mean(close x volume) over the prior 30 sessions"),
         ("float_shares", "float_shares", "vendor public float"),
         ("cap_source_symbol", "cap_source_symbol", "the row the cap was resolved from"),
+        ("settle_status", "settle_status", "how this row's close was settled - CONFIRMED (matched an independent reading) / UNCONFIRMED / NO_BAR"),
+        ("settle_round", "settle_round", "the probe round in which this row's close last changed (0 = it never moved after the first pull)"),
     ]:
         cov.append((label, populated.get(col, 0), basis))
 
@@ -252,6 +254,27 @@ def main() -> int:
         A(f"| `{label}` | {n} | {basis} |")
     A("")
     A(f"Rows: **{len(rows)}**. Settled closes: **{len(closes)}**.")
+    A("")
+    # ---- the universe assertion (the vendor's country tag is NULLABLE, so the delta must
+    # be published, never absorbed)
+    added = manifest.get("universe_added_vs_prior") or []
+    removed = manifest.get("universe_removed_vs_prior") or []
+    A(f"**Universe:** {manifest.get('universe_pulled', len(rows))} rows pulled from the "
+      f"vendor's `country_iso='US'` tag, {manifest.get('universe_written', len(rows))} written "
+      f"({manifest.get('universe_written', len(rows)) - manifest.get('universe_pulled', len(rows)):+d} "
+      f"against the pull). Against the prior session's file ({len(added) + len(removed)} "
+      f"line(s) moved): added {', '.join('`' + t + '`' for t in added) if added else 'none'}; "
+      f"removed {', '.join('`' + t + '`' for t in removed) if removed else 'none'} - for the "
+      f"removed lines the vendor's `general_info` rows are absent altogether, so the change "
+      f"is the vendor's, not the screen's.")
+    A("")
+    # ---- the settle evidence
+    sc = manifest.get("settle_counts") or {}
+    A(f"**Settle evidence:** {sc.get('CONFIRMED', 0)} of {len(rows)} rows are `CONFIRMED` - "
+      f"their close was matched against an INDEPENDENT reading of the 16:00 ET auction print; "
+      f"{sc.get('UNCONFIRMED', 0)} are `UNCONFIRMED` (a close is published but no independent "
+      f"reading was available for that line) and {sc.get('NO_BAR', 0)} carry no session bar "
+      f"at all. The deepest probe round was {manifest.get('settle_max_round', 0)}.")
     A("")
     A("### Data-quality flags (per row, `data_quality`)")
     A("")
@@ -349,6 +372,22 @@ def main() -> int:
       f"of the same issuer and say which one in `cap_source_symbol`. "
       f"**One issuer now appears on more than one row, so a cap-weighted aggregate MUST "
       f"deduplicate on `cap_source_symbol` first.**")
+    A("- **The cap is published on the session's price basis.** The vendor's cap table lags the "
+      "session (its rows are dated T+1), so the implied share count is taken from the vendor's "
+      "carrier row, corrected by Yahoo's independent implied share count when the two readings "
+      "disagree by more than 25%, and multiplied by the published close. `market_cap / close` is "
+      "therefore exactly the issuer's share count on the published basis.")
+    A(f"- **Every close carries its own settle statement** in `settle_status` "
+      f"(`CONFIRMED` / `UNCONFIRMED` / `NO_BAR`) and the probe round in which it last changed "
+      f"in `settle_round`. The session bar is taken from a **probe loop** - the close of a "
+      f"symbol's daily bar keeps moving for up to ~45 minutes after the close, and a bar can "
+      f"exist and still be provisional - so the routine pulls a stratified sample of the "
+      f"thinnest names plus every name that moved, round after round, and publishes when the "
+      f"drift goes to zero instead of sleeping a fixed time. The published close of every "
+      f"**CONFIRMED** row was then matched against an independent reading of the 16:00 ET "
+      f"auction print (Yahoo's 1-minute final bar — a different feed; where it carries the "
+      f"session's high or low instead of the close, as it does on thin names, the row is "
+      f"published as `UNCONFIRMED` rather than smoothed).")
     A(f"- **`data_quality`**: every row carries a flag from a closed vocabulary; a cell can hold "
       f"several flags joined with `|`, in the fixed precedence "
       f"{' > '.join(manifest['flag_precedence'])}. `OK` appears only when nothing else applies. "

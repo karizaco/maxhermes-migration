@@ -293,3 +293,81 @@ re-improvised at every fire):
 - `scripts/patch_eod_session_closes.py` — puts the venue's settled print into the session bar
   before the derived columns are computed.
 
+
+---
+
+## 10. The settle wall, measured and replaced with a probe loop (2026-11-12)
+
+**The wall is a data-latency wall, and it was measured twice before anything was changed.**
+
+| measurement | result |
+|---|---|
+| 2026-11-10, a 16:05 ET pull vs a 16:42 ET pull | **1,531 of 4,794 session closes moved (31.9%)**, the largest by 8.45% |
+| 2026-11-11, a 16:15 ET pull vs a 16:47 ET pull | **142 of the 443 names that already had a session bar at 16:15 still moved (32.1%)** — BGMS -5.62%, APUS +4.89%, CRD-B -3.06% |
+| the drift rate across the whole 16:05→16:11 window | **FLAT at 29–35%** — pulling later inside that window bought nothing |
+| the LIQUID core at 16:12 ET | already final (the daily bar matched the 1-minute final bar on 39/40) |
+| the universe at 16:15 ET | 90.4% of a 490-name sample carried the session bar; the rest kept moving until ~16:45 |
+
+**So the wall is a THIN-NAME wall, and a fixed sleep is a guess.** The old shape pulled the
+whole universe twice, 40 minutes apart: 9,818 requests, half of them wasted, and the second
+pass was blind — it re-fetched names that had already settled and still missed names that
+had not. (The 2026-11-11 run's two passes changed the close on 1,957 of 4,907 names.)
+
+**The fix is DETECTION, not a longer sleep.** `scripts/fetch_eod_settled.py` (marker
+`EOD_SETTLE_V1`) pulls the universe once (pass 1, a year of daily bars — the derived columns
+come out of it) and then **probes** until the feed stops moving: every `--probe-interval`
+seconds it re-pulls a **stratified sample** — half from the LOWEST-liquidity names (the thin
+names are where the drift and the big relative moves live), half at random, plus every name
+that moved in an earlier round or still has no bar. The probe measures **two** things per
+symbol: the vendor's session bar (`range=5d`: 1.6 KB against 24.1 KB) **and the venue's
+settled print** — the thing that is actually published. The loop exits on **two consecutive
+quiet rounds** with the residue size unchanged (the residue never empties: ~5% of the
+universe never publishes a session bar, so an empty residue is not a thing that happens).
+
+**INVARIANT:** every symbol that ever changed is re-pulled every round until it stops
+changing, so the published close is the latest value the feed ever showed.
+
+**The confirmation source was measured, and the obvious one is wrong.** The TradingView
+America scanner (2 POST calls, ~20,350 lines, ~3 seconds) agrees with the **vendor's daily
+bar** on **4,497 of 4,526** rows (99.4%) and with the **venue's print** on only **67.8%** —
+TV corroborates the BAR, not the venue, so using it to confirm the published close would
+flag 1,450 rows where the venue is right and the bar is wrong. (It also settles LATER than
+the vendor's feed: at 16:12 ET on 2026-11-11 its close matched the settled close on only
+10/40 liquid names against Yahoo's 39/40.) The confirmation is therefore **Yahoo's 1-minute
+final bar** — a different feed — and where that bar carries the session's high or low
+instead of the close (thin names) the row is published as **`UNCONFIRMED`**, never smoothed.
+
+**CNBC/CTA is only usable inside the session window:** outside it `last_time` degrades to a
+DATE (`"2026-11-11"`) and the "stamped exactly 16:00:00-05:00" test cannot be applied — and
+its `last` then carries a later print (MDBH 1.72 against the venue's 1.51).
+
+**The cap is now published on the session's price basis.** The vendor's cap table lags the
+session (its rows are dated T+1), so the issuer's **share count** is taken from the vendor's
+carrier row and multiplied by the published close; where a second reading (the quote
+service's own market cap) disagrees with the vendor's share count by more than 25%, the
+second reading wins — the vendor's cap is off by orders of magnitude for ~300 micro-caps.
+`market_cap / close` is therefore exactly the issuer's share count on the published basis.
+
+**New in the repo (procedure only — the prompt and the schedule are untouched):**
+
+- `scripts/fetch_eod_universe.py` — ONE joined keyset sweep of the vendor: the universe,
+  the carrier caps, the floats, the trailing P/E and the sector in one row per symbol, ~25
+  bridge calls instead of ~66 (the bridge is metered per CALL, not per row).
+- `scripts/fetch_eod_quotes.py` — the Yahoo `v7/finance/quote` batch (cookie + crumb). The
+  handshake trap: `fc.yahoo.com` answers HTTP 404 **and still sets the cookie**, so
+  `urllib` never sees it and the whole quote path gets abandoned.
+- `scripts/fetch_eod_settled.py` — pass 1 + the settle probe loop → the history and the
+  settle map.
+- `scripts/fetch_eod_venue.py` — the venue's settled print (Nasdaq `/info`) + the
+  independent confirmation → the settle map's `CONFIRMED` / `UNCONFIRMED` / `NO_BAR`.
+- `scripts/build_eod_base.py` — now also carries the settle evidence and the cap's share
+  count correction.
+- `tools/test_eod_settle_contract.py` — the fault-injection test for the settle contract
+  (8 cases; a checker never observed failing is a claim).
+- `tools/check_eod_artifact.py` — five new assertions: the `settle_status` vocabulary, the
+  `NO_BAR`/close rule, the `settle_round` format, at least one `CONFIRMED` row, and the
+  report's settle evidence agreeing with the CSV.
+
+**The published schema is 32 columns** (the base 14 + 16 derived/provenance + `settle_status`
++ `settle_round`); the first 14 are unchanged, so a consumer reading by position keeps
+working. The archive now holds 14-, 30- and 32-column files.

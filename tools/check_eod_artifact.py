@@ -48,12 +48,16 @@ REQUIRED_COLUMNS = [
     "rel_volume", "pct_from_52w_high", "pct_from_52w_low", "sma_20", "sma_50", "sma_200",
     "pct_vs_sma_50", "pct_vs_sma_200", "atr_14", "atr_pct", "gap_pct",
     "avg_daily_dollar_volume", "float_shares", "market_cap_usd", "cap_source_symbol",
-    "data_quality",
+    "data_quality", "settle_status", "settle_round",
 ]
 
 VOCABULARY = {"OK", "RANGE_ADJUSTED", "HIGH_LOW_UNAVAILABLE", "CAP_CARRIED", "NO_SECTOR",
               "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION",
               "SPLIT_ADJUSTED"}
+
+# The settle evidence: every row states how its close was settled. `CONFIRMED` means the
+# close was matched against an INDEPENDENT reading of the 16:00 ET auction print.
+SETTLE_VOCABULARY = {"CONFIRMED", "UNCONFIRMED", "NO_BAR"}
 
 # the archive's NUMERIC RULE, re-implemented here so the checker never shares code with
 # the builder: 4 significant figures with the fractional trailing zeros stripped, EXCEPT
@@ -71,7 +75,7 @@ NUMERIC_COLUMNS = ["open", "high", "low", "close", "change_pct", "pe_ratio", "re
                    "pct_from_52w_high", "pct_from_52w_low", "sma_20", "sma_50", "sma_200",
                    "pct_vs_sma_50", "pct_vs_sma_200", "atr_14", "atr_pct", "gap_pct"]
 INTEGER_COLUMNS = ["volume", "market_cap", "market_cap_usd", "avg_daily_dollar_volume",
-                   "float_shares"]
+                   "float_shares", "settle_round"]
 
 
 def fmt_num(x) -> str:
@@ -191,6 +195,10 @@ def main() -> int:
     zero_bad = 0
     shares_bad = 0
     capusd_bad = 0
+    settle_counts = {"CONFIRMED": 0, "UNCONFIRMED": 0, "NO_BAR": 0}
+    settle_bad = 0
+    settle_nobar_bad = 0
+    settle_round_bad = 0
     for r in rows:
         dq = (r.get("data_quality") or "").strip()
         if dq == "":
@@ -227,6 +235,21 @@ def main() -> int:
             implied = cap / cl2
             if not (1e3 <= implied <= 1e13):
                 shares_bad += 1
+
+        # ---- the settle evidence
+        st = (r.get("settle_status") or "").strip()
+        if st not in SETTLE_VOCABULARY:
+            settle_bad += 1
+        else:
+            settle_counts[st] += 1
+        has_close = bool((r.get("close") or "").strip())
+        if st == "NO_BAR" and has_close:
+            settle_nobar_bad += 1
+        if st != "NO_BAR" and not has_close:
+            settle_nobar_bad += 1
+        sr = (r.get("settle_round") or "").strip()
+        if sr and not re.fullmatch(r"\d+", sr):
+            settle_round_bad += 1
 
     (bad if empty_flags else ok)(f"data_quality has no empty value ({empty_flags} empty)")
     (bad if bad_vocab else ok)(f"every data_quality token is in the closed vocabulary "
@@ -267,6 +290,15 @@ def main() -> int:
         ok(f"every numeric cell is in the archive's numeric format ({fmt_checked} cells)")
     (bad if shares_bad else ok)(f"the implied share count is plausible on every capped row "
                                 f"({shares_bad})")
+    (bad if settle_bad else ok)(f"every settle_status is in the closed vocabulary "
+                                f"({settle_bad} unknown)")
+    (bad if settle_nobar_bad else ok)(
+        f"a row with a close is never NO_BAR and a NO_BAR row never carries a close "
+        f"({settle_nobar_bad})")
+    (bad if settle_round_bad else ok)(f"settle_round is a non-negative integer "
+                                      f"({settle_round_bad})")
+    (bad if settle_counts["CONFIRMED"] == 0 else ok)(
+        f"at least one close is independently CONFIRMED ({settle_counts['CONFIRMED']} rows)")
 
     # change_pct must be the PRICE change against the prior session's settled close.
     # A quote service's previous_close is dividend-adjusted for payers, and a bar whose
@@ -367,6 +399,26 @@ def main() -> int:
         dir_ok = "conversion direction" in method or "no fx conversion" in method
         (bad if not cur_ok else ok)("the Method section states the market-cap currency")
         (bad if not dir_ok else ok)("the Method section states the conversion direction")
+
+        # the report's settle evidence must agree with the CSV it was built from
+        m = re.search(r"\*\*Settle evidence:\*\*\s*(\d+)\s+of\s+(\d+)\s+rows are `CONFIRMED`"
+                      r".*?(\d+)\s+are `UNCONFIRMED`.*?and\s+(\d+)\s+carry no session bar",
+                      md, re.S)
+        if not m:
+            bad("the report publishes no settle evidence")
+        else:
+            rep_conf, rep_rows, rep_unconf, rep_nobar = (int(x) for x in m.groups())
+            mism = []
+            if rep_conf != settle_counts["CONFIRMED"]:
+                mism.append(f"CONFIRMED {rep_conf} vs {settle_counts['CONFIRMED']}")
+            if rep_unconf != settle_counts["UNCONFIRMED"]:
+                mism.append(f"UNCONFIRMED {rep_unconf} vs {settle_counts['UNCONFIRMED']}")
+            if rep_nobar != settle_counts["NO_BAR"]:
+                mism.append(f"NO_BAR {rep_nobar} vs {settle_counts['NO_BAR']}")
+            if rep_rows != len(rows):
+                mism.append(f"rows {rep_rows} vs {len(rows)}")
+            (bad if mism else ok)("the report's settle evidence agrees with the CSV "
+                                  f"({'; '.join(mism) if mism else 'all counts match'})")
 
     for c in checks:
         print(c)
