@@ -948,7 +948,7 @@ plus his Playbook and the BreakoutsHappen write-up of the same workflow:
 | 6 | **ADR ≥ 3%** — exclude slow movers (counter-example: SMFG at 1.33% ADR was rejected) | `AVG((high-low)/close, 20 rows) >= 0.03` |
 | 7 | **Close ≥ $5** — published `c >= 5`. "Prefer higher priced stocks" is a **ranking** preference, not a filter | `close >= 5.0` |
 | 8 | **Long-term trend** — exhaustion at support, NOT long-term downtrend | `close >= close_20d_ago * 0.92` (20 sessions back, not 21) |
-| S | **Stop** — body low, but the signal bar's LOW if the body is under 15% of the range; must be ≤ 2.5% from the entry | `CASE WHEN body_ratio < 0.15 THEN low ELSE LEAST(open, close) END` |
+| S | **Stop** — Bonde's rule (2026-11-12): the **low of the candle body** is the default; the signal bar's LOW is his sanctioned **alternative**, legal only when it is within 2.5% of the entry. A body low that sits ON the entry (≤ 0.10% below it) is degenerate → use the bar low; a bar low more than 2.5% away is NOT a legal stop → the body low stands. Stop goes in the NEXT MORNING | `CASE WHEN (entry - LEAST(open,close))/entry*100 <= 0.10 THEN (low IF (entry-low)/entry*100 <= 2.5 ELSE NO_LEGAL_STOP) ELSE LEAST(open,close) END` |
 | U | **Universe** — NYSE/NASDAQ/AMEX, market_cap > $5B (proxy for institutional ownership ≥ 1,000 funds; shibui does not expose `institutional_holders_count`), avg_vol_30d > 1M | |
 
 > **The tail:body ratio is NOT a gate.** The old criterion 3 (`(LEAST(open,close) - low) >= 3 * ABS(close - open)`)
@@ -965,12 +965,24 @@ shibui does not have `institutional_holders_count`. Two proxies:
 - `market_cap > 5_000_000_000` (5B USD floor — used as default)
 - `mcp__tradingview__screen_stocks` filter `institutional_holders_count >= 1000` (more accurate but adds an MCP call; only use when validating a short list, not as the primary universe gate)
 
+> **The universe gate is FIXED — do not "improve" it without the user.** Reviewed 2026-11-12 by
+> measuring the proxy against Nasdaq's 13F institutional-holdings data (an outside source, not
+> shibui): log(market cap) correlates with the institutional-holder count at **r = 0.86**
+> (Spearman 0.84), while log(average volume) correlates at only **r = 0.45** — so the cap floor
+> does the work and the liquidity rule is really excluding tiny-float structured names (median
+> **4** 13F filers), not under-owned large caps. A direct institutional-holder gate was
+> considered and **rejected**: it costs one API call per name, the 13F *filer* count is not the
+> *fund* count (one filer runs many funds), and the user chose to keep the proxy as it is.
+> Note also that the TradingView public scanner returns **null** for
+> `institutional_holders_count` (verified 2026-11-12 across six field-name variants), so that
+> second proxy is not actually available.
+
 **Bonde's output discipline** (do NOT skip these):
 - "Select 1 to 3 ideas" — the screen returns the mechanical passers; the discretionary review narrows to 1-3. Do not pad with marginal setups.
 - "Prefer higher priced stocks" — a **ranking** preference, applied when ordering the final list. It is not a filter (the published price floor is $5).
 - "Run the Stockbee Reversal Bullish Scan between 3.30 to 3.55 PM" — cron at 15:55 ET is right at the end of Bonde's window.
 - "Enter between 3.58 to 4PM or using Market On Close order (MOC)" — the cron is a screener, not an executor; entry is the trader's job.
-- "Put stop of less than 2%" — Bonde places the stop at the **low of the candle body** next morning, sized so loss ≤ 2.5%. **On a near-doji body the body low sits inside the bar's own noise** (0.07% away on the 2026-10-26 CBRE bar) and produces false exits, so when `body_ratio < 0.15` the report uses the signal bar's low instead — Bonde sanctions this: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."*
+- "Put stop of less than 2%" — Bonde places the stop at the **low of the candle body** next morning, sized so loss ≤ 2.5%. His own words sanction the alternative: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."* **The rule as implemented since 2026-11-12 (contract v4):** the **body low is the default** and is used whenever it is a real level (more than 0.10% below the entry); the **shadow (bar) low is the alternative** and is used only when the body low is degenerate — it sits on the entry, so a stop there is meaningless (0.07% wide on the 2026-10-26 CBRE bar, 0.00% on ADBE and TRI on 2026-11-10). A shadow low **more than 2.5% from the entry is not a legal stop at all**, so the body low stands and the row is flagged `NO_LEGAL_STOP` when the body low is degenerate too. The stop is placed **the next morning**, not at the entry: Bonde buys at 3.55–3.58 **without a stop**.
 - "Exit on stop hit if it does not work on 3rd day" — typical hold 1-3-5 days; report a "Day 1 / Day 2 / Day 3+" tag so the trader knows how stale the signal is.
 
 **The entry is TODAY's close.** The signal bar is today's live candle, so `entry_price` is
@@ -1112,12 +1124,12 @@ for U in \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/reversal_bullish.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'bonde-artifact-v3' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'bonde-artifact-v4' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
-if [ ! -s "$S" ] || ! grep -q 'bonde-artifact-v3' "$S"; then
+if [ ! -s "$S" ] || ! grep -q 'bonde-artifact-v4' "$S"; then
   echo "reversal_bullish.py: UNAVAILABLE (no copy of the script carrying the current artifact contract)"
   echo "no artifact; no push"
   exit 1
@@ -1244,38 +1256,41 @@ Every candidate row — in the markdown table **and** in the CSV — carries:
 |---|---|
 | `bar_low` / `bar_high` | the signal bar's actual range |
 | `stop_vs_bar_low_pct` | **signed**: negative = the stop is BELOW the bar low (survives the bar's noise); positive = the stop is ABOVE the bar low, i.e. inside the bar's range |
-| `stop_class` | `STRUCTURAL` / `NOISE_BREACH` / `CAPPED` (see below) |
+| `stop_class` | `STRUCTURAL` / `BODY_LOW` / `CAPPED` / `NO_LEGAL_STOP` (see below) |
 | `stop_capped` | `yes`/`no` — did the 2.5% max-loss cap bind the stop |
 | `bar_low_vs_entry_pct` | the structural distance to the bar low — the real risk, uncapped |
 
 The three classes, exactly one per candidate:
 
-- **`STRUCTURAL`** — the published stop is the structural level itself (the bar's low on a
-  near-doji body). A print through it is a genuine structural failure.
-- **`NOISE_BREACH`** — the published stop sits **above** the signal bar's low, so the bar
-  itself already traded through it. A print through the stop is **noise**, not a failure.
-  The structural failure level is the bar low.
-- **`CAPPED`** — the 2.5% cap bound the stop while the published stop is still at or below
-  the bar low, so it survives the noise but is tighter than the structural level.
+- **`STRUCTURAL`** — the published stop **IS the signal bar's low**: the level at which the
+  exhaustion thesis is structurally dead. It survives a full retest of the signal bar.
+- **`BODY_LOW`** — the published stop is **Bonde's default body low**, which sits INSIDE the
+  signal bar's own range, so it is *tighter* than the structural level: the risk is smaller
+  and the trigger comes sooner, but a retest of the bar low takes you out before the thesis
+  resolves. The structural level (the bar low) is published on every row.
+- **`CAPPED`** — the 2.5% max-loss cap bound the stop (the body low was further than 2.5%).
+- **`NO_LEGAL_STOP`** — **no stop Bonde's rule accepts**: the body low is degenerate (it sits
+  on the entry) AND the shadow low is more than 2.5% away. Such a name is **not a trade** and
+  may not be promoted.
 
 `stop_capped` and `stop_basis` carry the cap fact in every case, so no information is lost
 when the class is not `CAPPED`.
 
 > **Two notes on the classes, so nobody reads more into them than is there.**
-> (1) A **body-low** stop on a non-doji bar is *also* `NOISE_BREACH`: the signal bar's washout
-> low traded below it, so the structural failure level is the **bar low**, not the body low.
-> That is the fact the row publishes, and it is why `bar_low` and `bar_low_vs_entry_pct`
-> travel with every candidate.
-> (2) `CAPPED` does **not** occur with today's stop rule: the 2.5% cap can only pull a stop
-> *up* into the bar's range, which makes it a `NOISE_BREACH`. The class is computed, not
-> hardcoded, and `stop_capped` / `stop_basis` say plainly when the cap bound the stop.
+> (1) The stop goes in the **next morning**, so the signal bar's own low — printed BEFORE
+> the stop existed — is not a breach of it. `BODY_LOW` therefore does **not** mean "the bar
+> traded through your stop"; it means the published stop is tighter than the structural level.
+> The structural level (the bar low) is published on every row as `invalidation_level`.
+> (2) `NO_LEGAL_STOP` is the one class that ends a candidate: Bonde's 2.5% rule leaves no
+> legal stop, so the name is not a trade and may not be promoted.
 
-> **The rule that came out of the 2026-11-03 run:** when a promoted idea's
-> `stop_class == NOISE_BREACH`, its risk line goes to the **TOP of the reply** — inside the
-> `### Signal` line for that name — not into `### Method & caveats`. Say what the stop is
-> and what it means: *"stop 216.55 is inside the signal bar's range (low 214.67) — a print
-> through it is a noise breach, not a structural failure"*. A trader must be able to choose
-> which risk they are taking before they size the position, not after reading a footnote.
+> **The rule that came out of the 2026-11-03 run (and was restated on 2026-11-12):** when a
+> promoted idea's `stop_class == BODY_LOW`, its risk line goes to the **TOP of the reply** —
+> inside the `### Signal` line for that name — not into `### Method & caveats`. Say what the
+> stop is and what it means: *"stop 99.00 is inside the signal bar's range (low 96.00) — it is
+> tighter than the structural level and goes in the next morning"*. A trader must be able to
+> choose which risk they are taking before they size the position, not after reading a
+> footnote. A promoted name may never be `NO_LEGAL_STOP`.
 
 ##### 4. Volume conviction is a NUMBER, not a sentence
 
@@ -1313,8 +1328,15 @@ columns beyond the existing ones:
 
 ```
 bar_low, bar_high, stop_vs_bar_low_pct, bar_low_vs_entry_pct, stop_class, stop_capped,
-vol_vs_30d_avg_pct, capitulation, invalidation_level
+vol_vs_30d_avg_pct, capitulation, invalidation_level,
+body_low, body_stop_pct, shadow_stop_pct, body_stop_degenerate, stop_placement
 ```
+
+**Both stop levels travel with every row** (contract v4, 2026-11-12), because Bonde's default
+is the body low and the shadow low is his sanctioned alternative: `body_low` and
+`body_stop_pct` (the default), `shadow_stop_pct` (the alternative), `body_stop_degenerate`
+(yes when the body low sits on the entry, so the alternative applies) and `stop_placement`
+("next morning, after the open").
 
 `bar_low`/`bar_high` are the signal bar's range (the same numbers as `low`/`high`, named
 explicitly so no consumer has to guess which low is meant). `capitulation` is
@@ -1345,7 +1367,7 @@ It asserts the skeleton, the 3-bullet TL;DR, the verdict in the first 15 lines, 
 `Ideas promoted` count against the number of ✅ IDEA blocks, the required columns on every
 row of both files, that every promoted idea states its stop class and its invalidation
 test, that every non-promoted candidate is accounted for, that no marker survived, and that
-the artifact carries the current contract marker (`bonde-artifact-v3` — a missing marker
+the artifact carries the current contract marker (`bonde-artifact-v4` — a missing marker
 means a stale copy of the script produced it; re-fetch and re-run). It exits 1 and prints
 each failure. **If it fails, fix the artifact and run it again — do not report a clean run
 over a failing check.** Do not eyeball these things; the 2026-11-03 artifact looked fine
@@ -1358,11 +1380,11 @@ opener, `### Signal`, `### Method & caveats`, `### Files`, `### Push / errors`. 
 routine-specific rules on top of it:
 
 - **The prose opener names the risk.** Its second sentence is the caveat that most changes
-  how the run should be read. When a promoted idea is `NOISE_BREACH`, that is the caveat:
-  the published stop is inside the signal bar's range.
-- **The `### Signal` line for a NOISE_BREACH name says so in the line itself.** One
-  ticker per line, with the catalyst AND the stop's meaning. Do not move it into
-  `### Method & caveats`.
+  how the run should be read. When a promoted idea is `BODY_LOW`, that is the caveat:
+  the published stop is inside the signal bar's range, i.e. tighter than the structural level.
+- **The `### Signal` line for a BODY_LOW name says so in the line itself.** One
+  ticker per line, with the catalyst AND the stop's meaning (including that the stop goes
+  in the next morning). Do not move it into `### Method & caveats`.
 - **Do not re-publish the artifact's tables in the chat.** The table, the gate matrix and
   the funnel live in the file; the chat carries the verdict, the risk and the counts.
 

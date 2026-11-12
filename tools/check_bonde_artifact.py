@@ -31,9 +31,18 @@ REQUIRED_CSV_COLS = ["bar_low", "bar_high", "stop_class", "vol_vs_30d_avg_pct",
                      "bar_low_vs_entry_pct", "invalidation_level"]
 REQUIRED_CSV_VALUES = ["bar_low", "bar_high", "stop_class", "vol_vs_30d_avg_pct",
                        "capitulation"]
-STOP_CLASSES = {"STRUCTURAL", "NOISE_BREACH", "CAPPED"}
+# v4 (2026-11-12) publishes BOTH stop levels, because Bonde's default is the body low and the
+# shadow low is his sanctioned alternative. The columns are only required from v4 on.
+V4_CSV_COLS = ["body_low", "body_stop_pct", "shadow_stop_pct", "body_stop_degenerate",
+               "stop_placement"]
+V4_CSV_VALUES = ["body_low", "body_stop_pct", "shadow_stop_pct", "body_stop_degenerate",
+                 "stop_placement"]
+STOP_CLASSES = {"STRUCTURAL", "BODY_LOW", "CAPPED", "NO_LEGAL_STOP",
+                "NOISE_BREACH"}          # NOISE_BREACH: legacy v3 vocabulary
 CAPITULATION_CLASSES = {"CAPITULATION", "LOW_VOLUME", "UNKNOWN"}
-CONTRACT_VERSION = "bonde-artifact-v3"
+CONTRACT_VERSION = "bonde-artifact-v4"
+LEGACY_CONTRACT_VERSIONS = {"bonde-artifact-v3"}
+STOP_MAX_PCT = 2.5
 
 # display-label aliases for the markdown table headers
 MD_HEADER_ALIASES = {
@@ -181,11 +190,16 @@ def check_md(path):
         tldr_count = int(m.group(1))
         ok(f"the TL;DR publishes 'Ideas promoted: {tldr_count}'")
 
-    # --- 4. the artifact was produced by the current script -------------------
-    if CONTRACT_VERSION in raw:
+    # --- 4. the artifact was produced by a known script version ----------------
+    strict = CONTRACT_VERSION in raw
+    if strict:
         ok(f"the artifact carries the current contract marker ({CONTRACT_VERSION})")
+    elif any(v in raw for v in LEGACY_CONTRACT_VERSIONS):
+        ok(f"the artifact carries the LEGACY contract marker "
+           f"({sorted(v for v in LEGACY_CONTRACT_VERSIONS if v in raw)[0]}) — the v4 stop-rule "
+           f"assertions are skipped for it")
     else:
-        bad(f"the artifact does NOT carry the contract marker ({CONTRACT_VERSION}) — it was "
+        bad(f"the artifact does NOT carry a known contract marker ({CONTRACT_VERSION}) — it was "
             f"produced by an older copy of tools/reversal_bullish.py (a stale CDN cache). "
             f"Re-fetch the script and re-run it.")
 
@@ -235,6 +249,17 @@ def check_md(path):
     if rows:
         ok(f"every candidate row ({len(rows)}) carries bar_low / bar_high / stop_class / "
            f"vol_vs_30d_avg_pct")
+    if strict:
+        # --- v4: both stop levels must be visible, and the published stop must be real
+        for col, aliases in {"body_low": ("bodylow",), "stop_basis": ("stopbasis",)}.items():
+            if any(any(a in hn for a in aliases) for hn in hnorm):
+                ok(f"the Candidates table has a '{col}' column")
+            else:
+                bad(f"the Candidates table is missing the '{col}' column")
+        for n, r in enumerate(rows, 1):
+            cells = [str(r.get(h, "")).strip() for h in headers]
+            if not all(cells):
+                bad(f"candidate row {n} has an empty cell in a required column")
 
     # --- 9. every non-promoted candidate is accounted for ---------------------
     promoted_tickers = set()
@@ -258,22 +283,24 @@ def check_md(path):
                 bad(f"not-promoted candidate {t} has no invalidation test")
         else:
             bad(f"candidate {t} appears in neither 'Promoted ideas' nor 'Not promoted'")
-    return rows, cand_tickers, promoted_tickers
+    return rows, cand_tickers, promoted_tickers, strict
 
 
-def check_csv(path, md_rows, md_tickers):
+def check_csv(path, md_rows, md_tickers, strict=False):
     print(f"[csv] {path}")
     with open(path, newline="") as fh:
         rdr = csv.DictReader(fh)
         cols = rdr.fieldnames or []
         rows = list(rdr)
-    missing = [c for c in REQUIRED_CSV_COLS if c not in cols]
+    required = REQUIRED_CSV_COLS + (V4_CSV_COLS if strict else [])
+    values = REQUIRED_CSV_VALUES + (V4_CSV_VALUES if strict else [])
+    missing = [c for c in required if c not in cols]
     if missing:
         bad(f"the CSV header is missing required columns: {missing}")
     else:
         ok(f"the CSV header carries all required columns ({len(cols)} columns)")
     for n, r in enumerate(rows, 1):
-        empties = [c for c in REQUIRED_CSV_VALUES if not str(r.get(c, "")).strip()]
+        empties = [c for c in values if not str(r.get(c, "")).strip()]
         if empties:
             bad(f"CSV row {n} ({r.get('ticker')}) has empty required cells: {empties}")
         sc = str(r.get("stop_class", "")).strip().upper()
@@ -282,6 +309,8 @@ def check_csv(path, md_rows, md_tickers):
         cap = str(r.get("capitulation", "")).strip().upper()
         if cap and cap not in CAPITULATION_CLASSES:
             bad(f"CSV row {n} ({r.get('ticker')}) has an invalid capitulation flag: {cap}")
+    if strict:
+        check_stop_rule(rows)
     if rows:
         ok(f"every CSV row ({len(rows)}) carries bar_low / bar_high / stop_class / "
            f"vol_vs_30d_avg_pct")
@@ -291,6 +320,65 @@ def check_csv(path, md_rows, md_tickers):
     else:
         bad(f"the CSV candidates {csv_tickers} differ from the markdown {md_tickers}")
     return rows
+
+
+def check_stop_rule(rows):
+    """v4: the published stop must be a REAL, legal stop that follows Bonde's rule.
+
+    Bonde's default is the low of the signal candle's BODY; the shadow (bar) low is his
+    sanctioned ALTERNATIVE and is legal only within 2.5% of the entry. So:
+
+      * a body low that is degenerate (it sits on the entry) forces the shadow low;
+      * a body low that is usable stands, and the shadow must NOT be substituted for it
+        (a shadow more than 2.5% away is not a legal stop at all);
+      * a published stop at the entry (0.00% risk) is not a stop - it must be NO_LEGAL_STOP.
+    """
+    print("[stop-rule] Bonde's body-low default / shadow alternative / 2.5% cap")
+    for n, r in enumerate(rows, 1):
+        t = r.get("ticker")
+        try:
+            entry = float(r.get("entry_price"))
+            stop = float(r.get("stop"))
+            body_low = float(r.get("body_low"))
+            bar_low = float(r.get("bar_low"))
+            body_pct = float(r.get("body_stop_pct"))
+            shadow_pct = float(r.get("shadow_stop_pct"))
+        except (TypeError, ValueError):
+            bad(f"CSV row {n} ({t}) has a non-numeric stop field")
+            continue
+        sc = str(r.get("stop_class", "")).strip().upper()
+        basis = str(r.get("stop_basis", "")).strip().lower()
+        degen = str(r.get("body_stop_degenerate", "")).strip().lower() == "yes"
+        tol = 0.011
+        if sc == "NO_LEGAL_STOP":
+            ok(f"{t}: NO_LEGAL_STOP is published (no stop Bonde's rule accepts)")
+        elif stop >= entry - tol:
+            bad(f"{t}: the published stop {stop} is not below the entry {entry} — a 0.00% risk "
+                f"line is not a stop (class {sc})")
+        else:
+            ok(f"{t}: the published stop {stop} is {entry - stop:.2f} below the entry "
+               f"({(entry - stop) / entry * 100:.2f}%)")
+        if degen and sc != "NO_LEGAL_STOP":
+            if abs(stop - bar_low) > tol:
+                bad(f"{t}: the body low is degenerate (it sits on the entry) but the published "
+                    f"stop {stop} is not the shadow low {bar_low}")
+            else:
+                ok(f"{t}: a degenerate body low forces the shadow low ({bar_low})")
+        if not degen and sc not in ("NO_LEGAL_STOP", "CAPPED"):
+            if abs(stop - body_low) > tol:
+                bad(f"{t}: the body low is usable ({body_low}) but the published stop is {stop} — "
+                    f"Bonde's default is the body low; the shadow low may only be substituted when "
+                    f"the body low is degenerate")
+            else:
+                ok(f"{t}: the published stop is Bonde's default body low ({body_low})")
+        if "shadow" in basis and shadow_pct > STOP_MAX_PCT + 0.001:
+            bad(f"{t}: the shadow low is {shadow_pct:.2f}% from the entry — over Bonde's "
+                f"{STOP_MAX_PCT}% cap, so it is not a legal stop")
+        if "no legal stop" in basis and sc != "NO_LEGAL_STOP":
+            bad(f"{t}: the basis says there is no legal stop but the class is {sc}")
+        if (entry - stop) / entry * 100 > STOP_MAX_PCT + 0.05:
+            bad(f"{t}: the published stop is {(entry - stop) / entry * 100:.2f}% from the entry — "
+                f"over Bonde's {STOP_MAX_PCT}% max loss")
 
 
 def check_reply(path, csv_rows, promoted_tickers):
@@ -317,13 +405,19 @@ def check_reply(path, csv_rows, promoted_tickers):
         t = str(r.get("ticker", "")).strip()
         if t not in promoted_tickers:
             continue
-        if str(r.get("stop_class", "")).strip().upper() != "NOISE_BREACH":
+        sc = str(r.get("stop_class", "")).strip().upper()
+        if sc == "NO_LEGAL_STOP":
+            bad(f"promoted name {t} has NO_LEGAL_STOP — a name with no legal stop cannot be "
+                f"promoted")
             continue
-        if re.search(rf"\b{re.escape(t)}\b", region) and re.search(r"noise[ _-]?breach", region, re.I):
-            ok(f"promoted NOISE_BREACH name {t} has its risk line in the signal section")
+        if sc != "BODY_LOW":
+            continue
+        if re.search(rf"\b{re.escape(t)}\b", region) and re.search(r"body[ _-]?low|inside the (signal )?bar", region, re.I):
+            ok(f"promoted BODY_LOW name {t} has its risk line in the signal section")
         else:
-            bad(f"promoted NOISE_BREACH name {t} has NO risk line in the signal section "
-                f"(it may only appear under 'Method & caveats')")
+            bad(f"promoted BODY_LOW name {t} has NO risk line in the signal section (the stop is "
+                f"INSIDE the signal bar's range and may only be explained under "
+                f"'Method & caveats')")
 
 
 def main():
@@ -340,8 +434,8 @@ def main():
             print(f"FAIL missing file: {p}")
             sys.exit(1)
 
-    md_rows, md_tickers, promoted_tickers = check_md(args.md)
-    csv_rows = check_csv(args.csv, md_rows, md_tickers)
+    md_rows, md_tickers, promoted_tickers, strict = check_md(args.md)
+    csv_rows = check_csv(args.csv, md_rows, md_tickers, strict=strict)
     if args.reply and os.path.exists(args.reply):
         check_reply(args.reply, csv_rows, promoted_tickers)
 

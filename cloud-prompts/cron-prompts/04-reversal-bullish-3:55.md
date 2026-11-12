@@ -165,9 +165,16 @@ The gate values in the skill's §5 table are Bonde's **published** ones. Four of
 4. **Price floor $5, not $15** — Bonde's published `c >= 5`. "Prefer higher priced stocks" is a
    **ranking** preference applied when ordering the final list, not a filter.
 
-The **stop** is the body low, except on a near-doji body (under 15% of the range) where the signal
-bar's **low** is used — a body-low stop on a doji sits inside the bar's own noise (0.07% wide on
-the 2026-10-26 CBRE bar) and produces false exits. The 2.5% maximum-loss cap is enforced either way.
+The **stop** is Bonde's own rule (corrected 2026-11-12, contract v4): the **low of the candle
+body** is the default and is used whenever it is a real level (more than 0.10% below the entry);
+the signal bar's **low** is his explicitly sanctioned ALTERNATIVE, legal only when it is within
+2.5% of the purchase price, and it is used when the body low is degenerate — i.e. when it sits on
+the entry (0.07% wide on the 2026-10-26 CBRE bar, 0.00% on ADBE and TRI on 2026-11-10, where a
+stop AT the entry is not a stop). A shadow low more than 2.5% from the entry is not a legal stop,
+so the body low stands; if the body low is degenerate too, the row is `NO_LEGAL_STOP` and the
+name is NOT a trade. The stop is placed the **next morning**, not at the entry: Bonde buys at
+3.55-3.58 **without a stop**. Both levels, the body/shadow distances and the degeneracy flag are
+published on every row, and `tools/check_bonde_artifact.py` asserts the rule.
 
 **The gate values above are what the screen applies.** They are implemented in
 `tools/reversal_bullish.py` - run it, per the SIGNAL DAY section above, rather than writing the

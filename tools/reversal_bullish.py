@@ -52,9 +52,14 @@ The script publishes, on EVERY candidate row (markdown table AND CSV), the numbe
 were previously buried in prose:
 
     bar_low / bar_high            the signal bar's own range
+    body_low                      Bonde's DEFAULT stop level (the low of the candle body)
+    body_stop_pct                 signed distance from the entry to the body low
+    shadow_stop_pct               signed distance from the entry to the bar low (his ALTERNATIVE)
+    body_stop_degenerate          yes/no - the body low sits on the entry (a meaningless stop)
     stop_vs_bar_low_pct           signed distance from the published stop to the bar low
-    stop_class                    STRUCTURAL | NOISE_BREACH | CAPPED
+    stop_class                    STRUCTURAL | BODY_LOW | CAPPED | NO_LEGAL_STOP
     stop_capped                   yes/no - did the 2.5% cap bind the stop
+    stop_placement                when the stop goes in (Bonde: the NEXT MORNING)
     vol_vs_30d_avg_pct            the session's volume vs the 30-session mean
     capitulation                  CAPITULATION | LOW_VOLUME | UNKNOWN
     invalidation_level            a close below this level kills the setup
@@ -93,7 +98,7 @@ TV_ENDPOINT = "https://scanner.tradingview.com/america/scan"
 # requires this marker, so a CDN-cached copy of an OLD script cannot produce an artifact in
 # the old shape (raw.githubusercontent has been measured serving a stale blob for >17
 # minutes after a push). The checker asserts the same string in the artifact footer.
-CONTRACT_VERSION = "bonde-artifact-v3"
+CONTRACT_VERSION = "bonde-artifact-v4"
 
 TV_COLS = ["name", "description", "close", "open", "high", "low", "change", "change_abs",
            "volume", "average_volume_10d_calc", "market_cap_basic", "exchange", "type", "sector"]
@@ -117,14 +122,14 @@ G = dict(
     mcap_min=5_000_000_000,
     avg_vol_30d_min=1_000_000,
     stop_max_pct=2.5,        # published: stop must not exceed 2.5% loss
-    body_ratio_stop_switch=0.15,   # if body_ratio < 0.15 use the bar's LOW, not the body low
+    body_stop_degenerate_pct=0.10,  # a body low within 0.10% of the entry sits ON the entry
     capitulation_mult=1.5,   # flush volume >= 1.5x the 30-session mean = capitulation
     hist_sessions=30,        # settled sessions pulled per symbol
     universe_band=(5e9, 1.5e12),
 )
 
 # stop_class vocabulary (published on every candidate row, in the markdown AND the CSV)
-STOP_CLASSES = ("STRUCTURAL", "NOISE_BREACH", "CAPPED")
+STOP_CLASSES = ("STRUCTURAL", "BODY_LOW", "CAPPED", "NO_LEGAL_STOP")
 CAPITULATION_CLASSES = ("CAPITULATION", "LOW_VOLUME", "UNKNOWN")
 
 
@@ -457,73 +462,90 @@ def evaluate(row, hist):
 
 
 def stop_profile(m, entry):
-    """Bonde's stop PLUS the geometry a reader needs before sizing the trade.
+    """Bonde's stop, the way Bonde actually places it.
 
-    The stop itself is unchanged from Bonde's published rule: the body low, except on a
-    near-doji body (under 15% of the range) where the signal bar's LOW is used, and never
-    more than 2.5% of loss from the entry.
+    His published workflow (BreakoutsHappen, steps 4-5 of the reversal-bullish write-up):
 
-    What this adds is the CONFLICT that the 2026-11-03 artifact disclosed only in prose:
-    a stop tightened to the 2.5% cap can land INSIDE the signal bar's own range, so a
-    print through it is a *noise breach*, not a structural failure. That fact is published
-    as a field, never as a caveat sentence.
+      - you BUY at 15:55-15:58 **without a stop**;
+      - "The reversal bullish stop loss goes in the next day... at the **low of the candle
+        body** of the signal day", sized so the loss never exceeds **2.5%**;
+      - "If you prefer to place the stop at the low of the **shadow** instead, make sure that
+        level does not exceed a 2.5% loss from your purchase price."
 
-    Returns a dict:
-      stop                 published stop level (2.5% cap applied)
-      stop_basis           human-readable stop basis
-      structural           the structural stop level (body low, or the bar's low on a doji body)
-      stop_capped         True when the 2.5% max-loss cap tightened the stop
-      stop_class           STRUCTURAL | NOISE_BREACH | CAPPED  (see below)
-      stop_vs_bar_low_pct  signed: how far the published stop sits from the bar low
-                           (negative = the stop is BELOW the bar low -> survives noise;
-                            positive = the stop is ABOVE the bar low -> inside the bar's range)
+    So the BODY LOW is the DEFAULT and the SHADOW (bar) low is an explicitly sanctioned
+    ALTERNATIVE that is legal only when it is within 2.5% of the entry. Two consequences the
+    old house rule got wrong, and which cost real risk lines:
+
+      * The body low is DEGENERATE when it sits on the entry (a small body whose low IS the
+        close). A stop there is meaningless - the bar's own noise takes you out - so the shadow
+        low is the right level, IF it is within 2.5%.
+      * When the body low IS usable, the shadow must NOT be substituted: a shadow stop further
+        than 2.5% from the entry is not a legal stop at all, and Bonde's default body low
+        stands. The old rule substituted the shadow low and then TIGHTENED it to the 2.5% cap,
+        which published a stop Bonde would never take and could leave it inside the bar.
+
+    A name with no legal stop is NOT a trade: `NO_LEGAL_STOP` = the body low is degenerate AND
+    the shadow low is more than 2.5% away.
+
+    Returns:
+      stop                 the published stop level
+      stop_basis           human-readable basis
+      body_low             the body low (Bonde's default stop level)
+      body_stop_pct        distance from the entry to the body low (%)
+      shadow_stop_pct      distance from the entry to the bar low (%)
+      body_stop_degenerate True when the body low sits on the entry
+      structural           the structural level behind the published stop
+      stop_capped          True when the 2.5% cap bound the stop
+      stop_class           STRUCTURAL | BODY_LOW | CAPPED | NO_LEGAL_STOP
+      stop_vs_bar_low_pct  signed: the published stop vs the bar low
       bar_low_vs_entry_pct the structural distance to the bar low (the real risk, uncapped)
       invalidation_level   a close below this level kills the setup
-
-    stop_class precedence (exactly one value per candidate):
-      NOISE_BREACH  the published stop is ABOVE the signal bar's low, so the bar itself
-                    already traded through it. A print through the stop is noise.
-      CAPPED        the 2.5% cap bound the stop AND the published stop is still at or below
-                    the bar low, so it survives the bar's noise but is tighter than the
-                    structural level.
-      STRUCTURAL    the published stop is the structural level itself.
-
-    Note: with today's stop rule the cap can only pull a stop UP into the bar's range (the
-    bar low is always at least as far from the entry as the structural stop), so a capped
-    stop is ALWAYS classified NOISE_BREACH and CAPPED does not occur. `stop_capped` and
-    `stop_basis` carry the cap fact in every case, so no information is lost.
+      stop_placement       when the stop goes in
     """
     body_low = min(m["open"], m["close"])
-    if m["body_ratio"] < G["body_ratio_stop_switch"]:
-        structural = m["low"]
-        basis = "bar low (body < 15% of range)"
+    bar_low = m["low"]
+    body_pct = ((entry - body_low) / entry * 100.0) if entry else 0.0
+    shadow_pct = ((entry - bar_low) / entry * 100.0) if entry else 0.0
+    degenerate = body_pct <= G["body_stop_degenerate_pct"]
+
+    if degenerate:
+        if shadow_pct <= G["stop_max_pct"]:
+            structural = bar_low
+            basis = "shadow low (Bonde's alternative; the body low sits on the entry)"
+        else:
+            structural = body_low
+            basis = (f"NO LEGAL STOP (body low sits on the entry; the shadow low is "
+                     f"{shadow_pct:.2f}% away, over the {G['stop_max_pct']}% cap)")
     else:
         structural = body_low
-        basis = "body low"
-    cap_applied = bool(entry) and (entry - structural) / entry * 100.0 > G["stop_max_pct"]
-    if cap_applied:
-        stop = entry * (1 - G["stop_max_pct"] / 100.0)
-        basis += " (tightened to the 2.5% cap)"
-    else:
-        stop = structural
-    stop = round(stop, 2)
-    bar_low = m["low"]
+        basis = "body low (Bonde's default)"
+
+    cap_applied = bool(entry) and body_pct > G["stop_max_pct"]
     tol = max(0.005, bar_low * 0.0005)          # a cent of rounding must not create a class
-    if stop > bar_low + tol:
-        stop_class = "NOISE_BREACH"
+    if degenerate and shadow_pct > G["stop_max_pct"]:
+        stop_class = "NO_LEGAL_STOP"
+        stop = round(structural, 2)             # published for reference; the row is NOT a trade
     elif cap_applied:
+        stop = round(entry * (1 - G["stop_max_pct"] / 100.0), 2)
+        basis += f" (tightened to the {G['stop_max_pct']}% cap)"
         stop_class = "CAPPED"
     else:
-        stop_class = "STRUCTURAL"
+        stop = round(structural, 2)
+        stop_class = "STRUCTURAL" if stop <= bar_low + tol else "BODY_LOW"
     return dict(
         stop=stop,
         stop_basis=basis,
+        body_low=round(body_low, 2),
+        body_stop_pct=round(body_pct, 3),
+        shadow_stop_pct=round(shadow_pct, 3),
+        body_stop_degenerate="yes" if degenerate else "no",
         structural=round(structural, 2),
         stop_capped=cap_applied,
         stop_class=stop_class,
         stop_vs_bar_low_pct=round((stop - bar_low) / bar_low * 100.0, 3) if bar_low else None,
         bar_low_vs_entry_pct=round((bar_low - entry) / entry * 100.0, 3) if entry else None,
         invalidation_level=round(bar_low, 2),
+        stop_placement="next morning, after the open (Bonde buys without a stop)",
     )
 
 
@@ -810,7 +832,8 @@ def run(date_str, bridge, out_dir, dry_run=False):
 
 
 CSV_COLS = ["ticker", "company", "exchange", "sector", "signal_session", "entry_price",
-            "stop", "stop_basis", "stop_pct", "stop_class", "stop_capped",
+            "stop", "stop_basis", "stop_pct", "stop_class", "stop_capped", "stop_placement",
+            "body_low", "body_stop_pct", "shadow_stop_pct", "body_stop_degenerate",
             "bar_low", "bar_high", "stop_vs_bar_low_pct", "bar_low_vs_entry_pct",
             "invalidation_level",
             "open", "high", "low", "close", "volume",
@@ -836,6 +859,9 @@ def write_csv(path, results, report):
             w.writerow([x["ticker"], x["desc"], x["exchange"], x["sector"], report["date"],
                         x["entry"], x["stop"], x["stop_basis"], x["stop_pct"],
                         x["stop_class"], "yes" if x["stop_capped"] else "no",
+                        x["stop_placement"],
+                        x["body_low"], x["body_stop_pct"], x["shadow_stop_pct"],
+                        x["body_stop_degenerate"],
                         x["invalidation_level"], m["high"],
                         ("" if x["stop_vs_bar_low_pct"] is None else x["stop_vs_bar_low_pct"]),
                         ("" if x["bar_low_vs_entry_pct"] is None else x["bar_low_vs_entry_pct"]),
@@ -887,23 +913,28 @@ def tldr_caveat(results):
     capitulation beats the plain timing caveat. It is computed from the data, never
     left to prose. One line, the way the fleet's reply format wants it.
     """
-    noise = [x for x in results if x["stop_class"] == "NOISE_BREACH"]
-    if noise:
-        # worst conflict first: the stop furthest above the bar low is the one that
-        # most changes how the trade must be sized
-        noise.sort(key=lambda x: -abs(x["stop_vs_bar_low_pct"] or 0.0))
-        bits = ", ".join(f"{x['ticker']} (stop {x['stop']:.2f} vs bar low {x['m']['low']:.2f})"
-                         for x in noise[:3])
-        more = f" +{len(noise) - 3} more" if len(noise) > 3 else ""
-        return ("⚠ **Stop conflict:** the published stop sits INSIDE the signal bar's own range "
-                f"for {bits}{more} — a print through it is a NOISE_BREACH, not a structural "
-                "failure; the structural level is the bar low.")
+    dead = [x for x in results if x["stop_class"] == "NO_LEGAL_STOP"]
+    if dead:
+        bits = ", ".join(f"{x['ticker']} (shadow low {x['shadow_stop_pct']:.2f}% away)"
+                         for x in dead[:3])
+        return ("⚠ **No legal stop:** the body low sits on the entry and the shadow low is more "
+                f"than 2.5% away for {bits} — Bonde's 2.5% rule leaves no stop, so "
+                f"{'these names are' if len(dead) > 1 else 'that name is'} NOT a trade.")
     capped = [x for x in results if x.get("stop_capped")]
     if capped:
         x = capped[0]
         return (f"**Capped stop:** {x['ticker']}'s stop was tightened to Bonde's 2.5% max-loss cap "
                 f"({x['stop']:.2f}); the structural level is {x['m']['low']:.2f} "
                 f"({x['bar_low_vs_entry_pct']:.2f}% from entry).")
+    tight = [x for x in results if x["stop_class"] == "BODY_LOW"]
+    if tight:
+        bits = ", ".join(f"{x['ticker']} (stop {x['stop']:.2f} vs bar low {x['m']['low']:.2f})"
+                         for x in tight[:3])
+        more = f" +{len(tight) - 3} more" if len(tight) > 3 else ""
+        return ("⚠ **Body-low stop:** the published stop sits INSIDE the signal bar's own range "
+                f"for {bits}{more} — it is TIGHTER than the structural level, so a retest of the "
+                "bar low takes you out before the thesis resolves; the structural level is the "
+                "bar low, and the stop is placed the next morning.")
     lowv = [x for x in results if x.get("capitulation") == "LOW_VOLUME"]
     if lowv:
         x = lowv[0]
@@ -918,10 +949,10 @@ def _md_candidates_table(results):
     """One table, one row per name — every gate/metric/stop column the contract requires."""
     out = []
     A = out.append
-    A("| Ticker | Company | Entry | Stop | Stop % | Stop class | Bar low | Bar high | "
-      "Stop vs bar low | DCR | Body | Lower shdw | Tail | ADR | Drop days | 1-day chg | "
-      "Vol vs 30d avg | Capitulation | Mkt cap |")
-    A("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    A("| Ticker | Company | Entry | Stop | Stop % | Stop class | Stop basis | Body low | "
+      "Bar low | Bar high | Stop vs bar low | DCR | Body | Lower shdw | Tail | ADR | "
+      "Drop days | 1-day chg | Vol vs 30d avg | Capitulation | Mkt cap |")
+    A("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for x in results:
         m, h = x["m"], x["h"]
         tail = "inf" if m["tail_ratio"] == float("inf") else f"{m['tail_ratio']:.2f}x"
@@ -929,8 +960,13 @@ def _md_candidates_table(results):
                 else f"{x['stop_vs_bar_low_pct']:+.2f}%")
         vol = ("n/a" if x.get("vol_vs_30d_avg_pct") is None
                else f"{x['vol_vs_30d_avg_pct']:.0f}%")
+        basis = ("none" if x["stop_class"] == "NO_LEGAL_STOP"
+                 else ("shadow" if "shadow low" in x["stop_basis"] else "body"))
+        if x.get("stop_capped"):
+            basis += "+cap"
         A(f"| **{x['ticker']}** | {x['desc']} | **{x['entry']:.2f}** | {x['stop']:.2f} | "
-          f"{x['stop_pct']:.2f}% | `{x['stop_class']}` | {m['low']:.2f} | {m['high']:.2f} | "
+          f"{x['stop_pct']:.2f}% | `{x['stop_class']}` | {basis} | {x['body_low']:.2f} | "
+          f"{m['low']:.2f} | {m['high']:.2f} | "
           f"{svbl} | {m['dcr']:.3f} | {m['body_ratio']:.3f} | "
           f"{m['lower_shadow']:.2f} | {tail}{' ✓' if x['tail_band'] else ''} | "
           f"{h['adr']*100:.2f}% | {h['drop_days']} | "
@@ -1066,11 +1102,25 @@ def write_md(path, results, report, bridge):
       "cap filter is applied before the latest-row pick.")
     A("- **\"Prefer higher priced stocks\" is a ranking preference, not a filter** — the published "
       "gate is `c >= 5`; names are ordered by DCR then ADR.")
-    A("- **`stop_class` is published on every row, not buried in prose.** `NOISE_BREACH` = the "
-      "published stop sits inside the signal bar's own range, so the bar already traded through "
-      "it; `CAPPED` = the 2.5% cap bound the stop while it still sits at/below the bar low; "
-      "`STRUCTURAL` = the published stop is the structural level. `stop_vs_bar_low_pct` is signed: "
-      "negative = the stop is below the bar low.")
+    A("- **`stop_class` is published on every row, not buried in prose.** `STRUCTURAL` = the "
+      "published stop IS the signal bar's low, the level where the exhaustion thesis is "
+      "structurally dead; `BODY_LOW` = the published stop is Bonde's default body low, which sits "
+      "INSIDE the bar's own range and is therefore tighter than the structural level; `CAPPED` = "
+      "the 2.5% max-loss cap bound the stop; `NO_LEGAL_STOP` = no stop Bonde's rule accepts, so "
+      "the name is not a trade. `stop_vs_bar_low_pct` is signed: positive = the stop is ABOVE the "
+      "bar low (inside the bar).")
+    A("- **The stop rule is Bonde's, not the house's.** His default is the **low of the candle "
+      "body** of the signal day; the shadow (bar) low is his explicitly sanctioned ALTERNATIVE "
+      "and is legal only when it is within 2.5% of the purchase price. So the body low is used "
+      "whenever it is a real level, and the shadow low is used only when the body low is "
+      "degenerate (it sits on the entry). A shadow low more than 2.5% away is not a legal stop, "
+      "so the body low stands. `body_low`, `body_stop_pct`, `shadow_stop_pct` and "
+      "`body_stop_degenerate` are published on every row so both levels are visible.")
+    A("- **The stop is placed the NEXT MORNING, not at the entry.** Bonde buys at 15:55-15:58 "
+      "**without a stop** and puts the stop in the next morning, after the open, at the level "
+      "above. So the published stop is a LEVEL to take the next session, not an order resting on "
+      "the 15:58 fill, and the signal bar's own low (printed before the stop existed) does not "
+      "count as a breach of it.")
     A("- **Bonde's discretionary step is mandatory**: the mechanical screen returns candidates, "
       "then the review reduces them to **1–3 ideas** (\"no catalyst, no trade\", \"the reversal bar "
       "has to jump off the chart\"). Every promoted idea carries a named catalyst and an "

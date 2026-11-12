@@ -81,3 +81,92 @@ Four passers on the settled bar (DOCU, SYK, ADBE, TRI) and **one** promoted idea
 stop (317.87) IS the signal bar's low, so it is the only candidate whose risk line is usable for
 sizing. The other three publish a stop inside their own bar (DOCU capped at 75.72, ADBE 236.70
 and TRI 108.41 each exactly the entry) and were left on the watchlist with invalidation levels.
+
+---
+
+## 2026-11-12 — the stop rule becomes Bonde's rule (contract v4)
+
+**Triggered by:** the user asked to make the stop rule reflect how Bonde actually behaves.
+**Decision recorded:** the **universe gate is unchanged** — `market_cap > $5B` + `avg_vol(10d) > 1M`
+stay exactly as they are, including the `close > $5` floor. No institutional-holder gate was
+added.
+
+### What was wrong
+
+The screen used a HOUSE stop rule that is not Bonde's:
+
+> body low, except on a near-doji body (under 15% of the range) where the signal bar's LOW is
+> used — then tightened to the 2.5% cap.
+
+Bonde's published workflow (BreakoutsHappen, steps 4–5) says:
+
+- you buy at 15:55–15:58 **without a stop**;
+- the stop goes in the **next morning**, at the **low of the candle body** of the signal day,
+  sized so the loss never exceeds **2.5%**;
+- *"If you prefer to place the stop at the low of the shadow instead, make sure that level does
+  not exceed a 2.5% loss from your purchase price."*
+
+So the **body low is the default** and the **shadow low is a sanctioned alternative, legal only
+within 2.5%**. The house rule had it backwards in two ways:
+
+1. it substituted the shadow low for a **usable** body low and then **tightened it to the 2.5%
+   cap** — a stop Bonde would never take, and one that can land inside the bar's range. On
+   2026-11-10's DOCU bar the shadow low was 2.70% away (illegal by Bonde's own sentence), and
+   the house rule published a 2.50% capped stop at 75.72 where Bonde's default body low was
+   77.50 (-0.21%);
+2. it **kept a degenerate body low** (a body low that sits ON the entry) whenever the body was
+   ≥ 15% of the range — publishing a **0.00% risk line**, i.e. a stop AT the entry, on ADBE
+   (236.70) and TRI (108.41) on 2026-11-10.
+
+### The rule now implemented (contract v4)
+
+| Situation | Published stop | Class |
+|---|---|---|
+| body low more than 0.10% below the entry | **the body low** (Bonde's default), capped at 2.5% | `BODY_LOW` / `CAPPED` |
+| body low degenerate (on the entry) and the shadow low ≤ 2.5% away | **the shadow (bar) low** | `STRUCTURAL` |
+| body low degenerate and the shadow low more than 2.5% away | none — **not a trade** | `NO_LEGAL_STOP` |
+| otherwise | the body low, capped at 2.5% | `BODY_LOW` / `CAPPED` |
+
+Every row now publishes **both** levels: `body_low`, `body_stop_pct`, `shadow_stop_pct`,
+`body_stop_degenerate`, `stop_placement` ("next morning, after the open"), plus `stop_class`
+(`STRUCTURAL` / `BODY_LOW` / `CAPPED` / `NO_LEGAL_STOP`).
+
+**The class vocabulary changed, and so did what it means.** The stop goes in the next morning,
+so the signal bar's own low — printed *before* the stop existed — is not a breach of it. The old
+`NOISE_BREACH` label ("the bar already traded through it") described a stop that did not exist
+yet. The v4 classes are: `STRUCTURAL` = the stop IS the bar low (the structural death level);
+`BODY_LOW` = Bonde's default, inside the bar's range and therefore *tighter* than the structural
+level; `CAPPED` = the 2.5% cap bound it; `NO_LEGAL_STOP` = no stop Bonde's rule accepts, so the
+name is not a trade and may not be promoted.
+
+### Effect on the 2026-11-10 screen
+
+| Name | house rule | Bonde's rule | change |
+|---|---|---|---|
+| DOCU | 75.72 (-2.50%) `NOISE_BREACH` | **77.50 (-0.21%)** `BODY_LOW` | the illegal shadow stop is gone |
+| SYK | 317.87 (-1.98%) `STRUCTURAL` | 317.87 (-1.98%) `STRUCTURAL` | unchanged |
+| ADBE | 236.70 (**0.00%**) `NOISE_BREACH` | **231.82 (-2.06%)** `STRUCTURAL` | a real risk line at last |
+| TRI | 108.41 (**0.00%**) `NOISE_BREACH` | **106.47 (-1.79%)** `STRUCTURAL` | a real risk line at last |
+
+### Changes landed
+
+- `tools/reversal_bullish.py` — new `stop_profile`; `CONTRACT_VERSION` → `bonde-artifact-v4`;
+  new CSV columns; the Candidates table gains "Stop basis" and "Body low"; the TL;DR caveat and
+  the method bullets describe the new rule and the next-morning placement.
+- `tools/check_bonde_artifact.py` — accepts `bonde-artifact-v4` (and legacy `v3`, whose v4
+  assertions are skipped) and adds the **v4 stop-rule assertions**: the published stop must be
+  below the entry (a 0.00% line fails), a degenerate body low must force the shadow low, a
+  usable body low may NOT be displaced by the shadow, a shadow more than 2.5% away fails, and a
+  promoted name may never be `NO_LEGAL_STOP`.
+- `tools/test_bonde_stop_rule.py` — new hermetic test: the four real 2026-11-10 bars pinned to
+  their stops and classes, the `NO_LEGAL_STOP` and `CAPPED` cases, and **fault injection** that
+  proves the checker rejects (a) a stop at the entry, (b) a shadow substituted for a usable body
+  low, (c) an over-cap shadow stop — and accepts a compliant artifact.
+- `cloud-prompts/skills/stock-screener-suite/SKILL.md` §5 — the gate table, the class table, the
+  CSV column contract, the reply discipline and the fetch marker (`bonde-artifact-v4`); plus a
+  note that **the universe proxy is fixed** and must not be changed without the user.
+- `cloud-prompts/cron-prompts/04-reversal-bullish-3:55.md` — the stop paragraph rewritten to
+  match, and the prompt redeployed (the repo file IS the deployed prompt).
+
+Verified: `tools/test_bonde_stop_rule.py` 39/39; the v4 checker 41/41 on a filled real artifact
+(the 2026-11-11 settled replay, 7 passers — 4 `BODY_LOW`, 3 `STRUCTURAL`, no 0.00% line).
