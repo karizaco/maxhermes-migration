@@ -866,12 +866,16 @@ def emit_reversal_bullish_sql(date: str) -> str:
       * price floor $15 -> $5 (published). "Prefer higher priced stocks" is a RANKING
         preference, not a filter; keep it as a tie-break in the discretionary step.
 
-    Stop handling: the body low is the invalidation, but on a near-doji body it sits
-    inside the bar's own noise (0.07% away on the 2026-10-26 CBRE bar) and produces
-    false exits, so a body under 15% of the range uses the signal bar's LOW instead.
-    Bonde sanctions the shadow stop: "If you prefer to place the stop at the low of the
-    shadow instead, make sure that level does not exceed a 2.5% loss from your purchase
-    price." The 2.5% cap is enforced here as a filter.
+    Stop handling (corrected 2026-11-12 to Bonde's own rule, contract v4): the BODY LOW
+    is the default stop - Bonde places it the NEXT MORNING at the low of the signal candle's
+    body. The signal bar's LOW is his explicitly sanctioned ALTERNATIVE ("If you prefer to
+    place the stop at the low of the shadow instead, make sure that level does not exceed a
+    2.5% loss from your purchase price"), so it is used ONLY when the body low is DEGENERATE
+    - i.e. it sits on the entry (within 0.10% of it), where a stop there is meaningless
+    (0.07% away on the 2026-10-26 CBRE bar; 0.00% on ADBE and TRI on 2026-11-10). A shadow
+    low more than 2.5% from the entry is not a legal stop, so the body low stands, and if the
+    body low is degenerate too there is NO legal stop and the row is not a trade (the 2.5%
+    filter below drops it). The 2.5% cap is enforced here as a filter.
 
     Schema notes: shibui exposes no `institutional_holders_count`; `market_cap > $5B`
     stands in for "held by >= 1,000 institutional funds". `shibui.valuation` keeps stale
@@ -925,13 +929,15 @@ WITH q AS (
   WHERE w.rn = 1 AND w.date = DATE '{date}'
 ), calc AS (
   SELECT sig.*,
-         CASE WHEN body_ratio < 0.15 THEN low ELSE LEAST(open, close) END AS next_day_stop,
+         CASE WHEN (close - LEAST(open, close)) / NULLIF(close, 0) <= 0.001
+              THEN low ELSE LEAST(open, close) END AS next_day_stop,
          (close - LEAST(open, close)) / NULLIF(close, 0) AS body_stop_pct,
          (close - low) / NULLIF(close, 0) AS shadow_stop_pct
   FROM sig
 ), scored AS (
   SELECT *,
-         CASE WHEN body_ratio < 0.15 THEN shadow_stop_pct ELSE body_stop_pct END AS stop_risk_pct
+         CASE WHEN (close - LEAST(open, close)) / NULLIF(close, 0) <= 0.001
+              THEN shadow_stop_pct ELSE body_stop_pct END AS stop_risk_pct
   FROM calc
 )
 SELECT symbol, ticker, exchange, date AS signal_date,
@@ -959,7 +965,10 @@ WHERE market_cap > 5000000000                 -- U: institutional proxy (>= 1,00
   AND (drop_3d <= -0.03 OR drop_5d <= -0.03) -- F5 prior decline of 2-3 days (or a 5-day slide)
   AND adr20 >= 0.03                          -- F6 ADR >= 3% (house rule)
   AND close >= c20d * 0.92                   -- F8 long-term trend intact
-  AND stop_risk_pct <= 0.025                 -- S: maximum 2.5% loss from the signal close
+  AND stop_risk_pct <= 0.025                 -- S: Bonde's 2.5% max loss. A degenerate body low
+                                              --    (on the entry) takes the shadow low, and a
+                                              --    shadow beyond 2.5% is not a legal stop, so
+                                              --    that row falls out here: no legal stop = no trade.
 ORDER BY dcr DESC
 LIMIT 50
 """.strip()

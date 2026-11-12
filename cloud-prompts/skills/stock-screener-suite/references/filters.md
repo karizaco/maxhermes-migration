@@ -447,7 +447,7 @@ bar in a range, or an ordinary pause inside a decline — it is not the signal."
 | 6 | **ADR ≥ 3%** | `AVG((high-low)/close, 20 rows) >= 0.03` | house (SMFG counter-example) |
 | 7 | **Close ≥ $5** | `close >= 5.0` | published (`c >= 5`). "Prefer higher priced stocks" is a **ranking** preference, not a filter — use it to order the list, not to cut it. |
 | 8 | **Long-term trend intact** | `close >= close_20d_ago * 0.92` — 20 sessions back, not 21 | house; exhaustion at support, not a falling knife |
-| S | **Stop** | body low `LEAST(open, close)`, **but** if `body_ratio < 0.15` use the signal bar's **low**; the stop must be `<= 2.5%` from the entry | published: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."* A body-low stop on a near-doji sits inside the bar's own noise (0.07% away on the 2026-10-26 CBRE bar) and produces false exits. |
+| S | **Stop** | body low `LEAST(open, close)` — Bonde's default; the signal bar's **low** is his sanctioned ALTERNATIVE and is used only when the body low is DEGENERATE (within 0.10% of the entry, i.e. sitting on it); the stop must be `<= 2.5%` from the entry, so a shadow low beyond 2.5% is not a legal stop and the body low stands — and if the body low is degenerate too there is NO legal stop and the name is not a trade | published: *"If you prefer to place the stop at the low of the shadow instead, make sure that level does not exceed a 2.5% loss from your purchase price."* The stop goes in the **next morning**, not at the entry. Corrected 2026-11-12 (contract v4): the old house rule ("bar low whenever `body_ratio < 0.15`, then tighten to the cap") published an illegal shadow stop on DOCU (2.70% away, capped to a 2.50% stop) and **0.00% risk lines** (a stop AT the entry) on ADBE and TRI. |
 | U | **Universe** | NYSE/NASDAQ/AMEX, `market_cap > $5B` (proxy for ≥ 1,000 institutional funds), `avg_volume_30d > 1M` | proxy; shibui has no `institutional_holders_count` |
 
 The implementation is `tools/reversal_bullish.py` in `karizaco/maxhermes-migration` — the same
@@ -497,12 +497,16 @@ body stop is a *noise breach*, and a close that *undercut the signal bar's low* 
 failure*. Report both.
 
 **The artifact's shape and columns are fixed — read `../SKILL.md` §5 "ARTIFACT FORMAT
-CONTRACT (v3)".** The stop-vs-bar-low conflict (`bar_low`, `bar_high`,
-`stop_vs_bar_low_pct`, `stop_class` = `STRUCTURAL` / `NOISE_BREACH` / `CAPPED`) and the volume
-conviction (`vol_vs_30d_avg_pct`, `capitulation`) are **published fields on every candidate
-row**, in the markdown table and in the CSV — not prose in a caveat section. Every promoted
-idea and every non-promoted candidate carries an invalidation test, and the artifact is
-verified by `tools/check_bonde_artifact.py` before the run reports success.
+CONTRACT (v4)".** The stop geometry (`bar_low`, `bar_high`, `stop_vs_bar_low_pct`,
+`stop_class` = `STRUCTURAL` / `BODY_LOW` / `CAPPED` / `NO_LEGAL_STOP`) **and BOTH stop
+levels** (`body_low`, `body_stop_pct`, `shadow_stop_pct`, `body_stop_degenerate`,
+`stop_placement`) and the volume conviction (`vol_vs_30d_avg_pct`, `capitulation`) are
+**published fields on every candidate row**, in the markdown table and in the CSV — not prose
+in a caveat section. `BODY_LOW` means Bonde's default stop, which sits inside the signal bar's
+range and is therefore tighter than the structural level; `NO_LEGAL_STOP` means the name is
+not a trade and may not be promoted. Every promoted idea and every non-promoted candidate
+carries an invalidation test, and the artifact is verified by `tools/check_bonde_artifact.py`
+before the run reports success.
 
 ## M. Bonde — NTRT / EP continuation (overnight news)
 
