@@ -405,3 +405,73 @@ a failed pull is a failed pull.
 
 Full evidence and the fleet-wide rules: `docs/IMPROVEMENTS-2026-11-12-tv-scanner-pull-completeness.md`.
 Guard: `tools/test_tv_pull_completeness.py`.
+
+---
+
+## 2026-11-12 fire — the venue's LIVE block was published as the close (fixed, and the
+## probe loop's "drift" was this defect in disguise)
+
+### What the run found
+
+The 2026-11-12 fire published its first artifact from the venue's **LIVE** price block and
+caught it in review. The venue's `/info` endpoint carries two price blocks, and the difference
+between them is the difference between a close and a tape:
+
+| block | stamp | what it is |
+|---|---|---|
+| `secondaryData.lastSalePrice` | **"Closed at Nov 12, 2026 4:00 PM ET"** | the official 16:00 ET **auction print** — the close of record |
+| `primaryData.lastSalePrice` | "Nov 12, 2026 5:26 PM ET" | the **LIVE** print; after the close it carries an **extended-hours** trade |
+
+Measured on a pull made at 18:15 ET:
+
+- **AAPL** primary `$354.79` @ 5:26 PM ET vs secondary `$354.88` @ "Closed at 4:00 PM ET"
+- **JPM** primary `$342.80` @ 5:26 PM ET vs secondary `$342.98` @ "Closed at 4:00 PM ET"
+- **WMT** primary `$125.8152` @ 5:26 PM ET vs secondary `$126.19` @ "Closed at 4:00 PM ET"
+
+**Yahoo's 1-minute FINAL bar corroborates the SECONDARY print** (AAPL 354.88) — a different feed,
+so the agreement is real corroboration, and it is what proves the secondary block is the auction
+close while the primary block is the live tape.
+
+### Two consequences, both measured
+
+1. **The published close was an after-hours price.** An after-hours price sits OUTSIDE the
+   session's own range, so the range pass had to fall back to the venue's day range for **817
+   rows** under the live print against **384** under the settled print. Correcting the source
+   raised the independently `CONFIRMED` rows from **2,842 → 3,503** and moved `UNCONFIRMED` from
+   **2,045 → 1,345**.
+2. **The settle probe loop's "drift" was this defect in disguise.** The loop read the live block,
+   so it measured the **after-hours tape ticking**, not the close settling: **122 symbols still
+   "changed" in round 12 at 17:08 ET** (1,199 over the 12 rounds), the loop never reached two
+   quiet rounds, and it hit its `--max-rounds` cap. The published close does not depend on the
+   probe — it comes from the settled print — so the artifact was correct once the source was
+   fixed, but the drift *measurement* was worthless until then.
+
+### A third gap: the Market read had no index table
+
+The vendor's `country_iso='US'` universe carries equities, not ETFs, so the index proxies and the
+sector ETFs were never pulled — and the equity-only history produced a Market read with **no
+index rows** and **all 11 sector-ETF columns at `n/a`**. `fetch_eod_settled.py` now fetches
+`PROXY_SYMBOLS` (SPY, QQQ, IWM, DIA, RSP + the eleven sector ETFs) alongside the equities; the
+2026-11-12 artifact's Market read carries SPY −0.35%, QQQ −0.32%, IWM −1.64%, DIA −0.38%,
+RSP −0.87% and every sector ETF.
+
+### Landed
+
+- `fetch_eod_venue.py` — the close comes from the **settled** block; the primary print is used
+  only when a symbol serves no settled print AND its primary stamp is still inside the regular
+  session (a stamp after 16:00 ET is an extended-hours print, not a close). The record carries
+  `close_source`, `primary_price` and `primary_stamp` so the choice is auditable.
+- `fetch_eod_settled.py` — the probe loop measures the same settled block, so it is a drift
+  measurement again; and it pulls `PROXY_SYMBOLS`.
+- `build_eod_report.py` — takes `--prior-csv` and **states the column count when it differs from
+  the prior session** (30 → 32 columns on 2026-11-12, adding `settle_status` and `settle_round`),
+  and the settled-print rule is now in the artifact's `## Method & caveats`.
+- The skill spec states the settled-vs-live rule with the measurements.
+
+All three scripts are **fetched at RUN time**, so these fixes land on the next fire with **no
+`cron_update` and no prompt drift**.
+
+**Artifact:** `us-eod/2026-11-12.csv` (4,893 rows, 32 columns) + `us-eod/2026-11-12.md` +
+`us-eod/2026-11-12.manifest.json` in `karizaco/minimax-cloud-outputs` (`main`, commit `cbbe8b5`).
+Checker: 34/34 assertions pass; the settle fault-injection test 8/8; the numeric formatter
+reproduces the prior session's 99,869 numeric cells with **0 drift**.
