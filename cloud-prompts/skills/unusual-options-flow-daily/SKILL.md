@@ -348,17 +348,47 @@ ratio). The reply may show fewer ROWS than the artifact — it shows the leaders
 
 ### Acceptance criteria for this routine's reply
 
-Run the checker before the push, not after:
+**The checker is not in the sandbox by default — fetch it first.** A checker that is only *called*
+is not on disk, and a checker nobody runs is decoration. It lives in the repo under `tools/`, so
+it is fetched at run time with the standard ladder:
 
 ```bash
-python3 tools/check_options_flow_artifact.py --md options-flow/<date>.md --reply <reply.txt>
+C=/workspace/check_options_flow_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_options_flow_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_options_flow_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_options_flow_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && head -1 "$C.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+[ -s "$C" ] || echo "check_options_flow_artifact.py fetch FAILED - the reply cannot be checked"
 ```
+
+**Then write the reply you are about to send to a file and check THAT** — the reply is the thing
+the contract is about, and it cannot be checked after it has been sent:
+
+```bash
+# /workspace/reply.txt holds the EXACT text of the reply you are about to send.
+python3 "$C" --md /workspace/options-flow/$FIRE_DATE.md --reply /workspace/reply.txt
+echo "contract check exit: $?"
+```
+
+Fix every `FAIL` line and re-run until it exits 0, THEN push and send the reply. A breach
+prints as a `FAIL` line and exits 1.
 
 It asserts the bias tags against their own ratios, the universe behind every published ratio, the
 relative screen leading the artifact, and — since 2026-11-12 — **the column contract**: a separate
 `Expiry` column in the artifact's contract tables and in the reply's contract table, and no cell
-that packs side + strike + date. A breach prints as a `FAIL` line and exits 1. A reply that has
-been checked and passes is worth more than a reply that merely looks right.
+that packs side + strike + date. A reply that has been checked and passes is worth more than a
+reply that merely looks right.
+
+If the checker cannot be fetched, say so in `### Push / errors` as one degraded source. Do not
+publish a reply that fails the contract without saying why.
 
 
 ### The front matter names the population of every ratio
