@@ -136,6 +136,18 @@ copies agree is clean; removing a routine from **any one** of the three copies i
 the right copy; the original 2026-11-12 defect is reproduced and caught; and the live-vs-ground-truth
 check still returns 1, not 3.
 
+> **A bug the first version of this check shipped, caught by running it the way the auditor runs it.**
+> The audit executes in a **bare sandbox that holds only the files it fetched** — there is no repo
+> checkout. The first version of the check treated a copy it could not open as a *disagreement*, so
+> on every audit it would have published **three false drift findings** for `gen_roster.py`,
+> `deploy_prompts.py` and the auditor procedure — a check that cries wolf on every run is worse than
+> no check. The end-to-end run (fetch the six files into an empty directory, run the detector from
+> there) caught it; the fix is that a copy which cannot be **located** is reported as
+> `roster_copy_not_checked`, never as drift, and never raises the exit code. The procedure now
+> fetches `gen_roster.py` and `deploy_prompts.py` alongside the other four, so the check can run at
+> all. The sandbox layout is now a regression case in the test: **8 checks, including "the sandbox
+> layout raises NO false drift" and "an absent copy is not_checked, never drift"**.
+
 ### D4 — `preopen-feed/`: two sessions shipped half the artifact set
 
 Cron #92's prompt is explicit — *"**Two files, one fire.** Every successful checkpoint writes the
@@ -188,7 +200,7 @@ that the first carries") — so the index knew about a defect it could not fix.
 |---|---|
 | `tools/gen_roster.py` | `ARTIFACTS` gains `92a-preopen-catalyst-capture-0830` and `92b-preopen-catalyst-capture-0950`; a new `NO_ARTIFACT` set declares the artifact-less routine (#91) |
 | `tools/auditor_roster_check.py` | new **copy-drift check** comparing the ground truth against the auditor procedure, the deploy harness and the roster generator; new `roster_copy_drift` output; new exit code 3 |
-| `tools/test_auditor_roster_check.py` | **new** — hermetic proof that drift in any copy is caught, that a clean repo is not cried up, and that the exit-1 roster-gap semantics are unchanged |
+| `tools/test_auditor_roster_check.py` | **new** — hermetic proof that drift in any copy is caught, that a clean repo is not cried up, that the SANDBOX layout (no repo checkout) raises no false drift, and that the exit-1 roster-gap semantics are unchanged |
 | `cloud-prompts/_shared/auditor-procedure.md` | STEP 4e gains 4e-2: the four copies, the drift line format, and the exit-code distinction. **Fetched at RUN time — no prompt edit, no redeploy** |
 | `cloud-prompts/cron-prompts/README.md` | **regenerated** by `tools/gen_index.py`: 26 → 27 routines, the `#15b` row, and the real output paths for `#92a` / `#92b` |
 | `docs/README.md` | **regenerated** by `tools/gen_docs_index.py` |
