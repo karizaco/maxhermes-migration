@@ -16,14 +16,19 @@ The array form is what TradingView's PUBLIC DOCS show, so it is the one an agent
 from memory. This helper makes the correct form mechanical:
 
   1. VALIDATE the body BEFORE it is sent. A bad shape is refused locally, with the fix.
-  2. POST it, and check COMPLETENESS on the way back: `totalCount` must equal the rows
-     returned, because `range` is a PAGE SIZE and the API truncates silently.
+  2. POST it, and check COMPLETENESS on the way back: `range` is a PAGE SIZE and the API
+     truncates silently, so a pull that wants EVERYTHING must assert that the pages are
+     DISJOINT and that their UNION equals `totalCount` (TV_SCAN_V2).
   3. DIAGNOSE a failure by its error string, so a 400 names its cause and its fix.
+  4. PULL a known name list in ONE targeted call (`pull --names`), or a whole universe with
+     stable paged pulls (`pull --body`) — and index rows by the BARE ticker (`d[0]`).
 
 USAGE
 -----
     tv_scan.py validate --body body.json          # dry run: refuse a bad shape, send nothing
     tv_scan.py scan    --body body.json [--url U] # validate -> post -> completeness check
+    tv_scan.py pull    --names "BW,FRVO" --columns name,exchange,average_volume_10d_calc
+    tv_scan.py pull    --body body.json             # paged universe pull, disjoint pages
     tv_scan.py diagnose --status 400 --error-body err.json
     tv_scan.py selftest                            # offline checks of the validator itself
 
@@ -35,6 +40,8 @@ EXIT CODES
     1  the request body is INVALID (nothing was sent)
     2  the request FAILED (status/transport)
     3  the pull came back TRUNCATED (totalCount > rows) — a failed pull, report it
+    4  the pull was INCOMPLETE (pages overlapped, the union != totalCount, or a requested
+       name never came back) — a failed pull, report it
 """
 from __future__ import annotations
 
@@ -46,7 +53,11 @@ import urllib.request
 
 # ---- capability marker: a run-time fetch MUST require this token, or an older copy of this
 # ---- file (or of a different helper with the same name) could win the download race.
-CAPABILITY_MARKER = "TV_SCAN_V1"
+CAPABILITY_MARKER = "TV_SCAN_V2"
+# TV_SCAN_V1 is the shape-validation marker and is still PRESENT in this file on purpose:
+# a fetch ladder that demands the old token still resolves to this (better) file, while a
+# fetch ladder that demands TV_SCAN_V2 cannot be satisfied by an older copy.
+LEGACY_CAPABILITY_MARKER = "TV_SCAN_V1"
 
 DEFAULT_URL = "https://scanner.tradingview.com/america/scan"
 
@@ -339,6 +350,163 @@ def scan(body: dict, url: str = DEFAULT_URL, timeout: int = 60) -> tuple[dict, l
     return result, problems
 
 
+
+# --------------------------------------------------------------------------------------
+# TV_SCAN_V2 — PAGED PULLS, COVERAGE AND THE BARE-NAME KEY
+# --------------------------------------------------------------------------------------
+#
+# Measured 2026-11-11 (cron #07). Two defects that the old completeness check cannot see:
+#
+#   (a) PAGE OVERLAP. The scanner's default row order is NOT stable between two requests,
+#       so a two-slice pull can return 20,155 rows whose UNION is only 20,001 distinct
+#       symbols — 154 names missing, no error, and `totalCount == rows_returned` on the
+#       first page does not reveal it. The completeness test is a SET test:
+#       the pages must be DISJOINT and their UNION must equal `totalCount`.
+#       Sorting by a STABLE column ("name") is what makes the pages disjoint.
+#
+#   (b) THE ROW KEY. A response row is {"s": "NYSE:BW", "d": ["BW", "NYSE", ...]}: the
+#       bare ticker is `d[0]`, while `s` is VENUE-PREFIXED. Indexing by `s` makes every
+#       US ticker look ABSENT — a false negative indistinguishable from an empty universe.
+
+PAGE_CAP = 20000          # the scanner's own page cap, measured
+MAX_PAGES = 50            # runaway guard for a pull that never converges
+
+
+def bare_name(row: dict) -> str:
+    """The BARE ticker of a scanner row (`d[0]`), never the venue-prefixed `s`."""
+    d = row.get("d") or []
+    if d:
+        return str(d[0])
+    s = str(row.get("s") or "")
+    return s.split(":")[-1]
+
+
+def venue_of(row: dict) -> str:
+    """The venue of a scanner row: the `exchange` column if present, else `s`'s prefix."""
+    d = row.get("d") or []
+    if len(d) > 1 and d[1]:
+        return str(d[1])
+    s = str(row.get("s") or "")
+    return s.split(":")[0] if ":" in s else s
+
+
+def index_by_bare_name(rows: list) -> dict:
+    """{bare ticker -> row}. The key is `d[0]`, NOT the venue-prefixed `s`."""
+    out = {}
+    for r in rows:
+        out.setdefault(bare_name(r), r)
+    return out
+
+
+def check_page_coverage(pages: list, total) -> list[Problem]:
+    """The REAL completeness test: pages disjoint AND union == totalCount."""
+    problems = []
+    seen = {}
+    for i, page in enumerate(pages):
+        for k in page:
+            seen.setdefault(k, []).append(i)
+    overlap = {k: v for k, v in seen.items() if len(v) > 1}
+    if overlap:
+        sample = ", ".join(sorted(overlap)[:6])
+        problems.append(Problem(
+            "error", "pages-overlap",
+            f"{len(overlap)} name(s) came back on MORE THAN ONE page (e.g. {sample}). "
+            "The scanner's default order is not stable between requests, so a pull that "
+            "looks complete can still be missing names.",
+            "page with a STABLE sort - {\"sortBy\": \"name\", \"sortOrder\": \"asc\"} - and "
+            "assert that the pages are disjoint"))
+    if isinstance(total, int) and len(seen) != total:
+        problems.append(Problem(
+            "error", "pages-incomplete",
+            f"the union of the pages holds {len(seen)} distinct names but totalCount reads "
+            f"{total}: {total - len(seen)} name(s) never came back, with no error.",
+            "pull the missing slice; a pull whose union != totalCount is a FAILED pull - "
+            "report it, do not publish it"))
+    return problems
+
+
+def _post(body: dict, url: str, timeout: int):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(),
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return e.code, {"__error_body__": e.read().decode("utf-8", "replace")[:400]}
+    except Exception as e:
+        return None, {"__error_body__": str(e)}
+
+
+def pull_names(names: list, columns: list, url: str = DEFAULT_URL, timeout: int = 60):
+    """ONE targeted call for a KNOWN list of tickers. No paging, no truncation, no overlap.
+
+    The server-side filter is `{"left": "name", "operation": "in_range", "right": [names]}`
+    — `in_range` takes a LIST for a categorical column (the `in` operation does NOT).
+    """
+    problems = []
+    body = {"columns": columns,
+            "filter": [{"left": "name", "operation": "in_range", "right": list(names)}],
+            "range": [0, len(names) + 5],
+            "sort": {"sortBy": "name", "sortOrder": "asc"}}
+    problems += validate_body(body)
+    if any(p.severity == "error" for p in problems):
+        return {"rows": 0, "by_name": {}}, problems
+    status, data = _post(body, url, timeout)
+    if status != 200:
+        problems += diagnose(status or 0, data.get("__error_body__", ""))
+        return {"rows": 0, "by_name": {}}, problems
+    rows = data.get("data") or []
+    total = data.get("totalCount")
+    by_name = index_by_bare_name(rows)
+    missing = [n for n in names if n not in by_name]
+    if missing:
+        problems.append(Problem(
+            "error", "name-missing",
+            f"{len(missing)} requested name(s) did not come back: {', '.join(missing[:12])}.",
+            "a name absent from TradingView is a REAL absence only if the pull was complete; "
+            "check the pull's coverage before reporting it"))
+    if isinstance(total, int) and total != len(rows):
+        problems.append(Problem(
+            "error", "pull-truncated",
+            f"totalCount {total} but {len(rows)} rows came back - the targeted pull is "
+            "truncated, so a missing name may be a page defect.",
+            "raise the range and re-pull"))
+    result = {"rows": len(rows), "totalCount": total, "by_name": by_name,
+              "rows_list": rows, "status": status}
+    return result, problems
+
+
+def pull_pages(body: dict, url: str = DEFAULT_URL, timeout: int = 60):
+    """Pull a WHOLE universe, paging on a STABLE sort, and assert the pages are disjoint."""
+    problems = []
+    b = dict(body)
+    b["sort"] = {"sortBy": "name", "sortOrder": "asc"}   # a stable pagination key
+    pages, rows_all, total = [], [], None
+    start = 0
+    for _ in range(MAX_PAGES):
+        b["range"] = [start, start + PAGE_CAP]
+        problems += [p for p in validate_body(b) if p.severity == "error"]
+        if any(p.severity == "error" for p in problems):
+            return {"rows": 0, "by_name": {}}, problems
+        status, data = _post(b, url, timeout)
+        if status != 200:
+            problems += diagnose(status or 0, data.get("__error_body__", ""))
+            return {"rows": 0, "by_name": {}}, problems
+        rows = data.get("data") or []
+        total = data.get("totalCount")
+        pages.append([bare_name(r) for r in rows])
+        rows_all += rows
+        start += len(rows)
+        if not rows or (isinstance(total, int) and start >= total):
+            break
+    problems += check_page_coverage(pages, total)
+    result = {"rows": len(rows_all), "totalCount": total, "pages": len(pages),
+              "by_name": index_by_bare_name(rows_all), "rows_list": rows_all}
+    return result, problems
+
+
 # --------------------------------------------------------------------------------------
 # SELFTEST
 # --------------------------------------------------------------------------------------
@@ -380,6 +548,14 @@ def selftest() -> int:
                                                "operation": "greater", "right": 1793959200}]}, []),
         ("malformed range", {"columns": ["name"], "range": [0]}, ["range-malformed"]),
     ]
+    page_cases = [
+        ("pages disjoint and complete",
+         [["A", "B"], ["C", "D"]], 4, []),
+        ("two pages overlap",
+         [["A", "B"], ["B", "C"]], 3, ["pages-overlap"]),
+        ("union short of totalCount",
+         [["A", "B"], ["C"]], 5, ["pages-incomplete"]),
+    ]
     bad = 0
     for label, body, expected in cases:
         got = _codes(validate_body(body))
@@ -387,7 +563,24 @@ def selftest() -> int:
         print(f"  {'PASS' if ok else 'FAIL'}  {label:34} -> {got}")
         if not ok:
             bad += 1
-    print(f"selftest: {len(cases) - bad}/{len(cases)} validator cases passed")
+    for label, pages, total, expected in page_cases:
+        got = _codes(check_page_coverage(pages, total))
+        ok = all(e in got for e in expected)
+        print(f"  {'PASS' if ok else 'FAIL'}  {label:34} -> {got}")
+        if not ok:
+            bad += 1
+    key_cases = [
+        ("venue-prefixed s, bare d[0]",
+         {"s": "NYSE:BW", "d": ["BW", "NYSE", 1.0]}, "BW", "NYSE"),
+        ("crypto venue", {"s": "BINANCE:BTCUSD", "d": ["BTCUSD", "crypto", 1.0]}, "BTCUSD", "crypto"),
+    ]
+    for label, row, ename, evenue in key_cases:
+        ok = bare_name(row) == ename and venue_of(row) == evenue
+        print(f"  {'PASS' if ok else 'FAIL'}  {label:34} -> {bare_name(row)} / {venue_of(row)}")
+        if not ok:
+            bad += 1
+    total_cases = len(cases) + len(page_cases) + len(key_cases)
+    print(f"selftest: {total_cases - bad}/{total_cases} validator cases passed")
     return 1 if bad else 0
 
 
@@ -405,7 +598,7 @@ def _emit(problems, as_json: bool) -> None:
 
 def main(argv: list[str]) -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="Validated TradingView scanner client (TV_SCAN_V1)")
+    ap = argparse.ArgumentParser(description="Validated TradingView scanner client (TV_SCAN_V2)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_val = sub.add_parser("validate", help="check a body WITHOUT sending it")
@@ -416,6 +609,14 @@ def main(argv: list[str]) -> int:
     p_scan.add_argument("--url", default=DEFAULT_URL)
     p_scan.add_argument("--json", action="store_true", help="print the raw response as JSON")
     p_scan.add_argument("--out", help="write the raw response to this file")
+
+    p_pull = sub.add_parser("pull", help="pull the universe (paged, disjoint) OR a known name list (one call)")
+    p_pull.add_argument("--body", help="json file, inline json, or - for stdin (a universe pull)")
+    p_pull.add_argument("--names", help="comma-separated tickers (ONE targeted call)")
+    p_pull.add_argument("--columns", default="name,exchange,average_volume_10d_calc",
+                        help="comma-separated columns (with --names)")
+    p_pull.add_argument("--url", default=DEFAULT_URL)
+    p_pull.add_argument("--out", help="write the rows to this file as JSON")
 
     p_diag = sub.add_parser("diagnose", help="explain a failed scanner response")
     p_diag.add_argument("--status", type=int, required=True)
@@ -445,6 +646,24 @@ def main(argv: list[str]) -> int:
         problems = diagnose(a.status, raw)
         _emit(problems, False)
         return 1 if problems else 0
+
+    if a.cmd == "pull":
+        if a.names:
+            names = [n.strip() for n in a.names.split(",") if n.strip()]
+            cols = [c.strip() for c in a.columns.split(",") if c.strip()]
+            result, problems = pull_names(names, cols, url=a.url)
+        else:
+            result, problems = pull_pages(read_body(a.body), url=a.url)
+        _emit(problems, False)
+        if a.out:
+            with open(a.out, "w", encoding="utf-8") as f:
+                json.dump(result.get("by_name", {}), f, indent=1)
+        print(f"rows={result.get('rows')}  totalCount={result.get('totalCount')}  "
+              f"pages={result.get('pages', 1)}  names={len(result.get('by_name', {}))}")
+        errs = [p for p in problems if p.severity == "error"]
+        if errs:
+            return 4
+        return 0
 
     if a.cmd == "scan":
         body = read_body(a.body)

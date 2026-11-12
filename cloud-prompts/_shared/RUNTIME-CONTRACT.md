@@ -229,10 +229,57 @@ lives here rather than in one routine's prompt. Full evidence:
 **`range` is a PAGE SIZE, and the API truncates without saying so.** `range:[0,20000]` against the
 US universe returned exactly 20,000 rows while `totalCount` read **20,271** — 271 names dropped,
 no error, and with no effective sort the dropped slice is arbitrary. **`totalCount` is the true
-total**, so the completeness check is: **`totalCount` must equal the rows returned**; if it does not,
-the pull is truncated and the missing slice must be pulled. Same defect class as cron #25's
-`range:[0,600]` and cron #26's `range:[0,5000]` (which dropped Infineon, SoftBank, Petrobras).
-**A pull whose `totalCount` exceeds its rows is a FAILED pull, and must be reported, not published.**
+total**. Same defect class as cron #25's `range:[0,600]` and cron #26's `range:[0,5000]` (which
+dropped Infineon, SoftBank, Petrobras). **A pull whose `totalCount` exceeds its rows is a FAILED
+pull, and must be reported, not published.**
+
+#### The completeness check is a SET test, not a row count (measured 2026-11-11)
+
+`totalCount must equal the rows returned` is **necessary but NOT sufficient** — it passes a pull
+that is still missing names. Measured on cron #07's US universe pull:
+
+| pull | rows returned | distinct names | `totalCount` | verdict |
+|---|---:|---:|---:|---|
+| `range:[0,20000]` + `range:[20000,20155]`, **no sort** | 20,000 + 155 | **20,001** | 20,155 | **154 names missing, no error** |
+| `range:[0,10000]` + `range:[10000,20155]`, `sort {"sortBy":"name","sortOrder":"asc"}` | 10,000 + 10,155 | **20,155** | 20,155 | complete |
+
+The scanner's **default row order is not stable between two requests**, so a two-slice pull can
+overlap: the second slice returned 155 rows of which **154 were already in the first slice**. The
+pages must therefore be checked as SETS:
+
+- **the pages must be DISJOINT** — no name on two pages (`pages-overlap`), and
+- **their UNION must equal `totalCount`** (`pages-incomplete`).
+
+**Paging needs a STABLE key: sort by `{"sortBy": "name", "sortOrder": "asc"}`.** With that sort the
+pages are disjoint and the union equals `totalCount` exactly (verified live on 2026-11-12: 2 pages,
+20,356 rows, union 20,356 == `totalCount` 20,356, in 1.1 s). A sort by a live column (volume,
+change) is NOT a stable pagination key — the order can change between two requests.
+
+#### The row key is the BARE ticker, never the venue-prefixed `s`
+
+A response row is `{"s": "NYSE:BW", "d": ["BW", "NYSE", avg10d, rvol, mcap]}`: the bare ticker is
+**`d[0]`**, while `s` carries the venue (`NYSE:`, `NASDAQ:`, `AMEX:`, `OTC:`, `BINANCE:`). A pull
+indexed by `s` returns **every US ticker as MISSING** — indistinguishable from an empty universe,
+and a false negative that silently falls through to a fallback universe. **Index by `d[0]`, keep
+`d[1]` (the exchange) as a separate field, and assert the roster coverage before you use the pull.**
+
+#### If you know the tickers, do NOT pull the universe (measured 2026-11-11)
+
+The scanner accepts a **categorical `in_range` filter with a LIST `right`** — the `in` operation
+does not, but `in_range` does (and `relvol_screen.py` already uses it). One targeted call returns
+exactly the requested rows, so there is no page, no truncation, no overlap and no 20,000-row
+download:
+
+```json
+{"columns": ["name", "exchange", "average_volume_10d_calc", "market_cap_basic"],
+ "filter": [{"left": "name", "operation": "in_range", "right": ["BW", "FRVO", "..."]}],
+ "range": [0, 17], "sort": {"sortBy": "name", "sortOrder": "asc"}}
+```
+
+Measured on cron #07's 12-name roster: HTTP 200, `totalCount` 12, 12 rows, **one call** — against
+the universe pull's 20,155 rows. `tv_scan.py pull --names` does this and asserts the coverage
+(`name-missing` when a requested name never comes back). **Use the targeted pull whenever the
+ticker list is known; pull the universe only when a screen genuinely needs every name.**
 
 **There is a VALIDATED CLIENT — use it instead of hand-building a body.**
 
@@ -275,6 +322,23 @@ python3 /workspace/tv_scan.py scan --body /workspace/tv_body.json --out /workspa
 # 3. when a call DOES fail, name the cause from the error string
 python3 /workspace/tv_scan.py diagnose --status 400 --error-body /workspace/tv_err.json
 ```
+
+**`pull` (TV_SCAN_V2) — prefer this over `scan` for a pull.** `scan` checks ONE page;
+`pull` pages on a stable sort and checks the pages as SETS.
+
+```bash
+# A. KNOWN tickers -> ONE targeted call (no page, no truncation, no overlap).
+#    Asserts the coverage: a requested name that never comes back is an ERROR (exit 4).
+python3 /workspace/tv_scan.py pull --names "BW,FRVO,IAM" \
+  --columns "name,exchange,average_volume_10d_calc,market_cap_basic" \
+  --out /workspace/tv_by_name.json
+
+# B. the WHOLE universe -> paged on a stable sort, pages asserted DISJOINT and their
+#    UNION asserted equal to totalCount (exit 4 on overlap or an incomplete union).
+python3 /workspace/tv_scan.py pull --body /workspace/tv_body.json --out /workspace/tv_univ.json
+```
+
+Both write a JSON object keyed by the **BARE ticker** (`d[0]`), not the venue-prefixed `s`.
 
 **The fleet-wide lint.** `python3 tools/test_tv_scan_contract.py` (40 checks) proves the
 validator refuses every bad shape, the scan path diagnoses a failed response and catches a

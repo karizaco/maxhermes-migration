@@ -250,10 +250,16 @@ Working path, in order:
    It is NOT intraday RVOL and the artifact must say so.
 
 **TWO RECIPES THAT ARE ALREADY SOLVED — do not rediscover them.**
-- TradingView scanner FILTER: a filter with left=name, operation=in and right=[ticker,...] returns
-  HTTP 400 on this endpoint (verified 2026-11-02). Pull the full universe instead — body
-  `columns` plus `range:[0,20000]`, ~19,900 rows — and filter locally for your tickers.
-  One request, no filter.
+- TradingView scanner FILTER: a filter with left=name, operation=**in** and right=[ticker,...]
+  returns HTTP 400 on this endpoint (verified 2026-11-02) — the `in` operation takes ONE value.
+  **But `in_range` DOES take a LIST `right`** for a categorical column, so the roster is one
+  targeted call: `{"columns": ["name","exchange","average_volume_10d_calc","market_cap_basic"],
+  "filter": [{"left":"name","operation":"in_range","right":["BW","FRVO",...]}],
+  "range":[0, len(names)+5], "sort": {"sortBy":"name","sortOrder":"asc"}}`. Measured 2026-11-12 on
+  the 12-name roster: HTTP 200, `totalCount` 12, 12 rows, **one call** — against 20,155 rows for
+  the universe pull. **Assert the coverage** (every roster name present) before you use it; a name
+  that never comes back is an ERROR, not a quiet drop. `tv_scan.py pull --names` does this for you
+  (see the fetch block below). Only pull the full universe if you genuinely need every name.
 - Yahoo IN-PROGRESS BAR: the last bar of the day is stamped with the CURRENT wall-clock time and
   its volume is still 0. Keeping it UNDERSTATES session volume. Drop every bar whose timestamp is
   later than the last COMPLETED 5-minute bar, and say in the artifact that you did.
@@ -271,11 +277,48 @@ works, so do not reach for the shape you remember from TradingView's public docs
 Column names are NOT the problem: `relative_volume_10d_calc`, `market_cap_basic`,
 `premarket_volume` and `exchange` all return 200 together.
 Also: **`range` is a page size and the API truncates SILENTLY.** `range:[0,20000]` returned 20,000
-rows while `totalCount` read 20,271 — 271 names dropped with no error. **`totalCount` must equal
-the rows returned**; if it does not, the pull is truncated and the missing slice must be pulled.
-A truncated pull is a failed pull: report it, do not publish it.
+rows while `totalCount` read 20,271 — 271 names dropped with no error.
+**AND the completeness check is a SET test, not a row count (measured 2026-11-11).**
+`totalCount must equal the rows returned` is NECESSARY BUT NOT SUFFICIENT: with NO sort the
+scanner's default row order is **not stable between two requests**, so a two-slice universe pull
+returned 20,155 rows whose UNION held only **20,001** distinct names — **154 names missing, no
+error**, and the row-count check passes that pull. The real invariants are: **the pages are
+DISJOINT** and **their UNION equals `totalCount`**. To page at all, sort on a STABLE key
+(`{"sortBy":"name","sortOrder":"asc"}`); a sort on a live column (volume, change) is not a stable
+pagination key. Verified live 2026-11-12: sorted, paged, 2 pages, union 20,356 == `totalCount`
+20,356, in 1.1 s.
+**AND the row key is the BARE ticker, never the venue-prefixed `s`.** A response row is
+`{"s": "NYSE:BW", "d": ["BW", "NYSE", ...]}`: the ticker is **`d[0]`**, while `s` carries the venue
+(`NYSE:`, `NASDAQ:`, `AMEX:`, `OTC:`). Indexing by `s` makes **every US ticker look MISSING** —
+indistinguishable from an empty universe, and a silent false negative. **Index by `d[0]`, keep
+`d[1]` (the exchange) separate, and assert the roster coverage before you use the pull.**
 Evidence: `docs/IMPROVEMENTS-cron07-focus-rvol.md` and `cloud-prompts/_shared/RUNTIME-CONTRACT.md`
 section 2a-bis in karizaco/maxhermes-migration.
+
+**FETCH THE VALIDATED SCANNER CLIENT FIRST — a helper that is only called is not on disk.**
+`_shared/tv_scan.py` (capability marker `TV_SCAN_V2`) refuses a bad request shape BEFORE it is
+sent, diagnoses a failure from its error string, and its `pull` mode does the work for you:
+`pull --names "A,B,C"` = the ONE targeted call plus a coverage assertion; `pull --body` = paged on
+a stable sort with the disjointness and union assertions (exit 4 on either defect). It writes rows
+keyed by the BARE ticker. Fetch it in STEP 1 with the ladder below; if the fetch fails, fall back
+to the hand-built body above and apply the same assertions yourself.
+
+```bash
+D=/workspace/tv_scan.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/tv_scan.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/tv_scan.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/tv_scan.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && grep -q 'TV_SCAN_V2' "$D.tmp" 2>/dev/null; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] || echo "tv_scan.py fetch FAILED - hand-build the body with sortBy/sortOrder and assert coverage yourself"
+```
 
 Record the data timestamp for every symbol from the payload. A symbol with no intraday bars yet gets
 no_intraday_bars - never silently substitute a daily value.

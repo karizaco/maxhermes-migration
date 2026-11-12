@@ -276,3 +276,84 @@ if FAILS:
     sys.exit(1)
 print(f"RESULT: all {CHECKS} checks passed")
 sys.exit(0)
+
+# ---------------------------------------------------------------- 4. the TV_SCAN_V2 pull path
+print("4. the pull path (paged, disjoint, bare-name keyed - local HTTP stub)")
+
+class PagedStub(BaseHTTPRequestHandler):
+    """Returns a DIFFERENT page per request, keyed on the requested range start."""
+    pages = {}
+    status = 200
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(n) or b"{}")
+        rng = body.get("range") or [0, 0]
+        payload = self.pages.get(rng[0], b'{"totalCount":0,"data":[]}')
+        self.send_response(self.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *a):
+        pass
+
+
+def serve_paged(pages):
+    PagedStub.pages = pages
+    srv = HTTPServer(("127.0.0.1", 0), PagedStub)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}/scan"
+
+
+def page(rows, total):
+    return json.dumps({"totalCount": total,
+                       "data": [{"s": f"NYSE:{r}", "d": [r, "NYSE", 1.0]} for r in rows]}).encode()
+
+
+# two pages that OVERLAP and whose union is short of totalCount -> both defects are caught
+srv, url = serve_paged({0: page(["A", "B"], 5), 20000: page(["B", "C"], 5)})
+try:
+    res, probs = tv.pull_pages(dict(GOOD), url=url)
+    got = [p.code for p in probs]
+    check("pages-overlap" in got, "overlapping pages are caught (the 2026-11-11 defect)")
+    check("pages-incomplete" in got, "a union short of totalCount is caught")
+finally:
+    srv.shutdown()
+
+# two DISJOINT pages whose union equals totalCount -> clean
+srv, url = serve_paged({0: page(["A", "B"], 4), 20000: page(["C", "D"], 4)})
+try:
+    res, probs = tv.pull_pages(dict(GOOD), url=url)
+    check(not [p for p in probs if p.severity == "error"], "disjoint pages with a complete union pass")
+    check(res.get("rows") == 4, "every row across the pages is kept")
+    check("A" in res.get("by_name", {}), "rows are indexed by the BARE ticker, not the venue-prefixed s")
+finally:
+    srv.shutdown()
+
+# a targeted pull: complete -> clean, and keyed by the bare name
+srv, url = serve_paged({0: page(["BW", "FRVO"], 2)})
+try:
+    res, probs = tv.pull_names(["BW", "FRVO"], ["name", "exchange", "average_volume_10d_calc"], url=url)
+    check(not [p for p in probs if p.severity == "error"], "a complete targeted pull passes")
+    check(sorted(res.get("by_name", {}).keys()) == ["BW", "FRVO"],
+          "the targeted pull is keyed by the bare ticker")
+    check(res.get("rows") == 2 and res.get("totalCount") == 2, "the targeted pull reports rows and totalCount")
+finally:
+    srv.shutdown()
+
+# a targeted pull where a requested name never comes back -> caught
+srv, url = serve_paged({0: page(["BW"], 1)})
+try:
+    res, probs = tv.pull_names(["BW", "FRVO"], ["name", "exchange"], url=url)
+    check("name-missing" in [p.code for p in probs], "a requested name that never arrives is caught")
+finally:
+    srv.shutdown()
+
+# the targeted body uses in_range with a LIST (the `in` operation would 400)
+body = {"columns": ["name", "exchange", "average_volume_10d_calc"],
+        "filter": [{"left": "name", "operation": "in_range", "right": ["BW", "FRVO"]}],
+        "range": [0, 7]}
+check(tv.validate_body(body) and not errs(body), "the targeted in_range-list body validates clean")

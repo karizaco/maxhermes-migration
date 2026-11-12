@@ -1953,20 +1953,40 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
     sorts correctly**. Use this, or omit `sort` entirely.
   - Column names are NOT the problem: `relative_volume_10d_calc`, `market_cap_basic`,
     `premarket_volume` and `exchange` all return 200 together.
-  - A server-side `filter` with a LIST `right` is a **400 `Expected one value, passed 2`** — the
-    `in` operation does not take multiple values. Pull the universe and filter LOCALLY.
+  - A server-side `filter` whose `right` is a LIST is a **400 `Expected one value, passed 2`** —
+    but only for the **`in`** operation. **`in_range` DOES take a LIST `right`** for a categorical
+    column (the form `relvol_screen.py` already uses), so a KNOWN ticker list can be pulled in
+    **ONE targeted call** — no page, no truncation, no overlap, no 20,000-row download:
+    `{"columns": [...], "filter": [{"left": "name", "operation": "in_range", "right": ["BW", ...]}],
+    "range": [0, len(names) + 5]}`. **Use that whenever the ticker list is known**; pull the
+    universe only when the screen genuinely needs every name.
   - **`range` is a page size and the API truncates silently.** `range:[0,20000]` returned 20,000
-    rows while `totalCount` read **20,271** — 271 names dropped, no error. **`totalCount` must equal
-    the rows returned**; if it does not, the pull is truncated and the missing slice must be pulled.
-    A truncated pull is a failed pull: report it, do not publish it.
+    rows while `totalCount` read **20,271** — 271 names dropped, no error.
+  - **The completeness check is a SET test, not a row count (measured 2026-11-11).**
+    `totalCount must equal the rows returned` is necessary but NOT sufficient: with **no sort**,
+    the scanner's default row order is **not stable between requests**, so a two-slice pull
+    returned 20,155 rows whose UNION was only **20,001** distinct names — **154 missing, no
+    error**, and the row-count check passes it. The real invariants are: **the pages are
+    DISJOINT** and **their UNION equals `totalCount`**. To page at all, sort on a **stable** key
+    (`{"sortBy": "name", "sortOrder": "asc"}`); a sort on a live column (volume, change) is not a
+    stable pagination key.
+  - **The row key is the BARE ticker, never the venue-prefixed `s`.** A row is
+    `{"s": "NYSE:BW", "d": ["BW", "NYSE", ...]}`: the ticker is **`d[0]`**, while `s` carries the
+    venue (`NYSE:`, `NASDAQ:`, `AMEX:`, `OTC:`). Indexing by `s` makes **every US ticker look
+    MISSING** — indistinguishable from an empty universe, and a silent false negative. **Index by
+    `d[0]`, keep `d[1]` (the exchange) separate, and assert the roster coverage before using it.**
   - Full evidence and the per-market verification: `docs/IMPROVEMENTS-cron07-focus-rvol.md` and
     `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §2a-bis.
-  - **THERE IS A VALIDATED CLIENT — `_shared/tv_scan.py` (capability marker `TV_SCAN_V1`).** Use
+  - **THERE IS A VALIDATED CLIENT — `_shared/tv_scan.py` (capability marker `TV_SCAN_V2`).** Use
     it instead of hand-building a body: `validate` refuses a bad shape BEFORE it is sent
     (exit 1, nothing sent), `scan` validates, posts and checks the pull for truncation
-    (exit 3 = truncated), `diagnose` names the cause of a failure from its error string. The
+    (exit 3 = truncated), `diagnose` names the cause of a failure from its error string, and
+    **`pull` is the one to use for a pull**: `pull --names "A,B,C"` does the ONE targeted call and
+    asserts the coverage (exit 4 when a requested name never comes back), while `pull --body`
+    pages on a stable sort and asserts the pages are DISJOINT and their union equals
+    `totalCount` (exit 4). It writes rows keyed by the **bare** ticker. The
     fetch ladder and the usage are in RUNTIME-CONTRACT §2a-bis. The repo lint
-    `tools/test_tv_scan_contract.py` proves no repo caller SHIPS a poisoned body.
+    `tools/test_tv_scan_contract.py` (40 checks) proves no repo caller SHIPS a poisoned body.
 
 ### 8. Hook into existing briefs
 
