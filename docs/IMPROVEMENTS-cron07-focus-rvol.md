@@ -429,3 +429,138 @@ trains the fleet to re-run a failing test until it goes green, and it makes a re
 look like noise. The same principle the fleet already applies to checkers applies here —
 **"a checker never observed failing is a claim"** extends to **"a checker that flakes is not a
 guard"**. Whenever a local HTTP stub is used, **the handler MUST read the request body.**
+
+---
+
+## 2026-11-12 — the alert tier was structurally dead for FIVE sessions; the fix, and a defect in the fix
+
+**Audited:** 2026-11-12, against the published artifacts for 2026-11-09, 11-10 and 11-11.
+**Scope:** cron #07's crossing/alert rule (STEP 6), its universe (STEP 4), and its data path (STEP 5).
+
+### The symptom
+
+`alerts: none` on 2026-11-05, 11-06, 11-09, 11-10 and 11-11 — **five consecutive sessions**. The
+tape was not calm: on 2026-11-10 **seven names sat above the 1.5x bar** (ETON 2.74x, QNT 2.08x,
+RGTI 2.07x, TMDX 2.01x, FLY 1.93x, FROG 1.83x, LASR 1.81x) and **not one could be shown to be a
+crossing**. On 2026-11-11 BW was at 4.08x.
+
+### Cause 1 — the baseline was read only from a CSV keyed on a roster that had rotated away
+
+STEP 6 read the prior reading ONLY from the previous session's published CSV. That CSV is keyed on
+the previous sweep's ROSTER, and the roster turns over almost completely between sweeps — measured
+overlap: **4/12, 0/12, 0/12, 2/12, 0/12**. So the baseline covered almost none of today's names,
+and a missing ticker was published as `prev_session_rvol: n/a`. **An absent prior reading silently
+disarms the alert tier**: a name at 2.7x becomes a WATCH, not an ALERT. Nothing in the artifact
+said the tier was structurally unable to fire.
+
+The last session that fired alerts was 2026-11-04 — the one run with **no baseline CSV to read**,
+so it recomputed every prior reading from the same Yahoo series and produced 4 sound alerts.
+Recompute = works. Read-the-CSV = dead.
+
+### Cause 2 — the published prior value is on a DIFFERENT SCALE from today's reading
+
+`TV average_volume_10d_calc` is a **rolling** average and it moves between fetches: measured,
+ETON's denominator went **550,859 (published 2026-11-10) -> 740,475 (two days later), a 34% swing**,
+because the high-volume sessions it printed entered the window. The metric scales as 1/denominator,
+so a published value compared against today's `rvol_now` compares two different scales.
+
+**And the drift FLIPS VERDICTS.** The sensitivity is the distance of the PRIOR from the bar:
+
+| name | prior | distance to 1.5 | denominator move that flips the verdict |
+|---|---:|---:|---:|
+| FROG | 0.921 | 38.6% below | **38.6%** — holds |
+| LASR | 1.497 | 0.2% below | **0.2%** — flips |
+| RGTI | 1.551 | 3.4% above | 3.4% |
+
+On the 2026-11-10 roster, FROG and LASR crossed on the published denominator and **neither did**
+on today's. So "read the published CSV" is not merely incomplete — where it applies at all, it can
+be wrong.
+
+### The fix
+
+1. **Always recompute the prior reading**, on the same feed, with the **same denominator as
+   today's reading** — both sides of every crossing are then the same metric on one scale. The
+   published value is published alongside as `prev_session_rvol_published` plus
+   `denominator_drift_pct`: a CROSS-CHECK, never the baseline.
+2. **Publish the provenance** — `prev_session_rvol_source` is `recomputed_same_feed` or
+   `unavailable` on every row, and `n/a` is legal ONLY when the recompute is genuinely impossible.
+
+### Cause 3 — the focus roster was not the screen
+
+The roster is a **momentum screen built on the previous session's data**, so it structurally cannot
+contain a name whose move has not happened yet. Measured on 2026-11-09: the roster carried **1 of the
+day's top 10 gainers**, the previous session's `master.csv` 5, cron #17's boards 7, and the union
+**10 of 10**. And the routine cannot catch them by re-scanning — the move was already visible at
+the fire time (all ten were up 2.56%-22.57% at 09:45 ET, per their own 09:40 bars), but the roster
+was built on Friday's settled data.
+
+**The fix: publish TWO tables** — the focus roster in full, and the top of a wider union — and build
+the wider union from what is **already on disk** (the previous session's `focus.csv`, `master.csv`
+and cron #17's candidate CSVs, ~1,250 names), never by re-scanning the market. The union is a
+CANDIDATE SET; the published table is its top by `rvol_now`.
+
+### Cause 4 — the per-name arithmetic was what made the run slow, not the fetching
+
+The 2026-11-09 fire took 66 minutes. The HTTP fetches were never the problem: **the per-name
+reasoning was**. Measured cost per source:
+
+| source | per name | for 214 names |
+|---|---:|---:|
+| TV scanner (full universe, ONE POST) | — | 0.57s |
+| Yahoo 5m (the metric) | 0.13s | 28s |
+| **Nasdaq `/historical` (daily volume)** | **2.09s** | **419s** |
+| Yahoo `interval=1d` instead | 0.13s | 28s |
+
+The daily volume now comes from **Yahoo `interval=1d` bars**: over 240 symbol-sessions across 40
+names the ratio Yahoo-1d / Nasdaq-consolidated is **median 1.0000, mean 0.9997, max deviation
+0.32%**, with ZERO comparisons outside +/-1% — far tighter than the vendor's own intraday revision
+band, and the 2026-11-10 and 11-11 crossing verdicts are identical under both sources. And the
+whole per-name job moves into **`tools/focus_rvol_score.py`**, which fetches in parallel and
+RENDERS the artifact, so a number cannot be mistyped between the JSON and the markdown. Measured
+on 1,636 names: **1,307 scored in 4.5 min** (was 66 min).
+
+### The checker
+
+`tools/check_focus_rvol_artifact.py` (16 clauses) + `tools/test_focus_rvol_contract.py`
+(hermetic). **C6 is the regression clause**: a name above the alert bar with no prior reading and
+no `unavailable` explanation FAILS the artifact. It fails all three published sessions on exactly
+the clauses this defect produces:
+
+```
+2026-11-09  CONTRACT FAILED — 6 failures  (C2 C3 C4 C6 C8)
+2026-11-10  CONTRACT FAILED — 6 failures  (C2 C3 C4 C6 C8)   <- 7 names silenced
+2026-11-11  CONTRACT FAILED — 6 failures  (C2 C3 C4 C6 C8)   <- BW 4.08x silenced
+```
+
+and the hermetic test proves it passes a compliant artifact and FAILS the shape that shipped.
+C16 and C17 are new: the wider universe must be published, and the CSV must carry a `universe`
+column.
+
+### Two defects found in MY OWN first attempt — recorded because both were silent
+
+**The TV column index was wrong.** `cols = [name, close, volume, average_volume_10d_calc, ...]`
+— the denominator is `d[3]`, but the first version read `d[2]`, which is the LIVE volume column.
+STBA's volume is 1, so its `daily_factor` became 217,200 and its rvol **377,751x**. It did not
+crash; it published. Fixed, plus a guard: a denominator below 10,000 shares is refused as
+`implausible_tv_denominator`, and a metric above 1000x is refused as `implausible_metric`.
+
+**`close` was carrying volume, not price** (GDYN at 55612). The 5m series now carries both, and
+the close is the 09:40 bar's CLOSE.
+
+Both were caught only because the engine was validated against the published artifacts: with the
+historical denominator the engine reproduces the published `rvol_now` to within 0.005 on 10 of 12
+names. **A metric engine that is not checked against a known-good published run is a rumor.**
+
+### The deploy drifted — twice — and the answer is to stop hand-pasting
+
+The prompt was pasted by hand twice on 2026-11-12 and drifted both times: the first paste carried
+a **stale copy of the older prompt** from context (four places, including the `view=runs` ->
+`view:runs` swap the skill warns about); the second differed in **one paragraph's line-wrap** —
+word-for-word identical, but a different SHA-256, which is exactly what cron #91 reports as drift.
+The repo was aligned to the deployed bytes rather than re-pasting 48 KB to chase a wrap, because
+re-pasting risks a real content change for a cosmetic one.
+
+**The durable fix is the one already in this change: the procedure lives in run-time-fetched
+helpers** (`focus_rvol_run.py` -> `focus_rvol_universe.py` + `focus_rvol_score.py` + the fleet's
+validated `tv_scan.py`), each behind a capability marker, so the deployed prompt is the CONTRACT
+and the recipe can change without a redeploy at all.
