@@ -357,6 +357,15 @@ section 1e.
    prefer the bridge, say so, and **do not publish both**. Never report "no source available" when
    a source is reachable — a 429 is a rate limit, not an absence.
 
+8. **A push-script REHEARSAL can write to PRODUCTION.** `push_artifact.sh`'s git path honours
+   `REMOTE_URL`/`REPO_DIR`, but its **connector fallback does not** — it talks to the GitHub API
+   and always writes to the production outputs repo. As of 2026-11-12 the helper refuses the
+   connector when `REMOTE_URL` is not the production repo, but the rule stands: never rehearse the
+   push helper against a non-production remote, and remember that a push-script test is **not a
+   read-only action**. Verify a delivery with the **GIT BLOB API** (`GET /git/blobs/<sha>`), never
+   the contents API alone — the contents API is CDN-cached, so a stale blob looks exactly like a
+   commit that never happened.
+
 ### The TradingView scanner's request shape — every scanner pull, every routine
 
 The scanner is **healthy**; what fails is the SHAPE of the request, and three of its traps

@@ -372,8 +372,21 @@ def check_stop_rule(rows):
             else:
                 ok(f"{t}: the published stop is Bonde's default body low ({body_low})")
         if "shadow" in basis and shadow_pct > STOP_MAX_PCT + 0.001:
-            bad(f"{t}: the shadow low is {shadow_pct:.2f}% from the entry — over Bonde's "
-                f"{STOP_MAX_PCT}% cap, so it is not a legal stop")
+            # The assertion applies to the PUBLISHED STOP: if the stop IS the bar/shadow
+            # low, that level must be inside Bonde's 2.5% cap. A NO_LEGAL_STOP row is
+            # the opposite case - its shadow is over the cap PRECISELY BECAUSE no legal
+            # stop exists, and its basis text names the shadow only to explain that.
+            # Testing the substring "shadow" alone fired on that explanation (2026-11-12,
+            # JBS) and would fail every correctly-classified no-stop row.
+            if sc != "NO_LEGAL_STOP" and abs(stop - bar_low) <= tol:
+                bad(f"{t}: the shadow low is {shadow_pct:.2f}% from the entry — over Bonde's "
+                    f"{STOP_MAX_PCT}% cap, so it is not a legal stop")
+            elif sc == "NO_LEGAL_STOP":
+                ok(f"{t}: the shadow low is {shadow_pct:.2f}% from the entry — over the cap, "
+                   f"which is why the row is NO_LEGAL_STOP")
+            else:
+                ok(f"{t}: the published stop {stop} is not the shadow low {bar_low}, so the "
+                   f"shadow-cap assertion does not apply to it")
         if "no legal stop" in basis and sc != "NO_LEGAL_STOP":
             bad(f"{t}: the basis says there is no legal stop but the class is {sc}")
         if (entry - stop) / entry * 100 > STOP_MAX_PCT + 0.05:

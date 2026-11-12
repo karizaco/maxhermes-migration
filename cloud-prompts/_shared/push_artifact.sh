@@ -259,39 +259,51 @@ sanitize_tree "$SRC_DIR"
 # subjects for "cron (#)?NN ", which then reports a DELIVERED artifact as MISSING. Deriving from
 # the FIRST path that matches the table fixes that. A single --add caller is unaffected: one
 # path, same answer as before.
-if [ -z "$NN" ]; then
-  for _addp in $ADD_ALL; do
+# The NAME is derived on EVERY run, whether or not --nn was passed.
+#
+# Before 2026-11-12 the whole table sat inside `if [ -z "$NN" ]`, so a caller that passed
+# --nn explicitly skipped it entirely: NN was set, NM stayed empty, and the subject fell
+# back to the generic output directory ("cron 04 daily-screens 2026-11-12" instead of
+# "cron 04 reversal-bullish-3_55 2026-11-12"). The NUMBER survived, so cron #90's triage
+# still attributed the push - but the routine NAME was silently lost for every routine that
+# passes --nn, and the name is what makes a commit scannable.
+#
+# NN is taken from the table only when the caller did NOT supply it; NM is taken from the
+# table whenever the table recognises the path.
+for _addp in $ADD_ALL; do
   case "$_addp" in
-    asia-pre-market/*)                  NN=02; NM=asia-pre-market-reactions ;;
-    earnings/*-reminders.md)            NN=19; NM=earnings-reminder-daily ;;
-    earnings/*-reactions.md)            NN=15; NM=earnings-reaction-scanner ;;
-    daily-briefs/*-pre-market.md)       NN=26; NM=agentic-pre-market-brief ;;
-    daily-briefs/*-pre-market.csv)      NN=26; NM=agentic-pre-market-brief ;;
-    daily-briefs/*-pre-market-refresh.md) NN=26b; NM=agentic-pre-market-brief-refresh ;;
-    daily-briefs/*-post-market.md)      NN=23; NM=agentic-post-market-brief ;;
-    daily-screens/*/pre-market-gapper.md)   NN=08; NM=stock-screener-pre-market-gapper ;;
-    daily-screens/*/focus-rvol-snapshot.md) NN=07; NM=stock-screener-focus-rvol-09:45 ;;
-    daily-screens/*/breadth-snapshot.md)    NN=10; NM=stock-screener-breadth-snapshot ;;
-    daily-screens/*/reversal-bullish-3_55.md) NN=04; NM=reversal-bullish-3_55 ;;
-    daily-screens/*/reversal-bullish-3_55.csv) NN=04; NM=reversal-bullish-3_55 ;;
-    daily-screens/*/weekly-ipo.md)      NN=06; NM=stock-screener-pattern-study-backlog ;;
-    daily-screens/*/daily-sweep.md)     NN=09; NM=stock-screener-daily-sweep-18:30 ;;
-    cross-asset/*)                      NN=12; NM=cross-asset-correlation-snapshot ;;
-    macro-calendar/*-midweek.md)        NN=13; NM=macro-calendar-midweek ;;
-    macro-calendar/*-week-ahead.md)     NN=14; NM=macro-calendar-week-ahead ;;
-    ntrt/*)                             NN=25; NM=ntrt-gap-brief-daily ;;
-    options-flow/*)                     NN=16; NM=unusual-options-flow-daily ;;
-    us-stocks-in-play/*)                NN=17; NM=us-stocks-in-play ;;
-    us-eod/*)                           NN=20; NM=eod-watchlist-csv-snapshot ;;
-    international-eod/*)                NN=05; NM=eod-international-daily ;;
-    weekly/*-preview.md)                NN=22; NM=weekly-market-recap-preview ;;
-    preopen-feed/*)                     NN=92; NM=preopen-catalyst-capture ;;
-    _audit/status.json)                 NN=90; NM=delivery-auditor ;;
-    *)                                  NN="";  NM="" ;;
+    asia-pre-market/*) _NN=02; _NM=asia-pre-market-reactions ;;
+    earnings/*-reminders.md) _NN=19; _NM=earnings-reminder-daily ;;
+    earnings/*-reactions.md) _NN=15; _NM=earnings-reaction-scanner ;;
+    daily-briefs/*-pre-market.md) _NN=26; _NM=agentic-pre-market-brief ;;
+    daily-briefs/*-pre-market.csv) _NN=26; _NM=agentic-pre-market-brief ;;
+    daily-briefs/*-pre-market-refresh.md) _NN=26b; _NM=agentic-pre-market-brief-refresh ;;
+    daily-briefs/*-post-market.md) _NN=23; _NM=agentic-post-market-brief ;;
+    daily-screens/*/pre-market-gapper.md) _NN=08; _NM=stock-screener-pre-market-gapper ;;
+    daily-screens/*/focus-rvol-snapshot.md) _NN=07; _NM=stock-screener-focus-rvol-09:45 ;;
+    daily-screens/*/breadth-snapshot.md) _NN=10; _NM=stock-screener-breadth-snapshot ;;
+    daily-screens/*/reversal-bullish-3_55.md) _NN=04; _NM=reversal-bullish-3_55 ;;
+    daily-screens/*/reversal-bullish-3_55.csv) _NN=04; _NM=reversal-bullish-3_55 ;;
+    daily-screens/*/weekly-ipo.md) _NN=06; _NM=stock-screener-pattern-study-backlog ;;
+    daily-screens/*/daily-sweep.md) _NN=09; _NM=stock-screener-daily-sweep-18:30 ;;
+    cross-asset/*) _NN=12; _NM=cross-asset-correlation-snapshot ;;
+    macro-calendar/*-midweek.md) _NN=13; _NM=macro-calendar-midweek ;;
+    macro-calendar/*-week-ahead.md) _NN=14; _NM=macro-calendar-week-ahead ;;
+    ntrt/*) _NN=25; _NM=ntrt-gap-brief-daily ;;
+    options-flow/*) _NN=16; _NM=unusual-options-flow-daily ;;
+    us-stocks-in-play/*) _NN=17; _NM=us-stocks-in-play ;;
+    us-eod/*) _NN=20; _NM=eod-watchlist-csv-snapshot ;;
+    international-eod/*) _NN=05; _NM=eod-international-daily ;;
+    weekly/*-preview.md) _NN=22; _NM=weekly-market-recap-preview ;;
+    preopen-feed/*) _NN=92; _NM=preopen-catalyst-capture ;;
+    _audit/status.json) _NN=90; _NM=delivery-auditor ;;
+    *) _NN=""; _NM="" ;;
   esac
-  [ -n "$NN" ] && break
-  done
-fi
+  [ -n "$_NM" ] || continue
+  [ -z "$NN" ] && NN="$_NN"
+  [ -z "$NM" ] && NM="$_NM"
+  break
+done
 
 # The subject's date is the ARTIFACT's date, taken from the artifact path — not the execution
 # date. On a delayed replay those differ, and cron #90 greps commits by the audited date.
@@ -327,6 +339,21 @@ esac
 # It has NO equivalent of the 3-attempt race-retry, so it stays a FALLBACK. The git path is
 # still PRIMARY for routines that share a fire minute with a partner.
 connector_fallback() {
+  # SAFETY (2026-11-12): the connector writes to the PRODUCTION outputs repo and it has
+  # NO notion of REMOTE_URL - it talks to the GitHub API. So a caller that pointed
+  # REMOTE_URL at a local/test remote (a push-script rehearsal) would have its FILE
+  # written to production anyway, because the connector fallback ignores the override.
+  # Measured: a rehearsal against a local bare repo overwrote the live
+  # daily-screens/2026-11-12/reversal-bullish-3_55.md on main with the rehearsal's
+  # placeholder, and the real artifact had to be re-pushed. So: if REMOTE_URL is NOT
+  # the production outputs repo, the connector must NOT run.
+  case "${REMOTE_URL:-}" in
+    *github.com/karizaco/minimax-cloud-outputs.git) : ;;
+    *)
+      echo "push: connector fallback SKIPPED (REMOTE_URL is not the production outputs repo -"
+      echo "       the connector would write to production regardless of the override)"
+      return 1 ;;
+  esac
   command -v mcode-tools >/dev/null 2>&1 || {
     echo "push: connector fallback unavailable (mcode-tools not on PATH)"; return 1; }
   LOCAL_FILE="${SRC_DIR:-/workspace/$OUT}/$(basename "$ADD")"

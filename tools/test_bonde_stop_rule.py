@@ -277,6 +277,30 @@ def test_checker_fault_injection():
         else:
             ok("the checker accepts a compliant v4 artifact")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        # 5. a NO_LEGAL_STOP row must be ACCEPTED, even though its basis text names the
+        #    shadow low and states that the shadow is over the 2.5% cap.
+        #    (2026-11-12: the checker failed JBS because it tested the substring "shadow"
+        #    in the free-text basis. The shadow being over the cap is exactly WHY there is
+        #    no legal stop, so a correctly-classified no-stop row must pass.)
+        basis = ("NO LEGAL STOP (body low sits on the entry; the shadow low is 5.62% away, "
+                 "over the 2.5% cap)")
+        md, csv_path = write_artifact(tmp, 100.00, 0.00, "NO_LEGAL_STOP", basis,
+                                      100.00, 94.40, 101.00, "+5.60%", 0.00, 5.62, "yes")
+        rc, out = run_checker(md, csv_path)
+        if rc != 0:
+            bad("the checker REJECTED a correctly-classified NO_LEGAL_STOP row:\n" + out[-1500:])
+        else:
+            ok("the checker accepts a NO_LEGAL_STOP row (its over-cap shadow is the REASON)")
+        # ...and the row must still be rejected if it is misclassified as a legal stop.
+        md, csv_path = write_artifact(tmp, 100.00, 0.00, "STRUCTURAL", "shadow low",
+                                      100.00, 94.40, 101.00, "+5.60%", 0.00, 5.62, "yes")
+        rc, out = run_checker(md, csv_path)
+        if rc == 0:
+            bad("the checker ACCEPTED a 5.62% shadow stop published as STRUCTURAL")
+        else:
+            ok("the checker still rejects an over-cap shadow stop published as STRUCTURAL")
+
 
 def main():
     print(f"test_bonde_stop_rule.py — contract {rb.CONTRACT_VERSION}\n")

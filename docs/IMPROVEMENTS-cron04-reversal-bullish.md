@@ -194,3 +194,56 @@ lost").
 
 Guard: `tools/test_tv_pull_completeness.py` (20 checks, hermetic) — it proves a truncated pull is
 refused and a complete one screens every name.
+
+---
+
+## 2026-11-12 — the checker FAILED a correctly-classified `NO_LEGAL_STOP` row
+
+The 2026-11-12 fire (LIVE session, 15:57:54 ET read) produced three mechanical passers —
+ICLR (`BODY_LOW`), EQX (`STRUCTURAL`) and **JBS (`NO_LEGAL_STOP`)** — and the checker failed
+the run on JBS:
+
+```
+FAIL JBS: the shadow low is 5.62% from the entry — over Bonde's 2.5% cap, so it is not a legal stop
+```
+
+**The artifact was right and the checker was wrong.** The assertion was:
+
+```python
+if "shadow" in basis and shadow_pct > STOP_MAX_PCT + 0.001:
+    bad(...)
+```
+
+`basis` is FREE TEXT. For a `NO_LEGAL_STOP` row the basis is
+`"NO LEGAL STOP (body low sits on the entry; the shadow low is 5.62% away, over the 2.5% cap)"` —
+it names the shadow only to EXPLAIN that there is no legal stop. The substring test fired on
+that explanation.
+
+**The assertion's real intent is about the PUBLISHED STOP:** if the stop IS the bar/shadow low,
+that level must be inside Bonde's 2.5% cap. A `NO_LEGAL_STOP` row can never satisfy that — its
+shadow is over the cap PRECISELY BECAUSE no legal stop exists — so the check fired on exactly the
+row it was written to be true of. This was the first `NO_LEGAL_STOP` row the fleet had produced,
+which is why the defect had never been observed.
+
+**Landed:** the assertion now applies only when the published stop IS the bar low
+(`sc != "NO_LEGAL_STOP" and abs(stop - bar_low) <= tol`); a `NO_LEGAL_STOP` row gets its own
+`ok(...)` line that states the over-cap shadow is the REASON for the class. The teeth are
+unchanged — a shadow stop published as `STRUCTURAL` at 5.62% is still rejected.
+
+**Fault injection added** (`tools/test_bonde_stop_rule.py`, now 41 checks):
+- a `NO_LEGAL_STOP` row whose basis names an over-cap shadow must be **ACCEPTED**;
+- the same row misclassified as `STRUCTURAL` must still be **REJECTED**.
+
+The existing over-cap injection case (a `STRUCTURAL` row whose stop IS the bar low at 4.00%)
+still fails the checker as before, so the fix did not weaken the rule.
+
+Verified: `tools/test_bonde_stop_rule.py` 41/41; the v4 checker 29/29 on the live 2026-11-12
+artifact (3 passers — ICLR `BODY_LOW`, EQX `STRUCTURAL`, JBS `NO_LEGAL_STOP`).
+
+**Run note.** The screen's first run fell back to the Nasdaq history source because
+`mcp_bridge.py` was not on disk — the PROMPT-BLOCKS ladder fetches `push_artifact.sh`,
+`verify_delivery.sh` and `skip_marker.sh`, but NOT `mcp_bridge.py`. Re-fetching the bridge and
+re-running produced the identical candidate set with `history_source=shibui`, and the run
+published on the shibui history. **A helper that is only CALLED is not on disk**: the cron #04
+skill's DATA PATH uses the bridge for settled history, so the bridge belongs in the skill's own
+fetch block (or in the fleet-wide list), not only in the prose.

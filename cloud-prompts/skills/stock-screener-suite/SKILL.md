@@ -1094,6 +1094,7 @@ means the previous *trading* session, so weekends and holidays need no special-c
 | Universe gates | the same call — `filter` on `market_cap_basic > 5e9`, `exchange in_range [NYSE,NASDAQ,AMEX]`, `type == stock`, `close > 5`, `average_volume_10d_calc > 1e6` | live market cap, so there is no stale-row problem (unlike `shibui.valuation`) |
 | Settled history (5-day low, ADR, prior closes, average volume) | **shibui** over the MCP-over-HTTP bridge — one `stock_data_query` per 6 tickers with `QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) <= 30` | one server, 30 sessions per ticker |
 | History fallback | **Nasdaq** — `GET https://api.nasdaq.com/api/quote/{SYM}/historical?assetclass=stocks&fromdate=…&todate=…&limit=40` | 1 call per ticker; use it when shibui's `tools/call` is unavailable. Needs a browser `User-Agent`; some cells come back as the string `N/A`; Nasdaq 404s on symbols it does not carry |
+| Bridge prerequisite | **`/workspace/mcp_bridge.py`** — the screen calls the shibui server THROUGH it | **The bridge must be ON DISK before the screen runs.** A missing bridge does not fail the run: the screen falls back to Nasdaq and publishes `history_source=nasdaq`. Fetch the bridge in the IMPLEMENTATION block below, and check `history_source` in the JSON report — `nasdaq` means the bridge was missing. |
 | Entry quote / session state | **`market-recap get_quotes`** (bridge) — `price, previous_close, change_pct, volume, day_high, day_low, as_of, market_state` | confirms the session and the entry print |
 
 **TradingView paging trap — measured 2026-11-03:** `range` paging WITHOUT an explicit `sort`
@@ -1118,6 +1119,31 @@ same pattern cron #91 uses with `tools/schedule-drift.py`:
 # OLD copy of this script would write the OLD artifact shape, and the checker below would
 # then fail the run for no visible reason.
 mkdir -p /workspace/tools
+
+# --- fetch the MCP bridge (the screen's SETTLED-HISTORY path) ---
+# `tools/reversal_bullish.py` reads the settled history (5-day low, ADR, prior closes, average
+# volume) through the shibui MCP server over the bridge, and it expects the bridge AT
+# /workspace/mcp_bridge.py. If that file is absent the screen does NOT fail loudly: it prints
+# "shibui history unavailable ... using Nasdaq" and falls back to one Nasdaq call PER TICKER.
+# Measured 2026-11-12: the fallback produced the SAME three candidates, but on a different
+# history source, and the artifact then published `history_source=nasdaq` — a weaker source than
+# the skill's DATA PATH specifies, chosen by an accident of what happened to be on disk.
+# A helper that is only CALLED is not on disk: fetch it here.
+B=/workspace/mcp_bridge.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/mcp_bridge.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/mcp_bridge.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/mcp_bridge.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$B.tmp" "$U" 2>/dev/null
+  if [ -s "$B.tmp" ] && ! head -c 200 "$B.tmp" | grep -q '"message"' \
+     && head -1 "$B.tmp" 2>/dev/null | grep -q '^#!'; then
+    mv -f "$B.tmp" "$B"; break
+  fi
+  rm -f "$B.tmp"
+done
+[ -s "$B" ] || echo "mcp_bridge.py fetch FAILED - the screen will fall back to Nasdaq history"
+
 S=/workspace/tools/reversal_bullish.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/reversal_bullish.py?ref=main" \
