@@ -324,9 +324,15 @@ TradingView 10-day average daily volume, and a pull that dropped names silently 
 `daily_factor` for exactly the names it dropped. Report it, and fall back to the focus roster
 only (`universe_source: focus_roster_only`) rather than publishing a metric built on a broken pull.
 
-**If the engine fails**, fall back to scoring the FOCUS ROSTER ONLY (12 names — the behaviour
-before 2026-11-12) and set `universe_source: focus_roster_only` in the artifact. A narrow screen
-beats no screen. Never re-implement the metric by hand to work around a script failure.
+**If the engine scores ZERO rows, that is not a screen — it is a failure.** The session has no
+bars yet (pre-open, or a halt), so there is nothing to publish: write the artifact with
+`status: failed_no_data`, report `errors: 1`, and push it anyway so the gap is on the record. Do
+NOT fall back to a stale session's bars and present them as today's.
+
+**If the engine fails outright**, fall back to scoring the FOCUS ROSTER ONLY (12 names — the
+behaviour before 2026-11-12) and set `universe_source: focus_roster_only` in the artifact. A
+narrow screen beats no screen. Never re-implement the metric by hand to work around a script
+failure.
 
 **THE DAILY-VOLUME SOURCE — Yahoo 1d bars, not the Nasdaq historical endpoint.**
 The prior-10 FULL-DAY volume comes from Yahoo `interval=1d` bars. Measured over 240
