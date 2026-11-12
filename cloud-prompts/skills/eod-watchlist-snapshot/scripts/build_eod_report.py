@@ -122,6 +122,9 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--source-health", default="")
     ap.add_argument("--provenance", default="")
+    ap.add_argument("--prior-csv", default="",
+                    help="the PRIOR session's published CSV - the column count is compared "
+                         "against it, because a schema change must be STATED in ## Method")
     args = ap.parse_args()
 
     rows = list(csv.DictReader(open(args.csv, newline="")))
@@ -179,6 +182,27 @@ def main() -> int:
 
     flags = manifest["flag_counts"]
     populated = manifest["populated_counts"]
+
+    # ---- the column count must be STATED whenever it differs from the previous session.
+    # The archive holds 14-, 30- and 32-column files, so a consumer must be able to tell the
+    # shapes apart without parsing the header.
+    prior_col_note = ""
+    if args.prior_csv and os.path.exists(args.prior_csv):
+        with open(args.prior_csv, newline="") as fh:
+            prior_header = next(csv.reader(fh), [])
+        prior_n = len(prior_header)
+        if prior_n != manifest["csv_columns"]:
+            added = [c for c in manifest["columns"] if c not in prior_header]
+            prior_col_note = (
+                f" **This differs from the {prior_n}-column file published last session** "
+                f"({os.path.basename(args.prior_csv)}): the added column(s) are "
+                + ", ".join(f"`{c}`" for c in added)
+                + ". A consumer that reads by POSITION is unaffected (the first 14 columns "
+                  "are unchanged in name and order), and a consumer that reads by NAME sees "
+                  "the new column(s).")
+        else:
+            prior_col_note = (f" The prior session's file carried the same {prior_n} columns, "
+                              f"so the schema did not change.")
 
     # ---- TL;DR
     head = ""
@@ -359,7 +383,8 @@ def main() -> int:
                       f"{w['quote_adjusted_prior_close']})" for w in worst) + ".")
     A(f"- **CSV**: `{os.path.basename(args.csv)}` — **{manifest['csv_columns']} columns** "
       f"(the base 14 session columns plus {len(manifest['derived_columns'])} derived/provenance "
-      f"columns). A consumer reading by position still gets the same first 14 columns.")
+      f"columns). A consumer reading by position still gets the same first 14 columns."
+      + prior_col_note)
     A(f"- **Market-cap currency**: `market_cap` is **USD**. `market_cap_usd` is published "
       f"explicitly and equals it. **Conversion direction: none — no FX conversion is applied "
       f"to this file**, because every row's listing currency is USD. The identity to assert "
@@ -402,6 +427,14 @@ def main() -> int:
       f"range bracketed the close at all.")
     A("- **A missing value is empty, never zero.** A cap that cannot be resolved is empty and "
       "flagged `NO_CAP`.")
+    A("- **The close is the SETTLED print, never the live one.** The venue's `info` endpoint "
+      "carries two blocks: `secondaryData` is stamped *\"Closed at <date> 4:00 PM ET\"* and is "
+      "the official 16:00 ET auction print, while `primaryData` is the LIVE print — after the "
+      "close it carries an **extended-hours** trade. A pull made after 16:00 ET that reads "
+      "`primaryData` publishes an after-hours price as the session's close, and it also puts "
+      "that price OUTSIDE the session's own range (measured 2026-11-12: 817 rows needed the "
+      "venue's day range under the live print against 384 under the settled print). The "
+      "settled block is the close of record; the live block is the tape.")
     A("- **The index and sector-ETF moves are computed from the same daily-bar series** "
       "(split-adjusted closes - the series is NOT dividend-adjusted), so they can differ from "
       "an official cash close by "

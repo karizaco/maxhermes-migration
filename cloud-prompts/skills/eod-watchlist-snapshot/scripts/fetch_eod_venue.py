@@ -64,6 +64,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -100,6 +101,24 @@ def parse_num(x):
         return float(s)
     except ValueError:
         return None
+
+
+_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])")
+
+
+def after_regular_close(stamp: str) -> bool:
+    """True when a `lastTradeTimestamp` sits AFTER the 16:00 ET regular close.
+
+    Nasdaq's stamp is ET by contract ("Nov 12, 2026 5:26 PM ET"). A stamp at exactly 4:00 PM
+    is the auction close itself and counts as IN session; anything later is an extended-hours
+    print, which is not a session close.
+    """
+    m = _TIME_RE.search(stamp or "")
+    if not m:
+        return False
+    hh, mm, ampm = int(m.group(1)), int(m.group(2)), m.group(3).lower()
+    h24 = (hh % 12) + (12 if ampm == "pm" else 0)
+    return (h24, mm) > (16, 0)
 
 
 def tv_candidates(t: str) -> list[str]:
@@ -239,9 +258,37 @@ def fetch_one(ticker: str, timeout: float = 25.0) -> tuple[str, dict]:
                         "message": str(status.get("bCodeMessage") or "")[:80]}
     primary = data.get("primaryData") or {}
     secondary = data.get("secondaryData") or {}
-    close = parse_num(primary.get("lastSalePrice"))
-    if close is None:
-        close = parse_num(secondary.get("lastSalePrice"))
+    # THE SETTLED PRINT, NOT THE LIVE ONE (fixed 2026-11-12).
+    #
+    # `secondaryData` is stamped "Closed at <date> 4:00 PM ET" and carries the official
+    # 16:00 ET auction print. `primaryData` is the LIVE print: after the close it carries an
+    # EXTENDED-HOURS trade, so a pull made after 16:00 ET publishes an after-hours price as
+    # the session's close. Measured 2026-11-12, pulled at 18:15 ET:
+    #
+    #     AAPL  primary $354.79 @ "Nov 12, 2026 5:26 PM ET"   <- an after-hours print
+    #           secondary $354.88 @ "Closed at Nov 12, 2026 4:00 PM ET"   <- the official close
+    #     JPM   primary $342.80 @ 5:26 PM ET   vs  secondary $342.98 @ Closed at 4:00 PM ET
+    #     WMT   primary $125.8152 @ 5:26 PM ET vs  secondary $126.19  @ Closed at 4:00 PM ET
+    #
+    # Yahoo's 1-minute FINAL bar independently corroborates the SECONDARY print (AAPL
+    # 354.88), which is what proves the secondary block is the auction close and the primary
+    # block is the live tape.
+    #
+    # So the close comes from `secondaryData`; the primary print is used only when the
+    # symbol serves no settled print AND its primary stamp is still inside the regular
+    # session (an after-hours primary print is NOT a close).
+    primary_price = parse_num(primary.get("lastSalePrice"))
+    primary_stamp = primary.get("lastTradeTimestamp") or ""
+    settled = parse_num(secondary.get("lastSalePrice"))
+    settled_stamp = secondary.get("lastTradeTimestamp") or ""
+    close = None
+    close_source = ""
+    if settled is not None:
+        close = settled
+        close_source = "secondary_settled"
+    elif primary_price is not None and not after_regular_close(primary_stamp):
+        close = primary_price
+        close_source = "primary_regular_session"
     vol = parse_num(primary.get("volume"))
     if vol is None:
         vol = parse_num(secondary.get("volume"))
@@ -249,9 +296,12 @@ def fetch_one(ticker: str, timeout: float = 25.0) -> tuple[str, dict]:
         "ok": close is not None,
         "nasdaq_symbol": sym,
         "close": close,
+        "close_source": close_source,
+        "primary_price": primary_price,
+        "primary_stamp": primary_stamp,
         "volume": vol,
         "exchange": data.get("exchange") or "",
-        "session_stamp": primary.get("lastTradeTimestamp") or "",
+        "session_stamp": settled_stamp or primary_stamp,
         "error": "" if close is not None else "no_close",
     }
 
@@ -365,7 +415,19 @@ def main() -> int:
         for t in tickers:
             sm = smap.get(t) or {}
             published = (out.get(t) or {}).get("close")
-            if published is None:
+            # the settle map carries the venue print it measured during the probe loop; the
+            # probe's own venue read is the LIVE print, so the corrected settled print from
+            # this pull replaces it. Otherwise the fallback below would publish an
+            # after-hours price for a symbol this pull carries no print for.
+            if published is not None:
+                sm["venue_close"] = published
+            elif t in out:
+                # the venue serves this symbol but carries NO settled print: the probe's
+                # venue read (the live print) is dropped, so the fallback is the vendor's
+                # settled bar rather than an extended-hours price.
+                sm["venue_close"] = None
+                published = None
+            else:
                 published = sm.get("venue_close")
             if published is None:
                 published = bar_close.get(t)

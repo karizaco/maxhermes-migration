@@ -49,6 +49,7 @@ import csv
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -64,6 +65,14 @@ HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 NASDAQ_INFO = "https://api.nasdaq.com/api/quote/%s/info?assetclass=stocks"
+
+# The index proxies and the sector ETFs are NOT in the vendor's equity universe
+# (`country_iso='US'` carries equities, not ETFs), so they have to be pulled as their own
+# symbol list. Without them the report has NO index table and every sector-ETF column
+# reads n/a (measured 2026-11-12: the equity-only pull produced a Market read with no
+# index rows and 11 sector ETFs at n/a).
+PROXY_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "RSP",
+                 "XLK", "XLI", "XLV", "XLC", "XLE", "XLB", "XLY", "XLRE", "XLP", "XLF", "XLU"]
 
 
 # ------------------------------------------------------------------ symbols
@@ -167,7 +176,19 @@ def fetch_chart(ticker: str, rng: str, interval: str, throttle: Throttle,
 
 
 def fetch_venue(ticker: str) -> float | None:
-    """The venue's settled print (Nasdaq's consolidated record), or None."""
+    """The venue's settled print (Nasdaq's consolidated record), or None.
+
+    THE SETTLED PRINT, NOT THE LIVE ONE (fixed 2026-11-12). `secondaryData` is stamped
+    "Closed at <date> 4:00 PM ET" and carries the official 16:00 ET auction print;
+    `primaryData` is the LIVE print and, after the close, carries an EXTENDED-HOURS trade.
+    Measured 2026-11-12 at 18:15 ET: AAPL primary $354.79 @ "5:26 PM ET" vs secondary
+    $354.88 @ "Closed at 4:00 PM ET" - and Yahoo's 1-minute final bar corroborates the
+    SECONDARY print.
+
+    Reading the live print as the close also manufactured the probe's "drift": the
+    after-hours tape keeps ticking, so the probe measured the extended session moving and
+    never went quiet (122 symbols still "changed" in round 12, at 17:08 ET).
+    """
     sym = nasdaq_form(ticker)
     url = NASDAQ_INFO % sym.replace("^", "%5E")
     try:
@@ -178,17 +199,39 @@ def fetch_venue(ticker: str) -> float | None:
     except Exception:  # noqa: BLE001
         return None
     data = doc.get("data") or {}
-    for block in (data.get("primaryData") or {}, data.get("secondaryData") or {}):
+    secondary = data.get("secondaryData") or {}
+    primary = data.get("primaryData") or {}
+
+    def _price(block):
         raw = block.get("lastSalePrice")
         if not raw or str(raw).upper() in ("N/A", "NA"):
-            continue
+            return None
         try:
             v = float(str(raw).replace("$", "").replace(",", ""))
         except ValueError:
-            continue
-        if v > 0:
-            return v
+            return None
+        return v if v > 0 else None
+
+    v = _price(secondary)
+    if v is not None:
+        return v
+    pv = _price(primary)
+    if pv is not None and not _after_regular_close(primary.get("lastTradeTimestamp") or ""):
+        return pv
     return None
+
+
+_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])")
+
+
+def _after_regular_close(stamp: str) -> bool:
+    """True when a `lastTradeTimestamp` sits AFTER the 16:00 ET regular close."""
+    m = _TIME_RE.search(stamp or "")
+    if not m:
+        return False
+    hh, mm, ampm = int(m.group(1)), int(m.group(2)), m.group(3).lower()
+    h24 = (hh % 12) + (12 if ampm == "pm" else 0)
+    return (h24, mm) > (16, 0)
 
 
 # ------------------------------------------------------------------ session helpers
@@ -261,31 +304,38 @@ def main() -> int:
         return 2
 
     throttle = Throttle()
+    # the proxies are fetched alongside the equities, but they are NOT probed: they are
+    # index/ETF series, not thin session names, and they never carry a session bar that
+    # needs settling.
+    proxies = [p for p in PROXY_SYMBOLS if p not in set(tickers)]
+    fetch_list = list(tickers) + proxies
     state = {t: {"bars": [], "close": None, "venue": None, "round": 0, "changes": 0}
-             for t in tickers}
+             for t in fetch_list}
 
     # ---------------- pass 1: the whole universe, one year of bars
     t0 = time.time()
-    print(f"pass 1: {len(tickers)} symbols, range=1y", flush=True)
+    print(f"pass 1: {len(fetch_list)} symbols "
+          f"({len(tickers)} equities + {len(proxies)} index/ETF proxies), range=1y",
+          flush=True)
     done = 0
 
     def work(t):
         return t, fetch_chart(t, "1y", "1d", throttle)
 
     with ThreadPoolExecutor(max_workers=args.threads) as pool:
-        for t, bars in pool.map(work, tickers):
+        for t, bars in pool.map(work, fetch_list):
             state[t]["bars"] = bars
             sb = session_bar(bars, args.session)
             state[t]["close"] = None if sb is None else float(sb[4])
             done += 1
             if done % 1000 == 0:
-                print(f"  pass1 {done}/{len(tickers)} {time.time()-t0:.0f}s", flush=True)
+                print(f"  pass1 {done}/{len(fetch_list)} {time.time()-t0:.0f}s", flush=True)
     n_bar = sum(1 for t in tickers if state[t]["close"] is not None)
-    print(f"pass 1 done in {time.time()-t0:.0f}s: {n_bar}/{len(tickers)} carry a "
+    print(f"pass 1 done in {time.time()-t0:.0f}s: {n_bar}/{len(fetch_list)} carry a "
           f"{args.session} bar", flush=True)
 
     if args.pass1_only:
-        write_outputs(args, state, tickers)
+        write_outputs(args, state, fetch_list)
         return 0
 
     # ---------------- the probe loop
@@ -369,7 +419,7 @@ def main() -> int:
         print(f"  probe loop hit --max-rounds ({args.max_rounds}); the residue is published "
               f"as it stands", file=sys.stderr)
 
-    write_outputs(args, state, tickers)
+    write_outputs(args, state, fetch_list)
     print(f"probe: {rounds} round(s); {total_changed} symbol(s) changed after pass 1",
           flush=True)
     return 0
