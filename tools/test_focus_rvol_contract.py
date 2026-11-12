@@ -21,35 +21,38 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKER = os.path.join(HERE, "check_focus_rvol_artifact.py")
 
 CSV_HEADER = [
-    "symbol", "close", "rvol_intraday_live", "rvol_now", "rvol_prev", "rvol_at_09_38",
-    "rvol_trend", "prev_session_rvol", "prev_session_rvol_source", "bucket", "tier",
+    "symbol", "universe", "close", "rvol_intraday_live", "rvol_now", "rvol_prev",
+    "rvol_at_09_38", "rvol_trend", "prev_session_rvol", "prev_session_rvol_source",
+    "prev_session_rvol_published", "denominator_drift_pct", "bucket", "tier",
     "pm_vol", "pm_vol_source", "data timestamp",
 ]
 
 # symbol, rvol_now, prev_session_rvol, source, tier
 COMPLIANT = [
-    ("FROG", 1.8297, 0.9218, "recomputed_same_feed", "ALERT"),
-    ("LASR", 1.8069, 1.4976, "recomputed_same_feed", "ALERT"),
-    ("ETON", 2.7432, 2.3140, "recomputed_same_feed", "WATCH"),
-    ("OKLO", 1.1530, 1.0666, "recomputed_same_feed", "-"),
-    ("RHLD", 0.8226, "n/a", "unavailable", "-"),
+    ("FROG", "focus", 1.8297, 0.9218, "recomputed_same_feed", "ALERT"),
+    ("LASR", "focus", 1.8069, 1.4976, "recomputed_same_feed", "ALERT"),
+    ("ETON", "focus", 2.7432, 2.3140, "recomputed_same_feed", "WATCH"),
+    ("OKLO", "focus", 1.1530, 1.0666, "recomputed_same_feed", "-"),
+    ("RHLD", "focus", 0.8226, "n/a", "unavailable", "-"),
+    ("FRVO", "wider", 2.6090, 0.4100, "recomputed_same_feed", "ALERT"),
+    ("PRAX", "wider", 1.4000, 0.5300, "recomputed_same_feed", "NEAR MISS"),
 ]
 
 # The shape that actually shipped: no provenance column, every prior reading n/a, and
 # seven names above the bar with no baseline at all.
 BROKEN = [
-    ("ETON", 2.7432, "n/a", "", "WATCH"),
-    ("QNT", 2.0793, "n/a", "", "WATCH"),
-    ("RGTI", 2.0711, "n/a", "", "WATCH"),
-    ("TMDX", 2.0079, "n/a", "", "WATCH"),
-    ("FLY", 1.9335, "n/a", "", "WATCH"),
-    ("FROG", 1.8297, "n/a", "", "WATCH"),
-    ("LASR", 1.8069, "n/a", "", "WATCH"),
-    ("OKLO", 1.1530, "n/a", "", "-"),
-    ("CYRX", 1.0834, "n/a", "", "-"),
-    ("IONQ", 0.9534, "n/a", "", "-"),
-    ("RHLD", 0.8226, "n/a", "", "-"),
-    ("KRMN", 0.5168, "n/a", "", "-"),
+    ("ETON", "focus", 2.7432, "n/a", "", "WATCH"),
+    ("QNT", "focus", 2.0793, "n/a", "", "WATCH"),
+    ("RGTI", "focus", 2.0711, "n/a", "", "WATCH"),
+    ("TMDX", "focus", 2.0079, "n/a", "", "WATCH"),
+    ("FLY", "focus", 1.9335, "n/a", "", "WATCH"),
+    ("FROG", "focus", 1.8297, "n/a", "", "WATCH"),
+    ("LASR", "focus", 1.8069, "n/a", "", "WATCH"),
+    ("OKLO", "focus", 1.1530, "n/a", "", "-"),
+    ("CYRX", "focus", 1.0834, "n/a", "", "-"),
+    ("IONQ", "focus", 0.9534, "n/a", "", "-"),
+    ("RHLD", "focus", 0.8226, "n/a", "", "-"),
+    ("KRMN", "focus", 0.5168, "n/a", "", "-"),
 ]
 
 
@@ -59,12 +62,14 @@ def write_csv(path: str, rows, with_source: bool) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(header)
-        for sym, now, prev, src, tier in rows:
+        for sym, uni, now, prev, src, tier in rows:
             row = {
-                "symbol": sym, "close": "10.00", "rvol_intraday_live": "0.05",
+                "symbol": sym, "universe": uni, "close": "10.00",
+                "rvol_intraday_live": "0.05",
                 "rvol_now": now, "rvol_prev": now, "rvol_at_09_38": "0.04",
                 "rvol_trend": "STABLE", "prev_session_rvol": prev,
-                "prev_session_rvol_source": src, "bucket": "RVOL Required",
+                "prev_session_rvol_source": src, "prev_session_rvol_published": "n/a",
+                "denominator_drift_pct": "n/a", "bucket": "RVOL Required",
                 "tier": tier, "pm_vol": "0", "pm_vol_source": "not_subtracted",
                 "data timestamp": "2026-11-12 09:45:00 ET",
             }
@@ -77,7 +82,9 @@ def write_md(path: str, rows, compliant: bool) -> None:
                   "- **FROG** - 1.83x vs 0.92x on the prior session (recomputed on the same "
                   "feed), close 4.10 - crossed UP through the 1.5x bar.\n"
                   "- **LASR** - 1.81x vs 1.50x on the prior session (recomputed on the same "
-                  "feed), close 7.20 - crossed UP through the 1.5x bar.\n\n")
+                  "feed), close 7.20 - crossed UP through the 1.5x bar.\n"
+                  "- **FRVO** - 2.61x vs 0.41x on the prior session (recomputed on the same "
+                  "feed), close 9.15 - crossed UP through the 1.5x bar.\n\n")
     else:
         alerts = ("## Alerts\n\n"
                   "**none** - and the reason matters. The previous session's CSV does not carry "
@@ -86,27 +93,37 @@ def write_md(path: str, rows, compliant: bool) -> None:
                   "- **ETON** - rvol_now **2.74x** vs rvol_prev 2.76x; prev-session reading n/a, "
                   "so the crossing test starts next session.\n"
                   "- **FROG** - rvol_now **1.83x** vs rvol_prev 2.16x; prev-session reading n/a.\n\n")
+    def table(rows_subset):
+        return "".join(f"| {s} | {u} | {n} | {p} | {sr or '—'} | {t} |\n"
+                       for s, u, n, p, sr, t in rows_subset)
+
     body = (
         "---\n"
         "date: 2026-11-12\n"
         "cron: 07\n"
         "rvol_alert_threshold: 1.5\n"
+        "universe_source: focus_plus_wider\n"
+        "wider_universe_size: 2\n"
+        "wider_universe_source: focus+master+17\n"
         "---\n\n"
         "# Focus RVOL snapshot — 2026-11-12\n\n"
-        "## Table\n\n"
-        "| symbol | rvol_now | prev_session_rvol | prev_session_rvol_source | tier |\n"
-        "|---|---|---|---|---|\n"
-        + "".join(f"| {s} | {n} | {p} | {sr or '—'} | {t} |\n"
-                  for s, n, p, sr, t in rows)
+        "## Focus table\n\n"
+        "| symbol | universe | rvol_now | prev_session_rvol | prev_session_rvol_source | tier |\n"
+        "|---|---|---|---|---|---|\n"
+        + table([r for r in rows if r[1] == "focus"])
+        + "\n## Wider universe\n\n"
+        "| symbol | universe | rvol_now | prev_session_rvol | prev_session_rvol_source | tier |\n"
+        "|---|---|---|---|---|---|\n"
+        + table([r for r in rows if r[1] == "wider"])
         + "\n### Counts\n\n"
         "- universe size: " + str(len(rows)) + "\n"
         "- Required count: 7\n"
-        "- alert count: " + ("2" if compliant else "0") + "\n"
-        "- crossings: " + ("2" if compliant else "0") + "\n\n"
+        "- alert count: " + ("3" if compliant else "0") + "\n"
+        "- crossings: " + ("3" if compliant else "0") + "\n\n"
         + alerts
         + "## Method\n\n"
         "Baseline provenance: prior readings recomputed on the same feed with the identical "
-        "formula where the published CSV did not carry the ticker.\n"
+        "formula and the same denominator as today's reading.\n"
         "`prev_session_rvol_source` is published on every row.\n"
     )
     with open(path, "w", encoding="utf-8") as fh:

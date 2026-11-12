@@ -229,9 +229,9 @@ def main() -> None:
         if (r.get("tier") or "").strip().upper() not in allowed_tiers:
             fail("C13", f"{r.get('symbol')} has an unknown tier {r.get('tier')!r}")
 
-    # ---------------------------------------------------------------- C14 the markdown carries the table
-    if "## Table" not in md:
-        fail("C14", "the artifact has no '## Table' section")
+    # ---------------------------------------------------------------- C14 the markdown carries the tables
+    if "## Focus table" not in md:
+        fail("C14", "the artifact has no '## Focus table' section")
     if "## Alerts" not in md:
         fail("C14", "the artifact has no '## Alerts' section")
 
@@ -243,6 +243,43 @@ def main() -> None:
                 fail("C15", f"the reply does not name the crossing ticker {s}")
         if real and not re.search(r"^alerts:\s*\S", reply, flags=re.M):
             fail("C15", "the reply has no 'alerts:' line")
+
+    # ---------------------------------------------------------------- C16 the wider universe is published
+    # The focus roster is a momentum screen on the PREVIOUS session's data, so it structurally
+    # cannot contain a name whose move has not happened yet. Measured 2026-11-09: the roster
+    # carried 1 of the day's top 10 gainers, the wider union 10 of 10. A run that publishes only
+    # the roster is publishing a screen that misses the day's movers.
+    if "## Wider universe" not in md:
+        fail("C16", "the artifact has no '## Wider universe' section — the wider set (where the "
+                    "day's actual movers live) was not published")
+    else:
+        wider = section(md, "## Wider universe")
+        wrows = re.findall(r"^\|\s*([A-Z][A-Z0-9.\-]{0,5})\s*\|", wider, flags=re.M)
+        if not wrows:
+            fail("C16", "the '## Wider universe' section has no data rows")
+        # A focus-roster name must NOT be repeated in the wider table.
+        focus_syms = {r.get("symbol") for r in rows if (r.get("universe") or "").strip() == "focus"}
+        dupes = focus_syms & set(wrows)
+        if dupes:
+            fail("C16", "names appear in BOTH tables: " + ", ".join(sorted(dupes)))
+    # The front matter must declare the wider universe's size and source.
+    for key in ("wider_universe_size", "wider_universe_source"):
+        if not re.search(rf"^{key}\s*:", md, flags=re.M):
+            fail("C16", f"the front matter has no `{key}` key")
+    if "universe:" not in (read(args.reply) if args.reply and os.path.exists(args.reply) else ""):
+        if args.reply and os.path.exists(args.reply):
+            fail("C16", "the reply has no 'universe:' line — a reader cannot tell a narrow screen "
+                        "from a wide one")
+
+    # ---------------------------------------------------------------- C17 the universe column exists
+    if rows and "universe" not in rows[0]:
+        fail("C17", "the CSV has no `universe` column — a consumer cannot tell which table a "
+                    "row belongs to")
+    elif rows:
+        bad = [r.get("symbol") for r in rows
+               if (r.get("universe") or "").strip() not in ("focus", "wider")]
+        if bad:
+            fail("C17", "rows with a missing or illegal `universe` value: " + ", ".join(bad))
 
     report()
 

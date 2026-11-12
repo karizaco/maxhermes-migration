@@ -1944,18 +1944,38 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
   `RVOL_ALERT_THRESHOLD` AND whose `prev_session_rvol` is below `RVOL_ALERT_THRESHOLD` - the
   name crossed UP through the alert bar since the previous session's reading of the same metric.
   A level with no prior reading below the bar is NOT a crossing.
-- **THE PRIOR READING MUST BE COMPUTED, NOT ASSUMED ABSENT.** The previous session's reading comes
-  from the published CSV when it carries the ticker, and is otherwise RECOMPUTED on the same feed
-  with the identical formula (same clock window, that session's own prior-10 baseline, same
-  daily-factor recipe) - see cron #07's prompt STEP 6. **The focus roster turns over almost
-  completely between sweeps** (measured overlap between consecutive sweeps: 4/12, 0/12, 0/12,
-  2/12, 0/12), so the published CSV usually does NOT carry today's tickers. Publishing `n/a` for a
-  ticker the roster dropped silently disarms the alert tier - a name at 2.7x becomes a WATCH
-  instead of an ALERT. **That is what killed the alert tier for five consecutive sessions
-  (2026-11-05 to 2026-11-11), each publishing `alerts: none` while the tape was hot - 2026-11-10
-  alone had SEVEN names above the 1.5x bar and not one could be shown to be a crossing.** Recompute
-  the prior reading instead; publish `prev_session_rvol_source` (`published_csv` /
-  `recomputed_same_feed` / `unavailable`) on every row so a reader can tell the two apart.
+- **THE PRIOR READING MUST BE COMPUTED, NOT ASSUMED ABSENT — AND BOTH SIDES MUST SHARE ONE
+  DENOMINATOR.** The previous session's reading is RECOMPUTED on the same feed with the identical
+  formula (same clock window, that session's own prior-10 baseline, same daily-factor recipe) —
+  see cron #07's prompt STEP 6. **The focus roster turns over almost completely between sweeps**
+  (measured overlap between consecutive sweeps: 4/12, 0/12, 0/12, 2/12, 0/12), so the published
+  CSV usually does NOT carry today's tickers. Publishing `n/a` for a ticker the roster dropped
+  silently disarms the alert tier - a name at 2.7x becomes a WATCH instead of an ALERT. **That is
+  what killed the alert tier for five consecutive sessions (2026-11-05 to 2026-11-11), each
+  publishing `alerts: none` while the tape was hot - 2026-11-10 alone had SEVEN names above the
+  1.5x bar and not one could be shown to be a crossing.**
+  **The prior reading is NEVER taken from the published CSV.** `TV average_volume_10d_calc` is a
+  ROLLING average and it moves between fetches as each session prints into the window - measured,
+  ETON's went 550,859 (published 2026-11-10) to 740,475 two days later, a 34% swing - so a
+  published value is on THAT day's scale and is not comparable with today's `rvol_now`. **And the
+  drift FLIPS VERDICTS:** the metric scales as 1/denominator, so both sides of a crossing move
+  together, but a name whose prior sits close to the bar flips on a tiny move. Measured on the
+  2026-11-10 roster, FROG and LASR crossed on the published denominator and neither did on
+  today's; FROG (prior 0.921) holds through a 38.6% denominator move while LASR (prior 1.497)
+  flips on a **0.2%** move. Recompute the prior reading with the CURRENT run's denominator so
+  both sides of every crossing are the same metric on one scale; the published value is published
+  alongside as `prev_session_rvol_published` plus `denominator_drift_pct`, as a CROSS-CHECK and
+  never as the baseline.
+- **THE UNIVERSE IS WIDER THAN THE FOCUS ROSTER.** The focus roster is a momentum screen built on
+  the previous session's data, so it structurally cannot contain a name whose move has not
+  happened yet. Measured on 2026-11-09: the focus roster carried **1 of the day's top 10
+  gainers**, the previous session's `master.csv` carried 5, cron #17's boards carried 7, and the
+  union carried **10 of 10**. So the routine publishes TWO tables - the focus roster in full, and
+  the top of the wider union by `rvol_now` - and the wider union is built from sources ALREADY ON
+  DISK (the previous session's `focus.csv`, `master.csv` and cron #17's candidate CSVs), never by
+  re-scanning the market. The per-name metric is computed by `tools/focus_rvol_score.py`, because
+  doing that arithmetic by hand over ~1,300 names is what made the 2026-11-09 fire take 66
+  minutes.
 - **Publish the NEAR MISSES too:** a name is a near miss when `rvol_now >= NEAR_MISS_FLOOR` and
   `rvol_now < RVOL_ALERT_THRESHOLD`, with both its current and its prior value.
 - **Publish the TREND, not just the level:** every name carries `rvol_now`, `rvol_prev`,

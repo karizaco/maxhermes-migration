@@ -217,18 +217,150 @@ daily-screens/, report errors: 1, and stop. Do not push an empty snapshot as if 
 If a focus.md IS found: report its path, `focus_dir_date`, `screen_data_date` and `lag_sessions`.
 If `lag_sessions` > 1, set status: degraded_stale_focus_list (see the status list in STEP 7).
 
+**THE WIDER UNIVERSE — the focus roster alone is not the screen.**
+The focus roster is a MOMENTUM screen built on the previous session's data, so it structurally
+cannot contain a name whose move has not happened yet. Measured on 2026-11-09: the focus roster
+carried **1 of the day's top 10 gainers**; the previous session's `master.csv` carried 5; the
+previous session's cron #17 boards carried 7; and the union of all three carried **10 of 10**.
+So the wider universe is NOT optional context — it is where the day's actual movers are.
+
+**Build the union from what is ALREADY ON DISK. Do NOT re-scan the market for it.** Three
+sources, all published by earlier routines for the PREVIOUS session, so they exist before this
+fire:
+
+| source | path | names | why it is there |
+|---|---|---:|---|
+| the focus roster | `daily-screens/<prev>/focus.csv` | 12 | cron #09's momentum picks |
+| the sweep's wider candidate list | `daily-screens/<prev>/master.csv` | ~200 | every name the sweep scored |
+| cron #17's movers | `us-stocks-in-play/<prev>-open-candidates.csv` and `us-stocks-in-play/<prev>-candidates.csv` | ~1,250 | the names that actually MOVED, with their catalysts |
+
+**The previous session is the last session before `fire_date`, whatever the calendar says.** On a
+Monday that is Friday; the files are named for the SESSION, not for the day before. Resolve it
+as: the newest `daily-screens/<date>` directory that is EARLIER than `fire_date` and that contains
+a `focus.md`. Use that same date for all three sources, and say which one you used. **Glob the
+cron #17 files by that date — never `*.csv`, which would sweep in every earlier session's
+board.**
+
+```bash
+# the previous session's directory = the newest daily-screens/<date>/ older than fire_date
+PREV=""
+for d in $(ls -1d /workspace/daily-screens/2026-*/ | sort -r); do
+  d=${d%/}
+  [ "$d" = "/workspace/daily-screens/$DATE" ] && continue
+  [ -f "$d/focus.md" ] && { PREV="$d"; break; }
+done
+PREVDATE=${PREV##*/}
+echo "previous session: $PREVDATE"
+
+# the cron #17 boards for THAT session only
+mkdir -p /workspace/us-stocks-in-play
+for f in "${PREVDATE}-open-candidates.csv" "${PREVDATE}-candidates.csv"; do
+  [ -s "/workspace/us-stocks-in-play/$f" ] || \
+    git -C /workspace show "origin/main:us-stocks-in-play/$f" > "/workspace/us-stocks-in-play/$f" 2>/dev/null
+done
+ls -la /workspace/us-stocks-in-play/"$PREVDATE"*.csv 2>/dev/null
+```
+
+**If the cron #17 boards are missing, use what you have** — the focus roster plus `master.csv`
+— and say so in the artifact (`wider_universe_source`). A narrower union on disk is better than
+a fresh scan that does not finish. Never re-scan the whole market to rebuild this.
+
+**Write the union to a symbol file, one symbol per line**, so STEP 5 can hand it to the engine:
+```bash
+{ cut -d, -f1 "$PREV/focus.csv" 2>/dev/null | tail -n +2
+  cut -d, -f1 "$PREV/master.csv" 2>/dev/null | tail -n +2
+  for f in /workspace/us-stocks-in-play/"$PREVDATE"-open-candidates.csv \
+           /workspace/us-stocks-in-play/"$PREVDATE"-candidates.csv; do
+    [ -f "$f" ] && cut -d, -f1 "$f" 2>/dev/null | tail -n +2
+  done
+} | tr -d '\r' | tr ',' '\n' | sed 's/[^A-Za-z0-9.\-]//g' | grep -E '^[A-Z][A-Z0-9.\-]{0,6}$' \
+  | sort -u > /workspace/universe.txt
+cut -d, -f1 "$PREV/focus.csv" 2>/dev/null | tail -n +2 | tr -d '\r' \
+  | sed 's/[^A-Za-z0-9.\-]//g' | grep -E '^[A-Z][A-Z0-9.\-]{0,6}$' | sort -u > /workspace/focus.txt
+wc -l /workspace/universe.txt /workspace/focus.txt
+```
+
+**The universe is a CANDIDATE SET, not the table.** The published table is the TOP of it by
+`rvol_now` — publishing 1,600 rows is not a screen. STEP 5 scores the whole union; STEP 7
+publishes the focus roster in full plus the top of the wider set.
+
 ## STEP 5 — RVOL PER FOCUS TICKER
 Do NOT use mcp__tradingview_advanced__*, mcp__tradingview__* or mcp__yahoo_finance__*. They are
 provably absent in Cloud sessions: mcode-tools connector tools returns partial=false,
 provider_failures=[], with only connector__matrix__* and connector__email_workbench_credentials__*,
 and tool_search returns 0 hits for every finance keyword. Do not burn turns re-testing them.
 
+**RUN THE ENGINE. Do not hand-compute this metric per name.**
+The universe is ~1,300 names (STEP 4). Computing the metric by hand for each one is what made
+the 2026-11-09 fire take 66 minutes — the fetches are cheap, the per-name arithmetic is not.
+`tools/focus_rvol_score.py` does the fetching AND the arithmetic in parallel and writes a COMPACT
+JSON payload holding only what the artifact needs, so the agent's context cost does not scale with
+the universe. Run it:
+
+```bash
+# fetch the engine (run-time fetch: fixes land with no redeploy)
+curl -sL --max-time 40 -H "Accept: application/vnd.github.raw" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/focus_rvol_score.py?ref=main" \
+  -o /workspace/focus_rvol_score.py
+wc -c /workspace/focus_rvol_score.py   # must be non-zero
+
+# fetch the VALIDATED scanner client the engine calls for its denominator
+D=/workspace/tv_scan.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/tv_scan.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/tv_scan.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/tv_scan.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && grep -q 'TV_SCAN_V2' "$D.tmp" 2>/dev/null; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+[ -s "$D" ] && grep -q 'TV_SCAN_V2' "$D" || { echo "tv_scan.py: UNAVAILABLE"; }
+
+python3 /workspace/focus_rvol_score.py \
+  --fire-date "$DATE" \
+  --symbols /workspace/universe.txt \
+  --focus /workspace/focus.txt \
+  --prior-csv "$PREV/focus-rvol-snapshot.csv" \
+  --md-out /workspace/focus-rvol-snapshot.md \
+  --csv-out /workspace/focus-rvol-snapshot.csv \
+  --wider-source "focus+master+17" \
+  --out /workspace/focus-rvol-scores.json
+```
+
+**The engine renders the artifact ITSELF** (`--md-out`, `--csv-out`) — it is the only thing that
+touches the numbers. Do not retype a value into the markdown by hand: a transcribed number and
+the CSV will disagree, and the CSV is what the next fire reads.
+
+It prints a one-line summary to stderr (`N/M scored | focus … | wider table …`) and writes the
+JSON. **If the stderr line reports a scanner-pull PROBLEM, the denominator set is incomplete:**
+the denominator is the TradingView 10-day average daily volume, and a pull that dropped names
+silently produces a wrong `daily_factor` for exactly the names it dropped. Report it, and fall
+back to the focus roster only (`universe_source: focus_roster_only`) rather than publishing a
+metric built on a broken pull.
+
+**If the engine fails**, fall back to scoring the FOCUS ROSTER ONLY (12 names — the behaviour
+before 2026-11-12) and set `universe_source: focus_roster_only` in the artifact. A narrow screen
+beats no screen. Never re-implement the metric by hand to work around a script failure.
+
+**THE DAILY-VOLUME SOURCE — Yahoo 1d bars, not the Nasdaq historical endpoint.**
+The prior-10 FULL-DAY volume comes from Yahoo `interval=1d` bars. Measured over 240
+symbol-sessions across 40 names, the ratio Yahoo-1d / Nasdaq-consolidated is median **1.0000**,
+mean 0.9997, max deviation **0.32%**, with ZERO comparisons outside +/-1% — while the Nasdaq
+call is 16x slower per symbol (2.09s vs 0.13s) and returns empty for some symbols. That ratio
+is far tighter than the vendor's own intraday revision band, so it does not move a crossing
+verdict: the 2026-11-10 and 2026-11-11 crossing verdicts are identical under both sources.
+
 **SOURCE OF RECORD — one field, one source. Never mix them.**
 | field | source | note |
 |---|---|---|
-| last price / close | bridge `market-recap get_quotes` | `market_state: open` proves a live session |
+| last price / close | Yahoo chart 5m bars, the 09:40-stamped bar | `close` = the 09:45 print |
 | session volume (cumulative) | Yahoo chart 5m bars, summed to the last COMPLETED bar | Yahoo `chartPreviousClose` is a cross-check |
-| 10-day average daily volume (the denominator) | TV scanner `average_volume_10d_calc` | DENOMINATOR ONLY |
+| 10-day average daily volume (the denominator) | TV scanner `average_volume_10d_calc` | DENOMINATOR ONLY, one pull for the whole universe |
 | full-day relative volume | TV scanner `relative_volume_10d_calc` | fallback proxy only — label it `rvol_proxy_daily` |
 
 **TRAP — the TV scanner's LIVE columns lag the session. Never use them for a live field.**
@@ -448,25 +580,30 @@ STABLE, then DECELERATING) so that when two names print the same `rvol_now` the 
 climbing leads. The `## Alerts` list is ordered by trend delta desc — among flagged names the
 TREND is what decides the trade.
 
-**A CROSSING NEEDS A PRIOR READING — and the prior reading must be REAL.**
+**A CROSSING NEEDS A PRIOR READING — and both sides must be on the SAME SCALE.**
 A ticker CROSSED when `prev_session_rvol < RVOL_ALERT_THRESHOLD` and `rvol_now >=
 RVOL_ALERT_THRESHOLD`.
 The prior reading is the SAME metric for the PREVIOUS SESSION, computed the SAME way on the SAME
-source. There are TWO ways to obtain it, and the FIRST one is only a shortcut:
+source, **with the SAME TradingView denominator as today's reading.**
 
-1. **PUBLISHED (shortcut).** `daily-screens/<previous session>/focus-rvol-snapshot.csv` — written
-   by this routine — carries the previous session's per-ticker `rvol_now`. Read `prev_session_rvol`
-   from it, per ticker. Set `prev_session_rvol_source: published_csv`.
-2. **RECOMPUTED (the general case).** When the published CSV does not carry that ticker — and
-   **it usually does not**, because the focus roster turns over almost completely between sweeps
-   (measured overlap between consecutive sweeps: 4/12, 0/12, 0/12, 2/12, 0/12) — RECOMPUTE that
-   ticker's previous-session reading from the SAME Yahoo 5-minute series with the IDENTICAL
-   formula: the same clock window (09:30 -> the fire's bar) on the previous session, divided by
-   that session's own prior-10 same-window mean, times the same daily-factor recipe. Set
-   `prev_session_rvol_source: recomputed_same_feed`.
-   **This is a real prior reading, not a fabrication:** both sides of the comparison are the same
-   metric computed the same way on the same source. The 2026-11-04 run did exactly this and
-   published it with that provenance, and it produced 4 legitimate alerts.
+**ALWAYS RECOMPUTE THE PRIOR READING. Never take it from the previous session's published CSV.**
+The denominator is `TV average_volume_10d_calc`, a ROLLING average that moves between fetches as
+each session prints into the window: measured, ETON's went 550,859 (published 2026-11-10) ->
+740,475 two days later, a 34% swing. So a value published in an earlier session's CSV is on THAT
+day's scale, and comparing it with today's `rvol_now` compares two different scales.
+
+**And the drift FLIPS VERDICTS.** The metric scales as 1/denominator, so a denominator move moves
+BOTH sides of a crossing together — but a name whose prior sits close to the bar flips on a tiny
+move. Measured on the 2026-11-10 roster, on the published denominator FROG and LASR crossed; on
+today's denominator neither did. The sensitivity is the distance of the PRIOR from the bar:
+FROG (prior 0.921) holds through a 38.6% denominator move, while LASR (prior 1.497) flips on a
+**0.2%** move. **That is why the engine computes the prior reading with the CURRENT run's
+denominator: both sides of every crossing are then the same metric on one scale.**
+
+The published CSV value is still fetched — the engine attaches it as
+`prev_session_rvol_published` plus `denominator_drift_pct` — but it is a CROSS-CHECK, never the
+baseline. Publish both and let the reader see the drift; decide the crossing on the recomputed
+value.
 
 **DO NOT publish `n/a` merely because the previous CSV lacks the ticker.** A missing ticker is a
 MISSING ROSTER, not a missing prior reading — the tape was there, the routine simply never
@@ -484,14 +621,14 @@ baseline. In that case set `prev_session_rvol_source: unavailable`, say so in th
 emit no alert for that ticker.
 
 **Publish the provenance.** Every row carries `prev_session_rvol_source` —
-`published_csv` / `recomputed_same_feed` / `unavailable` — and the artifact's `## Alerts` section
-states how many prior readings came from each source. A reader must be able to tell a published
-prior reading from a recomputed one without re-deriving it.
+`recomputed_same_feed` / `unavailable` — plus `prev_session_rvol_published` and
+`denominator_drift_pct` where the previous CSV carried the ticker. The artifact's `## Alerts`
+section states how many prior readings were recomputed and how many were unavailable. A reader
+must be able to tell a recomputed prior reading from a published one without re-deriving it.
 
-**THE CSV IS NOT OPTIONAL.** A run that publishes only the `.md` breaks the NEXT fire's shortcut
-path: that is exactly what happened on 2026-11-03 (the `.md` shipped, the `.csv` did not, and the
-2026-11-04 run had to recompute every prior reading from scratch). Write BOTH files every time,
-and confirm the CSV exists before you push.
+**THE CSV IS NOT OPTIONAL.** A run that publishes only the `.md` breaks the NEXT fire's published
+cross-check: that is exactly what happened on 2026-11-03 (the `.md` shipped, the `.csv` did not).
+Write BOTH files every time, and confirm the CSV exists before you push.
 
 An empty bucket is a real result. Report it as an empty bucket with counts, not as a failure.
 
@@ -507,24 +644,39 @@ comparable.**
 3. `## TL;DR` — 3-6 lines: how many names cleared, how many are near misses, the alert names,
    and THE CAVEAT THAT CHANGES HOW THEY SHOULD BE READ. The TL;DR is what a human actually
    reads; a caveat that only exists down in Degradation does not exist.
-4. `## Universe` — where the focus list came from, the three dates, the lag.
-5. `## Table` — THE ONE TABLE (below).
-6. `### Counts`.
-7. `## Alerts` — the crossing names, each with a one-line `read`.
-8. `## Near misses` — the watch list, with current and prior values.
-9. `## Universe change` — names that entered or left the focus list vs the previous sweep.
-10. `## Method` — the method actually used.
-11. `## Source health`.
-12. `## Degradation / caveats`.
+4. `## Universe` — where the focus list came from, the three dates, the lag, AND the wider
+   universe: which on-disk sources were unioned, how many names they held, and how many were
+   scored.
+5. `## Focus table` — the focus roster, in full, every row.
+6. `## Wider universe` — the top of the wider set by `rvol_now` (the engine's `wider_rows`).
+7. `### Counts`.
+8. `## Alerts` — the crossing names, each with a one-line `read`.
+9. `## Near misses` — the watch list, with current and prior values.
+10. `## Universe change` — names that entered or left the focus list vs the previous sweep.
+11. `## Method` — the method actually used.
+12. `## Source health`.
+13. `## Degradation / caveats`.
 
-**THE ONE TABLE — each name appears ONCE, with ALL of its numbers in that row.**
-One row per ticker. No second table for volume, no third table for the cross-check: the
-cross-check values ARE columns (`rvol_prev`, `rvol_at_09_38`) and the volume detail IS columns.
-A reader must never have to join two tables to learn one name's story.
+**TWO TABLES — the focus roster, and the wider universe that carries the day's movers.**
+The focus roster is a momentum screen built on the previous session's data, so it structurally
+cannot contain a name whose move has not happened yet. Measured on 2026-11-09: it carried 1 of
+the day's top 10 gainers, while the wider union carried 10 of 10. **Publishing only the focus
+roster is publishing a screen that structurally misses the day's movers — so publish both.**
+- `## Focus table` — every name in the focus roster, in full.
+- `## Wider universe` — the engine's `wider_rows`: the wider union's top names by `rvol_now`
+  (25 by default), each with its `tier`, so a name the focus roster never contained is visible.
+  State the wider universe's size and how many rows are shown.
+
+**Each name appears ONCE within its table, with ALL of its numbers in that row.**
+No second table for volume, no third table for the cross-check: the cross-check values ARE
+columns (`rvol_prev`, `rvol_at_09_38`) and the volume detail IS columns. A reader must never
+have to join two tables to learn one name's story. A name in the focus roster is NOT repeated in
+the wider table.
 
 Columns, in this order:
 `symbol | close | rvol_intraday_live | rvol_now | rvol_prev | rvol_at_09_38 | rvol_trend |
-prev_session_rvol | prev_session_rvol_source | bucket | tier | pm_vol | pm_vol_source | data timestamp`
+prev_session_rvol | prev_session_rvol_source | prev_session_rvol_published |
+denominator_drift_pct | bucket | tier | pm_vol | pm_vol_source | data timestamp`
 
 - `rvol_intraday_live` — the RAW ratio (cumulative session volume / TV average_volume_10d_calc).
   It is mechanically tiny at 09:45 and is published for reference; NEVER bucket on it.
@@ -532,27 +684,36 @@ prev_session_rvol | prev_session_rvol_source | bucket | tier | pm_vol | pm_vol_s
 - `rvol_prev` — the metric at the earlier cross-check snapshot.
 - `rvol_at_09_38` — the RAW cumulative ratio at that earlier snapshot, so the trend is checkable.
 - `rvol_trend` — `ACCELERATING` / `STABLE` / `DECELERATING` with the numeric delta.
-- `prev_session_rvol` — the previous session's `rvol_now` for this ticker, from the published
-  CSV when it carries it and recomputed on the same feed when it does not (see STEP 6), or `n/a`
-  only when the recompute is genuinely impossible.
-- `prev_session_rvol_source` — `published_csv` / `recomputed_same_feed` / `unavailable`.
+- `prev_session_rvol` — the previous session's reading for this ticker, RECOMPUTED on the same
+  feed with the same denominator as today's (see STEP 6), or `n/a` only when the recompute is
+  genuinely impossible.
+- `prev_session_rvol_source` — `recomputed_same_feed` / `unavailable`.
+- `prev_session_rvol_published` — the previous session's PUBLISHED `rvol_now` for this ticker,
+  where the previous CSV carried it; `n/a` otherwise. A CROSS-CHECK, never the baseline.
+- `denominator_drift_pct` — how far the TV denominator moved between the previous session's pull
+  and this one, where both are known. `n/a` otherwise.
 - `bucket` — `RVOL Required` / `Liquid`, by `RVOL_REQUIRED_BUCKET`.
 - `tier` — `ALERT` / `NEAR MISS` / `WATCH` / `UNADJUSTED` / `-`.
 - `pm_vol` — the pre-market volume subtracted (0 when none was subtracted).
 - `pm_vol_source` — `subtracted_from_08` / `no_08_file` / `not_subtracted`.
 - `data timestamp` — when the volume/close reading was taken.
 
-The CSV carries the SAME columns as the table, one row per ticker, plus the upstream `stylists`
-and `flags` columns when the focus list provided them. Write the CSV even when the table is
-empty or degraded — a missing CSV is what starves the next fire's baseline.
+The CSV carries the SAME columns as the tables, one row per ticker, with a `universe` column
+(`focus` / `wider`), plus the upstream `stylists` and `flags` columns when the focus list provided
+them. Write the CSV even when the tables are empty or degraded — a missing CSV is what starves
+the next fire's published cross-check.
 
 Front-matter, exact keys in this order:
   date, cron, fire_time_et, fire_date, focus_dir_date, screen_data_date, lag_sessions,
-  universe_source, universe_size, elapsed_minutes, session_fraction, source, method,
+  universe_source, universe_size, wider_universe_source, wider_universe_size, wider_shown,
+  elapsed_minutes, session_fraction, source, method,
   metric_def, bucket_rule, rvol_required_bucket, rvol_alert_threshold, near_miss_floor,
   alert_rule, pm_source_status, cross_check_source, status, upstream, names_unpriced
-`lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size`, `names_unpriced`,
+`lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size`, `wider_universe_size`,
+`wider_shown`, `names_unpriced`,
 `rvol_required_bucket`, `rvol_alert_threshold` and `near_miss_floor` are NUMBERS, not strings.
+`universe_source` is `focus_plus_wider` / `focus_roster_only` / `fallback_tv_screener`.
+`wider_universe_source` names the on-disk sources unioned (e.g. `focus+master+17`), or `none`.
 `upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
 `alert_rule` is the one-sentence rule from STEP 6, with the same numbers.
 `pm_source_status` is `subtracted_from_08` / `no_08_file` / `not_subtracted` / `partial`.
@@ -611,7 +772,7 @@ exit status (always 0) and reports a rejected push as a success. That is why the
 exists, and why the push script must never be run with `git push … | head -3`.
 
 ## DELIVERY (the only thing delivered to the chat)
-Seven lines, no preamble. **This format is a DOCUMENTED EXCEPTION** (see
+Eight lines, no preamble. **This format is a DOCUMENTED EXCEPTION** (see
 `cron-prompts/README.md`): a fixed status line, machine-read rather than read by a human. Do NOT
 convert it to the standard prose / `### Signal` format.
 
@@ -619,7 +780,12 @@ focus-rvol-09:45 (cron #07) - DATE TIME_ET
 window: passed | skipped (reason)
 upstream: FOCUS_MD_PATH (lag N session(s)) | missing | fallback_tv_screener
 tickers: N | RVOL Required: N (>= 1.5x) | Liquid: N | NEAR MISS: N (>= 1.275x) | method: METHOD | pm: PM_SOURCE
+universe: focus N + wider N (source SOURCE) | focus only (engine failed)
 alerts: NAME (TREND), NAME (TREND) | none (no prior reading)
 file: PATH (BYTES B, written) | no artifact
 push: ok | skipped (token unset) | failed (reason)
 errors: N
+
+The `alerts:` line names EVERY crossing from BOTH tables — the focus roster's crossings first,
+then the wider universe's. The `universe:` line states how many names the wider union held and
+which on-disk sources were unioned, so a reader can tell a narrow screen from a wide one.
