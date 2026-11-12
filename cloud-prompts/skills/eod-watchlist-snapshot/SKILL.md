@@ -618,6 +618,43 @@ print, so one row carries one price.
 vendor — they come from the **venue's settled print**, while the vendor supplies the
 universe, the carrier caps, the floats and the GICS sectors.
 
+### THE VENUE'S SETTLED BLOCK, NOT ITS LIVE BLOCK (2026-11-12)
+
+The venue's `/info` endpoint carries **two** price blocks, and reading the wrong one is a
+silent wrong-close:
+
+| block | stamp | what it is |
+|---|---|---|
+| `secondaryData.lastSalePrice` | **"Closed at \<date\> 4:00 PM ET"** | the official 16:00 ET **auction print** — the close of record |
+| `primaryData.lastSalePrice` | "Nov 12, 2026 5:26 PM ET" | the **LIVE** print — after the close it carries an **extended-hours** trade |
+
+Measured 2026-11-12 on a pull made at 18:15 ET: AAPL primary `$354.79` @ 5:26 PM ET against
+secondary `$354.88` @ "Closed at 4:00 PM ET"; JPM `$342.80` vs `$342.98`; WMT `$125.8152` vs
+`$126.19`. **Yahoo's 1-minute FINAL bar corroborates the SECONDARY print** (AAPL 354.88), which
+is what proves the secondary block is the auction close and the primary block is the tape.
+
+Two measured consequences of reading the live block as the close:
+
+- the published close was an **after-hours price** — and an after-hours price sits OUTSIDE the
+  session's own range, so **817 rows** needed the venue's day range under the live print against
+  **384** under the settled print;
+- the **settle probe loop measured the after-hours tape moving** instead of the close settling,
+  so it never went quiet and hit its 12-round cap with **122 symbols still "changed"** at
+  17:08 ET (1,199 symbols changed over the 12 rounds). The probe's "drift" was an artifact of
+  the source, not of the feed.
+
+So: **the settled block is the close of record; the live block is the tape.** The primary print
+is used only when a symbol serves no settled print AND its primary stamp is still inside the
+regular session (a stamp after 16:00 ET is an extended-hours print, not a close). The probe
+loop measures the same settled block, so its drift measurement is a drift measurement again.
+Both scripts (`fetch_eod_venue.py`, `fetch_eod_settled.py`) implement this.
+
+**The index proxies and the sector ETFs are pulled as their OWN symbol list** — the vendor's
+`country_iso='US'` universe carries equities, not ETFs, so `SPY`, `QQQ`, `IWM`, `DIA`, `RSP` and
+the eleven sector ETFs are added to the history pull (`fetch_eod_settled.py` → `PROXY_SYMBOLS`).
+Without them the report's Market read has **no index table** and every sector-ETF column reads
+`n/a` (measured 2026-11-12).
+
 ## 2d. The SETTLE LOOP — detect the feed's quiet instead of sleeping a fixed time (2026-11-12)
 
 **THE WALL IS A DATA-LATENCY WALL, AND IT IS MEASURED IN DRIFT, NOT IN MISSING BARS.**
@@ -886,7 +923,8 @@ python3 /workspace/eod_scripts/eod_derive.py --base /workspace/work/base.csv \
 # 6. build the report FROM the published CSV (never hand-written)
 python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<YYYY-MM-DD>.csv \
     --manifest /workspace/work/manifest.json --history /workspace/work/history_patched.jsonl \
-    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json>
+    --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json> \
+    --prior-csv <PRIOR-CSV>
 
 # 7. the assertions — the artifact is not finished until they pass
 python3 tools/check_eod_artifact.py --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md \
