@@ -47,10 +47,27 @@ the trading-view paging trap. Read §5, then:
 
 ```bash
 mkdir -p /workspace/tools
-curl -sL -o /workspace/tools/reversal_bullish.py \
-  https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py
-wc -c /workspace/tools/reversal_bullish.py          # must be non-zero
-python3 /workspace/tools/reversal_bullish.py --date "$(TZ=America/New_York date +%F)"
+S=/workspace/tools/reversal_bullish.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/reversal_bullish.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/reversal_bullish.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/reversal_bullish.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  # The CAPABILITY MARKER is mandatory. The raw CDN has been measured serving a stale blob
+  # for >17 minutes after a push, and a copy of the OLD script would publish the OLD stop
+  # rule and the OLD artifact shape - the run would look clean and be wrong. The contents
+  # API is authoritative and is NOT CDN-cached, so it is tried FIRST.
+  if [ -s "$S.tmp" ] && grep -q 'bonde-artifact-v4' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'bonde-artifact-v4' "$S"; then
+  echo "reversal_bullish.py: UNAVAILABLE (no copy carrying the current contract marker)"
+  echo "no artifact; no push"
+  exit 1
+fi
+python3 "$S" --date "$(TZ=America/New_York date +%F)"
 ```
 
 Read its JSON report: `mode` is `LIVE` / `NO_SESSION` / `DEGRADED` / `SETTLED_REPLAY`, `passing` is
