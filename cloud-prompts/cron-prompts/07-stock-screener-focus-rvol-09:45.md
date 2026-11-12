@@ -238,10 +238,10 @@ fire:
 **The previous session is the last session before `fire_date`, whatever the calendar says.** On a
 Monday that is Friday; the files are named for the SESSION, not for the day before.
 
-**RUN THE UNIVERSE BUILDER — do not hand-assemble the union.** It resolves the previous
-session, globs the cron #17 boards by THAT date (a `*.csv` glob would sweep in every earlier
-session's board and inflate the universe with stale names), and writes `/workspace/universe.txt`
-and `/workspace/focus.txt`. It is fetched by the STEP 5 block; run it as soon as that block has
+**RUN THE UNIVERSE BUILDER — do not hand-assemble the union.** It resolves the previous session,
+globs the cron #17 boards by THAT date (a `*.csv` glob would sweep in every earlier session's
+board and inflate the universe with stale names), and writes `/workspace/universe.txt` and
+`/workspace/focus.txt`. It is fetched by the STEP 5 block; run it as soon as that block has
 fetched the helpers:
 
 ```bash
