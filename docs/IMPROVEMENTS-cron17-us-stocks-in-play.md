@@ -490,3 +490,66 @@ column was internally consistent and the arithmetic was wrong at the source.
 (`merge` mode) rebuilds the 09:30 open from the same bars and its gap agreed with this board's gap
 column to a **median of 0.02pp** across the 12 names cross-checked (NVDA -14.07 vs -14.07, NBIS -22.50
 vs -22.50, CRWV -16.25 vs -16.25, TWST -18.76 vs -18.76). The helper's `selftest` still prints 4 PASS.
+
+## 2026-11-12 (open slot, post-run analysis) — the pace basis MIXES an archived factor with a live numerator, and the published pace is inflated by ~10-25%
+
+**The defect.** The open slot's pace is
+
+```
+vol_basis_factor    = yahoo_5m_total(PRIOR session) ÷ polygon_daily_volume(PRIOR session)
+session_vol_to_0950 = yahoo_5m_volume_through_09:50 ÷ vol_basis_factor
+pace                = session_vol_to_0950 ÷ avg_vol_10d ÷ 0.125
+```
+
+The numerator is a **live** 5-minute pull (09:30-09:50 on the day being published). The factor is
+measured on the **PRIOR session's 5-minute series**, and that series comes from Yahoo's *archive*.
+The two are not on the same basis.
+
+**Measured on 2026-11-12 (14 names, 2026-11-11 session, complete 78-bar series):**
+
+| Measure | Value |
+|---|---|
+| polygon daily ÷ Yahoo 1d daily, 2026-11-11 | **1.000 – 1.017** (median 1.005) — the same series |
+| **Yahoo 5m sum ÷ Yahoo 1d daily**, 2026-11-11 | **0.654 – 0.996** (median ~0.79) — the archive is SHORT |
+| Yahoo 5m sum ÷ Yahoo 1d daily, 2026-11-12 through 11:35 ET | **0.999** — the LIVE feed matches the live daily bar |
+
+So: **a completed session's 5-minute archive sums to only ~79% of its own official daily volume,
+while the live session's 5-minute series matches its live daily bar.** Applying an archived
+factor (≈0.79) to a live numerator overstates the daily-basis volume by roughly **1/0.79 ÷ 1/1.0
+≈ 25%**, and by 10-25% for the names measured. The published pace is **too high**, and the error
+is invisible to the checker: every published column is internally consistent.
+
+**What it costs.** Re-tiering the 2026-11-12 board with the pace scaled down by the measured
+bias:
+
+| Bias | Tier A | Soft-A | TECH_WATCH | Tier B | tier flips |
+|---|---|---|---|---|---|
+| published | 22 | 1 | 178 | 322 | — |
+| pace ÷ 1.10 | 17 | 6 | 146 | 354 | 37 |
+| pace ÷ 1.15 | 16 | 7 | 130 | 370 | 54 |
+| pace ÷ 1.25 | 16 | 7 | 112 | 388 | 72 |
+
+The names that move are exactly the ones the reader acts on: **MSTR (published 1.51)** drops out
+of Tier A, and the TECH_WATCH→B flips are the "moved but on no volume" names — AMAT, VRT, RKLB,
+IONQ, CRCL, ILMN, SMTC, QBTS, MU, TSM, MRVL, LITE, SKHY, COHR, APH, BMNR, CLS.
+
+**The proposed fix (NOT yet landed — it needs a same-session validation first).** At run time the
+1d bar for TODAY is already being pulled for the survivors (the official prior close and the
+volume bound). Use it as the anchor instead of the prior session:
+
+```
+vol_to_0950_official = 1d_volume_live_at_pull × (5m_sum_through_09:50 ÷ 5m_sum_through_pull_time)
+pace                = vol_to_0950_official ÷ avg_vol_10d ÷ 0.125
+```
+
+Both terms are then on the same live feed, and the factor disappears — no cross-session
+extrapolation, no archived series in the numerator's basis. **Validate before landing:** publish
+the old and the new pace side by side for the top 30 names on the next fire and compare both
+against the 15:50 SETTLED RVol for the same names (the settled session is the ground truth). If
+the new basis is right, the open pace and the settled RVol must agree inside the 10.77%-16.49%
+opening-share band; the old basis should miss it by roughly the bias measured above.
+
+**A note on the 5-minute archive's shortfall.** It is not a missing-bar truncation (the
+completed session has all 78 bars); the individual bars carry less volume than the official
+daily bar. Whatever the cause, the ARCHIVE and the LIVE feed are different bases, and a
+procedure that mixes them must reconcile them explicitly.

@@ -214,6 +214,29 @@ def num(v):
         return None
 
 
+# A published cell that still looks like a Python repr means a data structure leaked
+# into the artifact instead of the string it was meant to be. Measured 2026-11-12: a
+# catalyst map whose values were (reason, has_timestamp) TUPLES was rendered as
+# "['Q3 revenue of $980.8m ...', 'yes']" — in the delta table AND in the CSV — and the
+# contract passed, because every assertion above tests only that the cell is NON-EMPTY.
+# NB: no bare `None`/`True`/`False` word test here — a legitimate reason can contain
+# "True Value" (Morningstar's fair-value measure). Only STRUCTURAL repr shapes count.
+REPR_PATTERNS = (
+    r"^\s*\[",                                        # a list repr
+    r"^\s*\(\s*['\"]",                              # a tuple repr
+    r"^\s*\{.*:.*\}\s*$",                           # a dict repr
+    r"^\s*['\"][^'\"]*['\"]\s*,\s*['\"]",        # a flat two-string tuple repr
+    r"\[\s*['\"][^\]]*['\"]\s*,\s*['\"][^\]]*\]",  # a pair of quoted strings in brackets
+)
+
+
+def looks_like_repr(value):
+    v = str(value or "")
+    if not v.strip():
+        return False
+    return any(re.search(pat, v) for pat in REPR_PATTERNS)
+
+
 def sections(lines):
     """Map '## Heading' -> (start, end) over the whole document."""
     heads = []
@@ -588,6 +611,20 @@ def check_md(path, slot):
                 else:
                     ok("every watch-block name carries a price level")
 
+    # --- 7b. no Python repr leaked into the document --------------------------
+    repr_lines = []
+    for i, ln in enumerate(alltext.split("\n"), start=1):
+        if ln.strip().startswith("|"):
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            if any(looks_like_repr(c) for c in cells):
+                repr_lines.append(f"table row {i}")
+    if repr_lines:
+        bad(f"{len(repr_lines)} table row(s) in the artifact still look like a Python repr "
+            f"({'; '.join(repr_lines[:6])}) — a data structure leaked into the board instead "
+            "of the string it was meant to be.")
+    else:
+        ok("no table row in the artifact looks like a Python repr")
+
     # --- 8. no halt COUNT anywhere ---------------------------------------------
     hits = []
     for pat in HALT_COUNT_PATTERNS:
@@ -660,6 +697,19 @@ def check_csv(path, slot):
             "`reason_without_timestamp` — a row with no timestamp still owes the reader "
             "the REASON, because the routine researches catalysts itself against issuer IR "
             "and EDGAR filings")
+
+    # no published cell may still be a Python repr
+    repr_rows = []
+    for i, r in enumerate(rows, start=2):
+        for k, v in r.items():
+            if v and looks_like_repr(v):
+                repr_rows.append(f"row {i} column '{k}'")
+    if repr_rows:
+        bad(f"{len(repr_rows)} published cell(s) still look like a Python repr "
+            f"({'; '.join(repr_rows[:6])}) — a data structure leaked into the artifact "
+            "instead of the string it was meant to be. Render the value, not the tuple.")
+    else:
+        ok(f"no published cell looks like a Python repr ({len(rows)} rows checked)")
 
     # the pace column must reconcile with its own stated denominator
     if slot == "open":
