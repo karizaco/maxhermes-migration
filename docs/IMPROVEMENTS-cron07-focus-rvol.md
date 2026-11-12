@@ -401,3 +401,31 @@ a validated client that every routine can fetch at run time.
 that fetch fails, the fallback is the hand-built body in the same block — but the ASSERTIONS
 (coverage, disjointness, union) are not optional. A pull that fails them is a failed pull:
 report it, do not publish it.
+
+---
+
+## 2026-11-12 — the repo's OWN contract test was RED on arrival (a flaky guard, not a logic failure)
+
+While extending `tools/test_tv_scan_contract.py` for TV_SCAN_V2, the suite failed
+intermittently: **1-3 of 37 checks failed on 6 of 6 runs** — before any of this session's edits
+(verified by running the pre-change file from git: `18c4ba1~1`). The failing pair was always
+`a FULL pull with totalCount > rows is caught as TRUNCATED` and `the row count and totalCount are
+both reported`.
+
+**Cause — the HTTP stub never read the request body.** `Stub.do_POST` wrote the response and
+closed the connection while the client's POST body was still unread in the socket, so the close
+carried an RST and urllib intermittently failed to read the response at all. That is a
+**`transport` error, not a result**: `tv.scan()` returned `status=None, rows=None`, so the
+truncation logic (which is correct — `requested=20000 >= RANGE_PAGE_CAP=20000` ⇒
+`pull-truncated`) was never reached. Measured 12 calls against the local stub: **9 clean,
+3 transport failures**. `PagedStub` (added with TV_SCAN_V2) reads the body and never flaked —
+which is why the NEW sections were stable and the OLD ones were not.
+
+**Fix:** `Stub.do_POST` now consumes `Content-Length` bytes before responding. **8 of 8 runs
+green** afterwards.
+
+**Why this is worth a section.** A guard that fails *randomly* is worse than no guard: it
+trains the fleet to re-run a failing test until it goes green, and it makes a real regression
+look like noise. The same principle the fleet already applies to checkers applies here —
+**"a checker never observed failing is a claim"** extends to **"a checker that flakes is not a
+guard"**. Whenever a local HTTP stub is used, **the handler MUST read the request body.**

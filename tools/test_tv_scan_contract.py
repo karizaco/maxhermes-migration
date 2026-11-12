@@ -133,6 +133,17 @@ class Stub(BaseHTTPRequestHandler):
     status = 400
 
     def do_POST(self):
+        # CONSUME THE REQUEST BODY. This is not hygiene, it is correctness: the handler
+        # wrote a response and closed the connection while the client's POST body was
+        # still unread in the socket, so the close carried an RST and urllib intermittently
+        # failed to read the response — a `transport` error, not a result. That made the
+        # truncation check below FLAKY: it failed ~25% of the time on a LOCAL server, and
+        # the repo's own contract test was RED on arrival (measured 2026-11-12: 1-3 of 37
+        # checks failed on 6 of 6 runs, before any of this session's edits). A guard that
+        # randomly fails is worse than no guard — the fleet learns to ignore it.
+        n = int(self.headers.get("Content-Length", "0"))
+        if n:
+            self.rfile.read(n)
         self.send_response(self.status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(self.payload)))
