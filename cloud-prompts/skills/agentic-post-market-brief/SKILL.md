@@ -364,6 +364,17 @@ One scanner call produces all of it:
  "sort":{"sortBy":"postmarket_change","sortOrder":"desc"},"range":[0,200]}
 ```
 
+**Send it through the shared validated client**, not raw curl — `_shared/tv_scan.py` checks the body
+before it goes out and checks the pull for truncation afterwards:
+
+```bash
+python3 /workspace/tv_scan.py scan --body /workspace/_mcp/ah_up.json --out /workspace/_mcp/tv_up.json
+```
+
+(A list-valued `right` on `in_range` — the `type` filter above — is a VALUE SET, not a numeric
+range, and the endpoint accepts it; the client was fixed to allow that form on 2026-11-11 after it
+falsely rejected this body. A scalar `in_range` still needs `second_right`.)
+
 Run it **twice** — `postmarket_change` descending for the gainers and ascending for the losers —
 so both sides are carried, then rank by **absolute** `postmarket_change`. Cap the published table
 at 10 names (5 gainers, 5 losers).
@@ -394,6 +405,14 @@ whose own numbers disagree.
 
 **Do not publish a level you did not read.** If a field is unavailable for a name, publish `n/a`
 in that cell and say which field is missing — never a zero and never a guess.
+
+**The after-hours tape keeps moving after the fire — pick one vendor and date the print.** The
+16:00 close is settled; the extended-hours print is not. On 2026-11-11 the same name carried three
+different after-hours changes depending on the vendor and the minute: CRWV **-2.37%** (Public,
+17:30 ET), **-7.12%** (MarketBeat, 18:10 ET) and **-6.37%** (the TradingView scanner, ~22:35 ET).
+Publish the scanner's print as the source of record, state that it is a snapshot as of the fire,
+and if another vendor's number is materially different, name it in `## Source health` rather than
+blending the two into one figure.
 
 ## 5.8 The reply
 

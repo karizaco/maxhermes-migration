@@ -398,3 +398,72 @@ assertion, and a dated read for the volatility indices, are not optional. The th
 published percentage needs its denominator named: an intraday move against the prior close and
 an intraday range against the prior close are different claims, and the artifact's own numbers
 made the difference visible (21.61 high, 19.92 previous close, 19.46 close).
+
+---
+
+## 2026-11-11 — the scanner validator rejected the routine's OWN body, and the after-hours tape moved between vendors
+
+**Evidence from the 2026-11-11 fire (session `2026-11-11`, 22:30 ET).**
+
+**1. The fleet's validated scanner client refused the body that this routine's own skill spec
+§5.7 documents.** §5.7 publishes the after-hours screen body with
+`{"left":"type","operation":"in_range","right":["stock","dr"]}`. `_shared/tv_scan.py` refused it:
+
+```
+[error] filter-in_range-no-second-right: filter[0] uses in_range but carries no second_right
+        - a single value is a 400
+        FIX: add "second_right"
+```
+
+The validator's rule was written for the NUMERIC form of `in_range` (a scalar `right` plus a
+`second_right`). But the endpoint accepts a LIST-valued `right` on a categorical column as a
+VALUE SET. Verified directly against the endpoint on 2026-11-11 with the skill spec's body
+verbatim:
+
+```
+POST https://scanner.tradingview.com/america/scan  (skill spec §5.7 body, unmodified)
+HTTP 200  totalCount=2045  first rows: AVEX, TTEK, VERX ...
+```
+
+So the body was correct and the **validator** was wrong. The 2026-11-11 run had to work around it
+by dropping the `type` filter and filtering the returned rows on the `type` column locally — which
+returned the same top three gainers (AVEX +11.29%, TTEK +8.48%, VERX +5.05%). A future fire that
+trusted the validator would either abandon the validated client (losing its truncation check) or
+drop the `type` filter without a replacement, silently letting funds into a screen the contract
+defines as stocks.
+
+**The fix is in the shared helper, so it lands fleet-wide with no `cron_update`.**
+`cloud-prompts/_shared/tv_scan.py` now requires `second_right` only when `in_range`'s `right` is a
+SCALAR; a list-valued `right` is accepted as a value set. Two selftest cases were added (list-valued
+`right` alone, and list-valued `right` with a `second_right`): `selftest: 13/13 validator cases
+passed`. The skill spec §5.7 now also says to send the body through the validated client rather
+than raw curl.
+
+**2. The after-hours print is not a settled number, and vendors disagree.** The same name, the same
+session, three different extended-hours changes:
+
+| Vendor / minute (ET) | CRWV after-hours change |
+|---|---|
+| Public, 17:30 | -2.37% ($59.33) |
+| MarketBeat, 18:10 | -7.12% ($56.45) |
+| TradingView scanner, ~22:35 | -6.37% ($56.90) |
+
+The 16:00 close is settled; the extended-hours print keeps moving. The skill spec §5.7 now says to
+publish the scanner as the source of record, state that the print is a snapshot as of the fire, and
+name a materially different vendor number in `## Source health` rather than blending the two. The
+2026-11-11 artifact does exactly that, in the news-to-watch bullet for CRWV and in Method notes.
+
+**3. A cross-source previous-close convention, worth knowing before mixing the two files.**
+Cron #20's `us-eod` CSV and the bridge's `get_quotes` can disagree on the SAME name's day change by
+up to ~0.1pp, because they use different previous closes — the CSV's official venue close against the
+bridge's Yahoo reference print. On 2026-11-11: NVDA's CSV row reads `change_pct 2.842` off a close of
+`173.7` (implying a previous close of ~168.89) while the bridge reads `+2.92%` off `173.73` with a
+`previous_close` of `168.796`. Every price and change published in the 2026-11-11 brief is the
+bridge's; the CSV is used only for participation counts, the median name move and the sector weights,
+and the two are never mixed in one cell. That rule is now in the artifact's Method notes.
+
+**Also carried forward from this run:** the artifact passed `check_postmarket_brief.py` (with
+`--reply`) on the FIRST attempt, and the two `degraded_sources` were both real and both published —
+the sub-$1B after-hours leaderboard was pulled 400 of 2,950 names per direction (not paged to the
+end), and cron #20's universe covers common stocks only, so the three funds on the watchlist have no
+volume-versus-average.

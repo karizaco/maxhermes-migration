@@ -165,11 +165,22 @@ def validate_body(body) -> list[Problem]:
                 f'filter[{i}] on {left!r} uses operation {op!r} with a LIST right - the endpoint '
                 'REJECTS it with HTTP 400 {"error":"Expected one value, passed N"}.',
                 'pull the universe WITHOUT this filter and filter the rows locally'))
-        if op == "in_range" and "second_right" not in entry:
+        # `in_range` has TWO meanings at this endpoint:
+        #   - a NUMERIC range  -> needs a scalar `right` AND a `second_right` (a scalar
+        #     `right` alone is a 400)
+        #   - a VALUE SET      -> a LIST `right` on a categorical column (e.g. type),
+        #     no `second_right` needed; the endpoint accepts it (verified 2026-11-11:
+        #     {"left":"type","operation":"in_range","right":["stock","dr"]} -> HTTP 200)
+        # The old unconditional check rejected the second form and blocked the body that
+        # cron #23's skill spec §5.7 documents. Only the scalar form is an error.
+        if op == "in_range" and "second_right" not in entry and not _is_list(right):
             problems.append(Problem(
                 "error", "filter-in_range-no-second-right",
-                f"filter[{i}] uses in_range but carries no second_right - a single value is a 400",
-                'add "second_right"'))
+                f"filter[{i}] uses in_range with a SCALAR right and no second_right - a single "
+                f"value is a 400",
+                'add "second_right" (numeric range), or pass a LIST of values for a '
+                'categorical column - e.g. {"left":"type","operation":"in_range",'
+                '"right":["stock","dr"]} is accepted by the endpoint'))
         if op in ("greater", "less") and left in DATE_COLUMNS:
             val = right
             if isinstance(val, (int, float)) and float(val) % 3600 != 0:
@@ -354,6 +365,12 @@ def selftest() -> int:
         ("in_range without second_right", {"columns": ["name"],
                                             "filter": [{"left": "close", "operation": "in_range", "right": 1}]},
          ["filter-in_range-no-second-right"]),
+        ("in_range with a LIST right (value set)", {"columns": ["name", "type"],
+                                                    "filter": [{"left": "type", "operation": "in_range",
+                                                                "right": ["stock", "dr"]}]}, []),
+        ("in_range with a LIST right and a second_right", {"columns": ["name"],
+                                                            "filter": [{"left": "close", "operation": "in_range",
+                                                                        "right": [1, 2], "second_right": 3}]}, []),
         ("date not on hour boundary", {"columns": ["name"],
                                        "filter": [{"left": "earnings_release_next_date",
                                                    "operation": "greater", "right": 1793959199}]},
