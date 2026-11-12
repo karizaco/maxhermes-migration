@@ -61,6 +61,27 @@ runtime. Do not call them and do not improvise their names. The three working pa
 The `## RUNTIME DATA-SOURCE CONTRACT` in `_shared/PROMPT-BLOCKS.md` is authoritative for the
 ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not change the ladder.**
 
+**When you build a TradingView scanner body, these four rules are not optional** (they are in
+`_shared/PROMPT-BLOCKS.md` → *The TradingView scanner's request shape*, with the full evidence
+in `RUNTIME-CONTRACT.md` §2a-bis):
+
+1. `sort` must be `{"sortBy": X, "sortOrder": "asc|desc"}`. An ARRAY `sort` is HTTP 400; the
+   `{"column","order"}` form is HTTP 200 and **silently unsorted**.
+2. **The completeness test is a SET test.** `totalCount == rows returned` is necessary and NOT
+   sufficient — the scanner's default page order is not stable between requests, so a paged
+   pull overlaps and misses names while looking healthy (measured: 13,500 rows / 8,689 unique;
+   and 20,155 rows / 20,001 unique). Assert the pages are DISJOINT and their UNION equals
+   `totalCount`, and page on a STABLE key (`name`) if you must page at all.
+3. **The row key is the BARE ticker `d[0]`** — `s` is venue-prefixed (`NYSE:BW`), and indexing by
+   `s` makes every US ticker look missing.
+4. **If you know the ticker list, pull it**: a categorical `in_range` filter takes a LIST
+   (`{"left":"name","operation":"in_range","right":[...]}`) and returns exactly those rows in one
+   call — no universe, no paging. Pull the universe only when you genuinely need every name.
+
+A pull that fails any of these is a **FAILED pull**: report it, do not publish it. The validated
+client `_shared/tv_scan.py` (marker `TV_SCAN_V2`, `pull --names` / `pull --body`) enforces all
+four.
+
 ## Steps
 
 1. **Read the watchlist.** It is a **PUBLISHED FILE**, fetched at run time (the local

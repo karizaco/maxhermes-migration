@@ -222,9 +222,40 @@ issuer carries that one USD figure.** The rule, in four parts:
 
 The issuer's US line is an independent reading of the same company-level cap, and it is cheap:
 `POST https://scanner.tradingview.com/america/scan` with `symbols.query.types = ["stock","dr"]`
-returns **13,376** rows in three calls (`range` caps at 6,000 per call), of which **737** are
-`type=dr` depositary receipts, and the OTC lines (`OTC:BCMXY`, `OTC:MURGY`, …) come back with
-them.
+returns **13,376** rows, of which **737** are `type=dr` depositary receipts, and the OTC lines
+(`OTC:BCMXY`, `OTC:MURGY`, …) come back with them.
+
+**Pull that universe in ONE call and ASSERT it — do not page it.** `range` is a PAGE SIZE (it
+caps at 6,000 per call), and the scanner's default page order is **not stable between two
+requests**, so a paged pull **overlaps and misses names** while looking healthy: measured
+2026-11-06 (cron #17), a 9-page offset pull returned 13,500 rows containing only 8,689 unique
+symbols; measured 2026-11-12, an unsorted two-slice pull returned 20,155 rows whose union held
+20,001. The completeness check is a **SET test**, not a row count: `totalCount == rows returned`
+is **necessary and not sufficient**.
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+URL = "https://scanner.tradingview.com/america/scan"
+COLS = ["name", "close", "market_cap_basic", "exchange", "type"]
+body = {"symbols": {"query": {"types": ["stock", "dr"]}}, "columns": COLS,
+        "sort": {"sortBy": "name", "sortOrder": "asc"}, "range": [0, 20000]}
+req = urllib.request.Request(URL, data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json",
+                                      "User-Agent": "Mozilla/5.0"})
+p = json.loads(urllib.request.urlopen(req, timeout=45).read())
+rows = p.get("data") or []; total = p.get("totalCount")
+# The row key is the BARE ticker (`d[0]`); `s` is VENUE-PREFIXED (`NYSE:BW`, `OTC:BCMXY`).
+names = {r["d"][0] for r in rows if r.get("d")}
+if total is not None and len(names) != total:
+    raise SystemExit(f"TRUNCATED PULL: {len(names)} distinct names against totalCount {total}"
+                     f" - a FAILED pull; do not publish a short universe")
+json.dump({"totalCount": total, "rows": rows}, open("/workspace/_us_universe.json", "w"))
+print("universe:", len(names), "of totalCount", total)
+PY
+```
+
+A pull that fails the assert is a **FAILED pull**: report it, do not publish it.
 
 **Where an issuer has a US ADR line, compare the two caps after conversion. They must agree
 within 10%.** A disagreement is a cap finding: publish the primary line's cap, record the

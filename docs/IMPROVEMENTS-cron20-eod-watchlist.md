@@ -371,3 +371,37 @@ second reading wins — the vendor's cap is off by orders of magnitude for ~300 
 **The published schema is 32 columns** (the base 14 + 16 derived/provenance + `settle_status`
 + `settle_round`); the first 14 are unchanged, so a consumer reading by position keeps
 working. The archive now holds 14-, 30- and 32-column files.
+
+---
+
+## 2026-11-12 — a DEAD TradingView universe pull, removed rather than repaired
+
+This file's `fetch_eod_venue.py` was created by the 2026-11-12 fire and shipped with a
+**TradingView universe pull** (`fetch_tv()`) that **was never wired in** — nothing called it, and
+the `--no-tv` flag ("skip the TradingView confirmation") controlled nothing at all. Two reasons it
+had to go rather than be repaired:
+
+1. **It was the wrong source.** Measured 2026-11-11, the TV America scanner agrees with the
+   VENDOR'S DAILY BAR on 4,497 of 4,526 rows (99.4%) and with the VENUE's settled print on only
+   **67.8%** — TV corroborates the BAR, not the venue, so it must not confirm the published close.
+   The live confirmation is Yahoo's 1-minute FINAL bar (a different feed, so agreement is real
+   corroboration). The pull was rejected on the merits and then left in the file anyway.
+2. **Its shape lost names.** It paged the universe on `sort {"sortBy":"close"}` — a LIVE column, so
+   the page order is not stable between requests. Measured 2026-11-12: **20,342-20,345 names
+   against a `totalCount` of 20,347** (2-5 missing) and **two identical pulls returned different
+   name sets** (IVRO, LYCA in one run only; AGCCF in the other). The stable sort (`{"sortBy":"name"}`)
+   returned 20,347 == `totalCount`, every time. The `totalCount == rows returned` check cannot see
+   this — it is a SET test.
+
+**Landed:** the dead pull is deleted (with a module note recording both reasons and the
+measurement), `--no-tv` is kept but documented as an honest **no-op** so an existing invocation
+cannot fail on it, and `tv_candidates()` survives as the symbol-form helper it always was.
+
+**The LIVE exposure was in the SKILL, not the script:** the cross-venue ADR pull was specified in
+prose as "13,376 rows in three calls (`range` caps at 6,000 per call)" — a PAGED pull the agent
+builds at run time, with no completeness check. It is now **one call with `range [0,20000]`** (the
+scanner's page cap), sorted by `name`, with an assert that the distinct names equal `totalCount`:
+a failed pull is a failed pull.
+
+Full evidence and the fleet-wide rules: `docs/IMPROVEMENTS-2026-11-12-tv-scanner-pull-completeness.md`.
+Guard: `tools/test_tv_pull_completeness.py`.

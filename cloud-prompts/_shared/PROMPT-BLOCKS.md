@@ -357,6 +357,48 @@ section 1e.
    prefer the bridge, say so, and **do not publish both**. Never report "no source available" when
    a source is reachable — a 429 is a rate limit, not an absence.
 
+### The TradingView scanner's request shape — every scanner pull, every routine
+
+The scanner is **healthy**; what fails is the SHAPE of the request, and three of its traps
+fail **silently**. These rules are fleet-wide because every routine that pulls the scanner
+builds the body by hand at run time. Full evidence: `RUNTIME-CONTRACT.md` §2a-bis.
+
+1. **One `sort` form works.** `"sort": [{"column": X, "order": "asc"}]` (an ARRAY) is **HTTP
+   400**; `"sort": {"column": X, "order": "asc"}` is **HTTP 200 and silently UNSORTED** (no
+   error, wrong data); `"sort": {"sortBy": X, "sortOrder": "asc"}` is the repo's canonical form
+   and sorts correctly. **Never send `sort` as an array; never "tidy" `sortBy`/`sortOrder`
+   into `column`/`order`.**
+2. **The completeness test is a SET test, not a row count.** `totalCount` equals the rows
+   returned is **NECESSARY AND NOT SUFFICIENT** — it passes a pull that is still missing
+   names, because the scanner's default page order is **not stable between two requests**.
+   Measured 2026-11-12: two unsorted slices returned 20,155 rows whose UNION held only
+   **20,001** — 154 names missing, no error. Measured 2026-11-06 (cron #17): a 9-page offset
+   pull returned **13,500 rows containing only 8,689 unique symbols**. The real invariants:
+   **the pages are DISJOINT** and **their UNION equals `totalCount`**. And if you page at all,
+   **page on a STABLE key** (`{"sortBy":"name","sortOrder":"asc"}`) — a sort on a live column
+   (volume, close, change) is NOT a stable pagination key.
+3. **The row key is the BARE ticker, never the venue-prefixed `s`.** A row is
+   `{"s": "NYSE:BW", "d": ["BW", "NYSE", ...]}`: the ticker is **`d[0]`**; `s` carries the venue
+   (`NYSE:`, `NASDAQ:`, `AMEX:`, `OTC:`). Indexing by `s` makes **every US ticker look MISSING**
+   — indistinguishable from an empty universe, and a silent false negative.
+4. **If the ticker list is KNOWN, pull it — do not pull the universe.** The `in` operation
+   rejects a list `right` (400 `Expected one value, passed 2`), but the categorical
+   **`in_range` takes a LIST**: `{"filter":[{"left":"name","operation":"in_range","right":[...]}],
+   "range":[0, len(names)+5]}` returns exactly those rows in ONE call (measured 2026-11-12: 12
+   names, `totalCount` 12, one call — against 20,155 rows for the universe pull). Pull the
+   universe only when a screen genuinely needs every name, and then page on a stable key.
+5. **There is a VALIDATED client — use it instead of hand-building a body.**
+   `cloud-prompts/_shared/tv_scan.py` (capability marker `TV_SCAN_V2`) refuses a bad shape
+   BEFORE it is sent (`validate`), diagnoses a failure from its error string (`diagnose`),
+   and its **`pull`** mode does the work: `pull --names "A,B,C"` = the ONE targeted call plus a
+   **coverage assertion** (a requested name that never comes back is an ERROR), `pull --body` =
+   a paged universe pull that asserts the pages are disjoint and their union equals
+   `totalCount` (exit 4 on either defect). Both write rows keyed by the **bare** ticker. Fetch
+   it with the 3-URL ladder (contents API FIRST — it is not CDN-cached) and the `TV_SCAN_V2`
+   marker; the usage is in `RUNTIME-CONTRACT.md` §2a-bis.
+
+**A pull that fails any of these is a FAILED pull: report it, do not publish it.**
+
 ## ZERO-FALLBACK POLICY
 The skill procedure uses a fallback chain (PRIMARY → FALLBACK → skip).
 **Every fallback MUST terminate with:**

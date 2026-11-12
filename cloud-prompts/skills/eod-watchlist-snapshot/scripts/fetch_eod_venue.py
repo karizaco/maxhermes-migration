@@ -33,6 +33,30 @@ CLASS-SHARE SYMBOL FORMS ARE PER VENDOR
 shibui writes `ABR-P-D`; Nasdaq serves `ABR^D` (base + "^" + the LAST class letter) and
 `USB^H`. The plain base is NEVER a fallback - `LEN-B` -> `LEN` would publish the Class A
 COMMON line's price under the Class B ticker.
+
+NO TRADINGVIEW UNIVERSE PULL (removed 2026-11-12)
+------------------------------------------------
+This module used to carry a TradingView universe pull (`fetch_tv()`) as a confirmation
+source. It was **dead code** - added 2026-11-12 and never wired in - and it was WRONG twice
+over, so it is gone rather than repaired:
+
+1. **TV corroborates the BAR, not the venue.** Measured 2026-11-11: the TV America scanner
+   agrees with the VENDOR'S DAILY BAR on 4,497 of 4,526 rows (99.4%) and with the VENUE's
+   settled print on only **67.8%**. TV is therefore not a confirmation source for the
+   published close, which is the venue's print. The live confirmation is Yahoo's 1-minute
+   FINAL bar (a different feed, so agreement is real corroboration).
+2. **Its pagination lost names.** The pull paged the universe on `sort {"sortBy":"close"}`
+   - a LIVE column, so the page order is not stable between requests. Measured 2026-11-12:
+   20,343-20,345 names against a `totalCount` of 20,347 (**2-5 names missing**) and **two
+   identical pulls returned DIFFERENT name sets** (IVRO, LYCA in one run only; AGCCF in the
+   other). The same pull paged on `{"sortBy":"name"}` returned 20,347 == `totalCount`, every
+   time. The `totalCount == rows returned` check cannot see this - it is a SET test (the
+   pages must be DISJOINT and their UNION must equal `totalCount`).
+
+**Do NOT re-add a TV universe pull here.** If a TV cross-check is ever wanted, it must be a
+TARGETED pull of the names already in hand - `filter [{"left":"name","operation":"in_range",
+"right":[...]}]` in ONE call - and it must assert `len(unique names) == totalCount`.
+See `cloud-prompts/_shared/RUNTIME-CONTRACT.md` §2a-bis.
 """
 
 from __future__ import annotations
@@ -51,7 +75,7 @@ MARKER = "EOD_SETTLE_V1"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 INFO = "https://api.nasdaq.com/api/quote/%s/info?assetclass=stocks"
-TV_SCAN = "https://scanner.tradingview.com/america/scan"
+TV_SCAN = "https://scanner.tradingview.com/america/scan"   # not queried any more (see the module note)
 
 
 def nasdaq_form(ticker: str) -> str:
@@ -81,7 +105,11 @@ def parse_num(x):
 def tv_candidates(t: str) -> list[str]:
     """TradingView's symbol forms for a shibui ticker. TV uses a DOT for a single class
     letter (`AGM-A` -> `AGM.A`) and carries no hyphenated form, so the preferred lines
-    (`ABR-P-D`) are usually absent from its America scanner."""
+    (`ABR-P-D`) are usually absent from its America scanner.
+
+    KEPT AS A SYMBOL-FORM HELPER ONLY. There is no TradingView QUERY behind it any more:
+    the TV universe pull that used to sit next to it was DEAD CODE (added 2026-11-12, never
+    wired in) and it was WRONG - see the module note."""
     t = t.strip().upper()
     out = [t]
     if "-" in t:
@@ -96,43 +124,6 @@ def tv_candidates(t: str) -> list[str]:
     return seen
 
 
-def fetch_tv() -> dict:
-    """The TradingView America scanner: every US line in 2 POST calls, ~3 seconds."""
-    out: dict[str, float] = {}
-    off = 0
-    while True:
-        body = {"symbols": {"query": {"types": []}, "tickers": []},
-                "columns": ["name", "close", "volume", "exchange", "type"],
-                "filter": [], "range": [off, off + 6000],
-                "sort": {"sortBy": "close", "sortOrder": "desc"}}
-        p = subprocess.run(["curl", "-s", "-X", "POST", "-A", UA,
-                            "-H", "Content-Type: application/json", "--max-time", "40",
-                            "--data-binary", json.dumps(body), TV_SCAN],
-                           capture_output=True, text=True)
-        try:
-            d = json.loads(p.stdout)
-        except Exception:  # noqa: BLE001
-            print("  tradingview scan failed", file=sys.stderr)
-            break
-        rows = d.get("data") or []
-        for row in rows:
-            if not row or len(row.get("d") or []) < 2:
-                continue
-            sym = str(row.get("s", "")).split(":")[-1]
-            cl = row["d"][1]
-            if sym and cl is not None:
-                out[sym] = float(cl)
-        off += 6000
-        if len(rows) < 6000 or off > 30000:
-            break
-    return out
-
-
-def tv_close_for(tv: dict, ticker: str):
-    for cand in tv_candidates(ticker):
-        if cand in tv:
-            return tv[cand]
-    return None
 
 
 def fetch_final_bars(tickers: list[str], threads: int) -> dict:
@@ -273,7 +264,11 @@ def main() -> int:
                     help="the probe's settle map - updated in place with the confirmation")
     ap.add_argument("--threads", type=int, default=96)
     ap.add_argument("--timeout", type=int, default=25)
-    ap.add_argument("--no-tv", action="store_true", help="skip the TradingView confirmation")
+    ap.add_argument("--no-tv", action="store_true",
+                    help="DEPRECATED NO-OP. There is no TradingView confirmation to skip: "
+                         "the TV universe pull was removed on 2026-11-12 (TV corroborates the "
+                         "BAR, not the venue - see the module note). The flag is still "
+                         "accepted so an existing invocation does not fail.")
     ap.add_argument("--history", default="", help="history JSONL - used to find the rows that need the venue's day range")
     ap.add_argument("--quotes", default="", help="quotes.json - the same purpose")
     ap.add_argument("--session", default="", help="the session date (for the range pass)")

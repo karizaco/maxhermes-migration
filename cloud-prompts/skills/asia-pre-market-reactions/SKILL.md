@@ -247,7 +247,7 @@ artifact.
                       "market_cap_basic","exchange","currency","sector","type",
                       "earnings_release_next_date","update_mode"],
            "sort":{"sortBy":"change","sortOrder":"'$SO'"},
-           "range":[0,600]}' -o "/workspace/_asia_${M}_${D}.json" &
+           "range":[0,20000]}' -o "/workspace/_asia_${M}_${D}.json" &
      done
    done
    wait
@@ -265,18 +265,36 @@ artifact.
    **local currency** — convert the $2bn floor with FX before filtering. The `range` must cover the
    market's row count or the tail is silently cut.
 
+   **The `range` is now `[0,20000]` (the scanner's page cap) and the pull is ASSERTED, not
+   hoped for.** It used to be a hardcoded `[0,600]`: on a violent session (a crash or a rally
+   in that market) more than 600 names clear the ±2% filter, the tail is silently cut, and
+   nothing reports it. `range` is a PAGE SIZE, and the completeness check is a SET test — see
+   the merge block below, which fails loudly instead of publishing a short mover list.
+
    Merge the two directions into the per-country file that Test B reads:
 
    ```bash
    for M in japan taiwan hongkong korea; do
      python3 - "$M" <<'PY'
    import json, sys
-   M = sys.argv[1]; data = []; total = 0
+   M = sys.argv[1]; data = []; total = 0; expect = 0
    for d in ("desc", "asc"):
        j = json.load(open(f"/workspace/_asia_{M}_{d}.json"))
-       total = max(total, j.get("totalCount", 0)); data += j.get("data", [])
-   json.dump({"totalCount": total, "data": data}, open(f"/workspace/_asia_{M}.json", "w"))
-   print(M, "merged rows:", len(data), "totalCount:", total)
+       rows = j.get("data", []); tc = j.get("totalCount", 0)
+       # A TRUNCATED PULL IS A FAILED PULL. `range` is a page size: if the rows returned
+       # do not equal totalCount, the tail was silently cut (the two directions are DISJOINT
+       # - a name cannot be both >+2% and <-2% - so each direction is checked on its own).
+       if len(rows) != tc:
+           raise SystemExit(f"TRUNCATED PULL: {M} {d} returned {len(rows)} rows against "
+                            f"totalCount {tc} - re-pull with a wider range; refusing to "
+                            f"publish a short mover list")
+       expect += tc
+       data += rows
+   if len(data) != expect:
+       raise SystemExit(f"MERGED MISMATCH: {M} merged {len(data)} rows against {expect} "
+                        f"expected (the two directions must be disjoint)")
+   json.dump({"totalCount": expect, "data": data}, open(f"/workspace/_asia_{M}.json", "w"))
+   print(M, "merged rows:", len(data), "totalCount:", expect)
    PY
    done
    ```

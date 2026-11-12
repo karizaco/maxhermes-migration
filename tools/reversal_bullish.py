@@ -161,7 +161,12 @@ def session_is_settled(date_str):
 
 
 def tv_scan(filters, sort, rng, cols=None, retries=3):
-    """One TradingView scanner POST. Returns a list of row dicts."""
+    """One TradingView scanner POST. Returns (rows, totalCount).
+
+    `totalCount` IS RETURNED ON PURPOSE. It is the only way to prove the pull is complete:
+    a scanner response whose `range` is smaller than `totalCount` is a SILENT TRUNCATION,
+    and dropping the field (as this helper used to) made that truncation undetectable.
+    """
     body = {"markets": ["america"], "symbols": {"query": {"types": []}},
             "columns": cols or TV_COLS, "range": list(rng), "options": {"lang": "en"},
             "filter": filters, "sort": sort}
@@ -173,8 +178,10 @@ def tv_scan(filters, sort, rng, cols=None, retries=3):
                 headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0",
                          "Origin": "https://www.tradingview.com"})
             with urllib.request.urlopen(req, timeout=45) as fh:
-                data = json.load(fh).get("data", [])
-            return [dict(zip(cols or TV_COLS, r["d"])) for r in data]
+                payload = json.load(fh)
+            data = payload.get("data", [])
+            total = payload.get("totalCount")
+            return [dict(zip(cols or TV_COLS, r["d"])) for r in data], total
         except Exception as exc:                     # noqa: BLE001
             last = exc
             if attempt < retries - 1:
@@ -198,12 +205,20 @@ def tv_universe():
             {"left": "close", "operation": "greater", "right": G["close_min"]},
             {"left": "average_volume_10d_calc", "operation": "greater",
              "right": G["avg_vol_30d_min"]}]
-    rows = tv_scan(base, {"sortBy": "name", "sortOrder": "asc"}, [0, 2000])
+    rows, total = tv_scan(base, {"sortBy": "name", "sortOrder": "asc"}, [0, 2000])
     uniq = {}
     for r in rows:
         uniq[r["name"]] = r
     if len(rows) != len(uniq):
         print(f"note: {len(rows) - len(uniq)} duplicate rows collapsed", file=sys.stderr)
+    # A TRUNCATED SCAN IS A FAILURE, NEVER A SHORTER BOOK. `totalCount` is the universe the
+    # gate matched; if the distinct names fetched do not equal it, the screen is publishing
+    # a candidate set it never proved complete. (The filtered universe is 951 names against
+    # the 2,000 cap as of 2026-11-12 - 49% headroom - so this is a guard, not a daily event.)
+    if total is not None and len(uniq) != total:
+        raise RuntimeError(
+            f"TRUNCATED SCAN: fetched {len(uniq)} distinct names against totalCount {total}. "
+            f"Refusing to publish a short book - widen the range and re-pull.")
     return list(uniq.values()), len(rows)
 
 

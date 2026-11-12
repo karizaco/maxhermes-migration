@@ -170,3 +170,27 @@ name is not a trade and may not be promoted.
 
 Verified: `tools/test_bonde_stop_rule.py` 39/39; the v4 checker 41/41 on a filled real artifact
 (the 2026-11-11 settled replay, 7 passers — 4 `BODY_LOW`, 3 `STRUCTURAL`, no 0.00% line).
+
+---
+
+## 2026-11-12 — the screen could not see its own truncation (`totalCount` was being dropped)
+
+`tools/reversal_bullish.py::tv_scan()` did `json.load(fh).get("data", [])` — it **threw the
+response's `totalCount` away**, so the only proof that the pull was complete was never in hand. A
+pull whose `range` is smaller than `totalCount` is a SILENT TRUNCATION, and without the field the
+screen could not refuse a short book.
+
+**Landed:** `tv_scan()` returns `(rows, totalCount)`, and the screen path asserts
+`len(distinct names) == totalCount` and raises `TRUNCATED SCAN … Refusing to publish a short book`
+otherwise. The filtered universe is **951 names against the 2,000 cap** (49% headroom, measured
+2026-11-12), so this was a latent guard, not a daily event — but the filter is on live columns
+(`close`, `market_cap_basic`, `average_volume_10d_calc`), so it moves with the market.
+
+**The sort was already right, and the reason is worth keeping:** the pull sorts by
+`{"sortBy":"name"}` — a STABLE key — because the scanner's default order is not stable between
+requests, and a pull paged on an unstable key silently duplicates and drops names (this module's
+own docstring records the 2026-11-03 measurement: "1500 rows fetched, only 1212 unique → 288 names
+lost").
+
+Guard: `tools/test_tv_pull_completeness.py` (20 checks, hermetic) — it proves a truncated pull is
+refused and a complete one screens every name.

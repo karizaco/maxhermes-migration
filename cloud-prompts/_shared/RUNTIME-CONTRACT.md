@@ -243,6 +243,15 @@ that is still missing names. Measured on cron #07's US universe pull:
 | `range:[0,20000]` + `range:[20000,20155]`, **no sort** | 20,000 + 155 | **20,001** | 20,155 | **154 names missing, no error** |
 | `range:[0,10000]` + `range:[10000,20155]`, `sort {"sortBy":"name","sortOrder":"asc"}` | 10,000 + 10,155 | **20,155** | 20,155 | complete |
 
+**The strongest evidence is cron #17's (2026-11-06), and it shows the failure at scale:** a
+9-page offset pull of the US cash universe (`type` in (stock, dr), 13,203 rows requested at
+1,500 per page) returned **13,500 rows containing only 8,689 unique symbols** — 3,876 symbols
+appeared more than once, with identical name, description, exchange and type. **The failure is
+silent: the response looks healthy (rows ≥ `totalCount`), so no row-count check catches it**,
+and the duplicated names are then counted twice in every tier count and every dollar-volume
+ranking. The same universe pulled in **one** call with `range [0, 6093]` returned 6,093 rows /
+6,093 unique — clean. Full evidence: `docs/IMPROVEMENTS-cron17-us-stocks-in-play.md` §1.
+
 The scanner's **default row order is not stable between two requests**, so a two-slice pull can
 overlap: the second slice returned 155 rows of which **154 were already in the first slice**. The
 pages must therefore be checked as SETS:
