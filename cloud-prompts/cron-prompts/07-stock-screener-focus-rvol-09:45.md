@@ -217,12 +217,13 @@ daily-screens/, report errors: 1, and stop. Do not push an empty snapshot as if 
 If a focus.md IS found: report its path, `focus_dir_date`, `screen_data_date` and `lag_sessions`.
 If `lag_sessions` > 1, set status: degraded_stale_focus_list (see the status list in STEP 7).
 
-**THE WIDER UNIVERSE — the focus roster alone is not the screen.**
-The focus roster is a MOMENTUM screen built on the previous session's data, so it structurally
-cannot contain a name whose move has not happened yet. Measured on 2026-11-09: the focus roster
-carried **1 of the day's top 10 gainers**; the previous session's `master.csv` carried 5; the
-previous session's cron #17 boards carried 7; and the union of all three carried **10 of 10**.
-So the wider universe is NOT optional context — it is where the day's actual movers are.
+**THE WIDER UNIVERSE — the focus roster alone is not the screen.** The focus roster is a
+momentum screen built on the previous session's data, so it structurally cannot contain a name
+whose move has not happened yet. Measured on 2026-11-09: the roster carried 1 of the day's top 10
+gainers, `master.csv` 5, cron #17's boards 7, and the union **10 of 10**. The wider union is part
+of the screen, and it is built from what is ALREADY ON DISK — the PREVIOUS session's `focus.csv`,
+`master.csv` and cron #17's candidate CSVs. Never re-scan the market to rebuild it. The rationale
+and the sources table are in SKILL.md §7; the builder is `focus_rvol_universe.py`.
 
 **Build the union from what is ALREADY ON DISK. Do NOT re-scan the market for it.** Three
 sources, all published by earlier routines for the PREVIOUS session, so they exist before this
@@ -266,53 +267,44 @@ provably absent in Cloud sessions: mcode-tools connector tools returns partial=f
 provider_failures=[], with only connector__matrix__* and connector__email_workbench_credentials__*,
 and tool_search returns 0 hits for every finance keyword. Do not burn turns re-testing them.
 
-**RUN THE ENGINE. Do not hand-compute this metric per name.**
-The universe is ~1,600 names. Computing the metric by hand for each one is what made the
-2026-11-09 fire take 66 minutes — the fetches are cheap, the per-name arithmetic is not.
-`tools/focus_rvol_score.py` does the fetching AND the arithmetic in parallel, and RENDERS the
-artifact, so a number cannot be mistyped between the JSON and the markdown.
+**RUN THE ENGINE. Do not hand-compute this metric per name.** The universe is ~1,600 names,
+and hand-computing the metric for each is what made the 2026-11-09 fire take 66 minutes. The
+engine fetches and computes in parallel and RENDERS the artifact, so a number cannot be mistyped
+between the JSON and the markdown. It also owns the metric definition, the daily-volume source
+and the denominator — SKILL.md §7 and the script's docstring carry the detail.
 
-**FETCH THE THREE HELPERS FIRST.** Two carry a capability marker, and a copy without its marker
-is an OLD copy that must not be used. The third is the scanner client the engine calls for its
-denominator: it pages on a stable sort and asserts the pages are DISJOINT and their union equals
-`totalCount`, because the scanner's completeness test is a SET test, not a row count.
+**FETCH AND RUN IT.** `focus_rvol_run.py` fetches the three helpers it needs (each behind
+its own capability marker), builds the universe, scores it, and renders the artifact:
 
 ```bash
-fetch() { # $1=marker (- for none)  $2=filename  $3=repo path
-  for V in "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$3?ref=main" \
-           "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$3" \
-           "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$3" ; do
-    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/workspace/$2.tmp" "$V" 2>/dev/null
-    if [ -s "/workspace/$2.tmp" ] && ! head -c 200 "/workspace/$2.tmp" | grep -q '"message"' \
-       && { [ "$1" = "-" ] || grep -q "$1" "/workspace/$2.tmp" 2>/dev/null; }; then
-      mv -f "/workspace/$2.tmp" "/workspace/$2"; return 0
-    fi
-    rm -f "/workspace/$2.tmp"
-  done
-  echo "$2: FETCH FAILED"; return 1
-}
-fetch FOCUS_RVOL_UNIVERSE_V1 focus_rvol_universe.py cloud-prompts/_shared/focus_rvol_universe.py
-fetch TV_SCAN_V2              tv_scan.py           cloud-prompts/_shared/tv_scan.py
-fetch -                        focus_rvol_score.py  tools/focus_rvol_score.py
-```
+R=/workspace/focus_rvol_run.py
+for V in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/focus_rvol_run.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/focus_rvol_run.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/focus_rvol_run.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$R.tmp" "$V" 2>/dev/null
+  if [ -s "$R.tmp" ] && ! head -c 200 "$R.tmp" | grep -q '"message"' \
+     && grep -q 'FOCUS_RVOL_RUN_V1' "$R.tmp" 2>/dev/null; then
+    mv -f "$R.tmp" "$R"; break
+  fi
+  rm -f "$R.tmp"
+done
+[ -s "$R" ] && grep -q 'FOCUS_RVOL_RUN_V1' "$R" || echo "focus_rvol_run.py: UNAVAILABLE"
 
-**NOW BUILD THE UNIVERSE, THEN SCORE IT:**
-
-```bash
-python3 /workspace/focus_rvol_universe.py --fire-date "$DATE" \
+python3 "$R" --fire-date "$DATE" \
   --screens-dir /workspace/daily-screens \
-  --board-dir /workspace/us-stocks-in-play --repo /workspace
-python3 /workspace/focus_rvol_score.py \
-  --fire-date "$DATE" \
-  --symbols /workspace/universe.txt \
-  --focus /workspace/focus.txt \
-  --prior-csv "$PREV/focus-rvol-snapshot.csv" \
+  --board-dir /workspace/us-stocks-in-play --repo /workspace \
   --md-out /workspace/focus-rvol-snapshot.md \
   --csv-out /workspace/focus-rvol-snapshot.csv \
-  --wider-source "focus+master+17" \
   --out /workspace/focus-rvol-scores.json
 ```
+
+It prints a one-line summary to stderr. **If the stderr line reports a scanner-pull PROBLEM, the
+denominator set is incomplete** — the denominator is the TradingView 10-day average daily volume,
+and a pull that dropped names silently produces a wrong `daily_factor` for exactly the names it
+dropped. Report it, and fall back to the focus roster only (`universe_source: focus_roster_only`)
+rather than publishing a metric built on a broken pull.
 
 **The engine renders the artifact ITSELF** (`--md-out`, `--csv-out`) — it is the only thing that
 touches the numbers. Do not retype a value into the markdown by hand: a transcribed number and
@@ -574,23 +566,13 @@ The prior reading is the SAME metric for the PREVIOUS SESSION, computed the SAME
 source, **with the SAME TradingView denominator as today's reading.**
 
 **ALWAYS RECOMPUTE THE PRIOR READING. Never take it from the previous session's published CSV.**
-The denominator is `TV average_volume_10d_calc`, a ROLLING average that moves between fetches as
-each session prints into the window: measured, ETON's went 550,859 (published 2026-11-10) ->
-740,475 two days later, a 34% swing. So a value published in an earlier session's CSV is on THAT
-day's scale, and comparing it with today's `rvol_now` compares two different scales.
-
-**And the drift FLIPS VERDICTS.** The metric scales as 1/denominator, so a denominator move moves
-BOTH sides of a crossing together — but a name whose prior sits close to the bar flips on a tiny
-move. Measured on the 2026-11-10 roster, on the published denominator FROG and LASR crossed; on
-today's denominator neither did. The sensitivity is the distance of the PRIOR from the bar:
-FROG (prior 0.921) holds through a 38.6% denominator move, while LASR (prior 1.497) flips on a
-**0.2%** move. **That is why the engine computes the prior reading with the CURRENT run's
-denominator: both sides of every crossing are then the same metric on one scale.**
-
-The published CSV value is still fetched — the engine attaches it as
-`prev_session_rvol_published` plus `denominator_drift_pct` — but it is a CROSS-CHECK, never the
-baseline. Publish both and let the reader see the drift; decide the crossing on the recomputed
-value.
+The denominator is `TV average_volume_10d_calc`, a ROLLING average that moves between fetches, so
+a published value is on THAT day's scale — and the drift FLIPS VERDICTS: a name whose prior sits
+close to the bar flips on a tiny move (measured: LASR, prior 1.497, flips on a 0.2% denominator
+move, while FROG, prior 0.921, holds through 38.6%). So the prior reading is recomputed with the
+CURRENT run's denominator, and both sides of every crossing are then the same metric on one scale.
+The published value is published alongside as `prev_session_rvol_published` plus
+`denominator_drift_pct` — a CROSS-CHECK, never the baseline. SKILL.md §7 has the measurement.
 
 **DO NOT publish `n/a` merely because the previous CSV lacks the ticker.** A missing ticker is a
 MISSING ROSTER, not a missing prior reading — the tape was there, the routine simply never
@@ -644,15 +626,10 @@ comparable.**
 12. `## Source health`.
 13. `## Degradation / caveats`.
 
-**TWO TABLES — the focus roster, and the wider universe that carries the day's movers.**
-The focus roster is a momentum screen built on the previous session's data, so it structurally
-cannot contain a name whose move has not happened yet. Measured on 2026-11-09: it carried 1 of
-the day's top 10 gainers, while the wider union carried 10 of 10. **Publishing only the focus
-roster is publishing a screen that structurally misses the day's movers — so publish both.**
-- `## Focus table` — every name in the focus roster, in full.
-- `## Wider universe` — the engine's `wider_rows`: the wider union's top names by `rvol_now`
-  (25 by default), each with its `tier`, so a name the focus roster never contained is visible.
-  State the wider universe's size and how many rows are shown.
+**TWO TABLES — the focus roster, and the wider universe that carries the day's movers.** Publish
+`## Focus table` (every focus-roster name, in full) AND `## Wider universe` (the engine's
+`wider_rows` — the wider union's top names by `rvol_now`, 25 by default). A name in the focus
+roster is NOT repeated in the wider table. SKILL.md §7 has why both are required.
 
 **Each name appears ONCE within its table, with ALL of its numbers in that row.**
 No second table for volume, no third table for the cross-check: the cross-check values ARE
