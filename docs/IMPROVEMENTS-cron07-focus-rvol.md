@@ -564,3 +564,105 @@ re-pasting risks a real content change for a cosmetic one.
 helpers** (`focus_rvol_run.py` -> `focus_rvol_universe.py` + `focus_rvol_score.py` + the fleet's
 validated `tv_scan.py`), each behind a capability marker, so the deployed prompt is the CONTRACT
 and the recipe can change without a redeploy at all.
+
+
+## 2026-11-12 — the ENGINE published three WRONG columns, and the checker could not see it (cron #07, 09:45 ET)
+
+The 09:45 fire published through the engine (`focus_rvol_run.py` -> `focus_rvol_score.py`), and
+the artifact passed `tools/check_focus_rvol_artifact.py` — **16 clauses, green** — while three of
+its contract columns were wrong. The green gate was not a cover-up; the clauses for these three
+columns simply did not exist. A checker that never asserts a column's SEMANTICS cannot find a
+column that is semantically wrong.
+
+### The three defects
+
+1. **`rvol_intraday_live` was a RATIO divided by a SHARE COUNT.** The renderer wrote
+   `rvol_now / tv_avg10d`, which printed values like `3.92e-07`. The contract wants the
+   cumulative SESSION VOLUME over the 10-day average daily volume — a sane 0.04-2.5. A reader
+   reading the published column as "the raw ratio" would have been reading a number seven orders
+   of magnitude too small.
+2. **`rvol_prev` was a literal `"n/a"`.** The earlier cross-check snapshot was never computed, so
+   the artifact had no cross-check at all, and the published cross-check the prompt asks for
+   (`rvol_at_09_38`) could not be checked against anything.
+3. **`rvol_trend` was measured against the PREVIOUS SESSION** (`rvol_now - rvol_prev_session`),
+   while the contract defines the trend as the EARLIER-SNAPSHOT delta (`rvol_now - rvol_prev`).
+   The two are different questions: "is this name hot versus its own norm at 09:38?" versus "is it
+   hotter than yesterday at the same hour?" The contract asks the first, and the trend column is
+   what tells a reader whether a name is BUILDING or FADING inside the opening window.
+
+All three are fixed in `tools/focus_rvol_score.py`. `rvol_prev` now reuses the fields
+`eval_session()` was already computing for the cross-check (`early` = the 09:30 bar's volume,
+`m_early` = the prior-10 mean of THAT bar), so the fix costs no extra fetch; the
+session-over-session delta is kept as `rvol_vs_prev_session` so nothing is lost. The CSV now also
+carries the audit columns `session_vol` and `tv_avg10d`, which make the raw ratio CHECKABLE.
+
+### `slim()` is a PROJECTION, and it silently eats a field
+
+`main()` projects each scored row through a fixed `keys` list before the CSV and the markdown are
+rendered. **A field missing from that list is dropped without a warning** — it cost a whole
+debugging round: `rvol_prev` and `session_vol` were computed correctly, and then vanished on the
+way to the artifact, so the renderer printed `n/a` for values that existed in memory. The list
+carries a comment saying so now. **When a computed value does not appear in the artifact, check
+the projection before re-checking the computation.**
+
+### Yahoo's opening window KEEPS SETTLING — two passes over one artifact must share ONE vintage
+
+Two fetches of the SAME `interval=5m&range=1mo` 09:30-09:45 window returned DIFFERENT bytes
+minutes apart on this fire: DPC +6.3%, BW +2%, and a thin name (IFNNY) **+42%** on the very same
+window. Late prints keep filling it after the bar closes.
+
+So the engine's fetch and a second pass's re-fetch computed the two halves of a published row on
+**different data** — the same defect the contract warns about for the denominator ("both sides of
+a crossing must share one denominator"), only with the NUMERATOR. The first attempt at this
+artifact hit it head-on: 93 rows, and the recomputed `rvol_now` disagreed with the engine's on
+many of them (worst case IFNNY, +42%).
+
+**The fix that works: cache the raw chart responses BYTES** (wrap `focus_rvol_score._curl`, key on
+the URL, write to a temp file and `os.replace` it) and let every pass read the cache. Then the
+enrichment's recomputed `rvol_now` matches the engine's EXACTLY — 93 of 93 rows verified, zero
+mismatch — and the artifact is ONE data vintage. **A cache mismatch means the passes did not share
+bytes: never loosen the tolerance to hide it.** Re-scoring ~1,600 names takes ~275 s; with the
+cache the second pass is free.
+
+### The CBOE delayed quote is the better earlier snapshot, and it is live
+
+`cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json` answers with its OWN
+`data.last_trade_time` (e.g. `2026-11-12T09:38:22`) and a cumulative regular-session
+`data.volume`. On CDNL it read 1,550,507 shares at 09:38:22 against the 09:30 bar's 1,569,552 —
+**1.2% apart**, so it corroborates the truncated series and gives the earlier window a real clock
+time instead of an assumption. `cross_check_source: cboe_delayed` is earned only when CBOE's own
+timestamp is EARLIER than the fire; otherwise the series is truncated at the 09:30 bar
+(`same_series_truncated`).
+
+### The checker gained three clauses, and the repo's test gained a fault-injection shape
+
+`tools/check_focus_rvol_artifact.py` now has 19 clauses:
+
+- **C18** — `rvol_intraday_live` must equal `session_vol / tv_avg10d` (within 2%). This is the
+  clause that would have caught defect 1.
+- **C19** — a scored row must carry a COMPUTED `rvol_prev`. This would have caught defect 2.
+- **C20** — `rvol_trend` must match `rvol_now - rvol_prev`. This would have caught defect 3.
+
+`tools/test_focus_rvol_contract.py` gained a third shape — the one the engine actually shipped on
+2026-11-12 (a mis-scaled raw ratio, an `n/a` cross-check, a trend that contradicts its own delta)
+— and asserts the checker exits non-zero on it AND that C18, C19 and C20 each trip. **A checker
+that has never been observed failing is a claim, not a check.**
+
+### The engine's markdown was too narrow, and the front matter was missing the three dates
+
+The rendered table carried 7 columns, so the reader had to leave the table to learn a name's
+story; the front matter had `cron: 07`, no `focus_dir_date`, no `screen_data_date` and no
+`lag_sessions`. The table now carries the contract's full column set, and the scorer reads the
+sweep's own `Screen data_date:` line out of `focus.md` (`--focus-md`) so the three dates cannot
+collapse into one. `lag_sessions` is a WEEKDAY count — a venue holiday inside the gap would add
+one, so it is an upper bound, and the artifact says so.
+
+### The 2026-11-12 result, for the record
+
+The focus roster (12 names) was **quiet — 0 of 12 cleared the bar**, best name TNGX 1.19x — and
+the wider union carried the day: **1,304 of 1,636 candidates scored, 182 above 1.5x and 133
+crossings** across the scored set. The published rows were the 12 roster names, the top 25 of the
+wider union and every name in the near-miss band (93 rows, 18 crossings). The alert list was
+ordered by the trend delta: HP, NVDA and FRMI ACCELERATING, the rest fading — **21 of the 25
+names above the bar were DECELERATING**, a broad opening burst being handed back. The 332
+unpriced candidates (`no_session_bars`) were reported as unpriced, never as a zero.

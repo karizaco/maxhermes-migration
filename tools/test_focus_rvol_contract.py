@@ -25,6 +25,8 @@ CSV_HEADER = [
     "rvol_at_09_38", "rvol_trend", "prev_session_rvol", "prev_session_rvol_source",
     "prev_session_rvol_published", "denominator_drift_pct", "bucket", "tier",
     "pm_vol", "pm_vol_source", "data timestamp",
+    # the audit columns the C18/C20 clauses need (see check_focus_rvol_artifact.py)
+    "rvol_trend_delta", "rvol_vs_prev_session", "session_vol", "tv_avg10d",
 ]
 
 # symbol, rvol_now, prev_session_rvol, source, tier
@@ -56,6 +58,23 @@ BROKEN = [
 ]
 
 
+# The shape the ENGINE shipped on 2026-11-12, before C18-C20 existed: the raw ratio is a
+# RATIO divided by a SHARE COUNT (3.92e-07 instead of 0.05), the cross-check column is a
+# literal "n/a", and the trend is measured against the previous session, so it contradicts
+# the published rvol_now - rvol_prev.
+MISCALED = [
+    # rvol_prev numeric but the trend contradicts rvol_now - rvol_prev  -> C20
+    ("FROG", "focus", 1.8297, 0.9218, "recomputed_same_feed", "ALERT", "3.92e-07", "2.9000",
+     "ACCELERATING"),
+    # rvol_prev never computed at all                                  -> C19
+    ("LASR", "focus", 1.8069, 1.4976, "recomputed_same_feed", "ALERT", "1.13e-07", "n/a",
+     "ACCELERATING"),
+    # the raw ratio is a RATIO divided by a SHARE COUNT                  -> C18
+    ("PRAX", "wider", 1.4000, 0.5300, "recomputed_same_feed", "NEAR MISS", "8.80e-08", "3.1000",
+     "DECELERATING"),
+]
+
+
 def write_csv(path: str, rows, with_source: bool) -> None:
     header = list(CSV_HEADER) if with_source else [
         c for c in CSV_HEADER if c != "prev_session_rvol_source"]
@@ -68,10 +87,33 @@ def write_csv(path: str, rows, with_source: bool) -> None:
                 "rvol_intraday_live": "0.05",
                 "rvol_now": now, "rvol_prev": now, "rvol_at_09_38": "0.04",
                 "rvol_trend": "STABLE", "prev_session_rvol": prev,
+                "rvol_trend_delta": "0.0000", "rvol_vs_prev_session": "0.0000",
+                "session_vol": "500000", "tv_avg10d": "10000000",
                 "prev_session_rvol_source": src, "prev_session_rvol_published": "n/a",
                 "denominator_drift_pct": "n/a", "bucket": "RVOL Required",
                 "tier": tier, "pm_vol": "0", "pm_vol_source": "not_subtracted",
                 "data timestamp": "2026-11-12 09:45:00 ET",
+            }
+            w.writerow([row[c] for c in header])
+
+
+def write_miscaled_csv(path: str, rows) -> None:
+    header = list(CSV_HEADER)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(header)
+        for sym, uni, now, prev, src, tier, live, rprev, trend in rows:
+            row = {
+                "symbol": sym, "universe": uni, "close": "10.00",
+                "rvol_intraday_live": live,
+                "rvol_now": now, "rvol_prev": rprev, "rvol_at_09_38": "0.04",
+                "rvol_trend": trend, "prev_session_rvol": prev,
+                "prev_session_rvol_source": src, "prev_session_rvol_published": "n/a",
+                "denominator_drift_pct": "n/a", "bucket": "RVOL Required",
+                "tier": tier, "pm_vol": "0", "pm_vol_source": "not_subtracted",
+                "data timestamp": "2026-11-12 09:45:00 ET",
+                "rvol_trend_delta": "0.0000", "rvol_vs_prev_session": "0.0000",
+                "session_vol": "500000", "tv_avg10d": "10000000",
             }
             w.writerow([row[c] for c in header])
 
@@ -95,7 +137,7 @@ def write_md(path: str, rows, compliant: bool) -> None:
                   "- **FROG** - rvol_now **1.83x** vs rvol_prev 2.16x; prev-session reading n/a.\n\n")
     def table(rows_subset):
         return "".join(f"| {s} | {u} | {n} | {p} | {sr or '—'} | {t} |\n"
-                       for s, u, n, p, sr, t in rows_subset)
+                       for s, u, n, p, sr, t in (r[:6] for r in rows_subset))
 
     body = (
         "---\n"
@@ -163,6 +205,22 @@ def main() -> None:
             failures.append("the broken artifact did not trip C6 (the alert-silencing clause)")
         else:
             print("  ok   broken artifact trips C6 (the alert-silencing clause)")
+
+        # ---- the shape the ENGINE shipped on 2026-11-12 must FAIL on C18/C19/C20
+        md = os.path.join(tmp, "miscaled.md"); cp = os.path.join(tmp, "miscaled.csv")
+        write_miscaled_csv(cp, MISCALED)
+        write_md(md, MISCALED, compliant=True)
+        rc, out = run_checker(md, cp)
+        if rc == 0:
+            failures.append("the MISCALED artifact PASSED - the checker is a no-op on the "
+                            "mis-scaled raw ratio")
+        else:
+            print("  ok   miscaled artifact -> CONTRACT FAILED")
+        for clause in ("[C18]", "[C19]", "[C20]"):
+            if clause not in out:
+                failures.append(f"the miscaled artifact did not trip {clause}")
+            else:
+                print(f"  ok   miscaled artifact trips {clause}")
 
     if failures:
         print("\nTEST FAILED:")

@@ -61,6 +61,7 @@ import csv as csvmod
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -169,7 +170,10 @@ def compute_one(sym: str, fire_date: dt.date, avg10: float | None) -> dict:
     """The metric for one symbol plus its previous-session reading (same denominator)."""
     rec: dict = {"symbol": sym, "close": None, "rvol_now": None,
                  "rvol_prev_session": None, "rvol_at_09_38": None,
+                 "rvol_prev": None,
                  "rvol_trend": None, "rvol_trend_delta": None,
+                 "rvol_vs_prev_session": None,
+                 "session_vol": None,
                  "daily_factor": None, "tv_avg10d": avg10,
                  "base_first": None, "base_last": None, "baseline_n": 0,
                  "status": ""}
@@ -233,11 +237,22 @@ def compute_one(sym: str, fire_date: dt.date, avg10: float | None) -> dict:
     rec["base_first"] = val["base"][0]
     rec["base_last"] = val["base"][-1]
     rec["baseline_n"] = len(val["base"])
-    if rec["rvol_prev_session"] is not None:
-        delta = rec["rvol_now"] - rec["rvol_prev_session"]
+    # THE EARLIER CROSS-CHECK SNAPSHOT (the contract's `rvol_prev`): the SAME metric over the
+    # earlier clock window, against the prior-10 mean of THAT window, on the same denominator.
+    # The window is the 09:30 bar of the same series - the cross-check that needs no second
+    # source and no second fetch.
+    rec["session_vol"] = val["w"]
+    if val["m_early"] > 0:
+        rec["rvol_prev"] = round((val["early"] / val["m_early"]) * val["df"], 6)
+    # `rvol_trend` is the EARLIER-SNAPSHOT delta, per the artifact contract. The
+    # session-over-session delta is kept as `rvol_vs_prev_session` so nothing is lost.
+    if rec["rvol_prev"] is not None:
+        delta = rec["rvol_now"] - rec["rvol_prev"]
         rec["rvol_trend_delta"] = round(delta, 4)
         rec["rvol_trend"] = ("ACCELERATING" if delta > 0.05 else
                              "DECELERATING" if delta < -0.05 else "STABLE")
+    if rec["rvol_prev_session"] is not None:
+        rec["rvol_vs_prev_session"] = round(rec["rvol_now"] - rec["rvol_prev_session"], 4)
     rec["status"] = "ok"
     return rec
 
@@ -267,9 +282,37 @@ def main() -> int:
     ap.add_argument("--md-out", help="render the artifact markdown here")
     ap.add_argument("--csv-out", help="render the artifact CSV here")
     ap.add_argument("--wider-source", default="", help="name of the on-disk wider sources")
+    ap.add_argument("--focus-md", default="",
+                    help="the upstream focus.md - its header carries the sweep's own "
+                         "`Screen data_date:` (the shibui T+1 date), which is NOT the folder date")
+    ap.add_argument("--focus-dir-date", default="",
+                    help="the date of the folder the focus list was found in")
     a = ap.parse_args()
 
     fire_date = dt.date.fromisoformat(a.fire_date)
+    focus_dir_date = a.focus_dir_date or None
+    screen_data_date = None
+    upstream = a.focus_md or None
+    if a.focus_md and os.path.exists(a.focus_md):
+        try:
+            with open(a.focus_md, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    m = re.search(r"^Screen data_date:\s*(\d{4}-\d{2}-\d{2})", line.strip())
+                    if m:
+                        screen_data_date = m.group(1)
+                        break
+        except OSError:
+            pass
+    # The trading-session lag between the sweep's own screen date and this fire. A weekday
+    # count: a venue holiday inside the gap would add one, so it is an UPPER bound.
+    lag_sessions = None
+    if screen_data_date:
+        try:
+            d0 = dt.date.fromisoformat(screen_data_date)
+            lag_sessions = sum(1 for i in range(1, (fire_date - d0).days)
+                               if (d0 + dt.timedelta(days=i)).weekday() < 5)
+        except ValueError:
+            lag_sessions = None
     syms = sorted({s.strip().upper() for s in open(a.symbols) if s.strip()})
     focus = set()
     if a.focus and os.path.exists(a.focus):
@@ -330,10 +373,14 @@ def main() -> int:
 
     focus_rows = [r for r in scored if r["symbol"] in focus]
     wider_rows = [r for r in scored if r["symbol"] not in focus][: a.top_n]
-    keys = ["symbol", "universe", "close", "rvol_now", "rvol_prev_session",
+    # NOTE: `slim()` is a PROJECTION - a field missing from this list is silently dropped
+    # before the CSV and the markdown are rendered (it cost a whole debugging round on
+    # 2026-11-12: the cross-check and the session volume were computed and then vanished).
+    keys = ["symbol", "universe", "close", "rvol_now", "rvol_prev", "rvol_prev_session",
             "prev_session_rvol_source", "prev_session_rvol_published",
-            "denominator_drift_pct", "rvol_at_09_38",
-            "rvol_trend", "rvol_trend_delta", "tier", "crossed", "daily_factor",
+            "denominator_drift_pct", "rvol_at_09_38", "session_vol",
+            "rvol_trend", "rvol_trend_delta", "rvol_vs_prev_session", "tier", "crossed",
+            "daily_factor",
             "tv_avg10d", "base_first", "base_last", "baseline_n", "prev_session_date",
             "status"]
 
@@ -353,6 +400,11 @@ def main() -> int:
         "near_miss_floor": NEAR_MISS_FLOOR,
         "daily_volume_source": "yahoo_1d",
         "tv_pull_problems": tv_problems,
+        "prior_roster": sorted(prior_pub.keys()),
+        "focus_dir_date": focus_dir_date,
+        "screen_data_date": screen_data_date,
+        "lag_sessions": lag_sessions,
+        "upstream": upstream,
         "denominator_source": "tradingview_average_volume_10d_calc (one pull, both sides)",
         "focus_crossings": [r["symbol"] for r in focus_rows if r["crossed"]],
         "wider_crossings": [r["symbol"] for r in wider_rows if r["crossed"]],
@@ -379,7 +431,11 @@ def main() -> int:
 CSV_COLS = ["symbol", "universe", "close", "rvol_intraday_live", "rvol_now", "rvol_prev",
             "rvol_at_09_38", "rvol_trend", "prev_session_rvol", "prev_session_rvol_source",
             "prev_session_rvol_published", "denominator_drift_pct", "bucket", "tier",
-            "pm_vol", "pm_vol_source", "data timestamp"]
+            "pm_vol", "pm_vol_source", "data timestamp",
+            # audit columns - they make the published numbers CHECKABLE by a consumer:
+            # `rvol_intraday_live` must equal session_vol / tv_avg10d, and `rvol_trend` must
+            # agree with rvol_now - rvol_prev.
+            "rvol_trend_delta", "rvol_vs_prev_session", "session_vol", "tv_avg10d"]
 
 
 def render_csv(out: dict, path: str) -> None:
@@ -391,14 +447,18 @@ def render_csv(out: dict, path: str) -> None:
             w.writerow([
                 r.get("symbol"), r.get("universe"),
                 _num(r.get("close"), 4),
-                (f'{r["rvol_now"] / r["tv_avg10d"]:.3g}' if r.get("rvol_now") and r.get("tv_avg10d") else "n/a"),
-                _num(r.get("rvol_now")), "n/a", _num(r.get("rvol_at_09_38")), r.get("rvol_trend"),
+                (f'{r["session_vol"] / r["tv_avg10d"]:.3g}'
+                 if r.get("session_vol") and r.get("tv_avg10d") else "n/a"),
+                _num(r.get("rvol_now")), _num(r.get("rvol_prev")),
+                _num(r.get("rvol_at_09_38")), r.get("rvol_trend"),
                 _num(r.get("rvol_prev_session")), r.get("prev_session_rvol_source", "unavailable"),
                 r.get("prev_session_rvol_published", "n/a"),
                 r.get("denominator_drift_pct", "n/a"),
                 "RVOL Required" if (r.get("rvol_now") or 0) >= ALERT_BAR else "Liquid",
                 r.get("tier"), "0", "not_subtracted",
                 f"{out['fire_date']} 09:45 ET (last completed 5m bar, stamped 09:40)",
+                _num(r.get("rvol_trend_delta"), 4), _num(r.get("rvol_vs_prev_session"), 4),
+                _num(r.get("session_vol"), 0), _num(r.get("tv_avg10d"), 1),
             ])
 
 
@@ -411,15 +471,31 @@ def _num(v, nd=4):
         return "n/a"
 
 
-def _md_table(rows: list) -> str:
-    head = ("| symbol | close | rvol_now | prev_session_rvol | prev_session_rvol_source | "
-            "rvol_trend | tier |\n|---|---|---|---|---|---|---|\n")
+def _md_table(rows: list, stamp: str = "") -> str:
+    """The contract's column set - EVERY number for a name is in that name's row.
+
+    (The narrow 7-column table this replaced dropped `rvol_intraday_live`, `rvol_prev`,
+    `rvol_at_09_38`, the bucket, the pre-market columns and the published cross-check, so a
+    reader had to leave the table to learn a name's story.)
+    """
+    head = ("| symbol | close | rvol_intraday_live | rvol_now | rvol_prev | rvol_at_09_38 | "
+            "rvol_trend | prev_session_rvol | prev_session_rvol_source | "
+            "prev_session_rvol_published | denominator_drift_pct | bucket | tier | pm_vol | "
+            "pm_vol_source | data timestamp |\n"
+            + "|" + "---|" * 16 + "\n")
     body = ""
     for r in rows:
-        body += (f"| {r.get('symbol')} | {_num(r.get('close'), 2)} | {_num(r.get('rvol_now'))} | "
+        live = (f'{r["session_vol"] / r["tv_avg10d"]:.3g}'
+                if r.get("session_vol") and r.get("tv_avg10d") else "n/a")
+        body += (f"| {r.get('symbol')} | {_num(r.get('close'), 2)} | {live} | "
+                 f"{_num(r.get('rvol_now'))} | {_num(r.get('rvol_prev'))} | "
+                 f"{_num(r.get('rvol_at_09_38'))} | {r.get('rvol_trend') or 'n/a'} | "
                  f"{_num(r.get('rvol_prev_session'))} | "
                  f"{r.get('prev_session_rvol_source','unavailable')} | "
-                 f"{r.get('rvol_trend') or 'n/a'} | {r.get('tier')} |\n")
+                 f"{_num(r.get('prev_session_rvol_published'))} | "
+                 f"{_num(r.get('denominator_drift_pct'), 2)} | "
+                 f"{'RVOL Required' if (r.get('rvol_now') or 0) >= ALERT_BAR else 'Liquid'} | "
+                 f"{r.get('tier')} | 0 | not_subtracted | {stamp} |\n")
     return head + body
 
 
@@ -435,23 +511,47 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
                   if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR)
     md = []
     md.append("---\n"
-              f"date: {out['fire_date']}\ncron: 07\nfire_time_et: 09:45\n"
+              f"date: {out['fire_date']}\n"
+              "cron: 07-stock-screener-focus-rvol-09:45\n"
+              'fire_time_et: "09:45"\n'
               f"fire_date: {out['fire_date']}\n"
+              f"focus_dir_date: {out.get('focus_dir_date') or 'n/a'}\n"
+              f"screen_data_date: {out.get('screen_data_date') or 'n/a'}\n"
+              f"lag_sessions: {out.get('lag_sessions') if out.get('lag_sessions') is not None else 'n/a'}\n"
               "universe_source: focus_plus_wider\n"
               f"universe_size: {out['universe_size']}\n"
               f"wider_universe_source: {wider_source or 'none'}\n"
               f"wider_universe_size: {out['wider_size']}\n"
               f"wider_shown: {len(wider)}\n"
-              "elapsed_minutes: 0\nsession_fraction: 0.038\n"
-              "source: yahoo_5m+tradingview\nmethod: focus_rvol_score.py\n"
-              "metric_def: rvol_tod_normalised\nbucket_rule: rvol_now>=1.5\n"
+              "elapsed_minutes: 15\nsession_fraction: 0.0385\n"
+              "source: Yahoo chart API 5m bars (interval=5m&range=1mo, regular session only) for "
+              "the session volume, the 09:45 close and the prior-10 same-window baseline; Yahoo "
+              "chart API 1d bars (range=3mo) for the prior-10 full-day volume; TradingView "
+              "america scanner average_volume_10d_calc for the denominator (ONE pull, used for "
+              "BOTH sides of every crossing)\n"
+              "method: rvol_tod_normalised, time-of-day-normalised intraday RVOL. Today's window "
+              "is 09:30-09:45 ET - 15 of 390 session minutes - compared with the SAME clock "
+              "window on the prior 10 eligible sessions, then scaled to full-day units by the "
+              "prior-10 mean full-day volume divided by TV average_volume_10d_calc. The earlier "
+              "reading is the same metric over the 09:30-09:35 slot, against the prior-10 mean "
+              "of that same slot, on the same denominator.\n"
+              "metric_def: rvol_tod_normalised = (cumulative volume 09:30 -> the fire's bar, "
+              "today) / (mean cumulative volume over 09:30 -> the SAME clock window across the "
+              "prior 10 sessions) x (mean full-day volume across those prior 10 sessions / TV "
+              "average_volume_10d_calc); rvol_intraday_live = cumulative session volume to the "
+              "fire bar / TV average_volume_10d_calc (reference only, never bucketed); rvol_prev "
+              "= the same formula over the earlier cross-check snapshot's window against the "
+              "prior-10 mean of that same window; rvol_at_09_38 = the raw cumulative ratio at "
+              "that earlier snapshot\n"
+              "bucket_rule: rvol_now >= 1.5 -> RVOL Required, otherwise Liquid\n"
               "rvol_required_bucket: 1.5\nrvol_alert_threshold: 1.5\nnear_miss_floor: 1.275\n"
               "alert_rule: An alert fires for a name whose rvol_now is at or above "
               "RVOL_ALERT_THRESHOLD (1.5) AND whose prev_session_rvol is below "
               "RVOL_ALERT_THRESHOLD (1.5) - that is, the name crossed UP through the alert bar "
               "since the previous session's reading of the same metric.\n"
               "pm_source_status: not_subtracted\ncross_check_source: same_series_truncated\n"
-              "status: ok\nupstream: focus.md\nnames_unpriced: "
+              "status: ok\n"
+              f"upstream: {out.get('upstream') or 'focus.md'}\nnames_unpriced: "
               f"{len(out['unscored'])}\n---\n")
     md.append(f"\n# Focus RVOL snapshot — {out['fire_date']}\n")
     md.append("\n## TL;DR\n"
@@ -469,9 +569,11 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               f"- focus roster: {out['focus_size']} names\n"
               f"- wider union: {out['wider_size']} names from {wider_source or 'n/a'}\n"
               f"- scored: {out['scored']}; unscored: {len(out['unscored'])}\n")
-    md.append("\n## Focus table\n\n" + _md_table(focus))
+    stamp = (f"{out['fire_date']} 09:45 ET (last completed 5m bar, stamped 09:40; "
+             f"volume window 09:30-09:45 ET)")
+    md.append("\n## Focus table\n\n" + _md_table(focus, stamp))
     md.append(f"\n## Wider universe\n\nThe top {len(wider)} of the wider union by `rvol_now`.\n\n"
-              + _md_table(wider))
+              + _md_table(wider, stamp))
     md.append("\n### Counts\n"
               f"- universe size: {out['universe_size']}\n"
               f"- focus roster size: {out['focus_size']}\n"
@@ -491,6 +593,42 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
     else:
         md.append("**none** — no name crossed UP through the 1.5x bar against its recomputed "
                   "prior-session reading.\n")
+    # ---------------------------------------------------------------- near misses
+    near_rows = [r for r in focus + wider
+                 if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR]
+    near_rows.sort(key=lambda r: -(r.get("rvol_now") or 0))
+    md.append("\n## Near misses\n\n")
+    if near_rows:
+        md.append(f"Names between {NEAR_MISS_FLOOR}x and {ALERT_BAR}x - the tradable edge. Each "
+                  f"would become an ALERT if `rvol_now` reaches 1.5x while `prev_session_rvol` "
+                  f"stays below 1.5x. Ordered by `rvol_now`, descending.\n\n"
+                  "| symbol | rvol_now | prev_session_rvol | rvol_prev | rvol_trend | "
+                  "what would turn it into an alert |\n|---|---|---|---|---|---|\n")
+        for r in near_rows:
+            md.append(f"| {r['symbol']} | {_num(r.get('rvol_now'))} | "
+                      f"{_num(r.get('rvol_prev_session'))} | {_num(r.get('rvol_prev'))} | "
+                      f"{r.get('rvol_trend') or 'n/a'} | rvol_now reaching 1.5x with "
+                      f"prev_session_rvol below 1.5x |\n")
+    else:
+        md.append("None: no published name sits in the 1.275x-1.5x band.\n")
+
+    # ---------------------------------------------------------------- universe change
+    today_syms = [r.get("symbol") for r in focus if r.get("symbol")]
+    prior_syms = list(out.get("prior_roster") or [])
+    stayed = sorted(set(today_syms) & set(prior_syms))
+    entered = sorted(set(today_syms) - set(prior_syms))
+    left = sorted(set(prior_syms) - set(today_syms))
+    md.append("\n## Universe change\n\n"
+              f"The focus roster against the previous session's published roster: "
+              f"**{len(entered)} entered**, **{len(left)} left**, **{len(stayed)} stayed**.\n\n"
+              f"- entered: {', '.join(entered) if entered else 'none'}\n"
+              f"- left: {', '.join(left) if left else 'none'}\n"
+              f"- stayed: {', '.join(stayed) if stayed else 'none'}\n\n"
+              f"This turnover is why the prior reading is recomputed rather than read from the "
+              f"previous session's published CSV: only {len(stayed)} of {len(today_syms)} roster "
+              f"names were in that file, so a published baseline would be `n/a` on nearly every "
+              f"row and the alert tier would be silently dead again.\n")
+
     md.append("\n## Method\n"
               f"- scored by `tools/focus_rvol_score.py` in {out['elapsed_sec']}s\n"
               "- window volume: Yahoo 5m bars, 09:30/09:35/09:40 stamps, the last COMPLETED bar\n"
@@ -500,7 +638,37 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "- denominator: TV `average_volume_10d_calc`, ONE pull used for BOTH sides of every "
               "crossing\n"
               "- the previous session's reading is recomputed on that same denominator; the "
-              "published value is carried as a cross-check with its drift\n")
+              "published value is carried as a cross-check with its drift\n"
+              "- pre-market: the Yahoo chart call uses regular-session bars (`includePrePost` "
+              "off), so session volume EXCLUDES pre-market prints by construction - "
+              "`pm_vol_source: not_subtracted`, `pm_vol: 0`\n")
+    md.append("\n## Source health\n"
+              f"- TradingView scanner (the denominator): one pull, "
+              f"{'no truncation and no coverage problem reported' if not out.get('tv_pull_problems') else 'PROBLEMS: ' + str(out.get('tv_pull_problems'))} - "
+              f"one denominator set used for BOTH sides of every crossing\n"
+              f"- Yahoo chart API (session volume, close, baselines): healthy; the engine scored "
+              f"{out['scored']} of {out['universe_size']} candidates\n"
+              f"- unpriced names: {len(out['unscored'])} of {out['universe_size']} candidates had "
+              f"no usable session window (`no_session_bars`); they are reported as unpriced, "
+              f"never as a zero\n")
+    md.append("\n## Degradation / caveats\n"
+              f"- **{len(out['unscored'])} candidates could not be priced** - no regular-session "
+              f"bars in the fetched window. They are excluded from every count rather than "
+              f"published as a zero or a daily proxy.\n"
+              "- **The universe is a CANDIDATE SET, not the market.** It is unioned from the "
+              "previous session's published files (the focus roster, the sweep's master list "
+              "and cron #17's mover boards). A name that was in none of them cannot appear "
+              "here.\n"
+              "- **`rvol_tod_normalised` is a MORNING metric** - how hot a name is against its "
+              "OWN norm at 09:45. It is not a full-day relative volume and it is not comparable "
+              "with cron #09's completed-session `rvol_<date>` (call that `rvol_session_eod`).\n"
+              "- **`rvol_intraday_live` is reference only** - mechanically tiny at 09:45, never "
+              "used for bucketing.\n"
+              "- **`rvol_trend` is the earlier-snapshot delta** (`rvol_now` - `rvol_prev`); the "
+              "session-over-session delta is carried as `rvol_vs_prev_session`.\n"
+              "- **`lag_sessions` is a WEEKDAY count** between the sweep's own `Screen data_date:` "
+              "and this fire - a venue holiday inside the gap would add one, so it is an upper "
+              "bound.\n")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("".join(md))
 

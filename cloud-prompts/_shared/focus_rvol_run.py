@@ -123,11 +123,18 @@ def main() -> int:
         return r.returncode
 
     # 2. score it and render the artifact
+    # The upstream focus.md carries the sweep's OWN `Screen data_date:` (the shibui T+1 date).
+    # It is NOT the folder date and it is NOT inferable from the calendar gap - the scorer
+    # reads it so the artifact's three dates cannot collapse into one.
+    focus_md = os.path.join(prev, "focus.md")
+    focus_dir_date = os.path.basename(prev)
     r = subprocess.run([sys.executable, os.path.join(a.work_dir, "focus_rvol_score.py"),
                         "--fire-date", a.fire_date,
                         "--symbols", "/workspace/universe.txt",
                         "--focus", "/workspace/focus.txt",
                         "--prior-csv", prevcsv,
+                        "--focus-md", focus_md,
+                        "--focus-dir-date", focus_dir_date,
                         "--md-out", a.md_out, "--csv-out", a.csv_out,
                         "--wider-source", a.wider_source,
                         "--out", a.out],

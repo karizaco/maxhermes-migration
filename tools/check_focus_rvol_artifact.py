@@ -41,7 +41,7 @@ NEAR_MISS_FLOOR = 1.275
 SOURCES = {"published_csv", "recomputed_same_feed", "unavailable"}
 
 FAILURES: list[str] = []
-CHECKS = 16
+CHECKS = 19
 
 
 def fail(clause: str, msg: str) -> None:
@@ -270,6 +270,59 @@ def main() -> None:
         if args.reply and os.path.exists(args.reply):
             fail("C16", "the reply has no 'universe:' line — a reader cannot tell a narrow screen "
                         "from a wide one")
+
+    # ---------------------------------------------------------------- C18 the raw ratio is the RAW ratio
+    # `rvol_intraday_live` is the cumulative session volume divided by the 10-day average
+    # daily volume. On 2026-11-12 the engine published `rvol_now / tv_avg10d` instead - a
+    # RATIO divided by a SHARE COUNT, which prints values like 3.92e-07 and is wrong by
+    # seven orders of magnitude. The audit columns make it checkable.
+    bad_raw = []
+    for r in rows:
+        live = fnum(r.get("rvol_intraday_live") or "")
+        vol = fnum(r.get("session_vol") or "")
+        avg = fnum(r.get("tv_avg10d") or "")
+        if live is None or not vol or not avg:
+            continue
+        expect = vol / avg
+        if abs(live - expect) > max(0.02 * expect, 1e-6):
+            bad_raw.append(f"{r.get('symbol')} (published {live:g}, expected {expect:g})")
+    if bad_raw:
+        fail("C18", "`rvol_intraday_live` is not session_vol / tv_avg10d - the raw ratio is "
+                   f"mis-scaled: {', '.join(bad_raw)}")
+
+    # ---------------------------------------------------------------- C19 the cross-check was COMPUTED
+    # `rvol_prev` is the earlier cross-check snapshot of the SAME metric. The engine wrote
+    # a literal "n/a" into that column, so the trend could only ever be measured against the
+    # previous session - and the trend column is what tells a reader whether a name is
+    # building or fading.
+    missing_prev = []
+    for r in rows:
+        if fnum(r.get("rvol_now") or "") is None:
+            continue
+        if (r.get("rvol_prev") or "").strip() in ("", "n/a", "-"):
+            missing_prev.append(r.get("symbol"))
+    if missing_prev:
+        fail("C19", "rows with no computed `rvol_prev` (the earlier cross-check snapshot) - the "
+                   f"trend column cannot be trusted: {', '.join(sorted(missing_prev)[:12])}")
+
+    # ---------------------------------------------------------------- C20 the trend agrees with the delta
+    # `rvol_trend` is the earlier-snapshot delta: ACCELERATING when rvol_now - rvol_prev > 0.05,
+    # DECELERATING when < -0.05, STABLE in between.
+    bad_trend = []
+    for r in rows:
+        now = fnum(r.get("rvol_now") or "")
+        prev = fnum(r.get("rvol_prev") or "")
+        trend = (r.get("rvol_trend") or "").strip().upper()
+        if now is None or prev is None or trend in ("", "N/A"):
+            continue
+        delta = now - prev
+        want = ("ACCELERATING" if delta > 0.05 else
+                "DECELERATING" if delta < -0.05 else "STABLE")
+        if trend != want:
+            bad_trend.append(f"{r.get('symbol')} (trend {trend}, delta {delta:+.4f})")
+    if bad_trend:
+        fail("C20", "`rvol_trend` does not match `rvol_now - rvol_prev`: "
+                   f"{', '.join(sorted(bad_trend)[:12])}")
 
     # ---------------------------------------------------------------- C17 the universe column exists
     if rows and "universe" not in rows[0]:
