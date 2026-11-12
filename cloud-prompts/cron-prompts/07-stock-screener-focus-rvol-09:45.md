@@ -373,12 +373,13 @@ own 10-session norm at the same hour.
 **THE ALERT RULE, in one sentence — state it this way in the artifact:**
 > An alert fires for a name whose `rvol_now` is at or above `RVOL_ALERT_THRESHOLD` (1.5) AND
 > whose `prev_session_rvol` is below `RVOL_ALERT_THRESHOLD` (1.5) — that is, the name crossed
-> UP through the alert bar since the previous session's published reading.
+> UP through the alert bar since the previous session's reading of the same metric.
 
 `rvol_now >= RVOL_ALERT_THRESHOLD` on its own is a LEVEL, not an alert. A level with no prior
 reading below the bar is not a crossing, and a crossing claimed without a prior reading is a
 fabrication, not a signal. Name every crossing ticker in the chat — that is the one alert this
-routine owes.
+routine owes. **A prior reading that was never COMPUTED is not a prior reading** — so compute it
+(STEP 6) rather than publishing `n/a` and silencing the tier.
 
 **THE NEAR-MISS TIER — the tradable edge.**
 A name is a **NEAR MISS** when `rvol_now >= NEAR_MISS_FLOOR` (1.275) and `rvol_now <
@@ -404,15 +405,48 @@ STABLE, then DECELERATING) so that when two names print the same `rvol_now` the 
 climbing leads. The `## Alerts` list is ordered by trend delta desc — among flagged names the
 TREND is what decides the trade.
 
-**A CROSSING NEEDS A PRIOR READING — the baseline is the previous SESSION's published value.**
-`daily-screens/<previous session>/focus-rvol-snapshot.csv` — written by this routine — carries the
-previous session's per-ticker `rvol_now`. Read `prev_session_rvol` from it, per ticker.
+**A CROSSING NEEDS A PRIOR READING — and the prior reading must be REAL.**
 A ticker CROSSED when `prev_session_rvol < RVOL_ALERT_THRESHOLD` and `rvol_now >=
 RVOL_ALERT_THRESHOLD`.
-If that CSV does not exist there is no baseline: say so, publish `prev_session_rvol: n/a` for
-every row, emit NO alert, and write `alerts: none (no prior reading available)` in the artifact.
-**THE CSV IS NOT OPTIONAL.** A run that publishes only the `.md` breaks the NEXT fire's baseline:
-that is exactly what happened on 2026-11-03 (the `.md` shipped, the `.csv` did not, and the
+The prior reading is the SAME metric for the PREVIOUS SESSION, computed the SAME way on the SAME
+source. There are TWO ways to obtain it, and the FIRST one is only a shortcut:
+
+1. **PUBLISHED (shortcut).** `daily-screens/<previous session>/focus-rvol-snapshot.csv` — written
+   by this routine — carries the previous session's per-ticker `rvol_now`. Read `prev_session_rvol`
+   from it, per ticker. Set `prev_session_rvol_source: published_csv`.
+2. **RECOMPUTED (the general case).** When the published CSV does not carry that ticker — and
+   **it usually does not**, because the focus roster turns over almost completely between sweeps
+   (measured overlap between consecutive sweeps: 4/12, 0/12, 0/12, 2/12, 0/12) — RECOMPUTE that
+   ticker's previous-session reading from the SAME Yahoo 5-minute series with the IDENTICAL
+   formula: the same clock window (09:30 -> the fire's bar) on the previous session, divided by
+   that session's own prior-10 same-window mean, times the same daily-factor recipe. Set
+   `prev_session_rvol_source: recomputed_same_feed`.
+   **This is a real prior reading, not a fabrication:** both sides of the comparison are the same
+   metric computed the same way on the same source. The 2026-11-04 run did exactly this and
+   published it with that provenance, and it produced 4 legitimate alerts.
+
+**DO NOT publish `n/a` merely because the previous CSV lacks the ticker.** A missing ticker is a
+MISSING ROSTER, not a missing prior reading — the tape was there, the routine simply never
+measured that name on that day. Writing `n/a` because the roster rotated converts a computable
+number into an absent one, and an absent prior reading silently disarms the alert tier: a name
+sitting at 2.7x becomes a WATCH instead of an ALERT. **That is what killed this routine's alert
+tier for five consecutive sessions (2026-11-05 through 2026-11-11): every one of them published
+`alerts: none` while the tape was hot — 2026-11-10 alone had SEVEN names above the 1.5x bar and
+not one could be shown to be a crossing.** Recompute instead. The roster rotates; the source does
+not.
+
+**Only publish `prev_session_rvol: n/a` when the recompute is genuinely impossible** — the symbol
+has no previous-session bars in the fetched series, or fewer than 10 usable prior sessions for the
+baseline. In that case set `prev_session_rvol_source: unavailable`, say so in the artifact, and
+emit no alert for that ticker.
+
+**Publish the provenance.** Every row carries `prev_session_rvol_source` —
+`published_csv` / `recomputed_same_feed` / `unavailable` — and the artifact's `## Alerts` section
+states how many prior readings came from each source. A reader must be able to tell a published
+prior reading from a recomputed one without re-deriving it.
+
+**THE CSV IS NOT OPTIONAL.** A run that publishes only the `.md` breaks the NEXT fire's shortcut
+path: that is exactly what happened on 2026-11-03 (the `.md` shipped, the `.csv` did not, and the
 2026-11-04 run had to recompute every prior reading from scratch). Write BOTH files every time,
 and confirm the CSV exists before you push.
 
@@ -447,7 +481,7 @@ A reader must never have to join two tables to learn one name's story.
 
 Columns, in this order:
 `symbol | close | rvol_intraday_live | rvol_now | rvol_prev | rvol_at_09_38 | rvol_trend |
-prev_session_rvol | bucket | tier | pm_vol | pm_vol_source | data timestamp`
+prev_session_rvol | prev_session_rvol_source | bucket | tier | pm_vol | pm_vol_source | data timestamp`
 
 - `rvol_intraday_live` — the RAW ratio (cumulative session volume / TV average_volume_10d_calc).
   It is mechanically tiny at 09:45 and is published for reference; NEVER bucket on it.
@@ -455,7 +489,10 @@ prev_session_rvol | bucket | tier | pm_vol | pm_vol_source | data timestamp`
 - `rvol_prev` — the metric at the earlier cross-check snapshot.
 - `rvol_at_09_38` — the RAW cumulative ratio at that earlier snapshot, so the trend is checkable.
 - `rvol_trend` — `ACCELERATING` / `STABLE` / `DECELERATING` with the numeric delta.
-- `prev_session_rvol` — the previous session's published `rvol_now`, or `n/a`.
+- `prev_session_rvol` — the previous session's `rvol_now` for this ticker, from the published
+  CSV when it carries it and recomputed on the same feed when it does not (see STEP 6), or `n/a`
+  only when the recompute is genuinely impossible.
+- `prev_session_rvol_source` — `published_csv` / `recomputed_same_feed` / `unavailable`.
 - `bucket` — `RVOL Required` / `Liquid`, by `RVOL_REQUIRED_BUCKET`.
 - `tier` — `ALERT` / `NEAR MISS` / `WATCH` / `UNADJUSTED` / `-`.
 - `pm_vol` — the pre-market volume subtracted (0 when none was subtracted).

@@ -1,11 +1,14 @@
 # Improvements — cron #07 `stock-screener-focus-rvol-09:45`
 
-- **Audited:** 2026-11-10 (the 09:45 ET fire, `2026-11-10`)
+- **Audited:** 2026-11-12 (the 09:45 ET fires of `2026-11-09`, `2026-11-10` and `2026-11-11` —
+  **the alert tier was structurally dead for five consecutive sessions**; see the 2026-11-12
+  section at the end of this file) and 2026-11-10 (the 09:45 ET fire, `2026-11-10`)
 - **Scope:** the intraday RVOL screen's data path — the live price, the session-volume window, the
   10-day denominator, the prior-10 same-window baseline, the cross-check snapshot and the
-  pre-market exclusion.
+  pre-market exclusion — and, since 2026-11-12, **the crossing/alert rule and the baseline it
+  reads** (prompt STEP 6).
 - **Artifact under review:** `daily-screens/2026-11-10/focus-rvol-snapshot.md` + `.csv` (outputs repo,
-  cron #07)
+  cron #07); also `2026-11-09` and `2026-11-11` for the alert-tier defect.
 
 ## Summary
 
@@ -235,3 +238,121 @@ that either crashes the row or silently produces a wrong `daily_factor`. The 202
 both because the pull was checked against `totalCount` **and** against the roster by name before
 the metric was computed. Keep both checks in the routine: they are cheap, and they are the only
 thing standing between a truncated denominator and a plausible-looking artifact.
+
+---
+
+## 2026-11-12 — the ALERT TIER was structurally dead for five sessions (cron #07, 09:45 ET)
+
+**Audited:** 2026-11-12, against the published artifacts for 2026-11-09, 2026-11-10 and
+2026-11-11 (outputs repo, cron #07).
+**Scope:** the crossing/alert rule (prompt STEP 6) and the baseline it reads.
+
+### The symptom
+
+`alerts: none` on 2026-11-05, 11-06, 11-09, 11-10 and 11-11 — **five consecutive sessions**.
+The tape was not calm. On 2026-11-10 alone, **seven names sat above the 1.5x bar** (ETON 2.74x,
+QNT 2.08x, RGTI 2.07x, TMDX 2.01x, FLY 1.93x, FROG 1.83x, LASR 1.81x) and **not one of them could
+be shown to be a crossing.** On 2026-11-11 BW was at 4.08x. Every one of those names was published
+as tier `WATCH` — a measurable level — because `prev_session_rvol` was `n/a` on every row.
+
+The last session that fired alerts was 2026-11-04 (4 crossings). That run had **no baseline CSV
+to read** (2026-11-03 shipped only the `.md`), so it recomputed every prior reading from the same
+Yahoo series — and produced 4 sound alerts. Recompute = works. Read-the-CSV = dead.
+
+### The cause is structural, not editorial
+
+STEP 6 said the baseline is *"the previous SESSION's published value"*, read from
+`daily-screens/<previous session>/focus-rvol-snapshot.csv`. That CSV is keyed on the **previous
+sweep's roster**. The focus roster turns over almost completely between sweeps — measured overlap
+between consecutive sweeps: **4/12, 0/12, 0/12, 2/12, 0/12** — so the published baseline covered
+almost none of today's names:
+
+| session | roster overlap with the previous sweep | names above 1.5x | alerts published |
+|---|---:|---:|---:|
+| 2026-11-04 | 0/12 | 4 | **4** (recomputed — no CSV existed) |
+| 2026-11-05 | 0/12 | 7 | 0 |
+| 2026-11-06 | 2/12 | 2 | 0 |
+| 2026-11-09 | 0/12 | 1 | 0 |
+| 2026-11-10 | 0/12 | **7** | 0 |
+| 2026-11-11 | 1/12 | 1 (BW 4.08x) | 0 |
+
+A missing ticker was published as `prev_session_rvol: n/a`, and **an absent prior reading silently
+disarms the alert tier**. The routine reported a clean `alerts: none` on a hot tape for five
+sessions, and nothing in the artifact said the tier was structurally unable to fire.
+
+### What the fix changes
+
+STEP 6 now has **two** ways to obtain the prior reading, and `n/a` is only legal when the
+recompute is genuinely impossible:
+
+1. `published_csv` — the previous session's CSV carries the ticker.
+2. `recomputed_same_feed` — it does not; recompute that ticker's previous-session reading from the
+   SAME Yahoo 5-minute series with the IDENTICAL formula (same clock window, that session's own
+   prior-10 baseline, same daily-factor recipe). **Both sides of the comparison are the same
+   metric computed the same way on the same source** — a real prior reading, not a fabrication.
+   This is exactly what the 2026-11-04 run did, and it published that provenance in the artifact.
+
+Every row now carries **`prev_session_rvol_source`** (`published_csv` / `recomputed_same_feed` /
+`unavailable`), and the artifact states the split. The roster rotates; the source does not.
+
+### What was missed, measured
+
+Recomputing the prior reading for the two sessions that published a false "none", on the same
+feed and the same formula:
+
+**2026-11-10 (prior session 2026-11-09) — 2 crossings the artifact could not claim:**
+
+| symbol | published `rvol_now` | recomputed prior | prior source | crossing |
+|---|---:|---:|---|---|
+| FROG | 1.8297 | 0.9218 | recomputed_same_feed | **YES** |
+| LASR | 1.8069 | 1.4976 | recomputed_same_feed | **YES (marginal)** |
+| ETON | 2.7432 | 2.3140 | recomputed_same_feed | no — already above the bar |
+| QNT | 2.0793 | 1.8178 | recomputed_same_feed | no |
+| RGTI | 2.0711 | 1.5515 | recomputed_same_feed | no |
+| TMDX | 2.0079 | 1.5887 | recomputed_same_feed | no |
+| FLY | 1.9335 | 2.4072 | recomputed_same_feed | no |
+| OKLO / CYRX / IONQ / KRMN | — | computed | recomputed_same_feed | no — below the bar |
+
+**2026-11-11 (prior session 2026-11-10) — 0 crossings.** Every name above the bar (BW 4.08x) was
+already above it on 2026-11-10 (BW 6.89x), so there was genuinely nothing to alert. This session
+published the right ANSWER for the wrong reason — the fix makes the reason honest rather than
+changing the number.
+
+### The one honest caveat: revision drift
+
+Recomputing a session **after** it was published does not always reproduce the published value
+exactly. Re-fetching the 2026-11-09 session on 2026-11-12 and comparing against what the 2026-11-09
+run published at 09:45 that morning:
+
+| | names | drift |
+|---|---:|---|
+| reproduced exactly (delta 0.0000) | 8 of 12 | 0.00% |
+| revised by the vendor | 4 of 12 (FUN +6.8%, JOBY +5.4%, U +4.8%, WRBY +6.8%) | up to **+6.8%** |
+
+Every denominator (prior-10 same-window mean, prior-10 full-day Nasdaq mean, TV `average_volume_10d_calc`)
+matched the published run **to four decimals** — `daily_factor` 1.0371 for WRBY on both sides. The
+whole difference is in the **numerator**: Yahoo revised the 09:30-09:45 bar volume of those four
+symbols after the session published (WRBY 539,264 → 576,127 shares). So the recompute is
+measurably the same metric, but the vendor's own intraday history is not immutable.
+
+**Consequence for a marginal crossing.** FROG's prior (0.9218) sits far below the 1.5x bar, so the
+crossing is **robust** to the whole measured drift band (-0.25% .. +4.12%). LASR's prior (1.4976)
+sits 0.16% below the bar and the band **straddles it** — LASR is a genuine but marginal crossing.
+A crossing this close to the bar should be published with its drift exposure stated, not silently
+asserted. The recompute is still strictly better than `n/a`, which asserts nothing at all.
+
+### The checker
+
+`tools/check_focus_rvol_artifact.py` (16 clauses) + `tools/test_focus_rvol_contract.py`
+(hermetic). **C6 is the regression clause**: a name above the alert bar whose prior reading is
+missing and which does not declare `unavailable` fails the artifact. Verified by running it
+against all three published sessions — each fails on exactly the clauses this defect produces:
+
+```
+2026-11-09  CONTRACT FAILED — 6 failure(s)   (C2 C3 C4 C6 C8)
+2026-11-10  CONTRACT FAILED — 6 failure(s)   (C2 C3 C4 C6 C8)  <- 7 names silenced
+2026-11-11  CONTRACT FAILED — 6 failure(s)   (C2 C3 C4 C6 C8)  <- BW 4.08x silenced
+```
+
+and the hermetic test proves the checker passes a compliant artifact and FAILS the broken shape,
+including the C6 trip.

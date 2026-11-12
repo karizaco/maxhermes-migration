@@ -1920,8 +1920,20 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
   `RVOL_ALERT_THRESHOLD = 1.5`, `NEAR_MISS_FLOOR = 1.275`.
 - **The alert rule, in one sentence:** an alert fires for a name whose `rvol_now` is at or above
   `RVOL_ALERT_THRESHOLD` AND whose `prev_session_rvol` is below `RVOL_ALERT_THRESHOLD` - the
-  name crossed UP through the alert bar since the previous session's published reading. A level
-  with no prior reading below the bar is NOT a crossing.
+  name crossed UP through the alert bar since the previous session's reading of the same metric.
+  A level with no prior reading below the bar is NOT a crossing.
+- **THE PRIOR READING MUST BE COMPUTED, NOT ASSUMED ABSENT.** The previous session's reading comes
+  from the published CSV when it carries the ticker, and is otherwise RECOMPUTED on the same feed
+  with the identical formula (same clock window, that session's own prior-10 baseline, same
+  daily-factor recipe) - see cron #07's prompt STEP 6. **The focus roster turns over almost
+  completely between sweeps** (measured overlap between consecutive sweeps: 4/12, 0/12, 0/12,
+  2/12, 0/12), so the published CSV usually does NOT carry today's tickers. Publishing `n/a` for a
+  ticker the roster dropped silently disarms the alert tier - a name at 2.7x becomes a WATCH
+  instead of an ALERT. **That is what killed the alert tier for five consecutive sessions
+  (2026-11-05 to 2026-11-11), each publishing `alerts: none` while the tape was hot - 2026-11-10
+  alone had SEVEN names above the 1.5x bar and not one could be shown to be a crossing.** Recompute
+  the prior reading instead; publish `prev_session_rvol_source` (`published_csv` /
+  `recomputed_same_feed` / `unavailable`) on every row so a reader can tell the two apart.
 - **Publish the NEAR MISSES too:** a name is a near miss when `rvol_now >= NEAR_MISS_FLOOR` and
   `rvol_now < RVOL_ALERT_THRESHOLD`, with both its current and its prior value.
 - **Publish the TREND, not just the level:** every name carries `rvol_now`, `rvol_prev`,
