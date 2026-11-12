@@ -627,6 +627,19 @@ Three endpoints, all measured on 2026-11-04 from the Cloud sandbox:
    artifact with the symbols you have, mark the gaps, and report `errors: <n>`. Do not abort the
    whole run because one source was blocked. The zero-fallback policy governs the *fallback
    chain*, not whether the artifact gets written.
+9. **A run-time-fetched engine's version marker is PINNED BY THE DEPLOYED PROMPT — changing it
+   without redeploying that prompt turns the engine OFF.** The fetch ladder in a deployed prompt
+   greps for a literal marker (`ENGINE_REV=2`, `bonde-artifact-v3`, …). Publishing a new file that
+   no longer contains that literal makes the ladder reject the fresh copy on EVERY URL, the file
+   never lands, and the routine silently falls through to its degraded fallback — for cron #16
+   that means the headline relative screen replaced by the legacy 8-name book, with no error.
+   Measured 2026-11-12 on cron #16's `relvol_screen.py`: a layout-only change was kept additive
+   (`ENGINE_REV` stayed 2) precisely to avoid this. **The marker is a contract between the
+   published script and the prompt that fetches it: change one, and change the other in the SAME
+   change — a prompt change needs a `cron_update` redeploy verified by SHA-256 (see AGENTS.md
+   §2), and until that redeploy lands the marker must not move.** A change that produces
+   IDENTICAL NUMBERS (a layout or formatting change) needs no new marker at all: the old copy is
+   then only cosmetically different, and the artifact's own contract checker catches it.
 
 ## 4. Transport and TLS
 
