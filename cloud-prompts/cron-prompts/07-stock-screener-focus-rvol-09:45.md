@@ -235,50 +235,26 @@ fire:
 | cron #17's movers | `us-stocks-in-play/<prev>-open-candidates.csv` and `us-stocks-in-play/<prev>-candidates.csv` | ~1,250 | the names that actually MOVED, with their catalysts |
 
 **The previous session is the last session before `fire_date`, whatever the calendar says.** On a
-Monday that is Friday; the files are named for the SESSION, not for the day before. Resolve it
-as: the newest `daily-screens/<date>` directory that is EARLIER than `fire_date` and that contains
-a `focus.md`. Use that same date for all three sources, and say which one you used. **Glob the
-cron #17 files by that date — never `*.csv`, which would sweep in every earlier session's
-board.**
+Monday that is Friday; the files are named for the SESSION, not for the day before.
+
+**RUN THE UNIVERSE BUILDER — do not hand-assemble the union.** It resolves the previous
+session, globs the cron #17 boards by THAT date (a `*.csv` glob would sweep in every earlier
+session's board and inflate the universe with stale names), and writes `/workspace/universe.txt`
+and `/workspace/focus.txt`. It is fetched by the STEP 5 block; run it as soon as that block has
+fetched the helpers:
 
 ```bash
-# the previous session's directory = the newest daily-screens/<date>/ older than fire_date
-PREV=""
-for d in $(ls -1d /workspace/daily-screens/2026-*/ | sort -r); do
-  d=${d%/}
-  [ "$d" = "/workspace/daily-screens/$DATE" ] && continue
-  [ -f "$d/focus.md" ] && { PREV="$d"; break; }
-done
-PREVDATE=${PREV##*/}
-echo "previous session: $PREVDATE"
-
-# the cron #17 boards for THAT session only
-mkdir -p /workspace/us-stocks-in-play
-for f in "${PREVDATE}-open-candidates.csv" "${PREVDATE}-candidates.csv"; do
-  [ -s "/workspace/us-stocks-in-play/$f" ] || \
-    git -C /workspace show "origin/main:us-stocks-in-play/$f" > "/workspace/us-stocks-in-play/$f" 2>/dev/null
-done
-ls -la /workspace/us-stocks-in-play/"$PREVDATE"*.csv 2>/dev/null
-```
-
-**If the cron #17 boards are missing, use what you have** — the focus roster plus `master.csv`
-— and say so in the artifact (`wider_universe_source`). A narrower union on disk is better than
-a fresh scan that does not finish. Never re-scan the whole market to rebuild this.
-
-**Write the union to a symbol file, one symbol per line**, so STEP 5 can hand it to the engine:
-```bash
-{ cut -d, -f1 "$PREV/focus.csv" 2>/dev/null | tail -n +2
-  cut -d, -f1 "$PREV/master.csv" 2>/dev/null | tail -n +2
-  for f in /workspace/us-stocks-in-play/"$PREVDATE"-open-candidates.csv \
-           /workspace/us-stocks-in-play/"$PREVDATE"-candidates.csv; do
-    [ -f "$f" ] && cut -d, -f1 "$f" 2>/dev/null | tail -n +2
-  done
-} | tr -d '\r' | tr ',' '\n' | sed 's/[^A-Za-z0-9.\-]//g' | grep -E '^[A-Z][A-Z0-9.\-]{0,6}$' \
-  | sort -u > /workspace/universe.txt
-cut -d, -f1 "$PREV/focus.csv" 2>/dev/null | tail -n +2 | tr -d '\r' \
-  | sed 's/[^A-Za-z0-9.\-]//g' | grep -E '^[A-Z][A-Z0-9.\-]{0,6}$' | sort -u > /workspace/focus.txt
+python3 /workspace/focus_rvol_universe.py --fire-date "$DATE" \
+  --screens-dir /workspace/daily-screens \
+  --board-dir /workspace/us-stocks-in-play --repo /workspace
 wc -l /workspace/universe.txt /workspace/focus.txt
 ```
+
+Its stderr line names the previous session and the sources unioned — **copy those names into the
+artifact's `wider_universe_source`**. If it reports that the cron #17 boards were MISSING, the
+union is narrower than it should be: say so in the artifact, and do not claim the full coverage.
+A narrower union on disk is better than a fresh scan that does not finish. Never re-scan the whole
+market to rebuild this.
 
 **The universe is a CANDIDATE SET, not the table.** The published table is the TOP of it by
 `rvol_now` — publishing 1,600 rows is not a screen. STEP 5 scores the whole union; STEP 7
@@ -291,36 +267,42 @@ provider_failures=[], with only connector__matrix__* and connector__email_workbe
 and tool_search returns 0 hits for every finance keyword. Do not burn turns re-testing them.
 
 **RUN THE ENGINE. Do not hand-compute this metric per name.**
-The universe is ~1,300 names (STEP 4). Computing the metric by hand for each one is what made
-the 2026-11-09 fire take 66 minutes — the fetches are cheap, the per-name arithmetic is not.
-`tools/focus_rvol_score.py` does the fetching AND the arithmetic in parallel and writes a COMPACT
-JSON payload holding only what the artifact needs, so the agent's context cost does not scale with
-the universe. Run it:
+The universe is ~1,600 names. Computing the metric by hand for each one is what made the
+2026-11-09 fire take 66 minutes — the fetches are cheap, the per-name arithmetic is not.
+`tools/focus_rvol_score.py` does the fetching AND the arithmetic in parallel, and RENDERS the
+artifact, so a number cannot be mistyped between the JSON and the markdown.
+
+**FETCH THE THREE HELPERS FIRST.** Two carry a capability marker, and a copy without its marker
+is an OLD copy that must not be used. The third is the scanner client the engine calls for its
+denominator: it pages on a stable sort and asserts the pages are DISJOINT and their union equals
+`totalCount`, because the scanner's completeness test is a SET test, not a row count.
 
 ```bash
-# fetch the engine (run-time fetch: fixes land with no redeploy)
-curl -sL --max-time 40 -H "Accept: application/vnd.github.raw" \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/focus_rvol_score.py?ref=main" \
-  -o /workspace/focus_rvol_score.py
-wc -c /workspace/focus_rvol_score.py   # must be non-zero
+fetch() { # $1=marker (- for none)  $2=filename  $3=repo path
+  for V in "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$3?ref=main" \
+           "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$3" \
+           "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$3" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/workspace/$2.tmp" "$V" 2>/dev/null
+    if [ -s "/workspace/$2.tmp" ] && ! head -c 200 "/workspace/$2.tmp" | grep -q '"message"' \
+       && { [ "$1" = "-" ] || grep -q "$1" "/workspace/$2.tmp" 2>/dev/null; }; then
+      mv -f "/workspace/$2.tmp" "/workspace/$2"; return 0
+    fi
+    rm -f "/workspace/$2.tmp"
+  done
+  echo "$2: FETCH FAILED"; return 1
+}
+fetch FOCUS_RVOL_UNIVERSE_V1 focus_rvol_universe.py cloud-prompts/_shared/focus_rvol_universe.py
+fetch TV_SCAN_V2              tv_scan.py           cloud-prompts/_shared/tv_scan.py
+fetch -                        focus_rvol_score.py  tools/focus_rvol_score.py
+```
 
-# fetch the VALIDATED scanner client the engine calls for its denominator
-D=/workspace/tv_scan.py
-for U in \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/tv_scan.py?ref=main" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/tv_scan.py" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/tv_scan.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
-  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
-     && grep -q 'TV_SCAN_V2' "$D.tmp" 2>/dev/null; then
-    mv -f "$D.tmp" "$D"; break
-  fi
-  rm -f "$D.tmp"
-done
-[ -s "$D" ] && grep -q 'TV_SCAN_V2' "$D" || { echo "tv_scan.py: UNAVAILABLE"; }
+**NOW BUILD THE UNIVERSE, THEN SCORE IT:**
 
+```bash
+python3 /workspace/focus_rvol_universe.py --fire-date "$DATE" \
+  --screens-dir /workspace/daily-screens \
+  --board-dir /workspace/us-stocks-in-play --repo /workspace
 python3 /workspace/focus_rvol_score.py \
   --fire-date "$DATE" \
   --symbols /workspace/universe.txt \
@@ -336,12 +318,11 @@ python3 /workspace/focus_rvol_score.py \
 touches the numbers. Do not retype a value into the markdown by hand: a transcribed number and
 the CSV will disagree, and the CSV is what the next fire reads.
 
-It prints a one-line summary to stderr (`N/M scored | focus … | wider table …`) and writes the
-JSON. **If the stderr line reports a scanner-pull PROBLEM, the denominator set is incomplete:**
-the denominator is the TradingView 10-day average daily volume, and a pull that dropped names
-silently produces a wrong `daily_factor` for exactly the names it dropped. Report it, and fall
-back to the focus roster only (`universe_source: focus_roster_only`) rather than publishing a
-metric built on a broken pull.
+It prints a one-line summary to stderr (`N/M scored | focus … | wider table …`). **If the stderr
+line reports a scanner-pull PROBLEM, the denominator set is incomplete**: the denominator is the
+TradingView 10-day average daily volume, and a pull that dropped names silently produces a wrong
+`daily_factor` for exactly the names it dropped. Report it, and fall back to the focus roster
+only (`universe_source: focus_roster_only`) rather than publishing a metric built on a broken pull.
 
 **If the engine fails**, fall back to scoring the FOCUS ROSTER ONLY (12 names — the behaviour
 before 2026-11-12) and set `universe_source: focus_roster_only` in the artifact. A narrow screen
