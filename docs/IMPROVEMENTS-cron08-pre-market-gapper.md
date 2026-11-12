@@ -638,3 +638,61 @@ Measured: `daily-screens/2026-11-09/focus-rvol-snapshot.csv` (cron #07, 09:45 ET
 with **WRBY and XERS** — the **2026-11-06** Focus names — because the 2026-11-09 sweep published no
 `focus.csv` for it to read. So the missing companion file has already silently degraded a second
 routine's universe for that session: it re-ranked the 6 Nov book instead of the 9 Nov one.
+
+---
+
+## 2026-11-12 (08:34 ET fire) — the contract CSV's price fields are STRINGS, and the event book is 95% penny stocks
+
+**The fire.** 1 of 12 Focus names flagged (MARA −5.74%, bitcoin beta), universe **2026-11-11**,
+6/6 hard assertions passed, `check_premarket_artifact.py` **27/27**. Two things about the data
+model cost real time and would have cost the next consumer a wrong number.
+
+### 1. `pm_high` / `pm_low` carry a PRICE **PLUS A CLOCK TIME**, and `exec_notional` carries a `$` and thousands separators
+
+The contract CSV (SKILL.md §6.7) names `pm_high`, `pm_low`, `exec_notional` as columns but never
+says they are **strings**:
+
+```
+AAON, ...,exec_notional = "1,380.00"   pm_high = "$75.51 (04:00:05 AM)"   pm_low = "$73.6658 (08:30:29 AM)"
+```
+
+`float()` raises on every one of them, and `pm_high`/`pm_low` cannot even be compared numerically.
+The checker's `num()` tolerates `$`, `,` and `%`, so the contract check passes — **the artifact
+looks healthy while a downstream parser breaks on it.** A consumer that wants "the pre-market
+high" gets a timestamp for free, which is genuinely useful — but only if the contract says so.
+
+**Recommended fix (not applied from a cron fire — it touches a script other routines read).**
+Either (a) publish `pm_high` / `pm_low` as bare numbers and move the clock into new columns
+`pm_high_time` / `pm_low_time`, keeping the column set additive; or (b) state in SKILL.md §6.7
+that these three fields are **formatted strings** (`$` + thousands separators, and a trailing
+` HH:MM:SS AM/PM` on `pm_high`/`pm_low`) and that a consumer must strip them. (a) is cleaner for
+the next consumer; (b) is a one-line change to the spec. Whichever lands, the spec and the
+checker must agree — the checker must not be the only place that knows the format.
+
+### 2. The raw pre-market gap-leader list is almost entirely penny stocks and LEVERAGED ETFs
+
+SKILL.md §6.13 §4 asks for "the market's pre-market gap leaders with their catalysts". Pulled
+literally (TV scanner, `premarket_change >= 4`), the list is **79 up / 313 down** — and the top of
+it is **PLCE +489%** ($0.1985), PARA +62.8%, plus a wall of single-stock ETFs (`Tradr 2X Short
+NBIS Daily ETF`, `Defiance Daily Target 2X Long LUNR ETF`, `Leverage Shares 2X Long CRWV…`) whose
+move is a DERIVATIVE of the underlying, not a gap anyone can trade.
+
+Adding `type = stock` and `market_cap_basic > 200000000` cuts it to **9 up / 81 down** of real
+companies, and the leaders become readable: LUNR +11.5% (pre-open Q3 beat), TTEK +11.1% (post-close
+Q4 beat), NBIS −13.5% and CRWV −10.0% (Nvidia's CEO news dragging the AI complex down).
+
+**The filter belongs in the spec, not in each run's judgement:** the event book's population is
+defined by the universe, and an unfiltered pull publishes a list that looks like a market and is
+not one.
+
+### 3. TradingView `earnings_release_date` is NOT a catalyst — it can be stale, and it can be mid-session
+
+NBIS gapped **−13.5%** on its Q3 print (a much-smaller-than-expected loss and a revenue beat) and
+TV still carried `earnings_release_date = 2026-08-12` for it. Several names carry a **10:30 ET**
+stamp, which is neither a before-the-open nor an after-the-close slot. Treating the field as the
+catalyst would have published a false cause for the largest mover in the book.
+
+**Rule to add to §6.13 §2:** `earnings_release_date` is a **candidate** catalyst, published with
+its source and its ET timestamp; it is asserted as a catalyst only when the issuer's release or
+the wire confirms it. Where nothing is confirmed, the artifact says **"no catalyst confirmed in
+this run"** — which is what today's event book does for 8 of the 21 names.
