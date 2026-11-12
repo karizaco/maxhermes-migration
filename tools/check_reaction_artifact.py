@@ -97,12 +97,44 @@ COLUMN_PATTERNS = {
     "earn": r"^earn$|^earn \(.*\)$|^earnings-driven$|^earnings driven$",
 }
 
-# The NYSE holidays, the only exchange calendar carried here: the US
-# reference close is the one that must never be older than the previous
-# session. EU/UK/AU use the weekday rule.
+# The NYSE holidays: the US reference close is the one that must never be
+# older than the previous session. EU/UK/AU use the weekday rule, corrected
+# by the venue holiday lists below.
 NYSE_HOLIDAYS_2026 = {
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
     "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+}
+
+# VENUE HOLIDAYS - the non-US exchange calendars, keyed by the artifact's
+# `market` column value.
+#
+# WHY THIS EXISTS. A foreign row's base must be its venue's previous SESSION,
+# and a venue that was CLOSED on the intervening day has a base one session
+# older than a plain weekday walk suggests. The checker carried only the NYSE
+# calendar, so on the 2026-11-12 fire it flagged LBW (GPW, Poland) for a
+# 2026-11-10 base: Warsaw was closed on Wednesday 11 November 2026
+# (Independence Day - gpw.pl's own published 2026 exchange-holidays list), so
+# Nov 10 WAS Poland's previous session and the row's +4.88% was the true Nov
+# 12 session move. Hand-verified: Yahoo carries no 2026-11-11 bar for PKO.WA,
+# CDR.WA or ALR.WA, while AIR.PA/MC.PA/SU.PA all have a traded Nov 11 bar -
+# Euronext Paris was open that day, only GPW was shut.
+#
+# A venue with no list here falls back to the weekday walk, so an entry must
+# only ever be added from that venue's OWN published calendar - a wrong entry
+# would let a genuinely stale base pass.
+#
+# KNOWN GAP (2026-11-12): only GPW's 2026 list is carried. The other covered
+# venues still use the weekday walk, so a venue holiday on a foreign market
+# can still raise a false REFCLOSE. Add each venue's list from its exchange's
+# published calendar, dated, when that venue first produces one.
+VENUE_HOLIDAYS = {
+    # Warsaw Stock Exchange, 2026 exchange holidays (gpw.pl, "Exchange
+    # holidays"): 1 Jan, 6 Jan, 3 Apr, 6 Apr, 1 May, 4 Jun, 11 Nov, 24 Dec,
+    # 25 Dec, 31 Dec.
+    "poland": {
+        "2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01",
+        "2026-06-04", "2026-11-11", "2026-12-24", "2026-12-25", "2026-12-31",
+    },
 }
 
 # Which venue a table belongs to, for the prior-session test.
@@ -197,7 +229,37 @@ def min_ref_date(scan_date, venue):
     return prior_session_date(scan_date, venue)
 
 
-def row_ref_floor(session_asof, venue):
+def market_of(header, cells):
+    """The row's market value (the artifact's `market` column), or None."""
+    idx = column_index(header, "market")
+    if idx is None or idx >= len(cells):
+        return None
+    return cells[idx].strip()
+
+
+def venue_prior_session(date_str, market=None):
+    """The session immediately before date_str on the MARKET's own calendar.
+
+    Walks back over weekends AND the market's published holidays (see
+    VENUE_HOLIDAYS), so a venue that was closed on the intervening day yields
+    the base it really reported. A market with no list falls back to the plain
+    weekday walk.
+    """
+    try:
+        d = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    hol = VENUE_HOLIDAYS.get((market or "").strip().lower(), set())
+    cur = d - datetime.timedelta(days=1)
+    for _ in range(12):
+        iso = cur.isoformat()
+        if cur.weekday() < 5 and iso not in hol:
+            return iso
+        cur -= datetime.timedelta(days=1)
+    return None
+
+
+def row_ref_floor(session_asof, venue, market=None):
     """The oldest base label a row with this session label may carry.
 
     A foreign row publishes the session it reports (`Session asof`) and the
@@ -220,6 +282,10 @@ def row_ref_floor(session_asof, venue):
     The floor therefore shifts by one day for AU/APAC. Measured 2026-11-11:
     an ASX row reported session 2026-11-11 with base 2026-11-09 (a 2-day
     label gap), an Indian row session 2026-11-10 with base 2026-11-08.
+
+    THE MARKET'S OWN HOLIDAYS ARE WALKED TOO. A venue that was closed on the
+    intervening day has a base one session older than the weekday walk
+    suggests, and that base is the honest one - see VENUE_HOLIDAYS.
     """
     try:
         s = datetime.datetime.strptime(session_asof, "%Y-%m-%d").date()
@@ -228,6 +294,11 @@ def row_ref_floor(session_asof, venue):
     prev = prior_session_date(s.isoformat(), venue)
     if not prev:
         return None
+    mk = (market or "").strip().lower()
+    if mk in VENUE_HOLIDAYS:
+        vp = venue_prior_session(s.isoformat(), mk)
+        if vp:
+            prev = vp
     if venue in ("AU", "APAC"):
         try:
             prev = (datetime.datetime.strptime(prev, "%Y-%m-%d").date()
@@ -431,7 +502,14 @@ def check(path, reply_text=None):
                                 f"the session it reports (`Session asof` = {sess!r}), so "
                                 f"its base cannot be checked")
                 continue
-            floor = row_ref_floor(sess, venue)
+            mk = market_of(header, cells)
+            if mk and mk.lower() in VENUE_HOLIDAYS \
+                    and sess in VENUE_HOLIDAYS[mk.lower()]:
+                failures.append(
+                    f"REFCLOSE: {title} row {ri} — the row reports session {sess}, but the "
+                    f"{mk} venue was closed that day, so it cannot be a session at all")
+                continue
+            floor = row_ref_floor(sess, venue, market=mk)
         if floor and asof < floor:
             failures.append(f"REFCLOSE: {title} row {ri} — the reference close {asof} is "
                             f"older than the previous session {floor}")
