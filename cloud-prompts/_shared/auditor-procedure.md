@@ -574,15 +574,17 @@ rebuilt from `migration-state.json` (the original local cron list).
 # second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
 # rejected on its BODY, not on its byte count.
 #
-# FOUR files, one loop:
+# SIX files, one loop:
 #   schedule-ground-truth.json  - the schedules of record (STEP 4c-0, STEP 4e)
 #   auditor-contract.json       - THE contract: states, causes, digest templates
 #   auditor_roster_check.py     - the live-vs-ground-truth roster detector (STEP 4e)
+#   gen_roster.py               - the roster GENERATOR's ARTIFACTS map (STEP 4e-2)
+#   deploy_prompts.py           - the deploy harness's task map (STEP 4e-2)
 #   check_auditor_contract.py   - the gate on THIS run's own output (STEP 6b)
 # They are fetched at RUN time, so a fix to any of them lands on the next fire with no
 # redeploy and no prompt drift.
 for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.py \
-         check_auditor_contract.py; do
+         check_auditor_contract.py gen_roster.py deploy_prompts.py; do
   D=/workspace/$F
   for U in \
     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/$F?ref=main" \
@@ -762,7 +764,10 @@ again.
 #    mcp_invoke  tool_name=cron_read  arguments={"view":"list","limit":100}
 #    -> write the raw payload to /workspace/.audit-tasks.json
 
-# 2. the detector (fetched at RUN time above) against the ground truth
+# 2. the detector (fetched at RUN time above) against the ground truth.
+#    The extra two fetches (gen_roster.py, deploy_prompts.py) are the OTHER TWO
+#    copies of the roster - without them the copy-drift check has nothing to
+#    compare against and reports them as "not checked", which is NOT a finding.
 python3 /workspace/auditor_roster_check.py --tasks /workspace/.audit-tasks.json \
         --ground-truth "$S" --json
 ```

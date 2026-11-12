@@ -180,6 +180,68 @@ def main():
                "the 2026-11-12 defect (both pre-open slots absent from gen_roster) is caught",
                f"rc={rc} drift={names}")
 
+        # ---- 3b. THE SANDBOX LAYOUT: no repo checkout, the fetched files only --
+        # Cron #90 runs the detector from a bare sandbox that holds only the files it
+        # fetched - there is NO repo checkout. A copy that cannot be LOCATED is a
+        # MISSING INPUT, not a disagreement: reporting it as drift would publish
+        # three false findings on EVERY audit. Measured 2026-11-12: the first
+        # version of this check did exactly that, and the end-to-end run caught it.
+        root = Path(tmp) / "sandbox"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "tools").mkdir(exist_ok=True)
+        (root / "cloud-prompts" / "_shared").mkdir(parents=True, exist_ok=True)
+        (root / "tools" / "schedule-ground-truth.json").write_text(json.dumps(GT))
+        (root / "tools" / "gen_roster.py").write_text(GEN_ROSTER)
+        (root / "tools" / "gen_index.py").write_text(GEN_INDEX)
+        (root / "tools" / "deploy_prompts.py").write_text(DEPLOY)
+        (root / "cloud-prompts" / "_shared" / "auditor-procedure.md").write_text(PROCEDURE)
+        sbx_tasks = Path(tmp) / "sandbox-tasks.json"
+        sbx_tasks.write_text(json.dumps(TASKS))
+        # the fetched files sit NEXT TO the detector, and there is no repo above it
+        sbx = Path(tmp) / "sandbox-run"
+        sbx.mkdir(parents=True, exist_ok=True)
+        shutil.copy(root / "tools" / "schedule-ground-truth.json", sbx / "schedule-ground-truth.json")
+        shutil.copy(root / "tools" / "gen_roster.py", sbx / "gen_roster.py")
+        shutil.copy(root / "tools" / "gen_index.py", sbx / "gen_index.py")
+        shutil.copy(root / "tools" / "deploy_prompts.py", sbx / "deploy_prompts.py")
+        shutil.copy(root / "cloud-prompts" / "_shared" / "auditor-procedure.md",
+                    sbx / "auditor-procedure.md")
+        # The DETECTOR ITSELF is fetched into the sandbox too, so it sits NEXT TO the
+        # copies - which is how cron #90 runs it. Running the repo's copy instead
+        # would let the resolver find the repo's OWN files and the test would prove
+        # nothing about the sandbox layout.
+        sbx_rc = sbx / "auditor_roster_check.py"
+        shutil.copy(RC, sbx_rc)
+        p = subprocess.run(
+            [sys.executable, str(sbx_rc), "--tasks", str(sbx_tasks),
+             "--ground-truth", str(sbx / "schedule-ground-truth.json"),
+             "--repo", str(sbx), "--json"],
+            capture_output=True, text=True, timeout=120, cwd=str(sbx))
+        try:
+            rep = json.loads(p.stdout)
+        except Exception:
+            rep = {"_stdout": p.stdout, "_stderr": p.stderr}
+        record(p.returncode == 0 and rep.get("roster_copy_drift_count") == 0,
+               "the sandbox layout (no repo checkout) raises NO false drift",
+               f"rc={p.returncode} drift={rep.get('roster_copy_drift_count')}")
+
+        # a copy that is simply ABSENT is not_checked, not drift
+        (sbx / "deploy_prompts.py").unlink()
+        p = subprocess.run(
+            [sys.executable, str(sbx_rc), "--tasks", str(sbx_tasks),
+             "--ground-truth", str(sbx / "schedule-ground-truth.json"),
+             "--repo", str(sbx), "--json"],
+            capture_output=True, text=True, timeout=120, cwd=str(sbx))
+        try:
+            rep = json.loads(p.stdout)
+        except Exception:
+            rep = {"_stdout": p.stdout, "_stderr": p.stderr}
+        record(p.returncode == 0 and rep.get("roster_copy_drift_count") == 0
+               and rep.get("roster_copy_not_checked_count", 0) >= 1,
+               "an absent copy is reported as not_checked, never as drift",
+               f"rc={p.returncode} drift={rep.get('roster_copy_drift_count')} "
+               f"not_checked={rep.get('roster_copy_not_checked_count')}")
+
         # ---- 4. the copy check did not change the live-vs-ground-truth check --
         root = Path(tmp) / "roster-gap"
         t = build_repo(tmp, root)

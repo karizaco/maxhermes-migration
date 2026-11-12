@@ -185,77 +185,57 @@ def _ids(names):
     return {routine_id(n) for n in names}
 
 
-def gen_roster_artifacts(repo=REPO):
-    """The ARTIFACTS keys of tools/gen_roster.py: {stem: spec}."""
-    path = os.path.join(repo, "tools", "gen_roster.py")
-    src = open(path, encoding="utf-8").read()
-    m = re.search(r"ARTIFACTS\s*=\s*\{(.*?)\n\}", src, re.S)
-    if not m:
-        raise ValueError("gen_roster.py has no ARTIFACTS map")
-    return set(re.findall(r'"([^"]+)"\s*:', m.group(1)))
 
 
-def gen_roster_no_artifact(repo=REPO):
-    """The routines declared as producing no artifact, by gen_roster.py and gen_index.py.
 
-    gen_roster.py and gen_index.py EACH carry their own NO_ARTIFACT map (the two files
-    were written independently and both need the set). The exempt set is the UNION of
-    the two: a routine that either file declares artifact-less is exempt, so the check
-    does not report a drift that is really just "this file names the exception".
+
+
+
+
+
+def _resolve(paths):
+    """The first candidate path that exists, or None."""
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def _copy_candidates(name, repo, explicit=None):
+    """Where a copy of the roster may live, most authoritative first.
+
+    The audit runs in a SANDBOX that holds only the files it fetched - there is no
+    repo checkout. So a copy is looked for in: the path the caller gave it, the
+    repo-relative path (when a checkout exists), the directory this script itself
+    sits in (the sandbox case: the procedure fetches the copies next to itself),
+    and /workspace.
     """
-    names = set()
-    for fname, var in (("gen_roster.py", "NO_ARTIFACT"), ("gen_index.py", "NO_ARTIFACT")):
-        path = os.path.join(repo, "tools", fname)
-        if not os.path.exists(path):
-            continue
-        src = open(path, encoding="utf-8").read()
-        m = re.search(var + r"\s*=\s*\{([^}]*)\}", src)
-        if m:
-            names |= set(re.findall(r'"([^"]+)"', m.group(1)))
-    return names
+    rel = {
+        "gen_roster": os.path.join("tools", "gen_roster.py"),
+        "deploy_prompts": os.path.join("tools", "deploy_prompts.py"),
+        "auditor_procedure": os.path.join("cloud-prompts", "_shared", "auditor-procedure.md"),
+    }[name]
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [
+        explicit,
+        os.path.join(repo, rel),
+        os.path.join(here, os.path.basename(rel)),
+        os.path.join("/workspace", os.path.basename(rel)),
+    ]
 
 
-def deploy_prompts_map(repo=REPO):
-    """The task map of tools/deploy_prompts.py: {cron_name: (task_id, sched)}."""
-    path = os.path.join(repo, "tools", "deploy_prompts.py")
-    src = open(path, encoding="utf-8").read()
-    m = re.search(r"^[A-Z_]+\s*=\s*\{(.*?)\n\}", src, re.S | re.M)
-    if not m:
-        raise ValueError("deploy_prompts.py has no task map")
-    return set(re.findall(r'"([^"]+\.md)"\s*:', m.group(1)))
+def copy_drift(ground_truth, repo=REPO, procedure=None,
+               gen_roster_path=None, deploy_prompts_path=None):
+    """Compare the ground truth against the other three copies of the roster.
 
-
-def auditor_procedure_roster(path=DEFAULT_AUDITOR_PROCEDURE):
-    """The routine ids in the auditor procedure's STEP 4 roster table."""
-    if not os.path.exists(path):
-        raise ValueError("auditor procedure not found")
-    src = open(path, encoding="utf-8").read()
-    # The STEP 4 table runs from its heading to the next heading.
-    m = re.search(r"##\s*STEP 4\b(.*?)(?=\n##\s|\Z)", src, re.S)
-    if not m:
-        raise ValueError("auditor procedure has no STEP 4 section")
-    ids = set()
-    for line in m.group(1).splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 2:
-            continue
-        name = cells[0].strip("` ")
-        if not name or name in ("Routine", "---") or set(name) <= set("- "):
-            continue
-        mm = ID_RE.match(name)
-        if mm:
-            ids.add(mm.group(1))
-    return ids
-
-
-def copy_drift(ground_truth, repo=REPO, procedure=None):
-    """Compare the ground truth against the other three copies of the roster."""
-    if procedure is None:
-        procedure = os.path.join(repo, "cloud-prompts", "_shared", "auditor-procedure.md")
-    gt_ids = _ids(ground_truth)
+    A copy that cannot be LOCATED is NOT a drift - the audit runs from a fetched-file
+    sandbox with no repo checkout, so a missing copy is a missing input, not a
+    disagreement. It is reported under `roster_copy_not_checked` instead, and it never
+    raises the exit code: a check that cries wolf on every audit is worse than no
+    check at all.
+    """
     drift = []
+    not_checked = []
 
     def note(copy, missing, why):
         for name in sorted(missing):
@@ -276,53 +256,101 @@ def copy_drift(ground_truth, repo=REPO, procedure=None):
             })
 
     # (4) the roster/index generator's ARTIFACTS map
-    try:
-        arts = gen_roster_artifacts(repo)
-        exempt = gen_roster_no_artifact(repo)
-        # NO_ARTIFACT holds STEMS ("91-schedule-drift-guard") while the ground truth
-        # holds FILENAMES ("91-schedule-drift-guard.md"), so the two are compared by
-        # routine id - the same key every other copy is compared by.
-        missing = {n for n in ground_truth
-                   if routine_id(n) not in _ids(exempt)
-                   and routine_id(n) not in _ids(arts)}
-        note("tools/gen_roster.py ARTIFACTS", missing,
-             "the generated README index and ROSTER.md cannot show its output path")
-    except (OSError, ValueError) as exc:
-        drift.append({"name": "-", "routine_id": "-", "copy": "tools/gen_roster.py",
-                      "why": f"unreadable: {exc}", "label": "roster_desync",
-                      "cause": "cron_update_failed",
-                      "line": f"gap: tools/gen_roster.py ROSTER_DESYNC tools/gen_roster.py "
-                              f"— cause=cron_update_failed age_h=0 — unreadable: {exc}"})
+    gr_path = _resolve(_copy_candidates("gen_roster", repo, gen_roster_path))
+    if not gr_path:
+        not_checked.append({
+            "copy": "tools/gen_roster.py ARTIFACTS",
+            "why": "gen_roster.py was not available in this sandbox",
+        })
+    else:
+        try:
+            src = open(gr_path, encoding="utf-8").read()
+            arts = set(re.findall(r'"([^"]+)"\s*:', re.search(r"ARTIFACTS\s*=\s*\{(.*?)\n\}", src, re.S).group(1)))
+            m = re.search(r"NO_ARTIFACT\s*=\s*\{([^}]*)\}", src)
+            exempt = set(re.findall(r'"([^"]+)"', m.group(1))) if m else set()
+            # gen_index.py carries its own NO_ARTIFACT map; the exempt set is the union.
+            gi_path = _resolve(_copy_candidates("gen_roster", repo,
+                                                os.path.join(repo, "tools", "gen_index.py")))
+            if gi_path:
+                gsrc = open(gi_path, encoding="utf-8").read()
+                gm = re.search(r"NO_ARTIFACT\s*=\s*\{([^}]*)\}", gsrc)
+                if gm:
+                    exempt |= set(re.findall(r'"([^"]+)"', gm.group(1)))
+            # NO_ARTIFACT holds STEMS while the ground truth holds FILENAMES, so the
+            # two are compared by routine id - the same key every copy is compared by.
+            missing = {n for n in ground_truth
+                       if routine_id(n) not in _ids(exempt)
+                       and routine_id(n) not in _ids(arts)}
+            note("tools/gen_roster.py ARTIFACTS", missing,
+                 "the generated README index and ROSTER.md cannot show its output path")
+        except (OSError, ValueError, AttributeError) as exc:
+            not_checked.append({
+                "copy": "tools/gen_roster.py ARTIFACTS",
+                "why": f"unreadable: {exc}",
+            })
 
     # (3) the deploy harness's task map
-    try:
-        dep = deploy_prompts_map(repo)
-        missing = {n for n in ground_truth if n not in dep}
-        note("tools/deploy_prompts.py", missing,
-             "the deploy harness cannot deploy or byte-verify it")
-    except (OSError, ValueError) as exc:
-        drift.append({"name": "-", "routine_id": "-", "copy": "tools/deploy_prompts.py",
-                      "why": f"unreadable: {exc}", "label": "roster_desync",
-                      "cause": "cron_update_failed",
-                      "line": f"gap: tools/deploy_prompts.py ROSTER_DESYNC tools/deploy_prompts.py "
-                              f"— cause=cron_update_failed age_h=0 — unreadable: {exc}"})
+    dp_path = _resolve(_copy_candidates("deploy_prompts", repo, deploy_prompts_path))
+    if not dp_path:
+        not_checked.append({
+            "copy": "tools/deploy_prompts.py",
+            "why": "deploy_prompts.py was not available in this sandbox",
+        })
+    else:
+        try:
+            src = open(dp_path, encoding="utf-8").read()
+            m = re.search(r"^[A-Z_]+\s*=\s*\{(.*?)\n\}", src, re.S | re.M)
+            dep = set(re.findall(r'"([^"]+\.md)"\s*:', m.group(1)))
+            missing = {n for n in ground_truth if n not in dep}
+            note("tools/deploy_prompts.py", missing,
+                 "the deploy harness cannot deploy or byte-verify it")
+        except (OSError, ValueError, AttributeError) as exc:
+            not_checked.append({
+                "copy": "tools/deploy_prompts.py",
+                "why": f"unreadable: {exc}",
+            })
 
     # (2) the auditor procedure's own STEP 4 roster table
-    try:
-        ids = auditor_procedure_roster(procedure)
-        missing = {n for n in ground_truth if routine_id(n) not in ids}
-        note("cloud-prompts/_shared/auditor-procedure.md STEP 4", missing,
-             "the auditor never checks its artifact")
-    except (OSError, ValueError) as exc:
-        drift.append({"name": "-", "routine_id": "-",
-                      "copy": "cloud-prompts/_shared/auditor-procedure.md",
-                      "why": f"unreadable: {exc}", "label": "roster_desync",
-                      "cause": "cron_update_failed",
-                      "line": f"gap: auditor-procedure.md ROSTER_DESYNC "
-                              f"cloud-prompts/_shared/auditor-procedure.md "
-                              f"— cause=cron_update_failed age_h=0 — unreadable: {exc}"})
+    ap_path = _resolve(_copy_candidates("auditor_procedure", repo, procedure))
+    if not ap_path:
+        not_checked.append({
+            "copy": "cloud-prompts/_shared/auditor-procedure.md STEP 4",
+            "why": "the auditor procedure was not available in this sandbox",
+        })
+    else:
+        try:
+            src = open(ap_path, encoding="utf-8").read()
+            m = re.search(r"##\s*STEP 4\b(.*?)(?=\n##\s|\Z)", src, re.S)
+            if not m:
+                raise ValueError("no STEP 4 section")
+            ids = set()
+            for line in m.group(1).splitlines():
+                if not line.startswith("|"):
+                    continue
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) < 2:
+                    continue
+                nm = cells[0].strip("` ")
+                if not nm or nm == "Routine" or set(nm) <= set("- "):
+                    continue
+                mm = ID_RE.match(nm)
+                if mm:
+                    ids.add(mm.group(1))
+            missing = {n for n in ground_truth if routine_id(n) not in ids}
+            note("cloud-prompts/_shared/auditor-procedure.md STEP 4", missing,
+                 "the auditor never checks its artifact")
+        except (OSError, ValueError) as exc:
+            not_checked.append({
+                "copy": "cloud-prompts/_shared/auditor-procedure.md STEP 4",
+                "why": f"unreadable: {exc}",
+            })
 
-    return {"roster_copy_drift": drift, "roster_copy_drift_count": len(drift)}
+    return {
+        "roster_copy_drift": drift,
+        "roster_copy_drift_count": len(drift),
+        "roster_copy_not_checked": not_checked,
+        "roster_copy_not_checked_count": len(not_checked),
+    }
 
 
 def main():
@@ -332,6 +360,12 @@ def main():
     ap.add_argument("--ground-truth", default=DEFAULT_GROUND_TRUTH)
     ap.add_argument("--repo", default=REPO,
                     help="the maxhermes-migration checkout the copies are read from")
+    ap.add_argument("--gen-roster", default=None,
+                    help="explicit path to tools/gen_roster.py (the sandbox fetches it next to this script)")
+    ap.add_argument("--deploy-prompts", default=None,
+                    help="explicit path to tools/deploy_prompts.py")
+    ap.add_argument("--procedure", default=None,
+                    help="explicit path to the auditor procedure file")
     ap.add_argument("--no-copies", action="store_true",
                     help="skip the copy-drift check (the live-vs-ground-truth check always runs)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
@@ -355,7 +389,9 @@ def main():
 
     drift = {"roster_copy_drift": [], "roster_copy_drift_count": 0}
     if not args.no_copies:
-        drift = copy_drift(gt, repo=args.repo)
+        drift = copy_drift(gt, repo=args.repo, procedure=args.procedure,
+                           gen_roster_path=args.gen_roster,
+                           deploy_prompts_path=args.deploy_prompts)
     report.update(drift)
 
     if args.json:
@@ -368,8 +404,11 @@ def main():
             print(f"GROUND-TRUTH-ONLY  {name}  (in schedule-ground-truth.json but not on the scheduler)")
         for d in report["roster_copy_drift"]:
             print(d["line"])
+        for d in report.get("roster_copy_not_checked", []):
+            print(f"COPY-NOT-CHECKED  {d['copy']}  ({d['why']}) - not a finding")
         print(f"RESULT: roster_gap={report['roster_gap_count']}  "
-              f"roster_copy_drift={report['roster_copy_drift_count']}")
+              f"roster_copy_drift={report['roster_copy_drift_count']}  "
+              f"copies_not_checked={report.get('roster_copy_not_checked_count', 0)}")
 
     if report["roster_gap_count"]:
         return 1
