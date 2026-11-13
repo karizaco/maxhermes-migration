@@ -135,6 +135,10 @@ def main() -> int:
                         "--prior-csv", prevcsv,
                         "--focus-md", focus_md,
                         "--focus-dir-date", focus_dir_date,
+                        # NO --top-n HERE, ON PURPOSE. The engine now RETAINS every scored row
+                        # in its JSON and publishes the top `--top-n` of them; the near-miss tier
+                        # and the universe distribution are computed over the WHOLE scored set.
+                        # Widening --top-n instead would put 1,292 rows in the markdown table.
                         "--md-out", a.md_out, "--csv-out", a.csv_out,
                         "--wider-source", a.wider_source,
                         "--out", a.out],

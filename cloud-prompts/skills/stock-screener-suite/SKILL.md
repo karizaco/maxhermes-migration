@@ -2358,6 +2358,33 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
     to define the earlier window when it is EARLIER than the fire (`cross_check_source:
     cboe_delayed`); otherwise truncate the same series at the 09:30 bar (`same_series_truncated`).
 
+  - **PUBLISH THE CONTEXT, NOT JUST THE COUNTS (2026-11-13).** Three things the artifact must
+    carry, because a screen that cannot see them is a false-positive machine:
+    (a) **THE SCORED UNIVERSE'S DISTRIBUTION** (median / p75 / p90 / p99 and the share of names
+    at or above 1.275x / 1.5x / 2x / 3x) and a **`selectivity` label** (`broad_tape` when >= 8% of
+    the scored universe cleared the bar, `elevated` at >= 3%, else `selective`). On 2026-11-12,
+    194 of 1,304 scored names (14.9%) cleared 1.5x, so "25 of 93 above the bar" read like a
+    screen when the tape was broadly hot. (b) **THE NEAR-MISS TIER ORDERED BY THE TREND DELTA**,
+    so the names that are BUILDING come first - a near miss that is fading is not a near miss,
+    it was one ten minutes ago (that band held 56 names and only 5 were building).
+    (c) **THE PRE-MARKET SHARE** per published name: `pm_share_pct` = pre-market volume /
+    (pre-market volume + session volume to the fire) - the share of everything published so far
+    that arrived BEFORE the open, which separates a gap continuation from fresh opening
+    activity (measured live on one pre-market tape: NVDA 95.5%, AAPL 13.5%, CDNL 7.8%).
+    **Yahoo cannot supply it** - with `includePrePost=true` it returns the extended-hours BARS
+    but every pre-open bar carries volume 0, on the live session and on history (measured
+    2026-11-13). **Nasdaq can**: `/api/quote/{SYM}/extended-trading?assetclass=stocks&
+    markettype=pre` -> `data.infoTable.rows[0].volume` (`assetclass` REQUIRED, browser UA
+    REQUIRED). **A REPLAY CANNOT MEASURE IT** - the endpoint serves TODAY's pre-market - so the
+    rows read `pm_vol_source: not_subtracted` and the share is `n/a`.
+    `includePrePost=true` costs +64% bytes per response (161 KB -> 266 KB measured), so it is
+    fetched for the PUBLISHED ROWS ONLY, never for the whole universe.
+  - **KEEP EVERY SCORED ROW, PUBLISH THE TOP.** The engine's JSON retains every scored row; the
+    markdown shows the top `--top-n` of the wider union and the CSV carries the focus roster,
+    the wider table and EVERY near miss. The counts, the near-miss tier and the distribution are
+    properties of the WHOLE scored set and are not computable from a truncated list - with the
+    old default `--top-n 25`, all 56 near misses of 2026-11-12 sat BELOW the cut.
+
 ### 8. Hook into existing briefs
 
 - 08:30 ET pre-market brief: prepend yesterday's `tier-a.md` + `regime.json`.

@@ -27,6 +27,7 @@ CSV_HEADER = [
     "pm_vol", "pm_vol_source", "data timestamp",
     # the audit columns the C18/C20 clauses need (see check_focus_rvol_artifact.py)
     "rvol_trend_delta", "rvol_vs_prev_session", "session_vol", "tv_avg10d",
+    "pm_share_pct", "pm_vintage_drift_pct",
 ]
 
 # symbol, rvol_now, prev_session_rvol, source, tier
@@ -89,9 +90,10 @@ def write_csv(path: str, rows, with_source: bool) -> None:
                 "rvol_trend": "STABLE", "prev_session_rvol": prev,
                 "rvol_trend_delta": "0.0000", "rvol_vs_prev_session": "0.0000",
                 "session_vol": "500000", "tv_avg10d": "10000000",
+                "pm_share_pct": "20.0000", "pm_vintage_drift_pct": "0.0000",
                 "prev_session_rvol_source": src, "prev_session_rvol_published": "n/a",
                 "denominator_drift_pct": "n/a", "bucket": "RVOL Required",
-                "tier": tier, "pm_vol": "0", "pm_vol_source": "not_subtracted",
+                "tier": tier, "pm_vol": "125000", "pm_vol_source": "measured_from_nasdaq",
                 "data timestamp": "2026-11-12 09:45:00 ET",
             }
             w.writerow([row[c] for c in header])
@@ -110,10 +112,11 @@ def write_miscaled_csv(path: str, rows) -> None:
                 "rvol_trend": trend, "prev_session_rvol": prev,
                 "prev_session_rvol_source": src, "prev_session_rvol_published": "n/a",
                 "denominator_drift_pct": "n/a", "bucket": "RVOL Required",
-                "tier": tier, "pm_vol": "0", "pm_vol_source": "not_subtracted",
+                "tier": tier, "pm_vol": "125000", "pm_vol_source": "measured_from_nasdaq",
                 "data timestamp": "2026-11-12 09:45:00 ET",
                 "rvol_trend_delta": "0.0000", "rvol_vs_prev_session": "0.0000",
                 "session_vol": "500000", "tv_avg10d": "10000000",
+                "pm_share_pct": "88.0000", "pm_vintage_drift_pct": "0.0000",
             }
             w.writerow([row[c] for c in header])
 
@@ -216,7 +219,7 @@ def main() -> None:
                             "mis-scaled raw ratio")
         else:
             print("  ok   miscaled artifact -> CONTRACT FAILED")
-        for clause in ("[C18]", "[C19]", "[C20]"):
+        for clause in ("[C18]", "[C19]", "[C20]", "[C21]"):
             if clause not in out:
                 failures.append(f"the miscaled artifact did not trip {clause}")
             else:

@@ -41,7 +41,7 @@ NEAR_MISS_FLOOR = 1.275
 SOURCES = {"published_csv", "recomputed_same_feed", "unavailable"}
 
 FAILURES: list[str] = []
-CHECKS = 19
+CHECKS = 20
 
 
 def fail(clause: str, msg: str) -> None:
@@ -323,6 +323,34 @@ def main() -> None:
     if bad_trend:
         fail("C20", "`rvol_trend` does not match `rvol_now - rvol_prev`: "
                    f"{', '.join(sorted(bad_trend)[:12])}")
+
+    # ---------------------------------------------------------------- C21 the pre-market share
+    # `pm_share_pct` is pre-market volume / (pre-market volume + session volume) - the share of
+    # everything published so far that arrived BEFORE the open. A share that disagrees with its
+    # own inputs is a wrong number, and the pre-market share is what separates a gap
+    # continuation from fresh opening activity.
+    PM_SOURCES = {"measured_from_nasdaq", "measured_from_series", "subtracted_from_08",
+                  "no_08_file", "not_subtracted"}
+    bad_pm = []
+    bad_share = []
+    for r in rows:
+        src = (r.get("pm_vol_source") or "").strip()
+        if src and src not in PM_SOURCES:
+            bad_pm.append(f"{r.get('symbol')}={src!r}")
+        share = fnum(r.get("pm_share_pct") or "")
+        pm = fnum(r.get("pm_vol") or "")
+        vol = fnum(r.get("session_vol") or "")
+        if share is None or not pm or not vol:
+            continue
+        expect = pm / (pm + vol) * 100
+        if abs(share - expect) > 0.6:
+            bad_share.append(f"{r.get('symbol')} (published {share:g}, expected {expect:g})")
+    if bad_pm:
+        fail("C21", f"rows with an unknown `pm_vol_source` (allowed: {sorted(PM_SOURCES)}): "
+                   f"{', '.join(bad_pm[:12])}")
+    if bad_share:
+        fail("C21", "`pm_share_pct` does not equal pm_vol / (pm_vol + session_vol): "
+                   f"{', '.join(bad_share[:12])}")
 
     # ---------------------------------------------------------------- C17 the universe column exists
     if rows and "universe" not in rows[0]:

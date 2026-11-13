@@ -666,3 +666,84 @@ wider union and every name in the near-miss band (93 rows, 18 crossings). The al
 ordered by the trend delta: HP, NVDA and FRMI ACCELERATING, the rest fading — **21 of the 25
 names above the bar were DECELERATING**, a broad opening burst being handed back. The 332
 unpriced candidates (`no_session_bars`) were reported as unpriced, never as a zero.
+
+
+## 2026-11-13 — five improvements to cron #07, from a post-mortem of the 2026-11-12 fire
+
+The 2026-11-12 fire published its artifact 24 minutes after the 09:45 instant and the numbers
+were right, but the post-mortem found three kinds of waste: duplicated compute, a screen that
+could not say whether it was selective, and a missing dimension (the pre-market). All five
+changes below are landed in the repo; the engine and the shared helpers are fetched at RUN time,
+so they take effect on the next fire with no `cron_update`.
+
+### 1. KEEP EVERY SCORED ROW, PUBLISH THE TOP (the near-miss tier was invisible)
+
+`focus_rvol_score.py` truncated its output to `--top-n` (25 by default) BEFORE anything else
+looked at it. The near-miss tier and the universe-wide counts are properties of the WHOLE
+scored set, so they were not computable from a truncated list: **all 56 near misses of
+2026-11-12 sat BELOW the top 25**. The JSON now retains every scored row; the markdown shows
+the top `--top-n` of the wider union; the CSV carries the focus roster, the wider table and
+EVERY near miss. The runner passes no `--top-n` on purpose (widening it would put 1,292 rows
+in the markdown table).
+
+### 2. ONE VINTAGE PER ARTIFACT
+
+Yahoo's opening window keeps settling after the bar closes (2026-11-12: two fetches minutes
+apart differed by +6.3% on DPC and +42% on a thin name), so a second pass over the same window
+computes the two halves of a row on different data. The whole run is now ONE process: the
+scoring pass, the near-miss selection and the pre-market pass all read the same series. The
+2026-11-12 fire needed THREE engine passes (13.7 min of compute for a 4.6 min job) purely
+because the passes were separate processes. **A cache mismatch means the passes did not share
+bytes: never loosen the tolerance to hide it.**
+
+### 3. THE PUSH COPIES AND STAGES ONE SLOT, NOT THE WHOLE OUTPUT TREE
+
+`push_artifact.sh` copied `SRC_DIR` (default `/workspace/<OUT>`) into the worktree and staged
+it. With `--out daily-screens` that is the ENTIRE output folder (2026-11-12: 773 files, 22 MB)
+to publish two files. The script now derives the **SLOT** - the deepest directory holding every
+`--add` path - and copies and stages only that. When the `--add` paths span different roots
+there is no common slot and the old behaviour is kept.
+
+### 4. THE CONTEXT, NOT JUST THE COUNTS
+
+A screen that cannot tell a broad tape from a selective one is a false-positive machine.
+Measured on 2026-11-12: **194 of 1,304 scored names (14.9%) cleared the 1.5x bar**, so "25 of 93
+above the bar" read like a screen when the tape was broadly hot. The artifact now carries:
+
+- the **scored universe's DISTRIBUTION** (median / p75 / p90 / p99 and the share of names at or
+  above 1.275x / 1.5x / 2x / 3x) in `## Universe` and in the front matter;
+- a **`selectivity` label** - `broad_tape` when >= 8% of the scored universe cleared the bar,
+  `elevated` at >= 3%, else `selective`;
+- the **counts for BOTH scopes** - the published rows AND the whole scored universe;
+- the **near-miss tier ordered by the TREND DELTA**, so the names that are BUILDING come first.
+  That band held 56 names and only 5 were building on 2026-11-12; ordered by level alone it
+  published 51 dead names ahead of the live ones.
+
+### 5. THE PRE-MARKET SHARE - the dimension the screen was missing
+
+`pm_share_pct` = pre-market volume / (pre-market volume + session volume to the fire): the
+share of everything published so far that arrived BEFORE the open. It separates a GAP
+CONTINUATION (the move was priced in the pre-market) from FRESH OPENING ACTIVITY (the volume
+arrived after 09:30). Measured live on one pre-market tape: **NVDA 95.5%, AAPL 13.5%,
+CDNL 7.8%** - three completely different trades behind the same 09:45 snapshot.
+
+**Yahoo cannot supply it.** With `includePrePost=true` it returns the extended-hours BARS, but
+every pre-open bar carries volume 0 - on the live session AND on history (measured
+2026-11-13). `includePrePost=true` also costs +64% bytes per response (161 KB -> 266 KB), so it
+is fetched for the PUBLISHED ROWS ONLY, never for the whole universe.
+
+**Nasdaq can**: `https://api.nasdaq.com/api/quote/{SYM}/extended-trading?assetclass=stocks&
+markettype=pre` -> `data.infoTable.rows[0].volume` (a comma string). `assetclass` is REQUIRED
+(without it the endpoint answers HTTP 200 with `data: null`) and so is a browser User-Agent.
+
+**A REPLAY CANNOT MEASURE IT** - the endpoint serves TODAY's pre-market, which is a different
+session. The engine refuses the value unless the fetch day IS the fire day, so a replayed fire
+publishes `pm_vol_source: not_subtracted` and `pm_share_pct: n/a` rather than a wrong number.
+
+### The checker grew a clause (C21) and the repo test grew a fault-injection shape
+
+`tools/check_focus_rvol_artifact.py` now has 20 clauses; **C21** asserts that `pm_share_pct`
+equals `pm_vol / (pm_vol + session_vol)` and that `pm_vol_source` is in the allowed set. The
+repo's own test gained the pre-market share in its fixtures and a mis-scaled share in the
+fault-injection shape - the test asserts the checker exits non-zero on it AND that C18, C19,
+C20 and C21 each trip.

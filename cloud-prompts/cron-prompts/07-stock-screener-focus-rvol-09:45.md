@@ -310,7 +310,9 @@ rather than publishing a metric built on a broken pull.
 touches the numbers. Do not retype a value into the markdown by hand: a transcribed number and
 the CSV will disagree, and the CSV is what the next fire reads.
 
-It prints a one-line summary to stderr (`N/M scored | focus … | wider table …`). **If the stderr
+It prints a one-line summary to stderr (`N/M scored | focus … | wider … | published … |
+near-miss … | selectivity …`). The `published` and `near-miss` counts are the tiers the
+artifact carries; `selectivity` is how broad the tape was. **If the stderr
 line reports a scanner-pull PROBLEM, the denominator set is incomplete**: the denominator is the
 TradingView 10-day average daily volume, and a pull that dropped names silently produces a wrong
 `daily_factor` for exactly the names it dropped. Report it, and fall back to the focus roster
@@ -482,6 +484,21 @@ Compute `rvol_prev` with the SAME formula as `rvol_now`, over the EARLIER window
 mean for THAT window, not today's window. Compute `rvol_at_09_38` as the RAW cumulative ratio at
 the earlier snapshot: (cumulative session volume at that snapshot) / (TV average_volume_10d_calc).
 Publish it so the reader can CHECK the normalisation instead of trusting it.
+
+**PRE-MARKET SHARE — MEASURE IT, AND THE SHARE IS THE NUMBER (measured 2026-11-13).**
+`pm_share_pct` = pre-market volume / (pre-market volume + session volume to the fire) — the
+share of everything published so far that arrived BEFORE the open. It separates a GAP
+CONTINUATION (a high share: the move was priced in the pre-market) from FRESH OPENING ACTIVITY
+(a low share: the volume arrived after 09:30). Measured live on one pre-market tape: NVDA 95.5%,
+AAPL 13.5%, CDNL 7.8%.
+**Yahoo's chart API CANNOT supply it:** with `includePrePost=true` it returns the extended-hours
+BARS, but every pre-open bar carries volume 0 — on the live session and on history alike
+(measured 2026-11-13). **Nasdaq's pre-session counter can:** `https://api.nasdaq.com/api/quote/
+{SYM}/extended-trading?assetclass=stocks&markettype=pre` -> `data.infoTable.rows[0].volume`
+(a comma string). `assetclass` is REQUIRED and so is a browser User-Agent.
+**A REPLAY CANNOT MEASURE IT** — the endpoint serves TODAY's pre-market, which is a different
+session. On a replay the rows read `pm_vol_source: not_subtracted` and the share is `n/a`; a
+wrong number is worse than none.
 
 **PRE-MARKET VOLUME — the subtraction must be auditable, and it depends on cron #08.**
 Session volume MUST exclude pre-market prints. There are two ways to get that, and the artifact
@@ -658,8 +675,10 @@ denominator_drift_pct | bucket | tier | pm_vol | pm_vol_source | data timestamp`
   and this one, where both are known. `n/a` otherwise.
 - `bucket` — `RVOL Required` / `Liquid`, by `RVOL_REQUIRED_BUCKET`.
 - `tier` — `ALERT` / `NEAR MISS` / `WATCH` / `UNADJUSTED` / `-`.
-- `pm_vol` — the pre-market volume subtracted (0 when none was subtracted).
-- `pm_vol_source` — `subtracted_from_08` / `no_08_file` / `not_subtracted`.
+- `pm_vol` — the PRE-MARKET volume. When the source is MEASURED it is the volume that arrived
+  before 09:30; the session volume excludes it by construction, so nothing is subtracted.
+- `pm_vol_source` — `measured_from_nasdaq` / `measured_from_series` / `subtracted_from_08` /
+  `no_08_file` / `not_subtracted`.
 - `data timestamp` — when the volume/close reading was taken.
 
 The CSV carries the SAME columns as the tables, one row per ticker, with a `universe` column
@@ -673,6 +692,9 @@ Front-matter, exact keys in this order:
   elapsed_minutes, session_fraction, source, method,
   metric_def, bucket_rule, rvol_required_bucket, rvol_alert_threshold, near_miss_floor,
   alert_rule, pm_source_status, cross_check_source, status, upstream, names_unpriced
+then, APPENDED after `names_unpriced` so the list above keeps its order:
+  published_rows, selectivity, universe_median_rvol, universe_p90_rvol,
+  universe_share_ge_1_5_pct, universe_crossings
 `lag_sessions`, `elapsed_minutes`, `session_fraction`, `universe_size`, `wider_universe_size`,
 `wider_shown`, `names_unpriced`,
 `rvol_required_bucket`, `rvol_alert_threshold` and `near_miss_floor` are NUMBERS, not strings.
@@ -680,17 +702,32 @@ Front-matter, exact keys in this order:
 `wider_universe_source` names the on-disk sources unioned (e.g. `focus+master+17`), or `none`.
 `upstream` is the focus.md path, or `missing` / `fallback_tv_screener`.
 `alert_rule` is the one-sentence rule from STEP 6, with the same numbers.
-`pm_source_status` is `subtracted_from_08` / `no_08_file` / `not_subtracted` / `partial`.
+`pm_source_status` is `measured_from_nasdaq` / `measured_from_series` / `subtracted_from_08` /
+`no_08_file` /
+`not_subtracted` / `partial`.
+`selectivity` is `broad_tape` / `elevated` / `selective` — it is the SHARE of the whole scored
+universe that cleared the 1.5x bar (>= 8% / >= 3% / below). **Publish it, because a screen that
+cannot tell a broad tape from a selective one is a false-positive machine**: on 2026-11-12,
+194 of 1,304 scored names (14.9%) cleared the bar, so "25 of 93 above the bar" read like a
+screen when the tape was broadly hot.
 `cross_check_source` is `cboe_delayed` / `same_series_truncated` / `none`.
 
 `### Counts` must state: universe size, Required count, Liquid count, NEAR MISS count, alert
-count, crossings, and the number of UNADJUSTED rows.
+count, crossings, and the number of UNADJUSTED rows — AND the counts must be stated for BOTH
+scopes: the PUBLISHED rows and the WHOLE scored universe. The universe scope is what tells the
+reader whether the bar selected anything.
+`## Universe` carries the SCORED UNIVERSE'S DISTRIBUTION (median, p75, p90, p99, and the share of
+names at or above 1.275x / 1.5x / 2x / 3x). Without it, no count in the artifact can be read as
+selective or not.
 `## Alerts` names the crossing tickers (or writes 'none' and says why), and gives each flagged
 name a ONE-LINE `read` that says what the number means — for example
 `RVOL fading 14.4x -> 6.9x — distribution, not accumulation`. A name whose RVOL is decaying is
 a different trade from one whose RVOL is climbing, and today only prose says so.
 `## Near misses` names every near miss with its current and prior values and what would trigger
-it.
+it — **ORDERED BY THE TREND DELTA, so the names that are BUILDING come first**. A near miss that
+is fading is not a near miss: it was one ten minutes ago. On 2026-11-12 the band held 56 names
+and only 5 of them were building, so ordering by level alone published 51 dead names ahead of
+the live ones. State the building/fading split in the Counts and in the TL;DR.
 
 status must be exactly one of: ok, degraded_stale_focus_list, degraded_daily_rvol_proxy,
 degraded_universe_fallback, degraded_pm_unadjusted, failed_no_upstream_focus_list,
@@ -713,6 +750,9 @@ done
 sh /workspace/push_artifact.sh --out daily-screens \
   --add daily-screens/{date}/focus-rvol-snapshot.md \
   --add daily-screens/{date}/focus-rvol-snapshot.csv --branch main
+# The push script derives the SLOT from the --add paths (their common parent directory) and
+# copies and stages ONLY that directory. Passing `--out daily-screens` alone would make it copy
+# and re-hash the WHOLE output tree (2026-11-12: 773 files, 22 MB) to publish two files.
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/focus-rvol-snapshot.md --branch main
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/focus-rvol-snapshot.csv --branch main
 ```

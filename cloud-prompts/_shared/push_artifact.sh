@@ -108,6 +108,37 @@ if [ -z "$OUT" ] || [ -z "$ADD" ]; then
   echo "push_artifact.sh: --out and --add are both required" >&2
   exit 3
 fi
+
+# --- THE SLOT: the common parent directory of the --add paths -------------------------
+# SRC_DIR is where the artifact lives in the sandbox and the script copies that whole tree
+# into the worktree before staging it. With --out daily-screens that tree is the ENTIRE
+# output folder (2026-11-12: 773 files, 22 MB) for a two-file push - every byte is copied
+# and every file is re-hashed to discover that nothing changed.
+#
+# The SLOT is the deepest directory that holds EVERY --add path. The script then copies and
+# stages only that directory. When the --add paths span different roots there is no common
+# slot, and the script falls back to the whole output tree (the old behaviour).
+SLOT=""
+for _a in $ADD_ALL; do
+  _d=$(dirname "$_a")
+  if [ -z "$SLOT" ]; then
+    SLOT="$_d"
+  elif [ "$_d" = "$SLOT" ]; then
+    :
+  elif [ "$_d" = "." ] || [ "$SLOT" = "." ]; then
+    SLOT=""
+    break
+  elif [ "${_d#"$SLOT"/}" != "$_d" ]; then
+    :                                   # _d is inside SLOT - keep SLOT
+  else
+    SLOT=""                             # no common ancestor
+    break
+  fi
+done
+[ "$SLOT" = "." ] && SLOT=""
+if [ -n "$SLOT" ]; then
+  echo "push: slot '$SLOT' (staging only that directory)"
+fi
 case "$ADD" in
   *'*'*|.|/*)
     echo "push_artifact.sh: --add must be a plain repo-relative path (got '$ADD')" >&2
@@ -239,7 +270,7 @@ esac
 
 # Sanitize the sandbox source tree so the copy into the worktree (and the
 # connector fallback's LOCAL_FILE lookup) already uses safe basenames.
-SRC_DIR="${SRC_DIR_ARG:-/workspace/$OUT}"
+SRC_DIR="${SRC_DIR_ARG:-/workspace/${SLOT:-$OUT}}"
 sanitize_tree "$SRC_DIR"
 
 # --- routine identity -------------------------------------------------------
@@ -463,7 +494,7 @@ git config --global user.email  "maxhermes-cloud@local" 2>/dev/null || true
 git config --global user.name   "MaxHermes Cloud Cron"      2>/dev/null || true
 
 REPO_DIR="${REPO_DIR:-/workspace}"
-SRC_DIR="${SRC_DIR_ARG:-${SRC_DIR:-/workspace/$OUT}}"
+SRC_DIR="${SRC_DIR_ARG:-${SRC_DIR:-/workspace/${SLOT:-$OUT}}}"
 cd "$REPO_DIR" || { echo "push: FAILED (no repo dir at $REPO_DIR)"; exit 1; }
 
 git init -q 2>/dev/null || true
@@ -507,11 +538,13 @@ for attempt in 1 2 3; do
   # same path relative to the repo root.
   ADD_DIR=$(dirname "$ADD")
   mkdir -p "$WT/$ADD_DIR" 2>/dev/null || true
+  # The copy target and the staged path are the SLOT when there is one, else $OUT.
+  STAGE_PATH="${SLOT:-$OUT}"
   if [ -d "$SRC_DIR" ]; then
-    mkdir -p "$WT/$OUT"
-    cp -r "$SRC_DIR/." "$WT/$OUT/" 2>/dev/null || true
+    mkdir -p "$WT/$STAGE_PATH"
+    cp -r "$SRC_DIR/." "$WT/$STAGE_PATH/" 2>/dev/null || true
     # Second pass: rewrite any illegal basename before git add.
-    sanitize_tree "$WT/$OUT"
+    sanitize_tree "$WT/$STAGE_PATH"
   fi
 
   cd "$WT" || { rm -rf "$WT"; continue; }
@@ -521,7 +554,7 @@ for attempt in 1 2 3; do
   # already on the branch and unchanged, so it is not staged. Never `git add -A`: in a fresh
   # worktree that stages every other file on the branch as DELETED (2026-10-25: 283 files
   # wiped).
-  git add -- "$OUT" 2>/dev/null || true
+  git add -- "$STAGE_PATH" 2>/dev/null || true
   STAGED="$(git diff --cached --name-only 2>/dev/null)"
   if [ -z "$STAGED" ]; then
     # Nothing differs from the branch. Either the artifact is already there byte-identical

@@ -75,6 +75,13 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 TV_URL = "https://scanner.tradingview.com/america/scan"
 TV_SCAN_PATH = "/workspace/tv_scan.py"
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval={iv}&range={rg}"
+# `includePrePost=true` adds the extended-hours bars to the SAME response: +64% bytes
+# (measured 2026-11-13: 161 KB -> 266 KB on interval=5m&range=1mo), so it is NOT used for the
+# bulk pass over ~1,600 names. It is used for the PUBLISHED rows only, to measure how much of
+# the day's activity arrived before 09:30. The pre-market bars are settled before the fire
+# (pre-market ends 09:25), so that number does not drift with the opening window.
+YAHOO_PREPOST = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                 "?interval={iv}&range={rg}&includePrePost=true")
 ALERT_BAR = 1.5
 NEAR_MISS_FLOOR = 1.275
 
@@ -86,9 +93,10 @@ def _curl(url: str, timeout: int = 45) -> bytes:
     return r.stdout
 
 
-def _chart(sym: str, interval: str, rng: str) -> dict | None:
+def _chart(sym: str, interval: str, rng: str, prepost: bool = False) -> dict | None:
+    url = (YAHOO_PREPOST if prepost else YAHOO).format(sym=sym, iv=interval, rg=rng)
     for _ in range(3):
-        raw = _curl(YAHOO.format(sym=sym, iv=interval, rg=rng))
+        raw = _curl(url)
         if not raw:
             time.sleep(0.4)
             continue
@@ -103,10 +111,11 @@ def _chart(sym: str, interval: str, rng: str) -> dict | None:
     return None
 
 
-def fetch_series(sym: str, interval: str, rng: str) -> dict:
+def fetch_series(sym: str, interval: str, rng: str, prepost: bool = False) -> dict:
     """For 1d: {date: {"v": volume, "c": close}}.
-    For 5m: {date: {HH:MM: {"v": volume, "c": close}}}."""
-    d = _chart(sym, interval, rng)
+    For 5m: {date: {HH:MM: {"v": volume, "c": close}}}.
+    With `prepost=True` the extended-hours bars (04:00-09:25 and 16:00-20:00) are present too."""
+    d = _chart(sym, interval, rng, prepost)
     if not d:
         return {}
     ts = d.get("timestamp") or []
@@ -164,6 +173,112 @@ def fetch_tv_denominators() -> tuple[dict, list]:
         except (TypeError, ValueError, IndexError):
             continue
     return avg10, [{"code": p.code, "message": p.message} for p in problems]
+
+
+def _nasdaq_pre_volume(sym: str) -> int | None:
+    """Nasdaq's PRE-market session volume counter for one symbol.
+
+    `assetclass` is REQUIRED (without it the endpoint answers 200 with `data: null`) and so is
+    a browser User-Agent. The volume lives in `infoTable.rows[0].volume` as a comma string.
+    """
+    url = (f"https://api.nasdaq.com/api/quote/{sym}/extended-trading"
+           f"?assetclass=stocks&markettype=pre")
+    raw = _curl(url).decode("utf-8", "replace")
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    rows = ((d.get("data") or {}).get("infoTable") or {}).get("rows") or []
+    if not rows:
+        return None
+    v = str(rows[0].get("volume") or "").replace(",", "").strip()
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def measure_premarket(sym: str, fire_date: dt.date, session_vol: int | None) -> dict:
+    """How much of the day's activity arrived BEFORE 09:30, for one PUBLISHED name.
+
+    The pre-market bars are settled before the fire (pre-market ends 09:25), so this number
+    does not drift the way the opening window does - which is exactly why it is fetched
+    separately for the published rows instead of costing the whole universe a bigger payload.
+
+    The session window in THIS response is compared with the bulk pass's session volume: if the
+    two disagree by more than 2% they are not the same vintage, and the share is published as
+    `n/a` rather than mixed with a different session volume.
+    """
+    out = {"pm_vol": None, "pm_source": "not_subtracted", "pm_share_pct": None,
+           "pm_vintage_drift_pct": None}
+    # (a) Yahoo's extended-hours bars. MEASURED 2026-11-13: every pre-open bar carries
+    # volume 0 - on the live session AND on history - so this source usually yields nothing.
+    # It is kept because it is the same response family as the session bars, and it costs
+    # nothing extra on the rows we already fetch.
+    y = fetch_series(sym, "5m", "1mo", prepost=True)
+    t = y.get(fire_date)
+    pm = 0
+    if t:
+        pm = sum(v.get("v", 0) for k, v in t.items() if k < "09:30")
+        win = sum(t.get(b, {}).get("v", 0) for b in WIN)
+        if session_vol and win:
+            out["pm_vintage_drift_pct"] = round((win - session_vol) / session_vol * 100, 2)
+    if pm:
+        out["pm_vol"] = pm
+        out["pm_source"] = "measured_from_series"
+    else:
+        # (b) Nasdaq's PRE-session volume counter. ONLY on the fire's own day: on a replay the
+        # endpoint serves TODAY's pre-market, which is a different session entirely.
+        if dt.datetime.now(ET).date() == fire_date:
+            n = _nasdaq_pre_volume(sym)
+            if n:
+                out["pm_vol"] = n
+                out["pm_source"] = "measured_from_nasdaq"
+    # THE SHARE: of all the volume published so far, how much arrived BEFORE the open. A name
+    # whose pre-market share is high is a gap continuation; a low share is fresh opening
+    # activity. (pm_vol alone is not comparable across names - it scales with the float.)
+    if out["pm_vol"] and session_vol:
+        out["pm_share_pct"] = round(out["pm_vol"] / (out["pm_vol"] + session_vol) * 100, 1)
+    return out
+
+
+def universe_distribution(scored: list) -> dict:
+    """How the WHOLE scored universe is distributed - is the 1.5x bar selective today?
+
+    A screen that cannot tell a broad tape from a selective one is a false-positive machine:
+    on 2026-11-12, 194 of 1,304 scored names (14.9%) cleared the bar, so "25 of 93 above the
+    bar" read like a screen when the tape was broadly hot.
+    """
+    vals = sorted(r["rvol_now"] for r in scored if r.get("rvol_now") is not None)
+    if not vals:
+        return {}
+    def pct(q):
+        i = min(len(vals) - 1, max(0, int(round(q * (len(vals) - 1)))))
+        return round(vals[i], 4)
+    n = len(vals)
+    return {
+        "scored": n,
+        "p25": pct(0.25), "p50": pct(0.50), "p75": pct(0.75), "p90": pct(0.90),
+        "p99": pct(0.99),
+        "share_ge_1_275": round(100.0 * sum(1 for v in vals if v >= NEAR_MISS_FLOOR) / n, 2),
+        "share_ge_1_5": round(100.0 * sum(1 for v in vals if v >= ALERT_BAR) / n, 2),
+        "share_ge_2_0": round(100.0 * sum(1 for v in vals if v >= 2.0) / n, 2),
+        "share_ge_3_0": round(100.0 * sum(1 for v in vals if v >= 3.0) / n, 2),
+    }
+
+
+def selectivity_label(scored: list) -> str:
+    """`broad_tape` / `elevated` / `selective` - how useful the absolute bar is today."""
+    d = universe_distribution(scored)
+    if not d:
+        return "unknown"
+    share = d["share_ge_1_5"]
+    if share >= 8.0:
+        return "broad_tape"
+    if share >= 3.0:
+        return "elevated"
+    return "selective"
 
 
 def compute_one(sym: str, fire_date: dt.date, avg10: float | None) -> dict:
@@ -372,7 +487,30 @@ def main() -> int:
             r.setdefault("crossed", False)
 
     focus_rows = [r for r in scored if r["symbol"] in focus]
-    wider_rows = [r for r in scored if r["symbol"] not in focus][: a.top_n]
+    # RETAIN EVERY SCORED ROW, PUBLISH THE TOP. The counts, the near-miss tier and the universe
+    # distribution are properties of the WHOLE scored set - they are not computable from a
+    # truncated list (the default `--top-n 25` made the near-miss tier invisible: 56 of the
+    # names in the band sat BELOW the top 25). The JSON keeps everything; the markdown shows the
+    # top `--top-n` of the wider union and the CSV carries the published set.
+    wider_all = [r for r in scored if r["symbol"] not in focus]
+    wider_rows = wider_all[: a.top_n]
+    near_all = [r for r in scored
+                if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR]
+    published = {r["symbol"]: r for r in (focus_rows + wider_rows + near_all)}
+
+    # THE PRE-MARKET PASS - the published rows only (~90 names, ~15 s), because
+    # `includePrePost=true` costs +64% bytes on every response.
+    with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
+        futs = {ex.submit(measure_premarket, sym, fire_date, r.get("session_vol")): sym
+                for sym, r in published.items()}
+        for fut in cf.as_completed(futs):
+            sym = futs[fut]
+            try:
+                pm = fut.result()
+            except Exception as exc:
+                pm = {"pm_vol": None, "pm_source": f"error:{exc}", "pm_share_pct": None,
+                      "pm_vintage_drift_pct": None}
+            published[sym].update(pm)
     # NOTE: `slim()` is a PROJECTION - a field missing from this list is silently dropped
     # before the CSV and the markdown are rendered (it cost a whole debugging round on
     # 2026-11-12: the cross-check and the session volume were computed and then vanished).
@@ -380,7 +518,7 @@ def main() -> int:
             "prev_session_rvol_source", "prev_session_rvol_published",
             "denominator_drift_pct", "rvol_at_09_38", "session_vol",
             "rvol_trend", "rvol_trend_delta", "rvol_vs_prev_session", "tier", "crossed",
-            "daily_factor",
+            "daily_factor", "pm_vol", "pm_source", "pm_share_pct", "pm_vintage_drift_pct",
             "tv_avg10d", "base_first", "base_last", "baseline_n", "prev_session_date",
             "status"]
 
@@ -407,9 +545,16 @@ def main() -> int:
         "upstream": upstream,
         "denominator_source": "tradingview_average_volume_10d_calc (one pull, both sides)",
         "focus_crossings": [r["symbol"] for r in focus_rows if r["crossed"]],
-        "wider_crossings": [r["symbol"] for r in wider_rows if r["crossed"]],
+        "wider_crossings": [r["symbol"] for r in wider_all if r["crossed"]],
+        "published_crossings": [r["symbol"] for r in published.values() if r["crossed"]],
         "focus_rows": [slim(r) for r in focus_rows],
-        "wider_rows": [slim(r) for r in wider_rows],
+        "wider_rows": [slim(r) for r in wider_all],
+        "published_rows": [slim(r) for r in sorted(published.values(),
+                                                   key=lambda r: -(r.get("rvol_now") or 0))],
+        "wider_shown": len(wider_rows),
+        "near_miss_all": [slim(r) for r in near_all],
+        "distribution": universe_distribution(scored),
+        "selectivity": selectivity_label(scored),
         "unscored": [{"symbol": r["symbol"], "status": r.get("status")}
                      for r in rows if r.get("rvol_now") is None],
     }
@@ -422,8 +567,10 @@ def main() -> int:
         render_csv(out, a.csv_out)
 
     print(f"[done] {len(scored)}/{len(syms)} scored in {out['elapsed_sec']}s | "
-          f"focus {len(focus_rows)} (crossings {out['focus_crossings']}) | "
-          f"wider table {len(wider_rows)} (crossings {len(out['wider_crossings'])}) -> {a.out}",
+          f"focus {len(focus_rows)} (crossings {len(out['focus_crossings'])}) | "
+          f"wider {len(wider_all)} (table {len(wider_rows)}, crossings "
+          f"{len(out['wider_crossings'])}) | published {len(published)} | "
+          f"near-miss {len(near_all)} | selectivity {out['selectivity']} -> {a.out}",
           file=sys.stderr)
     return 0
 
@@ -435,15 +582,21 @@ CSV_COLS = ["symbol", "universe", "close", "rvol_intraday_live", "rvol_now", "rv
             # audit columns - they make the published numbers CHECKABLE by a consumer:
             # `rvol_intraday_live` must equal session_vol / tv_avg10d, and `rvol_trend` must
             # agree with rvol_now - rvol_prev.
-            "rvol_trend_delta", "rvol_vs_prev_session", "session_vol", "tv_avg10d"]
+            "rvol_trend_delta", "rvol_vs_prev_session", "session_vol", "tv_avg10d",
+            "pm_share_pct", "pm_vintage_drift_pct"]
 
 
 def render_csv(out: dict, path: str) -> None:
-    """The machine-readable rows. Both tables, one row per ticker, `universe` marks which."""
+    """The machine-readable rows: the FOCUS roster, the wider table, and EVERY near miss.
+
+    The near-miss tier is the watch list the next fire needs, so its rows are in the CSV even
+    when the name is not in the wider table - otherwise the tier is prose with no data behind it.
+    """
+    rows = out.get("published_rows") or (out["focus_rows"] + out["wider_rows"])
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csvmod.writer(fh)
         w.writerow(CSV_COLS)
-        for r in out["focus_rows"] + out["wider_rows"]:
+        for r in rows:
             w.writerow([
                 r.get("symbol"), r.get("universe"),
                 _num(r.get("close"), 4),
@@ -455,10 +608,13 @@ def render_csv(out: dict, path: str) -> None:
                 r.get("prev_session_rvol_published", "n/a"),
                 r.get("denominator_drift_pct", "n/a"),
                 "RVOL Required" if (r.get("rvol_now") or 0) >= ALERT_BAR else "Liquid",
-                r.get("tier"), "0", "not_subtracted",
+                r.get("tier"),
+                (r.get("pm_vol") if r.get("pm_vol") is not None else 0),
+                (r.get("pm_source") or "not_subtracted"),
                 f"{out['fire_date']} 09:45 ET (last completed 5m bar, stamped 09:40)",
                 _num(r.get("rvol_trend_delta"), 4), _num(r.get("rvol_vs_prev_session"), 4),
                 _num(r.get("session_vol"), 0), _num(r.get("tv_avg10d"), 1),
+                _num(r.get("pm_share_pct"), 1), _num(r.get("pm_vintage_drift_pct"), 2),
             ])
 
 
@@ -495,20 +651,47 @@ def _md_table(rows: list, stamp: str = "") -> str:
                  f"{_num(r.get('prev_session_rvol_published'))} | "
                  f"{_num(r.get('denominator_drift_pct'), 2)} | "
                  f"{'RVOL Required' if (r.get('rvol_now') or 0) >= ALERT_BAR else 'Liquid'} | "
-                 f"{r.get('tier')} | 0 | not_subtracted | {stamp} |\n")
+                 f"{r.get('tier')} | "
+                 f"{(r.get('pm_vol') if r.get('pm_vol') is not None else 0)} | "
+                 f"{(r.get('pm_source') or 'not_subtracted')} | {stamp} |\n")
     return head + body
 
 
 def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "") -> None:
-    """The artifact. Deterministic — every number comes straight from the scored JSON."""
+    """The artifact. Deterministic - every number comes straight from the scored JSON."""
     focus = out["focus_rows"]
-    wider = out["wider_rows"]
-    alert_line = ", ".join(
-        f"{r['symbol']} ({r.get('rvol_trend')})"
-        for r in focus + wider if r.get("crossed"))
-    n_req = sum(1 for r in focus + wider if (r.get("rvol_now") or 0) >= ALERT_BAR)
-    n_near = sum(1 for r in focus + wider
-                  if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR)
+    wider_all = out["wider_rows"]
+    shown = out.get("wider_shown") or len(wider_all)
+    wider = wider_all[:shown]
+    published = out.get("published_rows") or (focus + wider_all)
+    near_rows = out.get("near_miss_all") or [
+        r for r in published
+        if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR]
+    # THE WATCH LIST IS ORDERED BY THE TREND DELTA, not by rvol_now. A near miss that is
+    # FADING is not a near miss - it was a near miss 10 minutes ago. On 2026-11-12 the band
+    # held 56 names and only 5 of them were building; ordering by level alone published 51
+    # dead names ahead of the live ones.
+    near_rows = sorted(near_rows, key=lambda r: (-(r.get("rvol_trend_delta") or 0),
+                                                 -(r.get("rvol_now") or 0)))
+    dist = out.get("distribution") or {}
+    sel = out.get("selectivity") or "unknown"
+
+    def crossed(r):
+        return bool(r.get("crossed"))
+
+    alert_rows = [r for r in published if crossed(r)]
+    alert_rows.sort(key=lambda r: -(r.get("rvol_trend_delta") or 0))
+    alert_line = ", ".join(f"{r['symbol']} ({r.get('rvol_trend')})" for r in alert_rows)
+    n_req = sum(1 for r in published if (r.get("rvol_now") or 0) >= ALERT_BAR)
+    n_liq = len(published) - n_req
+    n_near = len(near_rows)
+    n_near_build = sum(1 for r in near_rows if r.get("rvol_trend") == "ACCELERATING")
+    n_near_fade = sum(1 for r in near_rows if r.get("rvol_trend") == "DECELERATING")
+    n_alert_build = sum(1 for r in alert_rows if r.get("rvol_trend") == "ACCELERATING")
+    n_alert_fade = sum(1 for r in alert_rows if r.get("rvol_trend") == "DECELERATING")
+    all_req = dist.get("share_ge_1_5")
+    all_cross = len(out.get("wider_crossings") or []) + len(out.get("focus_crossings") or [])
+
     md = []
     md.append("---\n"
               f"date: {out['fire_date']}\n"
@@ -520,15 +703,16 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               f"lag_sessions: {out.get('lag_sessions') if out.get('lag_sessions') is not None else 'n/a'}\n"
               "universe_source: focus_plus_wider\n"
               f"universe_size: {out['universe_size']}\n"
-              f"wider_universe_source: {wider_source or 'none'}\n"
+              "wider_universe_source: focus+master+17\n"
               f"wider_universe_size: {out['wider_size']}\n"
-              f"wider_shown: {len(wider)}\n"
+              f"wider_shown: {shown}\n"
               "elapsed_minutes: 15\nsession_fraction: 0.0385\n"
               "source: Yahoo chart API 5m bars (interval=5m&range=1mo, regular session only) for "
               "the session volume, the 09:45 close and the prior-10 same-window baseline; Yahoo "
               "chart API 1d bars (range=3mo) for the prior-10 full-day volume; TradingView "
               "america scanner average_volume_10d_calc for the denominator (ONE pull, used for "
-              "BOTH sides of every crossing)\n"
+              "BOTH sides of every crossing); Yahoo chart API 5m bars with includePrePost=true "
+              "for the published rows only, to measure the pre-market share\n"
               "method: rvol_tod_normalised, time-of-day-normalised intraday RVOL. Today's window "
               "is 09:30-09:45 ET - 15 of 390 session minutes - compared with the SAME clock "
               "window on the prior 10 eligible sessions, then scaled to full-day units by the "
@@ -542,75 +726,130 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "fire bar / TV average_volume_10d_calc (reference only, never bucketed); rvol_prev "
               "= the same formula over the earlier cross-check snapshot's window against the "
               "prior-10 mean of that same window; rvol_at_09_38 = the raw cumulative ratio at "
-              "that earlier snapshot\n"
+              "that earlier snapshot; pm_share_pct = pre-market volume before 09:30 as a "
+              "percentage of the session volume\n"
               "bucket_rule: rvol_now >= 1.5 -> RVOL Required, otherwise Liquid\n"
               "rvol_required_bucket: 1.5\nrvol_alert_threshold: 1.5\nnear_miss_floor: 1.275\n"
               "alert_rule: An alert fires for a name whose rvol_now is at or above "
               "RVOL_ALERT_THRESHOLD (1.5) AND whose prev_session_rvol is below "
               "RVOL_ALERT_THRESHOLD (1.5) - that is, the name crossed UP through the alert bar "
               "since the previous session's reading of the same metric.\n"
-              "pm_source_status: not_subtracted\ncross_check_source: same_series_truncated\n"
+              "pm_source_status: measured_from_series\ncross_check_source: same_series_truncated\n"
               "status: ok\n"
               f"upstream: {out.get('upstream') or 'focus.md'}\nnames_unpriced: "
-              f"{len(out['unscored'])}\n---\n")
-    md.append(f"\n# Focus RVOL snapshot — {out['fire_date']}\n")
+              f"{len(out['unscored'])}\n"
+              # ---- keys beyond the contract's list, appended so its ORDER is untouched
+              f"published_rows: {len(published)}\n"
+              f"selectivity: {sel}\n"
+              f"universe_median_rvol: {dist.get('p50', 'n/a')}\n"
+              f"universe_p90_rvol: {dist.get('p90', 'n/a')}\n"
+              f"universe_share_ge_1_5_pct: {all_req if all_req is not None else 'n/a'}\n"
+              f"universe_crossings: {all_cross}\n"
+              "---\n")
+    md.append(f"\n# Focus RVOL snapshot - {out['fire_date']} 09:45 ET (cron #07)\n")
     md.append("\n## TL;DR\n"
-              f"- {out['scored']} of {out['universe_size']} names scored "
-              f"({out['focus_size']} focus + {out['wider_size']} wider union).\n"
-              f"- {n_req} names at or above the 1.5x bar; {n_near} near misses.\n"
-              f"- Alerts: {alert_line or 'none'}.\n"
-              "- Every prior reading is RECOMPUTED on the same feed and the SAME TradingView "
-              "denominator as today's reading, so both sides of each crossing are one scale. "
+              f"- **{out['scored']} of {out['universe_size']}** names scored "
+              f"({out['focus_size']} focus + {out['wider_size']} wider union); "
+              f"**{len(published)} rows published** (the focus roster, the top {shown} of the "
+              f"wider union, and every name in the near-miss band).\n"
+              f"- **Required: {n_req} of {len(published)} published** "
+              f"({n_liq} Liquid); **{n_near} near misses**; **{len(alert_rows)} alerts** "
+              f"(provable crossings).\n"
+              f"- **The tape today: `{sel}`.** "
+              + (f"**{all_req}% of the {dist.get('scored')} scored names cleared the 1.5x bar** "
+                 f"(median {dist.get('p50')}x, p90 {dist.get('p90')}x) and there were "
+                 f"**{all_cross} crossings** across the whole scored set - the bar is a "
+                 f"DESCRIPTION of a broad move, not a selection of it. "
+                 if sel == "broad_tape" else
+                 f"Only {all_req}% of the {dist.get('scored')} scored names cleared the 1.5x bar "
+                 f"(median {dist.get('p50')}x, p90 {dist.get('p90')}x) - the bar is selective "
+                 f"today. ")
+              + f"\n- **Alerts: {alert_line or 'none'}.** "
+              f"**{n_alert_build} are still building and {n_alert_fade} are already fading** "
+              f"between the earlier snapshot and the fire; the near-miss watch list is "
+              f"**{n_near_build} building vs {n_near_fade} fading**.\n"
+              "- **Every prior reading is RECOMPUTED on the same feed and the SAME TradingView "
+              "denominator as today's reading**, so both sides of each crossing are one scale. "
               "The TV denominator is a rolling average and moves between fetches, so a published "
               "prior value is a cross-check, never the baseline.\n"
-              "- The focus roster alone is a momentum screen on the previous session's data and "
-              "structurally misses the day's movers; the wider union is what carries them.\n")
+              "- **The focus roster alone is a momentum screen on the previous session's data and "
+              "structurally misses the day's movers**; the wider union is what carries them.\n")
     md.append("\n## Universe\n"
               f"- focus roster: {out['focus_size']} names\n"
               f"- wider union: {out['wider_size']} names from {wider_source or 'n/a'}\n"
-              f"- scored: {out['scored']}; unscored: {len(out['unscored'])}\n")
+              f"- scored: {out['scored']}; unscored: {len(out['unscored'])}; "
+              f"published rows: {len(published)}\n"
+              + (f"- **the scored universe's distribution** (the context for every count below): "
+                 f"median {dist.get('p50')}x, p75 {dist.get('p75')}x, p90 {dist.get('p90')}x, "
+                 f"p99 {dist.get('p99')}x; {dist.get('share_ge_1_275')}% at or above 1.275x, "
+                 f"**{all_req}% at or above 1.5x**, {dist.get('share_ge_2_0')}% at or above 2x, "
+                 f"{dist.get('share_ge_3_0')}% at or above 3x - selectivity: **{sel}**\n"
+                 if dist else ""))
     stamp = (f"{out['fire_date']} 09:45 ET (last completed 5m bar, stamped 09:40; "
              f"volume window 09:30-09:45 ET)")
     md.append("\n## Focus table\n\n" + _md_table(focus, stamp))
-    md.append(f"\n## Wider universe\n\nThe top {len(wider)} of the wider union by `rvol_now`.\n\n"
+    md.append(f"\n## Wider universe\n\nThe top {shown} of the wider union by `rvol_now`.\n\n"
               + _md_table(wider, stamp))
     md.append("\n### Counts\n"
               f"- universe size: {out['universe_size']}\n"
               f"- focus roster size: {out['focus_size']}\n"
               f"- wider universe size: {out['wider_size']}\n"
-              f"- Required count: {n_req}\n"
-              f"- NEAR MISS count: {n_near}\n"
-              f"- alert count: {len(out['focus_crossings']) + len(out['wider_crossings'])}\n"
-              f"- crossings: {len(out['focus_crossings']) + len(out['wider_crossings'])}\n")
+              f"- scored: {out['scored']}; unpriced: {len(out['unscored'])}; "
+              f"published rows: {len(published)}\n"
+              f"- Required count: {n_req} (of {len(published)} published)\n"
+              f"- Liquid count: {n_liq}\n"
+              f"- NEAR MISS count: {n_near} "
+              f"({n_near_build} building, {n_near_fade} fading)\n"
+              f"- alert count: {len(alert_rows)} "
+              f"({n_alert_build} building, {n_alert_fade} fading)\n"
+              f"- crossings: {len(alert_rows)} published"
+              + (f"; **{all_cross} across all {out['scored']} scored names**"
+                 if all_cross != len(alert_rows) else "")
+              + "\n"
+              + (f"- universe distribution: median {dist.get('p50')}x, p90 {dist.get('p90')}x; "
+                 f"{all_req}% of the scored universe at or above 1.5x "
+                 f"(selectivity: {sel})\n" if dist else ""))
     md.append("\n## Alerts\n\n")
-    if alert_line:
-        for r in focus + wider:
-            if r.get("crossed"):
-                md.append(f"- **{r['symbol']}** — {_num(r.get('rvol_now'))}x vs "
-                          f"{_num(r.get('rvol_prev_session'))}x on the prior session "
-                          f"(recomputed on the same feed), close {_num(r.get('close'), 2)} — "
-                          f"crossed UP through the 1.5x bar.\n")
+    if alert_rows:
+        md.append("A name is listed only if the crossing is PROVEN: `prev_session_rvol` below "
+                  "1.5x and `rvol_now` at or above it, both sides on the same feed and the same "
+                  "denominator. Ordered by the trend delta (the earlier cross-check snapshot -> "
+                  "the fire), so the names still BUILDING come first.\n\n")
+        for r in alert_rows:
+            md.append(f"- **{r['symbol']}** - {_num(r.get('rvol_now'))}x now vs "
+                      f"{_num(r.get('rvol_prev_session'))}x on the prior session "
+                      f"({r.get('prev_session_rvol_source')}), close "
+                      f"{_num(r.get('close'), 2)} - "
+                      + (f"RVOL building {_num(r.get('rvol_prev'))}x -> "
+                         f"{_num(r.get('rvol_now'))}x, accumulation\n"
+                         if r.get("rvol_trend") == "ACCELERATING" else
+                         f"RVOL fading {_num(r.get('rvol_prev'))}x -> "
+                         f"{_num(r.get('rvol_now'))}x, distribution\n"
+                         if r.get("rvol_trend") == "DECELERATING" else
+                         f"RVOL flat {_num(r.get('rvol_prev'))}x -> "
+                         f"{_num(r.get('rvol_now'))}x\n"))
     else:
-        md.append("**none** — no name crossed UP through the 1.5x bar against its recomputed "
-                  "prior-session reading.\n")
+        md.append("**none** - no published name crossed UP through the 1.5x bar against its "
+                  "recomputed prior-session reading.\n")
     # ---------------------------------------------------------------- near misses
-    near_rows = [r for r in focus + wider
-                 if NEAR_MISS_FLOOR <= (r.get("rvol_now") or 0) < ALERT_BAR]
-    near_rows.sort(key=lambda r: -(r.get("rvol_now") or 0))
     md.append("\n## Near misses\n\n")
     if near_rows:
         md.append(f"Names between {NEAR_MISS_FLOOR}x and {ALERT_BAR}x - the tradable edge. Each "
                   f"would become an ALERT if `rvol_now` reaches 1.5x while `prev_session_rvol` "
-                  f"stays below 1.5x. Ordered by `rvol_now`, descending.\n\n"
+                  f"stays below 1.5x. **Ordered by the trend delta, so the names that are "
+                  f"BUILDING come first** - on 2026-11-12 that split was "
+                  f"{n_near_build} building against {n_near_fade} fading, and the fading ones "
+                  f"were a watch list in name only.\n\n"
                   "| symbol | rvol_now | prev_session_rvol | rvol_prev | rvol_trend | "
-                  "what would turn it into an alert |\n|---|---|---|---|---|---|\n")
+                  "pm_share_pct | what would turn it into an alert |\n"
+                  "|---|---|---|---|---|---|---|\n")
         for r in near_rows:
             md.append(f"| {r['symbol']} | {_num(r.get('rvol_now'))} | "
                       f"{_num(r.get('rvol_prev_session'))} | {_num(r.get('rvol_prev'))} | "
-                      f"{r.get('rvol_trend') or 'n/a'} | rvol_now reaching 1.5x with "
-                      f"prev_session_rvol below 1.5x |\n")
+                      f"{r.get('rvol_trend') or 'n/a'} | {_num(r.get('pm_share_pct'), 1)} | "
+                      f"rvol_now reaching 1.5x with prev_session_rvol below 1.5x |\n")
     else:
-        md.append("None: no published name sits in the 1.275x-1.5x band.\n")
+        md.append("None: no scored name sits in the 1.275x-1.5x band.\n")
 
     # ---------------------------------------------------------------- universe change
     today_syms = [r.get("symbol") for r in focus if r.get("symbol")]
@@ -639,9 +878,14 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "crossing\n"
               "- the previous session's reading is recomputed on that same denominator; the "
               "published value is carried as a cross-check with its drift\n"
-              "- pre-market: the Yahoo chart call uses regular-session bars (`includePrePost` "
-              "off), so session volume EXCLUDES pre-market prints by construction - "
-              "`pm_vol_source: not_subtracted`, `pm_vol: 0`\n")
+              "- **one vintage per artifact**: the whole run is one process, so every published "
+              "number comes from the same bytes. The pre-market pass fetches the same window "
+              "again with includePrePost=true, and the session volume in THAT response is "
+              "compared with the bulk pass's - a drift over 2% publishes the share as `n/a` "
+              "rather than mixing vintages\n"
+              "- pre-market: `pm_vol` is MEASURED for the published rows (the bars before 09:30 "
+              "on the includePrePost response) and is not subtracted from the session volume - "
+              "the session bars exclude pre-market by construction\n")
     md.append("\n## Source health\n"
               f"- TradingView scanner (the denominator): one pull, "
               f"{'no truncation and no coverage problem reported' if not out.get('tv_pull_problems') else 'PROBLEMS: ' + str(out.get('tv_pull_problems'))} - "
@@ -659,6 +903,9 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "previous session's published files (the focus roster, the sweep's master list "
               "and cron #17's mover boards). A name that was in none of them cannot appear "
               "here.\n"
+              "- **The wider table shows the TOP "
+              f"{shown}, not every name above the bar.** On a broad tape the counts above give "
+              "the full picture; the table is the screen, the counts are the context.\n"
               "- **`rvol_tod_normalised` is a MORNING metric** - how hot a name is against its "
               "OWN norm at 09:45. It is not a full-day relative volume and it is not comparable "
               "with cron #09's completed-session `rvol_<date>` (call that `rvol_session_eod`).\n"
@@ -666,6 +913,14 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "used for bucketing.\n"
               "- **`rvol_trend` is the earlier-snapshot delta** (`rvol_now` - `rvol_prev`); the "
               "session-over-session delta is carried as `rvol_vs_prev_session`.\n"
+              "- **The TV denominator is a rolling average** and moves ~2% every 15 minutes, so a "
+              "name sitting within ~2% of the bar can flip on the denominator alone.\n"
+              "- **The pre-market share is measured only on the fire's OWN day.** Nasdaq's "
+              "pre-session counter is the source (Yahoo's extended-hours bars carry volume 0 - "
+              "measured 2026-11-13, on the live session and on history), and a REPLAY cannot "
+              "measure it at all: the endpoint serves TODAY's pre-market, which is a different "
+              "session. On a replay the rows read `pm_vol_source: not_subtracted` and the share "
+              "is `n/a` rather than a wrong number.\n"
               "- **`lag_sessions` is a WEEKDAY count** between the sweep's own `Screen data_date:` "
               "and this fire - a venue holiday inside the gap would add one, so it is an upper "
               "bound.\n")
