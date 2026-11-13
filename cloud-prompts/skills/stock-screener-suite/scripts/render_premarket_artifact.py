@@ -633,12 +633,27 @@ def main(argv=None) -> int:
         return 3
 
     context = {}
-    if a.context and Path(a.context).exists():
+    if a.context:
+        # A NAMED context file that is not on disk must FAIL LOUDLY. Measured
+        # 2026-11-13: a re-render pointed at a file that had not been fetched
+        # published "no catalyst confirmed in this run" for EVERY name - the
+        # artifact looked complete and every catalyst was gone.
+        if not Path(a.context).exists():
+            print("render_premarket_artifact: the context file %s does not exist - refusing to "
+                  "render an artifact that would silently publish 'no catalyst confirmed' for "
+                  "every name. Fetch it, or omit --context." % a.context, file=sys.stderr)
+            return 3
         try:
             context = json.loads(Path(a.context).read_text())
         except Exception as e:
-            print("render_premarket_artifact: the context file could not be read (%s) - it is "
-                  "ignored" % e, file=sys.stderr)
+            print("render_premarket_artifact: the context file could not be read (%s) - refusing "
+                  "to render an artifact without its catalysts" % e, file=sys.stderr)
+            return 3
+        if not context.get("catalysts"):
+            print("render_premarket_artifact: the context file carries no `catalysts` - refusing "
+                  "to render an artifact that would publish 'no catalyst confirmed' for every "
+                  "name", file=sys.stderr)
+            return 3
 
     out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
