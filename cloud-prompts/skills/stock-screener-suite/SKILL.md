@@ -862,7 +862,11 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/sweep_pipeline.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$P.tmp" "$U" 2>/dev/null
-  if [ -s "$P.tmp" ] && grep -q 'SWEEP_PIPELINE_V1' "$P.tmp" 2>/dev/null; then
+  # The FETCH marker (not the artifact contract marker) is what the ladder
+  # demands: SWEEP_PIPELINE_V2 carries the cron #10 path-ownership guard,
+  # and an OLD copy served from a CDN would fail every fire on the cron #10
+  # path check. The artifact's own `contract:` marker is still V1.
+  if [ -s "$P.tmp" ] && grep -q 'SWEEP_PIPELINE_V2' "$P.tmp" 2>/dev/null; then
     mv -f "$P.tmp" "$P"; break
   fi
   rm -f "$P.tmp"
@@ -876,6 +880,17 @@ python3 "$P" run --date <CRON_DATE> --out /workspace/daily-screens \
 # 2. fill the narrative, then re-check
 python3 "$P" check --date <CRON_DATE> --t1-date <T1_DATE> --out /workspace/daily-screens
 ```
+
+**Cron #10's paths live in the SAME dated directory.** Cron #10 (14:00 ET,
+intraday) writes `breadth-snapshot.{md,csv,json}` and `_regime-intraday.json`
+into `daily-screens/<date>/`, and cron #09 (18:30 ET) writes the end-of-day
+read into that same directory. So cron #10's files are ALWAYS present when
+cron #09 runs. The pipeline's check therefore compares CONTENT, not existence:
+it snapshots those four paths before the run writes anything
+(`_cron10_baseline.json`) and fails only if this run created, modified or
+deleted one of them. **Never delete `breadth-snapshot.md` from the branch** —
+cron #10's intraday read and cron #09's end-of-day read are meant to sit side
+by side.
 
 **The pipeline writes `daily-sweep.md` and `breadth.md` with
 `<!-- FILL: ... -->` slots** for the parts that need JUDGEMENT — the TL;DR, the

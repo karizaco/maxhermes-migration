@@ -2,6 +2,7 @@
 """Cron #09 daily-sweep pipeline — the ONE command that produces the artifact.
 
 CAPABILITY MARKER: SWEEP_PIPELINE_V1
+FETCH MARKER: SWEEP_PIPELINE_V2 (the cron #10 path-ownership guard, fixed)
 
 WHY THIS EXISTS
 ---------------
@@ -73,6 +74,28 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 CAPABILITY_MARKER = "SWEEP_PIPELINE_V1"
+
+# FETCH MARKER (2026-11-13).  The ARTIFACT contract marker above is unchanged
+# on purpose — the published files and their shapes did not change — but the
+# FETCH ladder in the skill spec now demands this string, so a CDN-cached copy
+# of the OLD script (with the broken cron #10 guard) cannot win the race.
+FETCH_MARKER = "SWEEP_PIPELINE_V2"
+
+# Cron #10 writes the SAME dated directory 4.5 hours earlier (its 14:00 ET
+# intraday read: `breadth-snapshot.{md,csv,json}` and `_regime-intraday.json`).
+# So the mere PRESENCE of cron #10's files in the output directory is NOT
+# evidence that cron #09 wrote them — and the old existence guard therefore
+# FAILED EVERY SINGLE FIRE, because cron #10 always runs first.
+#
+# The guard must compare CONTENT: cron #09 must leave cron #10's published
+# files byte-identical.  Two proofs, in order:
+#   1. the run-time baseline this script snapshots BEFORE it writes anything
+#      (`_cron10_baseline.json` in the dated dir);
+#   2. the published copy on `origin/main`, for an artifact produced before the
+#      baseline existed (or checked outside a run).
+CRON10_PATHS = ("breadth-snapshot.md", "breadth-snapshot.csv",
+                "breadth-snapshot.json", "_regime-intraday.json")
+CRON10_BASELINE = "_cron10_baseline.json"
 
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
@@ -235,6 +258,71 @@ def bare_ticker(symbol) -> str:
     if not symbol:
         return symbol
     return str(symbol).split(".")[0].strip().upper()
+
+
+def _sha256_bytes(b: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(b).hexdigest()
+
+
+def _sha256_file(p: Path) -> str | None:
+    try:
+        return _sha256_bytes(p.read_bytes())
+    except OSError:
+        return None
+
+
+def capture_cron10_baseline(out_dir: Path) -> dict:
+    """Snapshot cron #10's paths BEFORE this run writes anything.
+
+    The snapshot is the run-time truth about ownership: a path that was absent
+    before the run and present after it was written BY THIS RUN; a path whose
+    hash changed was modified by this run.  Both are failures.
+    """
+    files = {}
+    for f in CRON10_PATHS:
+        p = out_dir / f
+        if p.exists():
+            files[f] = {"exists": True, "sha256": _sha256_file(p),
+                        "mtime": p.stat().st_mtime}
+        else:
+            files[f] = {"exists": False, "sha256": None, "mtime": None}
+    return {"captured_at": time.time(), "cron_date": out_dir.name,
+            "files": files}
+
+
+def _published_copy(out_dir: Path, name: str) -> bytes | None:
+    """The published copy of `name` on origin/main, or None if unreachable.
+
+    Used as the fallback proof for an artifact that was produced before the
+    run-time baseline existed.  The contents API is NOT used here: it is
+    CDN-cached, and a stale blob looks exactly like a file that never changed.
+    The GIT BLOB API reads the branch itself.
+    """
+    try:
+        base = out_dir.resolve()
+    except OSError:
+        return None
+    root = None
+    for cand in [base] + list(base.parents):
+        if (cand / ".git").exists():
+            root = cand
+            break
+    if root is None:
+        return None
+    try:
+        rel = (base / name).relative_to(root).as_posix()
+    except ValueError:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(root), "cat-file", "blob",
+                            f"origin/main:{rel}"],
+                           capture_output=True, timeout=30)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
 
 
 def log(msg: str) -> None:
@@ -1591,10 +1679,39 @@ def check_artifact(out_dir: Path, cron_date: str, t1_date: str) -> list[str]:
         need(p.exists() and p.stat().st_size > 0, f"missing or empty artifact: {f}")
 
     # --- cron #10's paths are NOT written by this cron ----------------------
-    for f in ("breadth-snapshot.md", "breadth-snapshot.csv",
-              "breadth-snapshot.json", "_regime-intraday.json"):
-        need(not (out_dir / f).exists(),
-             f"{f} is cron #10's path and must not be written by cron #09")
+    # CONTENT comparison, not EXISTENCE.  Cron #10 writes this same dated
+    # directory 4.5 h earlier, so its files are ALWAYS present here; the old
+    # existence guard failed every single fire and blocked a publishable
+    # artifact.  What this cron must prove is that it did not TOUCH them.
+    baseline = None
+    bp = out_dir / CRON10_BASELINE
+    if bp.exists():
+        try:
+            baseline = json.loads(bp.read_text()).get("files")
+        except Exception:
+            baseline = None
+    for f in CRON10_PATHS:
+        p = out_dir / f
+        cur_sha = _sha256_file(p) if p.exists() else None
+        if baseline and f in baseline:
+            b = baseline[f]
+            if b.get("exists") and not p.exists():
+                need(False, f"{f} is cron #10's path and this run DELETED it")
+            elif not b.get("exists") and p.exists():
+                need(False, f"{f} is cron #10's path and this run CREATED it")
+            elif b.get("exists") and cur_sha != b.get("sha256"):
+                need(False, f"{f} is cron #10's path and this run MODIFIED it")
+            continue
+        # No run-time baseline: fall back to the PUBLISHED copy on the branch.
+        if not p.exists():
+            continue                      # nothing there to clobber
+        pub = _published_copy(out_dir, f)
+        if pub is None:
+            need(False, f"{f} is cron #10's path and this run's ownership of it "
+                        "cannot be verified (no run baseline, no published copy)")
+        elif _sha256_bytes(pub) != cur_sha:
+            need(False, f"{f} is cron #10's path and this run MODIFIED it "
+                        "(it differs from the copy published on origin/main)")
 
     results_path = out_dir / "_results.json"
     if not results_path.exists():
@@ -1755,6 +1872,15 @@ def cmd_run(args) -> int:
 
     out_dir = Path(args.out) / cron_date
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # The ownership baseline for cron #10's paths, captured BEFORE this run
+    # writes anything.  Without it the check could not tell "cron #10 wrote
+    # this earlier today" from "cron #09 wrote it just now".
+    try:
+        (out_dir / CRON10_BASELINE).write_text(
+            json.dumps(capture_cron10_baseline(out_dir), indent=2))
+    except OSError as exc:
+        log(f"could not write the cron #10 ownership baseline: {exc}")
     # The scratch dir holds the intermediate files (the fresh book, the overlay,
     # the symbol list).  It is NOT created by the pipeline, and a replay that
     # pointed --scratch at a fresh directory died with FileNotFoundError on
