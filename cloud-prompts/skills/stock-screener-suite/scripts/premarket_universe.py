@@ -670,6 +670,25 @@ def main(argv=None) -> int:
               "this universe.", file=sys.stderr)
         for f in failures:
             print("  FAIL " + f, file=sys.stderr)
+        # A MISSING SWEEP is the one failure with a documented fallback. Measured
+        # 2026-11-13: cron #09's 18:30 ET sweep for 2026-11-12 died on a transport
+        # error and published nothing, so H3 failed and the whole routine would
+        # have produced NO board. The fallback re-runs the resolver with
+        # --allow-stale-universe: the universe is one session old, the reference
+        # close comes from the INDEPENDENT sources, and the artifact publishes
+        # `universe_stale` (SKILL §6.3a). A WRONG close (H4/H5) has no fallback.
+        stale_ok = any(f.startswith("H3_") or "H2" in f for f in failures)
+        wrong_close = any(f.startswith("H4_") or f.startswith("H5_") for f in failures)
+        if stale_ok and not wrong_close:
+            print("\npremarket_universe: this failure is a MISSING SWEEP, and it has a "
+                  "documented fallback (SKILL §6.3a): re-run with --allow-stale-universe. "
+                  "The universe will be one session old, every reference close will come "
+                  "from the INDEPENDENT sources, and the artifact MUST publish "
+                  "`universe_stale`.", file=sys.stderr)
+        else:
+            print("\npremarket_universe: this failure has NO fallback — the reference close "
+                  "itself is wrong or unconfirmed, so there is no board. Stop and report.",
+                  file=sys.stderr)
         return 3
     return 0
 
