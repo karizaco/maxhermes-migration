@@ -262,6 +262,101 @@ there yet and the verdict is computed over a 20-minute window. `held` at the ope
 **"the gap held for 20 minutes"**, NOT "held into the bell" — say so in the artifact, and never
 reuse the preclose phrasing ("held into the bell") in an open-slot artifact.
 
+### The 09:50 pull engine (run-time fetched — required)
+
+The open slot's universe, the 5-minute pull, the 09:50 reconstruction, the floors and the publish
+gate are **one engine**: `tools/open_0950_pull.py`. Fetch it at RUN time — the fixes land on the
+next fire with no `cron_update` and no prompt drift.
+
+```bash
+mkdir -p /workspace/tools
+E=/workspace/tools/open_0950_pull.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/open_0950_pull.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/open_0950_pull.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/open_0950_pull.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$E.tmp" "$U" 2>/dev/null
+  if [ -s "$E.tmp" ] && grep -q 'OPEN_0950_PULL_V1' "$E.tmp" 2>/dev/null; then
+    mv -f "$E.tmp" "$E"; break
+  fi
+  rm -f "$E.tmp"
+done
+[ -s "$E" ] || { echo "open_0950_pull.py: UNAVAILABLE — do NOT hand-roll the pull; say so and stop"; exit 1; }
+```
+
+```bash
+# the whole open-slot data spine, in one call
+python3 "$E" run --date <YYYY-MM-DD> --prior <YYYY-MM-DD> \
+  --out /workspace/open_0950 --avg10 /workspace/avg10.json \
+  --index-live "SPY=<live move>,QQQ=<live move>"
+```
+
+`<live move>` is the **live** index move the MCP bridge returns (`market-recap get_quotes`) —
+the gate compares the reconstructed 09:50 move against it. Run the engine **before** the catalog
+work: it is the long pole and it is resumable.
+
+**What the engine owns, and why each rule exists** (every one was a measured, SILENT defect):
+
+| Rule | The defect it removes |
+|---|---|
+| the prior close is the **prior session's last non-null bar close**; `chartPreviousClose` is used only for `range=1d` | in a multi-day range that field is the close *before the window* ⇒ every move became a TEN-DAY move (2026-11-10: NVDA −21.50% instead of −4.10%, QQQ −6.55% instead of −0.26%) |
+| the price is the **last non-null close** at or before the cut, and a null-close bar's **volume still counts** | 1,276 of 7,857 names were silently dropped; a null bar's volume was under-counted |
+| **no cookie** on chart calls, and `Edge: Too Many Requests` / 429 is a **THROTTLE** (pause, back off, resume) | the cookie'd session is throttled by the egress edge; the `Edge:` prefix used to defeat the error check, so the pull kept hammering a throttled endpoint |
+| one **JSONL line per symbol** as it lands | a kill used to destroy ~3,945 completed fetches; now a retry resumes |
+| the **venue prefix is stripped** and `/` maps to `-` | `NASDAQ:NVDA` 404s on Yahoo |
+| **one keep-alive connection per worker** | one process per symbol ran at 12.4 req/s; the same requests run at 62–101 req/s (measured 2026-11-13) |
+
+**The PUBLISHED prior close is the OFFICIAL daily close, and the engine re-bases it.** The 5-minute
+series' last bar close is only an APPROXIMATION of the session close — the closing auction print
+does not always land in the bar series. Measured 2026-11-13 on the 2026-11-12 session: **26 of 646
+published names** had a 5-minute-derived prior close more than 0.5% away from Yahoo's own daily
+close (up to **1.4%** on a $1.39 name). The gap and the move are measured against the official
+close, so the engine re-bases every published name on it, **re-applies the trigger and the floors
+afterwards**, and publishes **how many names were re-based and how many left the set as a
+result** (measured on the 2026-11-12 session: 524 re-based, 11 dropped). The same defect is
+present in the published 2026-11-10 board (26 of 531 names) — it moves no Tier A/Soft-A name,
+but it is a real reference-price error and the artifact says so.
+
+**The PUBLISH GATE is not optional.** The engine exits non-zero when it fails; **a failed gate
+means NO open artifact is published** — say so and stop, do not publish a board on a broken
+reconstruction. The gate asserts:
+
+- **G1 index** — the reconstructed 09:50 move for SPY/QQQ is within **0.75pp** of the live index
+  move (the 09:50→quote drift is ~0.1–0.2pp; the ten-day-basis defect was 6.3pp on QQQ);
+- **G2 prior close (exact)** — every **published** name's reconstructed prior close equals Yahoo's
+  **own daily close** for the prior session within **0.5%** (measured 39 of 39 live names: SPY
+  759.79 vs 759.81);
+- **G3 completeness** — every published name carries a price, a prior close, a pace and a verdict,
+  and the published count equals the floor-cleared count. **A truncated pull is a FAILURE, never a
+  shorter board**;
+- **G4 basis sanity** — the median |reconstructed move − the scanner's change| over the published
+  set is under **12pp** (the correct basis reads 3.16pp; the scanner's own `change` column LAGS,
+  so this band is deliberately loose).
+
+The engine writes `universe.json`, `records.jsonl`, `published.txt` and `summary.json` into
+`--out`. **The candidates CSV is built from `published.txt`** — those are the names that cleared
+the open slot's floors and the 09:50 trigger, priced and tiered, with no unpriced tail.
+
+**Both pace bases are published, and only one is the contract's.** `pace` stays the published
+column (the current basis). `pace_live_basis` is published alongside it for the settled-session
+comparison below.
+
+#### The pace-basis validation (2026-11-13) — the OPEN slot publishes, the PRE-close slot arbitrates
+
+The published basis divides a **live** numerator by a factor measured on the **archived**
+prior session's 5-minute series, which sums to only ~79–99% of its own official daily volume.
+On the published 2026-11-10 board that inflated the pace by **~12%** (factor median 0.8918):
+no Tier A or Soft-A name changed tier, but ~30 names moved between TECH_WATCH and Tier B.
+
+The engine computes the alternative basis on the **live** feed —
+`vol_to_0950_official = daily_volume_live_today × (vol_to_0950 ÷ y5m_total_to_pull)` — and
+publishes it as `pace_live_basis`. **The basis does not change on the open slot.** The
+**pre-close** slot of the SAME session is the arbiter: its settled session volume is the ground
+truth, so the pre-close board publishes, for the open board's top-30 names, the open board's
+`pace`, the open board's `pace_live_basis`, and the settled RVol — side by side. **The published
+pace column stays as it is until that comparison has been made.**
+
 ### Pre-close two-phase procedure (required)
 
 The `preclose` slot straddles the bell, so run it in two phases and publish **one** digest:
@@ -278,6 +373,19 @@ The artifact must state that the numbers are **settled**, and the gap annex must
 that **held into the bell** from one that faded. Never publish an intraday price labelled as a
 close. Do not wait for the after-close earnings slate — the fleet's post-market brief owns that;
 the carry hands off to it.
+
+#### The pre-close slot ARBITRATES the open slot's pace basis (required, from 2026-11-13)
+
+The open slot publishes **two** pace bases for every name: `pace` (the published column, on the
+archived-prior-session factor) and `pace_live_basis` (on the live feed). **The pre-close slot of
+the SAME session is the arbiter**, because its settled session volume is the ground truth.
+
+**Required in the pre-close artifact**, for the open board's top-30 names by turnover: the open
+board's `pace`, the open board's `pace_live_basis`, and the settled RVol, **side by side in one
+table**. Read it against the opening-share band (10.77%–16.49%): if the settled RVol agrees with
+`pace_live_basis` and misses `pace` by roughly the measured bias, the live basis is the right one
+— and the basis change is then landed as its OWN commit, with the comparison published. **Do not
+change the published pace column in the same commit that publishes the comparison.**
 
 #### The settled close has TWO sources, and they disagree — pick one and cross-check (measured 2026-11-10)
 

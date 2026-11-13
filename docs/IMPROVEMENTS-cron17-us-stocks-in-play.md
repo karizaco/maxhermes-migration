@@ -553,3 +553,143 @@ opening-share band; the old basis should miss it by roughly the bias measured ab
 completed session has all 78 bars); the individual bars carry less volume than the official
 daily bar. Whatever the cause, the ARCHIVE and the LIVE feed are different bases, and a
 procedure that mixes them must reconcile them explicitly.
+
+
+---
+
+## 2026-11-13 (open slot) — the 09:50 pull engine: three discarded pulls, one wrong board, and the gate that stops both
+
+**The run.** The 2026-11-10 open fire took **46m52s** from the fire instant (09:50:36 ET) to the
+push (10:37:28 ET). The board itself was correct — 531 names, every tier priced, 31/31 contract
+checks green — but **~20 minutes of the 48 were two discarded pulls and one wrong pull**, and
+another ~9 minutes were available from the pull's own request pattern. The defects below are
+**SILENT**: nothing crashed, nothing was empty, and each one published plausible numbers.
+
+### 1. The three pulls
+
+| Pull | What it was | What it cost |
+|---|---|---|
+| **#1** | the venue-prefixed symbol (`NASDAQ:NVDA`) sent to Yahoo | **100% 404.** ~2 min, nothing usable |
+| **#2** | the cookie'd session; the edge throttled it at ~3,750 processed | **~3,945 completed fetches (~7 min) destroyed** — the script wrote its output file only on completion, so killing it lost everything |
+| **#3** | cookie-less, `range=10d`, **wrong prior close** | **11m18s** to produce a board where NVDA read **−21.50%** (really −4.10%) and QQQ **−6.55%** (really ≈−0.26%) — the whole market looked like a crash while the index was −0.30% |
+| **#4** | cookie-less, `range=2d`, prior close rebuilt from the prior session's bars | **the good one** — 7,857 of 7,889 symbols in 632s (12.4 req/s) |
+
+### 2. The five measured defects
+
+1. **`chartPreviousClose` in a MULTI-DAY range is the close BEFORE the range starts.** With
+   `range=10d` it is ~10 sessions old, so every move became a **ten-day move**. Nothing failed:
+   the arithmetic was flawless, it just answered the wrong question. **Fix: the prior close is the
+   last non-null close of the PRIOR SESSION's own bars** (already in the same response — zero extra
+   requests). `chartPreviousClose` is used ONLY for `range=1d`.
+2. **Some 5-minute bars carry a NULL close.** A picker that reads the 09:45 bar's close drops
+   those names **silently** — **1,276 of 7,857** in one pull. Worse, the bar's *volume* is real
+   even when its close is null, and dropping it under-counted the window. **Fix: the price is the
+   last NON-NULL close at or before the cut, and every bar's volume counts.**
+3. **The COOKIE'd chart session is throttled by the egress edge; the COOKIE-LESS one is not.**
+   The throttled body is `Edge: Too Many Requests` — the **`Edge:` prefix defeats a
+   `startswith("Too Many")` check**, so it was logged as a JSON parse error and the pull kept
+   hammering a throttled endpoint with no backoff. **Fix: no cookie, no crumb, and `Edge:`/429 is
+   classified as a THROTTLE — pause, back off, resume.**
+4. **No checkpointing.** The pull accumulated everything in memory and wrote its file only on
+   completion. **Fix: one JSONL line per symbol as it lands; a retry resumes.** A truncated pull is
+   a FAILURE, never a shorter board.
+5. **The venue prefix 404s.** `NASDAQ:NVDA` is not a Yahoo symbol; `SNUS/PH` must be `SNUS-PH`.
+
+### 3. The pull was REQUEST-bound, not source-bound
+
+| Mechanism | Cold throughput | 7,857 symbols |
+|---|---|---|
+| one `curl` process per symbol (what the 2026-11-10 run did) | **12.4 req/s** | 10m32s |
+| one keep-alive connection per worker (12 workers × 20 URLs) | **101.3 req/s** | **~1m20s** |
+
+Measured 2026-11-13 on 240 fresh (cold-cache) symbols, and confirmed live: 40 real symbols in
+**0.6s** with 8 workers, with **39 of 39** reconstructed prior closes within 0.5% of Yahoo's own
+daily bar (SPY 759.79 vs 759.81; QQQ 690.38 vs 690.38). The fleet's own 2026-11-10 measurement
+("12 workers → 17.1 req/s, 24 → 16.7, 48 → 16.7 — more workers buy nothing") is the same
+symptom seen from the other side: the ceiling was **per-request overhead** (fork/exec + TLS
+handshake), so raising concurrency could never fix it. Reusing the connection does.
+
+### 4. What landed: `tools/open_0950_pull.py` (capability `OPEN_0950_PULL_V1`)
+
+The engine owns the universe (three unpaginated scanner calls, each verified against its own
+`totalCount`), the pre-filter union, the pull, the 09:50 reconstruction, the floors and the gate.
+It is fetched at RUN time by the skill, so **the fixes land on the next fire with no `cron_update`
+and no prompt drift**. `tools/test_open_0950_pull.py` asserts every rule offline and requires the
+gate to CATCH six distinct breaches (24 checks).
+
+**The PUBLISH GATE** — a failed gate exits non-zero and **no open artifact is published**:
+
+| | check | tolerance | the defect it catches |
+|---|---|---|---|
+| **G1** | the reconstructed 09:50 move for SPY/QQQ vs the live index move | 0.75pp (the 09:50→quote drift is 0.1–0.2pp) | a broken basis (the ten-day defect was **6.3pp** on QQQ) |
+| **G2** | every **published** name's reconstructed prior close vs **Yahoo's own daily close** | **0.5%** (39 of 39 live names) | the ten-day prior close **outright** |
+| **G3** | every published name carries a price, a prior close, a pace and a verdict; the published count equals the floor-cleared count | exact | a truncated pull |
+| **G4** | the median \|reconstructed move − the scanner's change\| over the published set | 12pp (the correct basis reads 3.16pp) | a systematically wrong cross-section |
+
+G2 is the exact check and it is cheap: the 1-day bar the survivors need for the live pace basis
+carries the prior session's official close too. **G4 is deliberately loose** — the scanner's own
+`change` column LAGS, so it is a last-resort detector, not a precision check (a word-boundary
+gate on it would have produced false failures: the median drift on the published set is 3.16pp and
+the p90 is 11.4pp).
+
+### 5. The pace basis — published on BOTH, arbitrated by the pre-close slot
+
+The section above (2026-11-12) proposed the live-feed basis and asked for a same-session
+validation before landing it. **That validation is now instrumented, not landed**: the engine
+publishes `pace` (the current, contract column) **and** `pace_live_basis` for every name, and the
+**pre-close slot of the same session** publishes the open board's `pace`, the open board's
+`pace_live_basis` and the **settled RVol** side by side for the open board's top-30 names. The
+settled session is the ground truth. **The published pace column does not change until that
+comparison exists, and the basis change lands as its own commit.**
+
+Measured on the published 2026-11-10 board: the archived-factor basis inflated the pace by
+**~12%** (factor median 0.8918). **No Tier A or Soft-A name changes tier** (the lowest Tier A
+pace is 2.01, and even a 1.25 bias leaves it above 1.5) — but **~30 names move between
+TECH_WATCH and Tier B** (270/231 → 240/261 at a 1.12 bias), and the pace column itself is
+published on all 531 rows.
+
+### 7. A SIXTH defect, found by the new gate: the published prior close was NOT the official close
+
+The gate's **G2** check (the reconstructed prior close vs **Yahoo's own daily close** for the
+prior session, tolerance 0.5%) fired on the FIRST full-scale run of the new engine — on the
+2026-11-12 session, **26 of 646 published names** were more than 0.5% away, up to **1.4%** on a
+$1.39 name (ABR 1.4099 vs 1.3900; GLAS 1.8950 vs 1.8700; BGS 3.6450 vs 3.6700; TWN 85.9450 vs
+86.3800).
+
+**The cause:** the 5-minute series' last bar close is only an APPROXIMATION of the session close
+— the closing auction print does not always land in the bar series, and on a thin name the last
+bar can carry a stale print. The gap and the move are measured against the prior session's
+**official** close, so the engine now **re-bases every published name on the official daily
+close**, re-applies the trigger and the floors afterwards, and publishes the two counts
+(**524 re-based, 11 dropped** on that session). The same defect is in the published 2026-11-10
+board (**26 of 531** names): it moves no Tier A or Soft-A name, but it is a real reference-price
+error and the artifact must say so.
+
+**The lesson for the fleet:** a reconstructed reference price is a reconstruction, not the price.
+Where the source publishes the official price, **use it** — and gate the reconstruction against
+it rather than trusting it.
+
+### 8. The engine's measured throughput (full scale, live, 2026-11-13)
+
+| Measure | Value |
+|---|---|
+| the pull (8,627 symbols, cookie-less, keep-alive, 12 workers) | **42.7 s** ≈ **202 symbols/s** |
+| the same pull with one `curl` process per symbol (2026-11-10) | 632 s ≈ **12.4 symbols/s** |
+| the universe (3 unpaginated scanner calls, each verified against its own `totalCount`) | ~10 s |
+| the 1-day pass for the published names (the official prior close + the live volume) | ~8 s |
+| **the whole open-slot data spine** | **~60 s**, against **10m32s** for the price pull alone |
+| the gate | 4 checks, 635 published names, **prior_close_off = 0**, index deltas 0.12pp / 0.17pp, basis-sanity median 1.49pp |
+
+### 6. The rest of the 46m52s
+
+| block | time | verdict |
+|---|---|---|
+| the two discarded pulls + the wrong pull | ~20m | the defects above |
+| the pull's own request pattern | ~9m available | keep-alive connections |
+| the news fetch running CONCURRENTLY with the price pull | ~2m + it halved the pull's rate | fetch the news AFTER the pull, for the published names only |
+| the checker read end-to-end (754 lines, 4 reads) before first use | ~2m30s | run the checker on a stub and let it name its own requirements |
+| the Yahoo connectivity probing (4 calls to find a working UA/cookie) | ~1m | the recipe is now known and is in the engine |
+| three render/check cycles (a hardcoded claim about which names were on the board) | ~1m30s | every prose claim must be derived from the data |
+
+**The irreducible core** — the catalyst research, the curation, the prose and the push — is about
+**11 minutes**. Everything else was scheduling or a defect.
