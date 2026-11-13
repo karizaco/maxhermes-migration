@@ -106,16 +106,27 @@ except ImportError:
                 _u = _u.replace("/tools/screen.py",
                                 "/cloud-prompts/skills/stock-screener-suite/scripts/screen.py")
             try:
+                import base64
+                import json as _json
                 import urllib.request
                 _req = urllib.request.Request(
-                    _u, headers={"User-Agent": "Mozilla/5.0"})
+                    _u, headers={"User-Agent": "Mozilla/5.0",
+                                 "Accept": "application/vnd.github.raw"})
                 _body = urllib.request.urlopen(_req, timeout=30).read().decode()
+                # The contents API answers with a JSON envelope when the raw
+                # Accept header is not honoured; unwrap it.
+                if _body.lstrip().startswith("{"):
+                    _env = _json.loads(_body)
+                    _body = base64.b64decode(_env["content"]).decode()
             except Exception:
                 continue
-            # The marker is the acceptance test when it is present; a file
-            # without one is still better than no file, so accept it from the
-            # LAST url only (the authoritative raw CDN) rather than failing.
-            if _marker in _body or _u.startswith("https://raw.githubusercontent"):
+            # The CDNs are independently cached and CAN be stale: measured
+            # 2026-11-13, both raw.githubusercontent and jsdelivr served a
+            # screen.py WITHOUT the marker minutes after the push, while the
+            # contents API had it. So the marker is the acceptance test on
+            # every url, and a url that serves a stale copy is skipped rather
+            # than accepted.
+            if _marker in _body:
                 _dest.parent.mkdir(parents=True, exist_ok=True)
                 _dest.write_text(_body, encoding="utf-8")
                 _ok = True
