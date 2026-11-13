@@ -464,3 +464,40 @@ first class marker (`cum|pref|preferred|unit|class|non-voting|depositary|ads|gdr
 preferred descriptions put the COUPON before the marker (`"Enbridge Inc. 5.5 % Cum Red Pfd …"`
 reduces to `"Enbridge Inc. 5.5 %"`, against the primary line's `"Enbridge Inc."`). The
 issuer-preservation assertion itself passes — the ticker roots match on every carried cap.
+
+## 13. The venue collapse must prefer the issuer's PRIMARY venue, and the change field must reconcile with the prior close (2026-11-13)
+
+Date: 2026-11-13. Scope: cron #05's build path. Artifact: `international-eod/2026-11-13/` —
+4,383 rows across 16 regions, `scripts/intl_assert.py` green with 0 failures and 97 warnings (the
+documented baseline).
+
+**The defect.** The collapse picked the busiest venue line per (symbol, share class). That
+published `NEO:QBR.A` (Quebecor Class A, Cboe Canada) at C$74 with a **+105.56%** change, while
+the issuer's primary line, `TSX:QBR.A`, closed at C$80, +2.83%. The NEO line's own arithmetic
+implies a prior close of **C$36** — Quebecor had not traded there for months — so the line's
+change field was stale and the stock never moved 105% that day. Nothing errored; the file was
+well-formed and the row was the largest mover in its region.
+
+**How it was caught.** The cross-session check (§12.3) did not catch it — the row counts were
+within tolerance. What caught it was the **source's own arithmetic identity**: the implied prior
+close `close / (1 + change/100)` must reconcile with the prior session's close for the same
+instrument. That test is now built into the collapse (see the skill spec, "The venue-collapse
+rule"), and the corrected rule publishes `TSX:QBR.A` at +2.83% and drops the stale NEO line,
+counted in the manifest's `off_official_rows` (48 across the 16 regions) and disclosed in the
+report's caveats.
+
+**Two traps found while fixing it, both of which produced a plausible file.**
+- **The prior-close lookup must be per SYMBOL, not per issuer root.** Comparing a preferred
+  line's implied prior with the COMMON line's prior close flags every Canadian preferred as
+  stale: 183 false exclusions, and the Canadian file fell from 621 to 475 written rows against a
+  prior session of 631. `TSX:BCE.PR.B` is compared with `TSX:BCE.PR.B`'s own prior close.
+- **A carried-over close is not a stale print.** A row whose close EQUALS the prior close is a
+  carry-over (disclosed in `_carryover.json`) even when its change field is a leftover; the
+  implied-prior test only applies to rows whose close has moved.
+
+**The generalised lesson for the fleet.** A multi-venue source needs a **primary-venue
+preference** and a **second reading of its own arithmetic**, not a "largest number wins" rule.
+The busiest venue's line is often the stale one, and the move it reports can be off by a factor
+of two. This is the same shape as the archive's other silent-defect classes — the FX direction,
+the carry-over tolerance — and it is caught the same way: by reconciling the source against its
+own prior reading, not by checking the output for plausibility.
