@@ -79,73 +79,68 @@ _REPO = _HERE.parent
 _SCREEN = _REPO / "cloud-prompts/skills/stock-screener-suite/scripts/screen.py"
 _ENGINES = _HERE / "daily_sweep_engines.py"
 
+def _fetch_dependency(name: str, dest: Path, marker: str) -> None:
+    """Fetch one of the pipeline's two dependencies, if it is not already here.
+
+    The skill's fetch ladder fetches THIS FILE ALONE, but the pipeline imports
+    two siblings: `tools/daily_sweep_engines.py` and the skill's `screen.py`.
+    Fetched alone it died on ModuleNotFoundError — the same class of failure
+    as the ADR emitter: the helper exists, is correct, and is unreachable.
+
+    Two measured traps in this fetch (2026-11-13):
+    * the CDNs are independently cached and CAN be stale — both
+      raw.githubusercontent and jsdelivr served a `screen.py` WITHOUT the
+      capability marker minutes after the push, while the contents API had
+      it. So the marker is the acceptance test on EVERY url, and a url that
+      serves a stale copy is skipped rather than accepted.
+    * the contents API answers with a JSON envelope when the raw Accept
+      header is not honoured, and that envelope must be unwrapped before the
+      marker is tested.
+    """
+    if dest.exists() and marker in dest.read_text(errors="ignore"):
+        return
+    import base64
+    import json as _json
+    import urllib.request
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for u in (
+        f"https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/{name}?ref=main",
+        f"https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/{name}",
+        f"https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/{name}",
+    ):
+        if name == "screen.py":
+            u = u.replace(
+                "/tools/screen.py",
+                "/cloud-prompts/skills/stock-screener-suite/scripts/screen.py")
+        try:
+            req = urllib.request.Request(
+                u, headers={"User-Agent": "Mozilla/5.0",
+                             "Accept": "application/vnd.github.raw"})
+            body = urllib.request.urlopen(req, timeout=30).read().decode()
+            if body.lstrip().startswith("{"):
+                body = base64.b64decode(_json.loads(body)["content"]).decode()
+        except Exception:
+            continue
+        if marker in body:
+            dest.write_text(body, encoding="utf-8")
+            return
+    raise SystemExit(
+        f"sweep_pipeline.py: could not fetch its dependency {name} "
+        f"(marker {marker}) — the pipeline cannot run"
+    )
+
+
+# The two dependencies are fetched BEFORE sys.path is built: the directory
+# `screen.py` lands in may not exist yet, and a path entry for a directory
+# that does not exist yet is useless.
+_fetch_dependency("daily_sweep_engines.py", _ENGINES, "DAILY_SWEEP_ENGINES_V1")
+_fetch_dependency("screen.py", _SCREEN, "STOCK_SCREENER_SUITE_V1")
+
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_SCREEN.parent))
 
-try:
-    import daily_sweep_engines as engines  # noqa: E402
-except ImportError:
-    # The pipeline is fetched ALONE by the skill's fetch ladder, so its two
-    # siblings (`daily_sweep_engines.py` and the skill's `screen.py`) may not
-    # be on disk. Fetch them from the repo — the same three-URL ladder, with
-    # the capability marker as the acceptance test.
-    _HERE.mkdir(parents=True, exist_ok=True)
-    for _name, _dest, _marker in (
-        ("daily_sweep_engines.py", _ENGINES, "DAILY_SWEEP_ENGINES_V1"),
-        ("screen.py", _SCREEN, "STOCK_SCREENER_SUITE_V1"),
-    ):
-        if _dest.exists() and _marker in _dest.read_text(errors="ignore"):
-            continue
-        _ok = False
-        for _u in (
-            f"https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/{_name}?ref=main",
-            f"https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/{_name}",
-            f"https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/{_name}",
-        ):
-            if _name == "screen.py":
-                _u = _u.replace("/tools/screen.py",
-                                "/cloud-prompts/skills/stock-screener-suite/scripts/screen.py")
-            try:
-                import base64
-                import json as _json
-                import urllib.request
-                _req = urllib.request.Request(
-                    _u, headers={"User-Agent": "Mozilla/5.0",
-                                 "Accept": "application/vnd.github.raw"})
-                _body = urllib.request.urlopen(_req, timeout=30).read().decode()
-                # The contents API answers with a JSON envelope when the raw
-                # Accept header is not honoured; unwrap it.
-                if _body.lstrip().startswith("{"):
-                    _env = _json.loads(_body)
-                    _body = base64.b64decode(_env["content"]).decode()
-            except Exception:
-                continue
-            # The CDNs are independently cached and CAN be stale: measured
-            # 2026-11-13, both raw.githubusercontent and jsdelivr served a
-            # screen.py WITHOUT the marker minutes after the push, while the
-            # contents API had it. So the marker is the acceptance test on
-            # every url, and a url that serves a stale copy is skipped rather
-            # than accepted.
-            if _marker in _body:
-                _dest.parent.mkdir(parents=True, exist_ok=True)
-                _dest.write_text(_body, encoding="utf-8")
-                _ok = True
-                break
-        if not _ok:
-            raise SystemExit(
-                f"sweep_pipeline.py: could not fetch its dependency {_name} "
-                f"(marker {_marker}) — the pipeline cannot run"
-            )
-    import daily_sweep_engines as engines  # noqa: E402
-
-try:
-    import screen  # noqa: E402
-except ImportError:
-    raise SystemExit(
-        "sweep_pipeline.py: could not fetch the skill's screen.py — the pipeline "
-        "cannot run"
-    )
-
+import daily_sweep_engines as engines  # noqa: E402
+import screen  # noqa: E402
 TV_SCAN_URL = engines.TV_SCAN_URL
 USER_AGENT = engines.USER_AGENT
 
