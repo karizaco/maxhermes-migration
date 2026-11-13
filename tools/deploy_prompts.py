@@ -62,7 +62,7 @@ TASKS = {
     "20-eod-watchlist-csv-snapshot.md":         ("457172664209610", "0 16 * * 1-5"),
     "22-weekly-market-recap-preview.md":        ("457956577145214", "47 17 * * 0"),
     "23-agentic-post-market-brief.md":          ("457952877850694", "30 22 * * 1-5"),
-    "25-ntrt-gap-brief-daily.md":               ("457578106761360", "0 9 * * 1-5"),
+    "25-ntrt-gap-brief-daily.md":               ("457578106761360", "45 8 * * 1-5"),
     "26-agentic-pre-market-brief.md":           ("457175063601252", "30 8 * * 1-5"),
     # Added 2026-11-06: the 09:20 ET refresh of #26 was live on the scheduler but
     # had NO row here, so --emit could not reach it and the harness could neither

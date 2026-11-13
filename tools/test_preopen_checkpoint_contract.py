@@ -247,12 +247,12 @@ def m_narrative_with_number(tape, digest, repo):
     return True
 
 
-def m_wrong_record_count(digest, tape, repo):
+def m_wrong_record_count(tape, digest, repo):
     mutate(digest, "**records:**", "**records:** 999")
     return True
 
 
-def m_bad_order(digest, tape, repo):
+def m_bad_order(tape, digest, repo):
     """Swap the first two body rows: the |%| ordering is broken."""
     lines = open(digest, encoding="utf-8").read().split("\n")
     idx = [i for i, l in enumerate(lines)
@@ -265,51 +265,52 @@ def m_bad_order(digest, tape, repo):
     return True
 
 
-def m_bad_conf(digest, tape, repo):
+def m_bad_conf(tape, digest, repo):
     mutate(digest, "| low |", "| certain |", replace_all=True)
     return True
 
 
-def m_no_halt_state(digest, tape, repo):
+def m_no_halt_state(tape, digest, repo):
     mutate(digest, "not measurable", "0 halts")
     return True
 
 
-def m_wall_clock_slot(repo, tape, digest):
+def m_wall_clock_slot(tape, digest, repo):
     """The procedure names the slot with the wall clock."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
     mutate(p, "export CP=0830", "export CP=$(TZ=America/New_York date +%H%M)")
     return True
 
 
-def m_no_losers_half(repo, tape, digest):
+def m_no_losers_half(tape, digest, repo):
     """The procedure scans the gainers half only."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
-    mutate(p, "| `top_movers` (losers) | `market-recap` | the same ground truth for the other direction. |",
+    mutate(p, "| `top_movers` (losers) | `market-recap` | the same universe for the other "
+               "direction. |",
            "| (removed) | (removed) | (removed) |")
     return True
 
 
-def m_no_both_directions(repo, tape, digest):
+def m_no_both_directions(tape, digest, repo):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
-    mutate(p, "BOTH directions", "one direction")
+    mutate(p, "Both directions are mandatory", "One direction is enough")
     return True
 
 
-def m_append_instead_of_replace(repo, tape, digest):
+def m_append_instead_of_replace(tape, digest, repo):
     """The tape is appended to again — the doubling defect."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p, "os.replace(tmp, out)", 'open(out, "a").write(body)')
     return True
 
 
-def m_no_losers_call(repo, tape, digest):
+def m_no_losers_call(tape, digest, repo):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p, 'call_top_movers(category="losers")', "call_top_movers()")
     return True
 
 
-def m_prices_from_the_movers_scan(repo, tape, digest):
+def m_prices_from_the_movers_scan(tape, digest, repo):
     """The capture prices the tape from the LAST COMPLETED session again.
 
     Measured 2026-11-09: 14 of 14 testable priced rows carried the previous session's
@@ -322,13 +323,46 @@ def m_prices_from_the_movers_scan(repo, tape, digest):
     return True
 
 
-def m_no_version_marker(repo, tape, digest):
+def m_no_version_marker(tape, digest, repo):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
-    mutate(p, "CAPTURE_SCRIPT_VERSION: 2026-11-11.1", "CAPTURE_SCRIPT_VERSION:")
+    # The target is DERIVED from the file, so the mutation can never go stale: a
+    # literal version string in the test is a false PASS waiting to happen (see the
+    # audit note in main()).
+    s = open(p, encoding="utf-8").read()
+    m = re.search(r"CAPTURE_SCRIPT_VERSION:\s*\d{4}-\d{2}-\d{2}\.\d+", s)
+    if not m:
+        raise AssertionError("the capture script carries no CAPTURE_SCRIPT_VERSION marker")
+    mutate(p, m.group(0), "CAPTURE_SCRIPT_VERSION:")
     return True
 
 
-def m_slot_guard_removed(repo, tape, digest):
+def m_no_band_call(tape, digest, repo):
+    """The capture stops taking its candidates from TODAY's pre-market band.
+
+    The band is what makes the tape able to serve a brief: the 2026-11-10 tape carried
+    49 rows and covered 6 of the 50 names the brief published, because the candidate
+    source was Yahoo's `top_movers` - a screener over the LAST COMPLETED session.
+    A capture that goes back to that has to be caught.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "band = call_scanner_band()", 'band = {"rows": {}, "total": 0}')
+    return True
+
+
+def m_no_share_floor(tape, digest, repo):
+    """The capture stops dropping a pre-market print below the absolute share floor.
+
+    Below 25,000 pre-market shares is a quote, not a market - and it is the same
+    number cron #25's fourth gate leg uses. A capture that drops the floor fills the
+    tape with prints that the brief will throw away anyway.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "MIN_PM_SHARES = 25_000", "MIN_PM_SHARES = 0")
+    mutate(p, "pm_shares(pm_rows[tk]) < MIN_PM_SHARES", "False")
+    return True
+
+
+def m_slot_guard_removed(tape, digest, repo):
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p, "ALLOWED_SLOTS = (\"0830\", \"0920\", \"0950\")", "ALLOWED_SLOTS = ()")
     return True
@@ -378,7 +412,7 @@ def m_missing_news_date_key(tape, digest, repo):
     return True
 
 
-def m_board_shows_capture_clock(digest, tape, repo):
+def m_board_shows_capture_clock(tape, digest, repo):
     """The board's 'When it broke' shows the CAPTURE clock instead of the news date.
 
     This is the exact defect the ARWR row exposed: the column fell back to `ts`,
@@ -389,23 +423,26 @@ def m_board_shows_capture_clock(digest, tape, repo):
     return True
 
 
-def m_no_staleness_gate(repo, tape, digest):
+def m_no_staleness_gate(tape, digest, repo):
     """The capture script no longer dates its catalysts."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     # The gate is a CALL to resolve_news_date(); the checker also requires the tape
     # to carry the field, so the quoted key is what has to disappear.
-    mutate(p, '"news_date": None,', '"news_dateX": None,')
+    # The gate is the DATEING: the call to resolve_news_date() and the field it
+    # writes. Removing the name (everywhere) takes both away, and the checker must
+    # catch a script that no longer dates its catalysts.
+    mutate(p, "resolve_news_date", "resolve_news_dateX", replace_all=True)
     return True
 
 
-def m_stale_window_drift(repo, tape, digest):
+def m_stale_window_drift(tape, digest, repo):
     """The script's staleness window no longer matches the checker's."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p, "CATALYST_MAX_AGE_DAYS = 4", "CATALYST_MAX_AGE_DAYS = 400")
     return True
 
 
-def m_board_ignores_news_date(repo, tape, digest):
+def m_board_ignores_news_date(tape, digest, repo):
     """The renderer stops reading news_date for its break-time column."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py")
     mutate(p, 'broke = r.get("news_date") or r.get("trending_ts") or ""',
@@ -413,7 +450,7 @@ def m_board_ignores_news_date(repo, tape, digest):
     return True
 
 
-def m_published_date_not_age_checked(repo, tape, digest):
+def m_published_date_not_age_checked(tape, digest, repo):
     """The script stops age-checking the PUBLISHED catalyst date.
 
     Measured 2026-11-11 08:30 ET: NOVT carried a catalyst dated 2026-02-22 (262 days
@@ -451,6 +488,10 @@ CASES = [
     ("a capture script that prices from the last completed session is caught", False,
      m_prices_from_the_movers_scan),
     ("a capture script with no version marker is caught", False, m_no_version_marker),
+    ("a capture script that does not take its candidates from the pre-market band is caught",
+     False, m_no_band_call),
+    ("a capture script with no absolute pre-market share floor is caught", False,
+     m_no_share_floor),
     ("a capture script with no slot guard is caught", False, m_slot_guard_removed),
     ("a catalyst dated outside the window is caught", False, m_stale_news_date),
     ("an undated catalyst published as high confidence is caught", False, m_undated_confident),
@@ -502,7 +543,14 @@ def main():
             rc, out = run_checker(repo, tape=tape, digest=digest, slot="0830")
             record(name, expect_pass, rc, out)
         except Exception as exc:
-            record(name, expect_pass, 1, str(exc))
+            # A mutation that could not be APPLIED is not a checker verdict - it is a
+            # broken test. Recording it as "caught" (rc=1 against an expected catch)
+            # is a FALSE PASS: the case goes green without the checker ever running.
+            # The 2026-11-12 audit found one: the version-marker mutation targeted
+            # `CAPTURE_SCRIPT_VERSION: 2026-11-11.1` while the script carried
+            # `2026-11-11.2`, so mutate() raised and the case "passed" vacuously.
+            print(f"  FAIL  {name}  (the mutation could not be applied: {exc})")
+            RESULTS.append((name, False, 1, str(exc)))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

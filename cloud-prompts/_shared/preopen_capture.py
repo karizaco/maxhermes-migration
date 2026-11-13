@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-11.2
+CAPTURE_SCRIPT_VERSION: 2026-11-13.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -34,6 +34,29 @@ worst pre-open loser would never get a catalyst.
 **Prices always come from calls 2 and 3.** Calls 1, 4 and 5 explain; they never price.
 A percentage that disagrees with the movers scan by more than 2pp is marked
 `unverified`.
+
+THE CANDIDATE SOURCE - WHY THE BAND EXISTS
+------------------------------------------
+The tape's candidates used to come from Yahoo's `top_movers`, which is a PREDEFINED
+SCREENER over the LAST COMPLETED REGULAR SESSION. Before the open, that session is
+YESTERDAY: so the tape named yesterday's movers, and the brief's screen - which is
+TODAY's pre-market movers - barely intersected it.
+
+Measured on the 2026-11-10 fire: the 08:30 checkpoint carried **49 rows** and covered
+**6 of the 50 names the brief published**. On 2026-11-12 the 08:30 tape covered **21 of
+693** screen names (3.0%) and **9 of 21** actionable names. A tape that cannot see
+today's movers cannot serve a brief about today's movers.
+
+So the candidate source is now the **CURRENT session's pre-market band**: every US stock
+trading more than +/-2.5% pre-market, pulled from the TradingView scanner in TWO
+DISJOINT halves (the gainers and the decliners, exactly like the movers scan's two
+halves). The band IS today's tape, so the names the brief publishes are the names the
+tape carries. Measured on 2026-11-12 at 09:04 ET the band held 693 names; at 08:30 ET
+it held ~380, and the tape now carries every one of them that cleared the floor.
+
+The `top_movers` scan is NOT removed: it still supplies the previous session's movers,
+which is where a name that is being watched BEFORE it gaps comes from, and the checker
+(`tools/check_preopen_checkpoint.py`) asserts that the losers half is scanned too.
 
 THE PRE-MARKET PRINT - WHY CALL 6 EXISTS
 -----------------------------------------
@@ -151,6 +174,36 @@ DISAGREE_PP = 2.0
 # (measured 2026-11-06: NEXR +742% at $2.01, RCT +68% at $0.0505, SITC -83% at $0.61).
 MIN_PRICE = 1.0
 MIN_DOLLAR_VOL = 1_000_000
+# The floor on a name that HAS a pre-market print is NOT a price floor and NOT the
+# movers scan's dollar volume: it is the SIZE OF THE PRINT, in SHARES. A pre-market
+# print of fewer than 25,000 shares is one seller, not a market, and it is dropped
+# from the tape.
+#
+# SHARES, and not a dollar notional, for two reasons. First, a share count is MONOTONE
+# in time: a name that has printed 25,000 shares by 08:30 has printed more by 09:22,
+# so the floor never excludes a name that later qualifies (a notional floor is not:
+# the price can fall under it). Second, it is the SAME instrument and the SAME number
+# as cron #25's fourth gate leg, so the tape and the brief that reads it speak one
+# language: below 25,000 pre-market shares is a quote, not a market.
+#
+# Measured on the 2026-11-12 screen at 09:04 ET: a $100K pre-market-notional floor
+# keeps 251 of 693 names and the floor's purpose is visible in what it removes
+# (VECA $28.6K, OPRX $15.8K, DSS $0.2K - quote prints) and in what it KEEPS:
+# PARA, whose pre-market print was $48.96M, and PSFE at $358,898.
+#
+# The floor is deliberately NOT a $1 price floor either. The old one was, and it
+# deleted the day's most violent prints for being cheap: PARA +79%, ICMB +57%,
+# CENN +38% - all real money on a low-priced share - which is exactly what cron
+# #25's below-the-floor watchlist exists to publish. Measured on the 2026-11-13 band
+# at 07:57 ET: the $100K-notional floor kept 72 of 458 names and DROPPED CRIS
+# (-10.6% on 39,053 shares, $19,956) - a real mover on a cheap share, and one of the
+# names cron #25 has to publish. The 25,000-SHARE floor keeps 118 of the same 458 and
+# keeps CRIS.
+MIN_PM_SHARES = 25_000
+# The pre-market band: +/-2.5%. Historically the tape was a "+/-3% snapshot" (678 rows
+# on 2026-11-04) and then a "+/-2.5% movers-sorted snapshot" (849 rows on 2026-11-06),
+# and 2.5% is the width that keeps the day's biggest movers inside the tape.
+BAND_PCT = 2.5
 # How old a catalyst may be and still be allowed to explain today's move.
 #
 # FOUR DAYS, and not one: the 08:30 checkpoint on a MONDAY has to reach Friday's and
@@ -341,6 +394,69 @@ def call_scanner_premarket(tickers):
     return {"rows": out, "total": len(out), "requested": len(syms)}
 
 
+def call_scanner_band(pct=BAND_PCT, limit=1000):
+    """The CURRENT session's pre-market BAND: every US stock moving more than +/-pct.
+
+    Two DISJOINT pulls - the gainers (`premarket_change > pct`, sorted descending) and
+    the decliners (`premarket_change < -pct`, sorted ascending). A name cannot be in
+    both halves, so no record can ever carry two prices, exactly like the movers
+    scan's two halves.
+
+    This is the tape's CANDIDATE SOURCE, and it is the reason the tape can serve a
+    brief: Yahoo's `top_movers` is a screener over the LAST COMPLETED session, so
+    before the open it names YESTERDAY's movers. The band is today's actual pre-market
+    tape.
+
+    `range` is a page size, not a filter: each half is checked against `totalCount`
+    and a truncated half is REPORTED, never silently published as a whole tape.
+    """
+    out = {}
+    counts = {}
+    truncated = []
+    for side, op, right, order in (("up", "egreater", pct, "desc"),
+                                    ("down", "eless", -pct, "asc")):
+        body = {"filter": [{"left": "type", "operation": "equal", "right": "stock"},
+                           {"left": "exchange", "operation": "not_in_range",
+                            "right": ["OTC"]},
+                           {"left": "premarket_change", "operation": op, "right": right}],
+                "columns": ["name", "description", "premarket_change", "premarket_close",
+                            "premarket_volume", "exchange"],
+                "sort": {"sortBy": "premarket_change", "sortOrder": order},
+                "range": [0, limit]}
+        req = urllib.request.Request(
+            "https://scanner.tradingview.com/america/scan",
+            data=json.dumps(body).encode(),
+            headers={**UA, "Content-Type": "application/json"})
+        try:
+            res = json.loads(urllib.request.urlopen(req, timeout=45).read())
+        except Exception as exc:
+            return {"error": f"band_failed: {str(exc)[:120]}", "rows": {}}
+        data = res.get("data") or []
+        counts[side] = len(data)
+        total = res.get("totalCount")
+        if isinstance(total, int) and total > len(data):
+            truncated.append(f"{side}: {len(data)} of {total}")
+        for row in data:
+            d = row.get("d") or []
+            if len(d) < 6:
+                continue
+            rec = dict(zip(["name", "description", "premarket_change", "premarket_close",
+                            "premarket_volume", "exchange"], d))
+            t = (rec.get("name") or "").upper()
+            if not t:
+                continue
+            try:
+                pm_chg = float(rec.get("premarket_change"))
+                pm_px = float(rec.get("premarket_close"))
+            except (TypeError, ValueError):
+                continue
+            out[t] = {"pct": pm_chg, "price": pm_px,
+                      "volume": rec.get("premarket_volume"),
+                      "name": rec.get("description"), "exchange": rec.get("exchange")}
+    return {"rows": out, "up": counts.get("up", 0), "down": counts.get("down", 0),
+            "total": len(out), "truncated": truncated}
+
+
 def call_top_movers(category="gainers", limit=40):
     """Ground-truth prices for the movers."""
     out = rpc(PACK_MARKET, "top_movers", {"category": category, "limit": limit}, prefer=["movers"])
@@ -503,10 +619,15 @@ def build(date_str, checkpoint, top_n=8):
     tr = call_trending()
     tm = call_top_movers()
     tm_dn = call_top_movers(category="losers")
-    if "error" in tr and "error" in tm:
-        return {"error": f"both sources failed: trending={tr.get('error')} movers={tm.get('error')}"}
+    # THE BAND: today's actual pre-market movers, in two disjoint halves.
+    band = call_scanner_band()
+    band_error = band.get("error")
+    if "error" in tr and "error" in tm and band_error:
+        return {"error": f"every source failed: trending={tr.get('error')} "
+                         f"movers={tm.get('error')} band={band_error}"}
     trending = {r["ticker"]: r for r in (tr.get("rows") or [])}
     movers = tm.get("movers") or {}
+    band_rows = band.get("rows") or {}
     # The decliners are the DISJOINT other half of the same movers scan (a name cannot be
     # both a top gainer and a top loser), so merging the two halves can never put two
     # prices on one record. Measured 2026-11-09: the gainers-only default missed IRTC
@@ -522,33 +643,57 @@ def build(date_str, checkpoint, top_n=8):
         dv = (px or 0) * (m.get("volume") or 0)
         return (px or 0) >= MIN_PRICE and dv >= MIN_DOLLAR_VOL
 
+    def pm_shares(r):
+        """The size of the pre-market print, in shares. A print of fewer than
+        MIN_PM_SHARES shares is a QUOTE, not a market, and the tape does not carry it."""
+        try:
+            return float(r.get("volume") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     candidates = []
     seen = set()
-    # Rank by the ABSOLUTE move, not by change_pct: the grounded-call budget is finite and
-    # must reach the biggest movers in BOTH directions. Ranking by change_pct puts every
-    # decliner behind every gainer, so the worst pre-open loser never gets a catalyst.
+    # 1. THE BAND FIRST. It is today's tape: the names the brief publishes are the names
+    # the tape carries. Ranked by the ABSOLUTE move, not by change_pct: the grounded-call
+    # budget is finite and must reach the biggest movers in BOTH directions. Ranking by
+    # change_pct puts every decliner behind every gainer, so the worst pre-open loser
+    # never gets a catalyst.
+    for tk, r in sorted(band_rows.items(), key=lambda kv: -abs(kv[1].get("pct") or 0)):
+        if tk in seen:
+            continue
+        seen.add(tk)
+        candidates.append(tk)
+    # 2. The retail chatter signal, for the names that are being watched before they gap.
+    for tk in trending:
+        if tk not in seen:
+            seen.add(tk)
+            candidates.append(tk)
+    # 3. The movers scan's liquid names - YESTERDAY's movers, which the band cannot see
+    #    because they have not moved today yet. They keep the old floor (price and dollar
+    #    volume of the last completed session), because their pre-market print is what
+    #    the band and the scanner decide, not the movers data.
     for tk, m in sorted(movers.items(), key=lambda kv: -abs(kv[1].get("change_pct") or 0)):
         if tk in seen or not liquid(m):
             continue
         seen.add(tk)
         candidates.append(tk)
-    for tk in trending:
-        if tk not in seen:
-            seen.add(tk)
-            candidates.append(tk)
 
     # THE PRE-MARKET PRINT. The movers scan (calls 2 and 3) ranks by the last COMPLETED
     # session's move, so before the open it names YESTERDAY's movers and carries
     # YESTERDAY's closes. The tape is about the session that is about to open, so the
     # numbers come from the scanner's `premarket_*` columns for THIS session.
     #
-    # One call for the whole candidate set. A name the scanner does not carry has NO
-    # pre-market print, and the tape must not invent one: it keeps a NULL number and is
-    # published as a narrative row, exactly like a trending-only name.
-    pm = call_scanner_premarket(candidates)
-    pm_rows = pm.get("rows") or {}
+    # The band rows are ALREADY priced - they come from the same pull that chose them -
+    # so only the names the band did not cover are asked for. One call for that
+    # remainder. A name the scanner does not carry has NO pre-market print, and the tape
+    # must not invent one: it keeps a NULL number and is published as a narrative row,
+    # exactly like a trending-only name.
+    leftovers = [tk for tk in candidates if tk not in band_rows]
+    pm = call_scanner_premarket(leftovers)
+    pm_rows = dict(band_rows)
+    pm_rows.update(pm.get("rows") or {})
     pm_error = pm.get("error")
-    priced_now = sum(1 for tk in candidates if tk in pm_rows)
+    priced_candidates = sum(1 for tk in candidates if tk in pm_rows)
 
     # Re-order the candidates by THIS session's absolute pre-market move. The
     # grounded-call budget is finite and is spent in this order, so the order must follow
@@ -562,11 +707,20 @@ def build(date_str, checkpoint, top_n=8):
 
     rows = []
     stale_dropped = []          # names whose catalyst was rejected as too old
+    thin_dropped = []           # names whose pre-market print was a quote, not a market
     grounded_budget = top_n
     for tk in candidates:
         mv = movers.get(tk)
         trr = trending.get(tk)
-        if not mv and not trr:
+        # A band name is on the tape because it MOVED TODAY, even when the movers scan
+        # has never heard of it and no one is tweeting about it.
+        if not mv and not trr and tk not in band_rows:
+            continue
+        # THE QUOTE FLOOR. A pre-market print of fewer than MIN_PM_SHARES shares is one
+        # seller, not a market, and the tape is a tape of MOVERS. The name is dropped
+        # rather than published with a number that means nothing.
+        if tk in pm_rows and pm_shares(pm_rows[tk]) < MIN_PM_SHARES:
+            thin_dropped.append(tk)
             continue
         # ONE capture instant per row: it stamps the row AND bounds the article
         # search, so a catalyst can never post-date the record that carries it.
@@ -685,14 +839,24 @@ def build(date_str, checkpoint, top_n=8):
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
             "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
+            # THE BAND: how many names today's pre-market tape held, and how many of
+            # them the quote floor removed.
+            "band_up": band.get("up"), "band_down": band.get("down"),
+            "band_total": band.get("total"),
+            "band_truncated": band.get("truncated") or [],
+            "band_error": band_error,
+            "thin_dropped": thin_dropped,
             # How many rows carry THIS session's pre-market print, and how many are
-            # narrative-only because the name did not trade pre-market.
-            "premarket_priced": priced_now,
-            "premarket_unprinted": len(candidates) - priced_now,
+            # narrative-only because the name did not trade pre-market. These count the
+            # rows the tape ACTUALLY carries: a name whose print was too thin to keep is
+            # not a priced row, and saying otherwise would overstate the tape.
+            "premarket_priced": sum(1 for r in rows if r.get("src") in ("scanner", "pipeworx")),
+            "premarket_unprinted": sum(1 for r in rows if r.get("src") == "stocktwits"),
+            "premarket_candidates_priced": priced_candidates,
             "premarket_error": pm_error,
             "stale_dropped": stale_dropped,
             "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
-                                   pm_error) if e]}
+                                   band_error, pm_error) if e]}
 
 
 def main():
@@ -738,7 +902,8 @@ def main():
     body = "\n".join(lines) + ("\n" if lines else "")
 
     if args.dry_run:
-        print(f"# dry run — {len(res['rows'])} rows, movers={res['mover_count']}, "
+        print(f"# dry run — {len(res['rows'])} rows, band={res.get('band_total')}, "
+              f"movers={res['mover_count']}, "
               f"trending={res['trending_count']}, as_of={res.get('as_of')}, "
               f"premarket_priced={res.get('premarket_priced')}, "
               f"premarket_unprinted={res.get('premarket_unprinted')}")
@@ -762,7 +927,10 @@ def main():
     # Printed as "movers=20 = 20 up / 10 down" it reads as an arithmetic claim that
     # is simply false.
     print(f"preopen capture: wrote {len(res['rows'])} records to {out} "
-          f"(movers scan: {res.get('gainers')} up + {res.get('losers')} down, "
+          f"(pre-market band: {res.get('band_up')} up + {res.get('band_down')} down, "
+          f"{res.get('band_total')} names, "
+          f"quote-floor drops={len(res.get('thin_dropped') or [])}, "
+          f"movers scan: {res.get('gainers')} up + {res.get('losers')} down, "
           f"{res['mover_count']} names, "
           f"trending={res['trending_count']}, "
           f"premarket_priced={res.get('premarket_priced')}, "

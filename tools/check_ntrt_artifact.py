@@ -59,20 +59,45 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "ntrt-artifact-v4"
+CONTRACT_VERSION = "ntrt-artifact-v5"
 CONTRACT_CHECKS = 17
 
 # The capability marker the run-time fetch demands. An OLDER copy of this script
 # is still published on the mirrors, and it checks fewer rules - so a fetch that
 # does not demand this marker can win a stale file and report a clean artifact
 # it never checked.
-MARKER = "NTRT_CONTRACT_CHECK_V2"
+# v3 = the v5 contract: a FOURTH gate leg (the absolute pre-market share floor)
+# and a SESSION-NORMALISED ADV denominator. A v2 checker would clear an artifact
+# that breaks either of them, so the marker must move with the contract.
+MARKER = "NTRT_CONTRACT_CHECK_V3"
 
 # ---- the published constants (they live in the skill spec; keep them in sync) ----
 GATE_GAP_PCT = 3.0        # |gap| >= 3%
-GATE_PCT_ADV = 5.0        # AND >= 5% of 30-day ADV
+GATE_PCT_ADV = 5.0        # AND >= 5% of the SESSION-NORMALISED 30-day ADV
 GATE_MKT_CAP = 200000000  # AND market cap >= $200M (the universe floor)
+GATE_PM_SHARES = 25000    # AND pre-market print >= 25,000 shares (the absolute floor)
 NOISE_PCT_ADV = 1.0       # noise when pct_of_adv is empty or < 1
+
+# ---- the session-normalised ADV denominator -------------------------------------
+# The ADV leg asks "is this pre-market print heavy?". The denominator has to be
+# the ADV AS PRORATED TO THE PRE-MARKET SESSION, or the comparison is between a
+# part-session print and a whole-day average.
+#
+# The pre-market session is 04:00-09:30 ET = 330 minutes, and the brief's
+# PUBLISHED pull is pinned at 09:22 ET (skill section 7), so 322 of the 330
+# minutes have elapsed. The session factor is therefore 322/330 = 0.975758 and
+# the gate's raw-%ADV bar is 5.0% x 0.975758 = 4.8788% of the RAW 30-day ADV.
+#
+# The bar is a CONSTANT on purpose: the pull clock is pinned, so the rule cannot
+# drift with the minute, and the checker's verdict never depends on parsing a
+# clock out of the artifact's banner. The published `pct_of_adv` column stays
+# RAW (premarket_volume / avg_volume_30d * 100) so the CSV, the markdown and
+# every published artifact keep one meaning for that number.
+PM_SESSION_START_MIN = 4 * 60           # 04:00 ET
+PM_SESSION_MINUTES = 330                # 04:00 -> 09:30 ET
+CANONICAL_PULL_MIN = 9 * 60 + 22       # 09:22 ET - the pinned published pull
+SESSION_FACTOR = (CANONICAL_PULL_MIN - PM_SESSION_START_MIN) / PM_SESSION_MINUTES
+GATE_PCT_ADV_RAW = GATE_PCT_ADV * SESSION_FACTOR
 
 # The section skeleton, in order. Matched by normalised PREFIX so a dated or
 # annotated heading ("## Flags - 2026-11-05") still satisfies the contract.
@@ -103,6 +128,9 @@ TOL_2DP = 0.005 + 1e-9
 # classification is accepted. The classification itself is still made on the
 # RAW value.
 BOUNDARY = 0.05 + 1e-9
+
+# The same tolerance on the ABSOLUTE share floor, in shares (5% of the floor).
+BOUNDARY_SHARES = GATE_PM_SHARES * 0.05
 
 RESULTS = []
 FAILURES = []
@@ -640,25 +668,33 @@ def check_tldr(lines, sections):
 def gate_state(row):
     """(passes the gate, is a boundary case) for a CSV row, on the RAW values.
 
-    The gate has THREE legs since v4: |gap| >= 3%, %ADV >= 5% and market cap
-    >= $200M. The market-cap leg is what lets the brief publish the names the
-    universe floor EXCLUDED (the `Below the $200M floor` watchlist) without
-    those names counting as gate-passers - they were never candidates.
+    The gate has FOUR legs since v5: |gap| >= 3%, %ADV >= 5% of the
+    SESSION-NORMALISED 30-day ADV, market cap >= $200M, and a pre-market print
+    of at least 25,000 shares. The market-cap leg is what lets the brief
+    publish the names the universe floor EXCLUDED (the `Below the $200M floor`
+    watchlist) without those names counting as gate-passers - they were never
+    candidates. The share leg is what separates a MARKET from a QUOTE: on
+    2026-11-12 it removed SMHI (6,711 shares, $61.5K notional, no catalyst)
+    and 37 of the 113 names that cleared the %ADV bar - none of which had a
+    sourced catalyst.
 
-    A cap the CSV cannot supply is a BOUNDARY case, not a failure: an unknown
-    cap cannot be verified either way. A cap that is KNOWN to be under the
-    floor is a verified failure.
+    A cap or a share count the CSV cannot supply is a BOUNDARY case, not a
+    failure: an unknown value cannot be verified either way. A value that is
+    KNOWN to be under the floor is a verified failure.
     """
     g = num(row.get("premarket_change_pct"))
     p = num(row.get("pct_of_adv"))
     c = num(row.get("mkt_cap_usd"))
+    v = num(row.get("premarket_volume"))
     gap_ok = g is not None and abs(g) >= GATE_GAP_PCT
-    adv_ok = p is not None and p >= GATE_PCT_ADV
+    adv_ok = p is not None and p >= GATE_PCT_ADV_RAW
     cap_ok = c is not None and c >= GATE_MKT_CAP
+    vol_ok = v is not None and v >= GATE_PM_SHARES
     boundary = ((g is not None and abs(abs(g) - GATE_GAP_PCT) <= BOUNDARY)
-                or (p is not None and abs(p - GATE_PCT_ADV) <= BOUNDARY)
-                or c is None)
-    return (gap_ok and adv_ok and cap_ok), boundary
+                or (p is not None and abs(p - GATE_PCT_ADV_RAW) <= BOUNDARY)
+                or c is None or v is None
+                or (v is not None and abs(v - GATE_PM_SHARES) <= BOUNDARY_SHARES))
+    return (gap_ok and adv_ok and cap_ok and vol_ok), boundary
 
 
 def check_gate(tables, idx, act_names, wide_names, also_names=()):
@@ -673,9 +709,12 @@ def check_gate(tables, idx, act_names, wide_names, also_names=()):
             g = num(row.get("premarket_change_pct"))
             p = num(row.get("pct_of_adv"))
             c = num(row.get("mkt_cap_usd"))
+            v = num(row.get("premarket_volume"))
             problems.append(f"{tick}: published as ACTIONABLE but |gap|={abs(g):.2f}% / "
-                            f"%ADV={p} / cap={c} does not clear the gate (|gap| >= {GATE_GAP_PCT}% "
-                            f"AND %ADV >= {GATE_PCT_ADV}% AND cap >= {GATE_MKT_CAP})")
+                            f"%ADV={p} / cap={c} / pre-market shares={v} does not clear the "
+                            f"gate (|gap| >= {GATE_GAP_PCT}% AND %ADV >= "
+                            f"{GATE_PCT_ADV_RAW:.4f}% of the session-normalised ADV AND cap >= "
+                            f"{GATE_MKT_CAP} AND pre-market shares >= {GATE_PM_SHARES})")
     for tick in wide_names:
         row = idx.get(tick)
         if row is None:
@@ -685,9 +724,10 @@ def check_gate(tables, idx, act_names, wide_names, also_names=()):
         if passes and not boundary:
             g = num(row.get("premarket_change_pct"))
             p = num(row.get("pct_of_adv"))
+            v = num(row.get("premarket_volume"))
             problems.append(f"{tick}: published in the WIDER SCREEN but it clears the gate "
-                            f"(|gap|={abs(g):.2f}%, %ADV={p}) — it belongs in the actionable "
-                            f"table")
+                            f"(|gap|={abs(g):.2f}%, %ADV={p}, pre-market shares={v}) — it "
+                            f"belongs in the actionable table")
     csv_gate = {t for t, r in idx.items() if gate_state(r)[0]}
     for tick in sorted(csv_gate - set(act_names) - set(also_names)):
         row = idx.get(tick)

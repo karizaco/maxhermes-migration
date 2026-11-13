@@ -33,7 +33,8 @@ Generates the weekday pre-market gapper brief. Replaces the paused `ntrt-pre-mar
 
 ## When
 
-- Cron: `0 9 * * 1-5` America/New_York (weekdays, 09:00 ET — 30 min before the US open)
+- Cron: `45 8 * * 1-5` America/New_York (weekdays, 08:45 ET — 45 min before the US open, so
+  the published pull can be taken at ~09:22 ET and the brief can be written before the bell)
 - Manual: user asks "run the ntrt brief" or "what's gapping today"
 
 ## Backend discovery
@@ -58,7 +59,7 @@ Generates the weekday pre-market gapper brief. Replaces the paused `ntrt-pre-mar
 
 ---
 
-## ARTIFACT FORMAT CONTRACT (v4 — load-bearing)
+## ARTIFACT FORMAT CONTRACT (v5 — load-bearing)
 
 This section is the reason the fleet's briefs stopped drifting. Earlier revisions left the
 artifact layout to the run, and the last four briefs used **three different section
@@ -78,6 +79,24 @@ are unchanged. What v4 adds:
    silently drop a name.
 3. **The pre-open catalyst tape** (§11) is the first place to look for a catalyst — it is
    already published, already sourced, and it covers the names the $200M floor excludes.
+
+**v5 = v4 + a FOURTH gate leg + a session-normalised ADV denominator + a pinned pull clock +
+the tape's real schema.** The section skeleton, the one-table rule and the CSV column contract
+are **still unchanged** — the CSV carries the same 12 columns in the same order, and `pct_of_adv`
+is still the RAW ratio. What v5 adds:
+
+1. **The gate has a fourth leg** (§2): the pre-market print must be **≥ 25,000 shares**. The
+   %ADV leg cannot see a quote that printed 6,000 shares; this leg can. Measured on
+   2026-11-12: it removes **37 of the 113** names that cleared the %ADV bar, **none of which had
+   a sourced catalyst**, and costs exactly one actionable name (SMHI).
+2. **The ADV leg's denominator is session-normalised** (§2): the pre-market session is
+   04:00–09:30 ET (330 minutes) and the published pull is pinned at 09:22 ET, so the bar is
+   **5.0% × 322/330 = 4.8788%** of the raw 30-day ADV instead of a clock-dependent 5.0%.
+3. **The pull clock is pinned** (§7): the **published** pull is at ~09:22 ET, the **delta** pull at
+   ~09:27 ET, and the research pull's numbers are never published. The mode banner states the
+   published pull's clock.
+4. **§11 reads the tape's real schema**: `why` is the driver, **`news_url` is the citable
+   URL**, `ref` is **prose evidence and never a URL**.
 
 ### 1. Section skeleton (fixed order)
 
@@ -99,15 +118,19 @@ are unchanged. What v4 adds:
 
   ```
   **Mode B — screener fallback.** TradingView public scanner; the ntrt backend was unreachable
-  (`GET /health` → HTTP 000). Snapshot 09:07 ET, 23 min before the open.
+  (`GET /health` → HTTP 000). Snapshot 09:22 ET, 8 min before the open.
   ```
 
   In Mode A the first line names the backend and drops the screener sentence. Always state
-  the snapshot time — the tape moves and the reader needs to know how live it is.
+  the snapshot time — the tape moves and the reader needs to know how live it is. **The
+  snapshot time is the PUBLISHED pull's clock** (§7), never the research pull's and never the
+  wall clock.
 - **`## TL;DR`** — **exactly 3 bullets**, each one line:
   1. What the tape is doing (the shape), with the name count.
-  2. **The %ADV reality check** — how many names cleared 5% of ADV vs how many cleared the gap
-     threshold. This bullet is what stops the reader treating the screen as 261 tradeable names.
+  2. **The %ADV reality check** — how many names cleared the ADV bar (5% of the
+     session-normalised 30-day ADV, §2) vs how many cleared the gap threshold, and how many
+     cleared the 25,000-share print floor. This bullet is what stops the reader treating the
+     screen as 261 tradeable names.
   3. **The single most consequential name** and why. If you cannot name one, name the theme.
 - **`## Market backdrop`** — its own section, near the top, not a bullet buried at the bottom.
   Futures, oil, rates, and the day's macro (an election, a central-bank decision, a scheduled
@@ -141,12 +164,38 @@ pushes the artifact toward 200 lines. The 2026-11-03 brief put SHOP in six secti
 five; that is the failure this rule exists to prevent.
 
 - **The actionable gate** — a name is in `## Worth your attention` when it has
-  `|gap| ≥ 3%` **AND** `% of 30d ADV ≥ 5%` **AND** `market cap ≥ $200M`. The 5% ADV floor
-  is what separates a market from a quote: a ±20% gap on 350 shares is a quote, and publishing
-  it as a headline is misleading. The **$200M market-cap floor is the third leg**: it is the
-  universe floor, and because it is part of the GATE (not a filter hidden inside the scanner
-  query) the names it excludes can be published in the §10 watchlist without counting as
-  gate-passers.
+  `|gap| ≥ 3%` **AND** `% of 30d ADV ≥ 5%` **AND** `market cap ≥ $200M` **AND**
+  `pre-market print ≥ 25,000 shares`. **FOUR legs since v5**, and every one of them is a
+  number the CSV already carries — the gate is recomputed from the CSV, not from prose.
+  1. **The gap** (`|gap| ≥ 3%`) — the headline.
+  2. **The ADV leg, session-normalised** (`% of 30d ADV ≥ 4.8788%`) — what separates a market
+     from a quote: a ±20% gap on 350 shares is a quote, and publishing it as a headline is
+     misleading. **The denominator is the ADV as prorated to the pre-market session**: the
+     pre-market session is **04:00–09:30 ET = 330 minutes**, and the brief's published pull is
+     pinned at **09:22 ET** (§7), so **322 of the 330 minutes have elapsed** and the
+     session factor is `322/330 = 0.975758`. The bar is therefore
+     `5.0% × 0.975758 = 4.8788%` of the **raw** 30-day ADV. Why it matters: the %ADV leg is
+     measured against a WHOLE DAY's average while the print is only a PART-session's volume, so
+     an un-normalised bar moves with the pull minute — **12 names crossed the 5% bar between the
+     09:04 and the 09:24 pulls on 2026-11-12** (AU, AXTI and SMCI newly cleared it). With the
+     session factor the bar is a **constant** (the pull clock is pinned, so the rule cannot drift
+     with the minute) and the published `pct_of_adv` column stays **raw**, so the CSV, the
+     markdown and every published artifact keep one meaning for that number. Measured effect on
+     the 2026-11-12 screen: the bar at 4.8788% re-admits **AXTI** (4.941% of ADV, 530,232
+     shares) — a name the old 5.000% bar dropped on the fourth decimal place.
+  3. **The universe floor** (`market cap ≥ $200M`) — it is part of the GATE (not a filter hidden
+     inside the scanner query) so the names it excludes can be published in the §10 watchlist
+     without counting as gate-passers.
+  4. **The absolute pre-market share floor** (`pre-market print ≥ 25,000 shares`) — the leg that
+     kills the quote class the %ADV leg cannot see. Measured on the 2026-11-12 screen: of the 113
+     names clearing 5% of ADV, **37 printed fewer than 25,000 pre-market shares and NOT ONE of
+     them had a sourced catalyst** — they were quote prints. At 25,000 the floor costs exactly
+     **one** actionable name (**SMHI**: 6,711 shares, $61.5K notional, no catalyst) and removes
+     none of the names that had a driver. A 100,000-share floor was measured and **rejected**: it
+     demotes **PSFE** (−26.1% on a real $247.5M impairment), **SSYS** and **ALLT**, all of which
+     have sourced catalysts. The floor is a **share** count, not a dollar notional, because the
+     share count is what the CSV publishes (`premarket_volume`) and what the tape and the
+     screen both speak in.
 - **The cap is measured AT THE PRE-MARKET PRINT** (§3) — the same instant as the price the
   row publishes. The screener's `market_cap_basic` is a **last-close** figure, so for any name
   that has gapped it is stale *by the move itself*, and a row quoting a pre-market print
@@ -242,6 +291,10 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
 ```
 
 - `pct_of_adv` — 3 decimals (`18.913`), computed as `premarket_volume / average_volume_30d_calc * 100`.
+  **This column is RAW** — it is not prorated by the session factor, and it never changes meaning
+  between runs. The **gate** is what applies the session normalisation (§2): the bar is 4.8788%
+  of the raw ratio, and the checker compares the raw ratio against that bar. A published
+  `pct_of_adv` is therefore directly comparable with every earlier brief's.
   When a name has **no 30-day ADV history** (`average_volume_30d_calc` is null or 0) the value is
   **empty, never 0** — an unmeasurable denominator is not a zero-volume name.
 - `noise` — `true` when `pct_of_adv` is **empty or below 1**, `false` otherwise. A downstream
@@ -304,13 +357,39 @@ returned an error you did not read.
 ### 7. One pull per brief — and the one exception
 
 **The tape is live.** Pull it once and make every section agree with that one pull. If you
-re-pull to verify a name, the **first pull wins** for the tables, and the prose must match it.
+re-pull to verify a name, the **published pull wins** for the tables, and the prose must match it.
 If the tape moved between pulls, say so in Flags rather than publishing two different numbers
 for the same ticker. A brief that contradicts itself is worse than a brief with less in it.
 
-**THE ONE EXCEPTION — the delta pull (§12).** A pull made at **~09:25 ET**, about five minutes
+**THE PULL CLOCK IS PINNED — this is what makes the brief's numbers live at publish time.**
+The brief is written by a routine that fires at **08:45 ET**, so the pull schedule is a
+schedule, not a hint:
+
+| pull | when | what it is for |
+|---|---|---|
+| **research pull** | ~09:00 ET | selecting which names to research. **Its numbers are NEVER published.** |
+| **published pull** | **~09:22 ET** | **the numbers the artifact publishes.** Every gap, price, volume, %ADV and cap comes from this pull. |
+| **delta pull** | ~09:27 ET | **flags only** (§12) — never a published number. |
+
+- **The published pull is the last pull before the open.** On 2026-11-12 the brief published a
+  09:04 pull and pushed at 09:32 — **28 minutes stale, and two minutes after the open**. Moving
+  the published pull to ~09:22 ET is the fix: the numbers are ~8 minutes old when the reader
+  sees them, not 28.
+- **The published pull wins.** If a name's numbers differ between the research pull and the
+  published pull, the **published pull's** numbers are the ones in the tables, the CSV and the
+  mode banner. A number from an earlier pull that survives into the artifact is a contract
+  failure, not a detail.
+- **The mode banner states the PUBLISHED pull's clock** (§1), not the research pull's and not the
+  wall clock. If your published pull ran at a different minute, publish the minute it actually
+  ran at — the reader needs to know how live the numbers are, and the gate's bar does **not**
+  move with it (§2).
+- **The session-normalised ADV bar is tied to the pinned pull** (§2). Because the pull clock is
+  pinned at 09:22 ET, the bar is the constant 4.8788% and the actionable set is defined by ONE
+  rule whichever minute the run actually pulled.
+
+**THE ONE EXCEPTION — the delta pull (§12).** A pull made at **~09:27 ET**, about three minutes
 before the open, is used **only to flag movement**. It never changes a published number: the
-tables keep the first pull's numbers, and the delta pull's values appear only in Flags, as the
+tables keep the published pull's numbers, and the delta pull's values appear only in Flags, as the
 gap it faded from and to. That is what makes the "a name left the screen" flag (§5) possible —
 a flag the contract asks for and that a single pull can never produce.
 
@@ -355,8 +434,10 @@ Universe: the <N> names checked for a catalyst (<A> actionable + <W> wider scree
   artifact's own tables plus its CSV, which is exactly what the checker does.
 - **The gate axis is the actionable gate** (§2): passes = in `## Worth your attention`, fails =
   in `## Wider screen`. **Classify on the RAW CSV values, never on the published 1 dp number** —
-  a name at 4.995% of ADV FAILS the gate even though the published cell reads `5.0`. When a
+  a name at 4.870% of ADV FAILS the gate even though the published cell reads `4.9`. When a
   published number reads like it passes while the name sits in the wider screen, say so in Flags.
+  The bar is the **session-normalised 4.8788%** (§2), not a round 5.000%, and the fourth leg is
+  the **25,000-share** pre-market print.
 - **One example per populated cell**, and the example must really sit in that cell. A cell with
   a count of 0 says `none`.
 - What each cell means:
@@ -375,8 +456,8 @@ Universe: the <N> names checked for a catalyst (<A> actionable + <W> wider scree
 
 ### 9. The contract check runs every time — the contract is a gate, not a document
 
-`tools/check_ntrt_artifact.py` asserts the sixteen rules of this contract against the
-artifact you just wrote; `tools/test_ntrt_contract.py` proves that each of the sixteen checks
+`tools/check_ntrt_artifact.py` asserts the seventeen rules of this contract against the
+artifact you just wrote; `tools/test_ntrt_contract.py` proves that each of the seventeen checks
 actually bites. **Fetch the checker at RUN time and run it BEFORE you push.** A run that fails
 a check does not publish a failing artifact: fix the artifact and re-run.
 
@@ -392,14 +473,15 @@ for U in \
   # and it checks fewer rules, so without the marker a stale file can win the ladder
   # and report a clean artifact it never checked. The CDNs cache `main` independently,
   # so one of them CAN serve stale bytes - the contents API is not CDN-cached, so it is
-  # tried FIRST. v1 checked 14 rules; v2 checks 16 - the marker is what tells them apart.
+  # tried FIRST. v1 checked 14 rules; v2 checked 16; v3 is the v5 contract (the fourth gate
+  # leg and the session-normalised ADV bar) - the marker is what tells them apart.
   if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
-     && grep -q 'NTRT_CONTRACT_CHECK_V2' "$C.tmp" 2>/dev/null; then
+     && grep -q 'NTRT_CONTRACT_CHECK_V3' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
-if [ ! -s "$C" ] || ! grep -q 'NTRT_CONTRACT_CHECK_V2' "$C" 2>/dev/null; then
+if [ ! -s "$C" ] || ! grep -q 'NTRT_CONTRACT_CHECK_V3' "$C" 2>/dev/null; then
   echo "contract-check: UNAVAILABLE - publish the brief, report contract: NOT RUN, errors: 1"
 else
   python3 "$C" --md "/workspace/ntrt/{date}.md" --csv "/workspace/ntrt/{date}.csv"
@@ -421,7 +503,7 @@ fi
   `contract: 17/17`. A reader must be able to see that the artifact was **verified**, not
   assumed. (The checker also accepts `--reply <file>` and verifies that published count — use
   it if you keep the reply text on disk.)
-- **Publish the number the checker PRINTS.** The checker behind the `NTRT_CONTRACT_CHECK_V2`
+- **Publish the number the checker PRINTS.** The checker behind the `NTRT_CONTRACT_CHECK_V3`
   marker runs **17** checks, and `--reply` FAILS if the published pair is anything other than
   `17/17`. An earlier revision of this section said `16/16` — a run that followed it literally
   would fail the REPLY check even with every artifact check green. Read the count off the
@@ -543,54 +625,89 @@ appear here and also in `## Worth your attention`.
 Cron #92 (`preopen-catalyst-capture`) publishes a **catalyst tape** for the same session:
 `preopen-feed/{date}-{HHMM}.jsonl` in `karizaco/minimax-cloud-outputs`, one file per checkpoint
 (the slots are `0830`, `0920`, `0950`). The **08:30 ET checkpoint exists before this brief is
-written** (09:00 ET), and it carries, per name: the pre-market print, a one-line `why`, a `cat`
-(`acquisition | merger | earnings | guidance | fda | trial | offering | halt | downgrade |
-guidance-cut | spin | dividend | other`), a `conf` (`high | medium | low`, plus `unverified` for a
-claim the merge could not tie to the scanner) and a `ref` — **the source URL**. A record with no
-source URL is written `conf: low`.
+written** (the routine fires at 08:45 ET), and it carries, per name: the pre-market print
+(`pct`, `price`), a one-line `why`, a `cat` (`acquisition | merger | earnings | guidance | fda |
+trial | offering | halt | downgrade | guidance-cut | spin | dividend | other`), a `conf`
+(`high | medium | low`, plus `unverified` for a claim the merge could not tie to the scanner),
+a `news_url`, a `news_date` and a `ref`.
+
+**READ THE TAPE'S REAL SCHEMA — `ref` is NOT a URL.** An earlier revision of this section said
+`ref` was "the source URL". It is not: **`ref` is prose evidence** — the search-result text the
+merge used to tie a claim to the scanner. Measured across six tapes (284 rows): **`ref` contains
+an `http` in 2 rows and is a URL in 0**; the citable article URL lives in **`news_url`**, which
+was present on 8 of those 284 rows. The row schema is:
+
+| key | what it is |
+|---|---|
+| `ticker`, `name` | the name |
+| `pct`, `price` | the pre-market print (the tape's own number, not the brief's) |
+| `cat` | the catalyst class |
+| **`why`** | **the one-line driver** — the text that goes in the brief's `Why` cell |
+| **`news_url`** | **the citable article URL, when the merge found one** |
+| `news_date` | when the news broke (use it to judge freshness; the tape drops news older than 4 days) |
+| `conf` | `high | medium | low | unverified` |
+| **`ref`** | **prose evidence, never a URL** — the search-result dump behind the `why` |
+| `src` | which source produced the row (`scanner | pipeworx | stocktwits`) |
 
 Measured on the 2026-11-04 tape: **678 rows, covering 63 of the 66** actionable names, with 12
 sourced catalysts (DOX guidance-cut, ALIT beat-and-raise, DUOL, DDOG, HELE acquisition,
 NRIX/Sanofi, RIOT, FSLR) — and it covers **PARA, CRIS and DKI**, the names the $200M floor hides.
 
+**A tape row is usable as a catalyst when `conf != low` AND `why` is present.** Measured on the
+same six tapes: **113 rows carry a `why`, 93 have `conf != low`, and the two sets overlap
+completely** — there is **no** row with `conf != low` and no `why`. So:
+- `conf != low` + `why` → publish the `why` as the driver. **Cite `news_url` when the row has
+  one**; when it does not, the driver is still publishable but it has **no citable URL behind
+  it** — say so in the source-health section, and do not print a `ref` as if it were a link.
+- `conf: low` or no `why` → the row is a **lead, not a catalyst**: it still tells you the name
+  moved, but the driver must come from your own lookup.
+- `conf: unverified` → verify with one fetch of `news_url` before publishing it, or leave the
+  cell blank and flag the name.
+
 **Fetch it before you search.** It replaces a dozen `web_search` calls with one HTTP GET, and
-every catalyst it supplies already has a URL behind it. A human-readable digest sits beside the
-tape as `{date}-{HHMM}.md` — read it first if you want the movers without parsing JSONL.
+every catalyst it supplies already has its evidence behind it. A human-readable digest sits
+beside the tape as `{date}-{HHMM}.md` — read it first if you want the movers without parsing
+JSONL.
 
 ```bash
+# The LOCAL copy first. The 08:30 checkpoint writes /workspace/preopen-feed/{date}-0830.jsonl
+# at ~08:35, but it reaches the outputs repo between 08:34 and 08:57 ET (one day it landed at
+# 10:19) - and this routine fires at 08:45. The local path is the only one that is reliably
+# there when the brief starts, so it is tried FIRST.
 T=/workspace/preopen-0830.jsonl
-for U in \
-  "https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/preopen-feed/{date}-0830.jsonl" \
-  "https://cdn.jsdelivr.net/gh/karizaco/minimax-cloud-outputs@main/preopen-feed/{date}-0830.jsonl" ; do
-  curl -sL --max-time 30 -o "$T.tmp" "$U" 2>/dev/null
-  if [ -s "$T.tmp" ] && head -c 200 "$T.tmp" | grep -q '"ticker"'; then mv -f "$T.tmp" "$T"; break; fi
-  rm -f "$T.tmp"
-done
+if [ -s "/workspace/preopen-feed/{date}-0830.jsonl" ]; then
+  cp -f "/workspace/preopen-feed/{date}-0830.jsonl" "$T"
+else
+  for U in \
+    "https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/preopen-feed/{date}-0830.jsonl?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/preopen-feed/{date}-0830.jsonl" \
+    "https://cdn.jsdelivr.net/gh/karizaco/minimax-cloud-outputs@main/preopen-feed/{date}-0830.jsonl" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$T.tmp" "$U" 2>/dev/null
+    if [ -s "$T.tmp" ] && head -c 200 "$T.tmp" | grep -q '"ticker"'; then mv -f "$T.tmp" "$T"; break; fi
+    rm -f "$T.tmp"
+  done
+fi
 ```
 
 - **The tape is optional and it fails closed.** Cron #92 writes nothing when its key is
   unusable, so the file may simply not exist. **That is not an error** — fall back to
   `web_search` for the catalyst and record `pre-open tape: absent` in the source-health
   section. Never invent a tape.
-- **A tape of ~120 rows is a REGRESSION SIGNATURE** — the checkpoint sorted by volume instead of
-  by move. Do not treat a short tape as the day's screen — fall back to `web_search` and say so.
-  **The tape's size is #92's to define, not this skill's**: it was 678 rows on 2026-11-04 and 700
-  on 2026-11-05 under the old ±3% snapshot, and **849 on 2026-11-06** when #92's movers-sorted
-  ±2.5% snapshot landed. A tape **longer** than the old band is normal, not a deviation; only a
-  ~120-row tape is. Read the expected size out of `cloud-prompts/_shared/preopen-capture.md`
-  (`PROCEDURE_VERSION`) if you need to quote it.
+- **The tape's size is #92's to define, not this skill's.** It was 678 rows on 2026-11-04, 700
+  on 2026-11-05 and **849 on 2026-11-06** under the old ±3%/±2.5% movers-sorted snapshots. From
+  2026-11-13 the capture takes its candidates from the **current session's pre-market band**, so
+  a tape is **200–900 rows** on a normal day. A tape **shorter than ~120 rows** is a REGRESSION
+  SIGNATURE — the capture fell back to a narrower source. Do not treat a short tape as the day's
+  screen — fall back to `web_search` and say so. Read the expected size out of
+  `cloud-prompts/_shared/preopen-capture.md` (`PROCEDURE_VERSION`) if you need to quote it.
 - **A short tape is not a screen.** Measured on the 2026-11-10 fire: the 08:30 checkpoint came
   back with **49 rows** — well under the size of a movers-sorted snapshot — and it covered only
-  6 of the 50 published names, **none of which carried a source URL**. With no `ref`, §11's rule
-  forbids publishing the tape's `why` as a catalyst, so a short tape means every catalyst has to
-  come from a search instead. Say `pre-open tape: short (N rows)` in the source-health section
+  6 of the 50 published names, **none of which carried a source URL**. With no usable row, §11's
+  rule forbids publishing the tape's `why` as a catalyst, so a short tape means every catalyst has
+  to come from a search instead. Say `pre-open tape: short (N rows)` in the source-health section
   and count it as a degraded source.
-- **A tape row is a lead, not a verdict.** Use the tape's `why` as the catalyst **only when it
-  carries a `ref` URL and its `conf` is not `low`**; then the cell names the driver and the
-  source URL. For `conf: unverified` or a missing `ref`, **verify it with one fetch of the URL**
-  before publishing it, or leave the cell blank and flag the name.
 - **The tape's price is a second opinion, not the price of record.** It was pulled at 08:30 and
-  the screen at ~09:04; the same name can differ by several points. The **screener's** number is
+  the screen at ~09:22; the same name can differ by several points. The **screener's** number is
   what the brief publishes. A gap between the two is a **movement flag** (§12), not a correction.
 - **The tape is priced from the CURRENT session's pre-market print — verify, then use.** The
   producer fixed this on 2026-11-11: the capture now takes each row's `pct`/`price` from the
@@ -608,12 +725,17 @@ done
 
 ### 12. The delta pull — flag movement, never re-publish it
 
-Take **one more pull at ~09:25 ET**, five minutes before the open, and use it for **nothing but
-flags**. It exists because the pre-market tape moves while the brief is being written: on
+Take **one more pull at ~09:27 ET**, about three minutes before the open, and use it for **nothing
+but flags**. It exists because the pre-market tape moves while the brief is being written: on
 2026-11-04 PARA went −51% (07:13) → −57% (07:45) → −88.6% (09:35), and a name that had not
 gapped at all when the screen was pulled (SUPN) was at −35% an hour later.
 
-- The **tables keep the first pull's numbers.** The delta pull's values appear only in Flags,
+- **The delta pull is the LAST pull, and it is flags-only.** The published pull (§7) is at
+  ~09:22 ET; this one lands ~5 minutes later, as close to the open as the screen allows. That
+  spacing is deliberate: the movement a reader most needs to know about is the movement in the
+  last few minutes before the open, and on 2026-11-12 the gap between the published pull and the
+  push was **28 minutes** — the brief's numbers were two minutes older than the open.
+- The **tables keep the published pull's numbers.** The delta pull's values appear only in Flags,
   as the gap a name faded from and to.
 - **The flag to write:** any published name whose gap moved **≥ 3 points** between the two
   pulls, or that crossed the 3% band in either direction. Name the ticker and both numbers.
@@ -621,7 +743,7 @@ gapped at all when the screen was pulled (SUPN) was at −35% an hour later.
   (§7) and skip the flag if the pull did not complete.
 - If the delta pull could not be made (the network failed), **say so in Flags** — one line — and
   carry on. Never publish a number from the delta pull.
-- **A LATE delta pull is still worth taking.** The 09:25 window is a target, not a gate: a run
+- **A LATE delta pull is still worth taking.** The 09:27 window is a target, not a gate: a run
   whose own latency (50 catalyst lookups, the contract check) carries it to 09:30 can still take
   the pull, because TradingView keeps serving the last pre-market print for a short while after
   the open. Take it, use it for flags only, and **state the actual pull time in Flags** — a pull
@@ -708,8 +830,9 @@ Columns and what they are worth:
 1. Screen with the filters above, then carry **both** sides. Rank by absolute `premarket_change`;
    a descending-only sort would hide the day's largest decliners. **Check the pull is complete**
    (`totalCount` vs rows returned, §7) and apply the $200M floor **after** the scan (§10).
-2. **Fetch the pre-open catalyst tape (§11) before you search.** Use its sourced `why` + `ref`
-   for the names it covers; look up the rest with `web_search` for `"<TICKER>" news catalyst
+2. **Fetch the pre-open catalyst tape (§11) before you search.** Use its usable `why` (and its
+   `news_url` where the row has one) for the names it covers; look up the rest with `web_search`
+   for `"<TICKER>" news catalyst
    <today>` (past 12 hours). A name with no confirmed catalyst keeps its row and is flagged — an
    empty `Why` cell must never be filled with a guess.
 3. Surface what you have; clearly mark this as the screener fallback in the brief header.
@@ -754,12 +877,14 @@ before today, and for anything older they are gone. For an older date:
 - **Double-listing** → a ticker appearing in two tables and a prose section is the same failure
   in miniature. Fix the layout, not the word count.
 - **Two pulls, two numbers** → the tape moved mid-run and the prose took a different pull from
-  the tables. One pull per brief; the first pull wins; note the movement in Flags. The §12
-  delta pull is the only exception, and it never publishes a number.
+  the tables. One pull per brief; the **published pull** (~09:22 ET) wins; note the movement in
+  Flags. The §12 delta pull is the only exception, and it never publishes a number.
 - **A truncated pull** → `totalCount` did not match the rows returned, so the screen is quietly
   half a screen. Pull the missing slice (§7) or report the pull as failed. Never publish it.
 - **The pre-open tape is absent** → cron #92 failed closed and wrote nothing. Not an error:
   fall back to `web_search` and record `pre-open tape: absent` in the source-health section.
+- **A published `ref` as if it were a link** → `ref` is prose evidence, never a URL (§11). The
+  citable article URL is `news_url`. Printing `ref` in a source column is a contract breach.
 - **The floor hid the biggest mover** → a below-the-floor name gapped harder than anything in
   the actionable table and the watchlist was not published. That is a `SUBFLOOR` failure; the
   watchlist is required (§10).

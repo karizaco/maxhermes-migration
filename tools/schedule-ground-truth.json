@@ -109,7 +109,7 @@
       "session_mode": "new"
     },
     "25-ntrt-gap-brief-daily.md": {
-      "schedule": "0 9 * * 1-5",
+      "schedule": "45 8 * * 1-5",
       "timezone": "America/New_York",
       "session_mode": "new"
     },

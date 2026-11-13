@@ -15,7 +15,7 @@ This step must never block, delay, or fail the artifact.
 
 ## SCHEDULE
 - Original local schedule: morning
-- Deployed schedule: `0 9 * * 1-5` America/New_York — 09:00 ET, Mon-Fri.
+- Deployed schedule: `45 8 * * 1-5` America/New_York — 08:45 ET, Mon-Fri.
 - The day-of-week field is set in the SCHEDULER, so this routine does not fire at all on
   weekends: no agent invocation is spent discovering it is a weekend, and no weekend SKIPPED
   file is written. The WINDOW CHECK below keeps the one guard a cron expression cannot

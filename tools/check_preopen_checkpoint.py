@@ -161,9 +161,18 @@ def check_procedure(path):
     # 8. the procedure demands the DATED capture script and states the gate. Without
     # these the procedure could keep asking for the 2026-11-09 script, which publishes
     # a ten-month-old press release as this morning's cause.
-    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-11", t) is not None,
-          "the procedure demands the 2026-11-11 capture script (the one that PRICES the "
-          "tape from the current session's pre-market print)")
+    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-13", t) is not None,
+          "the procedure demands the 2026-11-13 capture script (the one that takes its "
+          "candidates from TODAY's pre-market band)")
+    # THE CANDIDATE SOURCE. The tape used to be built from Yahoo's `top_movers`, which
+    # is a screener over the LAST COMPLETED session - so before the open it named
+    # YESTERDAY's movers. Measured 2026-11-10: the 08:30 tape carried 49 rows and
+    # covered 6 of the 50 names the brief published. The procedure must state that the
+    # band is the candidate source.
+    check(re.search(r"pre-market band", t, re.I) is not None,
+          "the procedure states that the candidates come from TODAY's pre-market band")
+    check(re.search(r"25,000\s*SHARES|25,000 shares", t) is not None,
+          "the procedure states the absolute pre-market share floor")
     check("news_date" in t and "news_url" in t,
           "the procedure states that every catalyst carries a date and a source article")
     check("stale" in norm(t),
@@ -190,13 +199,19 @@ def check_script(path):
           "the tape is written with a temp file + rename, never appended")
     check("ALLOWED_SLOTS" in t and "resolve_slot" in t,
           "the slot is asserted against the allowed set and a late dispatch snaps down")
+    m_slots = re.search(r"ALLOWED_SLOTS\s*=\s*\(([^)]*)\)", t)
+    check(m_slots is not None and all(s in m_slots.group(1) for s in ALLOWED_SLOTS),
+          f"the allowed slot set names every checkpoint slot {list(ALLOWED_SLOTS)}")
     for k in TAPE_KEYS:
         check(f'"{k}"' in t, f"the tape row carries the contract key {k!r}")
     check("not measurable" in norm(t) or "halted" not in t,
           "the script never publishes a halt count")
     # THE STALENESS GATE. Without this the script can date a catalyst and still
     # publish a stale one, and the tape's date field becomes decoration.
-    check("resolve_news_date" in t and '"news_date"' in t,
+    # The CALL, not the name: `resolve_news_dateX(` still contains the substring
+    # "resolve_news_date", so a name-only check cannot tell a dated capture from an
+    # undated one.
+    check(re.search(r"=\s*resolve_news_date\(", t) is not None and '"news_date"' in t,
           "the script dates every catalyst (resolve_news_date -> news_date)")
     # THE PUBLISHED DATE IS AGE-CHECKED IN ITS OWN RIGHT. The gate reads the provider's
     # NEWEST article (freshest), but the tape publishes the MATCHED article's stamp, and
@@ -215,6 +230,14 @@ def check_script(path):
           "the script reads the scanner's premarket_change/premarket_close for the tape's price")
     check("call_scanner_premarket" in t,
           "the script calls the scanner for the current session's pre-market print")
+    # THE CANDIDATE SOURCE, asserted on the CALL and not on the definition: a script
+    # that defines call_scanner_band() and never calls it has yesterday's movers back.
+    check(re.search(r"=\s*call_scanner_band\(", t) is not None,
+          "the script takes its candidates from TODAY's pre-market band")
+    m_floor = re.search(r"MIN_PM_SHARES\s*=\s*([1-9]\d*)", t)
+    check(m_floor is not None,
+          "the script carries the absolute pre-market share floor (a quote is not a "
+          "market) - and the floor is a REAL number, not zero")
     check(re.search(r'"pct":\s*pr\.get\("pct"\)', t) is not None,
           "the tape row's pct comes from the pre-market print, not from the movers scan")
     check(re.search(r'"price":\s*pr\.get\("price"\)', t) is not None,
@@ -244,6 +267,12 @@ def check_digest_script(path):
           "the board reports the halt state as not measurable")
     check("news_date" in t,
           "the board's 'When it broke' reads the tape's news_date, not the capture clock")
+    # The break-time ASSIGNMENT has to read news_date - not merely mention it in a
+    # comment. The renderer prints the capture clock in a column titled "When it
+    # broke" unless the news date comes first.
+    check(re.search(r"broke\s*=\s*r\.get\(\s*[\"']news_date[\"']", t) is not None,
+          "the board's break-time column takes the NEWS date first, and only then the "
+          "trending stamp")
 
 
 def check_prompts(repo):
@@ -459,15 +488,22 @@ def check_digest(tape_path, digest_path, slot):
     check(len(body) <= TOP_N, f"the table lists at most {TOP_N} rows (got {len(body)})")
     check(len(body) == min(TOP_N, n), f"the table lists the top {min(TOP_N, n)} movers")
 
-    # ordering by |pct| desc
+    # ordering by |pct| desc.
+    #
+    # The cell is "+40.00%" - and float("+40.00%") RAISES, so every row used to fall
+    # into the except branch and read -1.0. The list was then all -1.0, which is
+    # already sorted, and the check could never fail: the board's ordering was
+    # UNVERIFIED, not verified. The cell has to be parsed, not coerced.
     pcts = []
     for r in body:
+        raw = (r[1] or "").strip().replace("%", "").replace(",", "").replace("+", "")
+        raw = raw.replace("\u2212", "-").replace("\u2013", "-")
         try:
-            pcts.append(abs(float(r[1])))
+            pcts.append(abs(float(raw)))
         except Exception:
             pcts.append(-1.0)
     check(pcts == sorted(pcts, reverse=True),
-          "the rows are ranked by |%| descending")
+          f"the rows are ranked by |%| descending (read {pcts[:6]})")
 
     # every row carries a visible conf
     confs = [r[2].replace("⚠", "").strip() for r in body if len(r) > 2]

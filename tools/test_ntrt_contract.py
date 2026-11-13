@@ -74,10 +74,10 @@ CSV_ROWS = [
 ]
 
 MD = """# NTRT gap brief — Friday, 06 November 2026
-**Mode B — screener fallback.** TradingView public scanner; the ntrt backend was unreachable (`GET /health` -> HTTP 000). Snapshot 08:52 ET, 38 min before the open.
+**Mode B — screener fallback.** TradingView public scanner; the ntrt backend was unreachable (`GET /health` -> HTTP 000). Snapshot 09:22 ET, 8 min before the open.
 
 ## TL;DR
-- **The tape is a rotation, not a sell-off:** 12 US stocks printed a >=3% pre-market gap; 5 cleared the actionable gate (|gap| >=3% AND >=5% of 30-day ADV AND market cap >= $200M) — 3 down, 2 up.
+- **The tape is a rotation, not a sell-off:** 12 US stocks printed a >=3% pre-market gap; 5 cleared the actionable gate (|gap| >=3% AND >=5% of the session-normalised 30-day ADV AND market cap >= $200M AND pre-market print >= 25,000 shares) — 3 down, 2 up.
 - **The %ADV reality check:** of the 12 gap names, only 5 cleared 5% of 30-day ADV and just 2 cleared 20%; 6 are quotes on essentially no volume. The screen is not 12 tradeable names.
 - **The most consequential name is IIII -55.0%** — below the $200M floor, so it is in the watchlist, not the table.
 
@@ -94,7 +94,7 @@ Prior board: `2026-11-05`. Each name was looked up in this morning's full screen
 | YYYY | +1.1 | under the line |
 
 ## Worth your attention
-Actionable set: 4 names (|gap| >=3% AND >=5% of 30-day ADV AND market cap >= $200M), sorted by absolute gap within each direction, capped at 20 per direction.
+Actionable set: 4 names (|gap| >=3% AND >=5% of the session-normalised 30-day ADV AND market cap >= $200M AND pre-market print >= 25,000 shares), sorted by absolute gap within each direction, capped at 20 per direction.
 
 ### Gap down
 | Ticker | Gap % | PM print | Prev close | % of 30d ADV | Mkt cap | Why |
@@ -161,7 +161,7 @@ REPLY = """Pre-market gap brief for 06 Nov is written and pushed.
 - BBBB -8.3% — guidance cut; Q3 EPS $0.21 vs $0.30 est.
 
 ### Method & caveats
-- TradingView public screener (Mode B), snapshot 08:52 ET; 12 names at >=3% gap, 5 clear the gate.
+- TradingView public screener (Mode B), snapshot 09:22 ET; 12 names at >=3% gap, 5 clear the gate.
 
 ### Files
 - /workspace/ntrt/2026-11-06.md
@@ -301,6 +301,20 @@ def main():
                  replace_once(
                      csv, "BBBB,-8.25,10.00,10.90,300000,2000000,15.000",
                      "BBBB,-8.25,10.00,10.90,80000,2000000,4.000"))),
+            ("GATE", "an actionable name's pre-market print is only 6,000 shares",
+             # The share floor bites: DDDD still clears |gap|, %ADV and the cap,
+             # but 6,000 shares is a quote. The ADV is scaled with the volume so
+             # pct_of_adv stays exactly 6.000 and NO other check can fire.
+             lambda md, csv: (md, replace_once(
+                 csv, "DDDD,-4.40,12.00,12.55,60000,1000000,6.000,600000000",
+                 "DDDD,-4.40,12.00,12.55,6000,100000,6.000,600000000"))),
+            ("GATE", "a name at 4.94% of ADV clears the session-normalised bar but is not published",
+             # The session-normalised bar is 5.0% x 322/330 = 4.8788% of the RAW
+             # 30-day ADV. YYYY at 4.940% clears it (and is clear of the 0.05
+             # boundary band) and must therefore be published.
+             lambda md, csv: (md, replace_once(
+                 csv, "YYYY,-3.60,3.00,3.11,3000,1000000,0.300,250000000,Finance,NYSE,,true",
+                 "YYYY,-3.60,3.00,3.11,49400,1000000,4.940,250000000,Finance,NYSE,,false"))),
             ("FOURCELL", "a published four-cell count is wrong",
              lambda md, csv: (replace_once(
                  md, "| **Passes the actionable gate** | 3 — e.g. AAAA |",

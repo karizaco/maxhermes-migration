@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-11.3
+PROCEDURE_VERSION: 2026-11-13.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -53,7 +53,7 @@ for U in \
   # provider's newest article. 2026-11-11.1 dated the tape from the previous
   # session's closes, and it published a matched article's stamp without checking
   # that stamp was inside the window - both are defects this version fixes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-11.2' "$S.tmp" 2>/dev/null; then
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-13.1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -143,11 +143,39 @@ Five Pipeworx gateway calls plus one TradingView scanner POST, each with one job
 | Call | Pack | Job |
 |---|---|---|
 | `trending_symbols` | `stocktwits` | candidates + a natural-language reason + a `summary_at` timestamp for each. Live retail/WSB chatter — the X signal. |
-| `top_movers` (gainers) | `market-recap` | **which names** moved: the movers universe, in one direction. |
+| `top_movers` (gainers) | `market-recap` | YESTERDAY's movers universe, in one direction — the names being watched before they gap. |
 | `top_movers` (losers) | `market-recap` | the same universe for the other direction. |
+| TradingView scanner — **the band** | direct POST | **TODAY's pre-market movers**: every US stock trading more than ±2.5% pre-market, in two DISJOINT halves. **This is the tape's candidate source.** |
 | `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence and confidence, for movers the first call did not cover. It does **not** say WHEN the news broke. |
 | `polygon_io_news` | `polygon-io` | the article feed, straight from the provider: `published_utc`, `article_url`, title and description. This is where the catalyst gets its DATE. |
 | TradingView scanner | direct POST | **the PRICE**: this session's `premarket_change` and `premarket_close` for every name on the tape. |
+
+**THE CANDIDATE SOURCE IS TODAY'S PRE-MARKET BAND, NOT YESTERDAY'S MOVERS.**
+
+`top_movers` is Yahoo's predefined screener over the **last completed regular session**, so
+before the open it names YESTERDAY's movers. A tape built from it cannot serve a brief about
+today's movers, and it did not: on the 2026-11-10 fire the 08:30 checkpoint carried **49 rows**
+and covered **6 of the 50 names the brief published**; on 2026-11-12 it covered **21 of 693**
+screen names (3.0%) and **9 of 21** actionable names.
+
+So the candidates come from the **TradingView scanner's pre-market band** — every US stock
+trading more than **±2.5%** pre-market, pulled in **two DISJOINT halves** (the gainers sorted
+descending and the decliners sorted ascending, so a name cannot be in both and no record can
+hold two prices). The band IS today's tape.
+
+Measured on 2026-11-13 at 07:57 ET: the band held **458 names** (271 up / 187 down) and the
+tape carries **130 priced rows** — against 47 rows before. The band is the same width as the
+historical "±2.5% movers-sorted snapshot" (849 rows on 2026-11-06), so a tape of 200–900 rows
+is normal and only a tape under ~120 rows is a regression signature.
+
+**THE QUOTE FLOOR: a pre-market print of fewer than 25,000 SHARES is not on the tape.**
+That is the same number, and the same instrument, as cron #25's fourth gate leg — one rule
+across the fleet: below 25,000 pre-market shares is a quote, not a market. It is a SHARE count
+and not a dollar notional because a share count is monotone in time (a name that printed
+25,000 shares by 08:30 has printed more by 09:22) while a notional floor is not (the price can
+fall under it), and because a notional floor deletes real movers: measured on 2026-11-13 a
+$100K-notional floor kept 72 of 458 band names and DROPPED **CRIS (-10.6% on 39,053 shares)**
+— a real mover on a cheap share, and one of the names cron #25 has to publish.
 
 **Both directions are mandatory.** The gainers and losers halves are DISJOINT (a name cannot be
 both a top gainer and a top loser), so merging them can never put two prices on one record.
@@ -163,8 +191,10 @@ close and move (IRTC -30.70% at 90.22, from 130.19 on Nov 5 to 90.22 on Nov 6), 
 TradingView's own pre-market for IRTC that morning was +0.86% at 91.00. The tape was
 publishing Friday's move as if it were Monday's pre-market.
 
-So the movers scan decides WHICH names are on the tape, and the scanner supplies the NUMBER
-that belongs to the session the tape is about. Two rules follow:
+So the **band** decides WHICH names are on the tape, and the scanner supplies the NUMBER that
+belongs to the session the tape is about (the band rows are priced by the pull that chose
+them; the few names the band did not cover are priced by a second scanner call). The movers
+scan still contributes the names that have not moved yet. Two rules follow:
   * A name the scanner does not carry has **no pre-market print**. It keeps `pct`/`price`
     NULL and is published as a narrative row (`src: stocktwits`) — it did not trade
     pre-market, and the tape must not invent a number for it.
