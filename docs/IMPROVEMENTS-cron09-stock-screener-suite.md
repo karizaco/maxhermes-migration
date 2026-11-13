@@ -956,3 +956,54 @@ of them made the checker exit non-zero.
 With them, the whole pipeline runs offline from saved inputs — which is how the
 identical-output proof above was made, and how a regression can be caught
 without spending a metered shibui call.
+
+---
+
+## 2026-11-12 18:30 ET — the sweep DIED on a transport error and published NOTHING
+
+**What happened.** Cron #09's 2026-11-12 fire dispatched on time (run record
+`462739098427857`, session `462738825769397`, `scheduled_at_ms` = 18:30:00 EST) and died
+**four minutes later** with `[Error] Connection error.` — a transport failure, not a data
+failure. The last thing it did was run a hand-built breadth script; the turn ended there.
+It published **no artifact, no skip marker and no trace**, so `daily-screens/2026-11-12`
+contains the other routines' files and **no `focus.csv`, no `focus.md`, no `_results.json`**.
+
+**Why that is a fleet-level event, not a #09 event.** The sweep's Focus list is the
+UNIVERSE for two other routines:
+
+| consumer | fire | consequence of a missing sweep |
+|---|---|---|
+| cron #08 pre-market gapper | 08:34 ET | the universe resolver's H3 fails (*"universe session 2026-11-11 vs expected prior session 2026-11-12"*) → **no board at all** |
+| cron #07 focus-rvol | 09:45 ET | the same: the focus roster it re-ranks is a session old, or missing |
+
+This is the second time a missing `focus.csv` has degraded a downstream routine (the
+2026-11-10 sweep published `focus.md` and no CSV, and #07's 11-09 board re-ranked the 11-06
+book). **A sweep that publishes nothing is worse than a sweep that publishes a degraded
+book**, because there is nothing downstream to fall back to.
+
+**The 2026-11-12 session was ALSO on the wrong code path — and that part is now moot.**
+It hand-built the whole pipeline in `scratch/` instead of running the repo engine, and its
+ETF leg used `"symbols": {"tickers": [...]}` — the documented bare-ticker trap — so it
+pulled **0 rows** and computed `breadth_divergence_pp = 53.03` (which is just
+`breadth_pct` with an ETF term of 0). Had the session not died, that number would have
+shipped. **`tools/sweep_pipeline.py` (marker `SWEEP_PIPELINE_V1`) landed at 2026-11-13
+06:13Z — SEVEN HOURS after this fire** — so the session could not have used it; the skill
+it read still carried the old manual order. Every sweep from 2026-11-13 18:30 ET onward
+runs the ONE COMMAND, whose ETF leg uses the correct `name in_range` filter.
+
+**What is landed for the next sweep** (2026-11-13 18:30 ET onwards): the pipeline owns the
+mechanics, the fetch and the check — the incident above predates it.
+
+**What is landed for the CONSUMERS** (cron #08, `b34f00a` + `05fb893` on 2026-11-13): a
+missing sweep is now a **DEGRADED READ**, not a missing board. Cron #08's run sequence
+retries the resolver with `--allow-stale-universe`, the reference close comes from the
+INDEPENDENT sources only, and the artifact publishes `universe_stale` in `## Flags` and in
+the TL;DR caveat. The checker keeps its teeth: an **unflagged** universe/denominator
+mismatch fails, and a close taken from the stale file fails. **A missing sweep costs the
+reader a stale universe, not the whole board.**
+
+**Still open, and it is not a repo fix:** a transport error that kills a session leaves no
+trace. The only durable mitigation on our side is to publish EARLY — the sweep's Focus
+list before the narrative work — so a later crash still leaves a usable universe for #07
+and #08. That is a change to the sweep's run order inside `sweep_pipeline.py` and is worth
+doing next.

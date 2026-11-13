@@ -913,3 +913,44 @@ python3 "$R" --pull-json "$D/_premarket-pull.json" --universe-manifest "$D/_univ
 python3 "$C" --md "$D/pre-market-gapper.md" --csv "$D/pre-market-gapper.csv" \
     --pull-json "$D/_premarket-pull.json" --reply /workspace/reply.txt
 ```
+
+---
+
+## 2026-11-13 08:34 ET — a MISSING SWEEP is a DEGRADED READ, not a missing board
+
+**The incident.** Cron #09's 2026-11-12 18:30 ET sweep died on a transport error and
+published nothing (see `IMPROVEMENTS-cron09-stock-screener-suite.md`). Cron #08's strict
+universe resolver therefore failed H3 — *"universe session 2026-11-11 vs expected prior
+session 2026-11-12 — the sweep for the prior session has not published"* — and exited 3.
+**Measured, not assumed:** the strict resolver for the 2026-11-13 fire was run against the
+live sources and exited 3 with that exact assertion. Without a change, the routine would
+have produced **no artifact at all** for 2026-11-13.
+
+**The fix, and why it is safe.** The resolver's escape hatch (`--allow-stale-universe`)
+already existed; what was missing was the ROUTINE that uses it, and a contract that says
+what a degraded run owes the reader.
+
+| rule | landed in | why |
+|---|---|---|
+| the run sequence retries the resolver with `--allow-stale-universe` when the strict run fails on **H2/H3** (the expected session's sweep has not published) | SKILL §6.6 | a missing sweep must not cost the whole morning |
+| the reference close comes from the **INDEPENDENT sources only** | the resolver's degraded mode | the stale CSV's close belongs to a different session — that is the wrong-number bug H3 exists to prevent. Measured on the degraded run: AAON's close came from `tradingview:close` = 78.80, confirmed by Cboe (last trade 2026-11-12T15:59:59) and Nasdaq's session-exact history — all three agreeing |
+| the artifact **publishes** `universe_stale` in `## Flags` and names it in the TL;DR caveat | the renderer | an unflagged stale universe is a hidden degradation |
+| the checker FAILS an unflagged universe/denominator mismatch, and FAILS a close taken from the stale file | `check_premarket_artifact.py` | the guard keeps its teeth: only the **declared** degradation passes |
+| the resolver's failure message now names the fallback when the cause is a missing sweep, and says there is NO fallback when the close itself is wrong | `premarket_universe.py` | a fire that reads the failure must not stop at "there is no run" when a documented path exists |
+
+**Verified end-to-end on the real 2026-11-13 inputs** (degraded resolver → pull → renderer
+→ checker): **30/30 contract checks passed**, with the CSV carrying
+`universe_date = 2026-11-11`, `ref_close_date = 2026-11-12` and
+`universe_source = tradingview:close` on every row.
+
+**Two smaller defects the degraded run exposed, both fixed:**
+
+1. **`universe_source` was EMPTY on every row of the degraded CSV.** The renderer read it
+   from the manifest, which has no such key in the degraded mode. The pull now carries
+   `universe_date` / `ref_close_date` / `universe_source` **per record**, so the renderer
+   never guesses them.
+2. **A failed ladder scan sank the whole artifact.** The checker failed the run because the
+   Market ladder section had no table — but the ladder is CONTEXT, and a failed TV scan
+   must not sink the Focus book. The rule is now: the engine's `market_ladder` decides
+   (an empty ladder on both sides is fine; rows on one side and not the other is a
+   failure).
