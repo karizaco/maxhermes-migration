@@ -467,3 +467,43 @@ and the two are never mixed in one cell. That rule is now in the artifact's Meth
 the sub-$1B after-hours leaderboard was pulled 400 of 2,950 names per direction (not paged to the
 end), and cron #20's universe covers common stocks only, so the three funds on the watchlist have no
 volume-versus-average.
+
+---
+
+## 2026-11-12 fire — the one-ticker rule again, this time on a trial name
+
+**Date:** 2026-11-12 (the 22:30 ET fire, session `462797923590223`) · **Scope:** cron #23's skill spec
+§5.8 rule 2 and the reply's `### Signal` bullets.
+
+The 2026-11-12 artifact passed `check_postmarket_brief.py` on its own; the REPLY failed the
+one-ticker rule on its first run:
+
+```
+FAIL: reply: a `### Signal` bullet carries 2 tickers (SLS, REGAL) — ONE ticker per line
+```
+
+The bullet was `- SLS +20.13% after hours — the Phase 3 REGAL trial hit its prespecified 80th
+event; topline expected in November.` — one real ticker (SLS) and one TRIAL NAME. `REGAL` is not on
+the checker's `NON_TICKERS` list, and the checker's ticker regex is mechanical, so a caps trial name
+reads as a second ticker.
+
+This is the same defect class the skill already warns about with "FCC", and it is the RECURRING
+case for this routine: after-hours earnings reactions are full of named clinical programmes (the
+SELLAS REGAL trial on 2026-11-12, Cerebras' own named cloud wins on the same night), and a brief
+that names them in caps will fail this check on a growing share of fires.
+
+**The fix is in the skill spec** (`cloud-prompts/skills/agentic-post-market-brief/SKILL.md` §5.8
+rule 2), which is fetched at RUN time — so it lands on the next fire with NO `cron_update` and no
+prompt drift: the rule now names the trial-name case explicitly and says to write the trial in
+words ("the Phase 3 trial"), keeping the caps token for the ticker alone. The checker was NOT
+weakened: "REGAL" was deliberately NOT added to `NON_TICKERS`, because the correct fix is to write
+the bullet correctly, not to teach the checker that a trial name is a ticker.
+
+**Also carried forward from this run.** The artifact and the reply were consistent on
+`degraded_sources: 3` / `errors: 3`, and all three were real and published: cron #20's universe
+CSV carries 370 rows with no sector (excluded from the sector ranking) and 52 rows with no price
+(excluded from the participation read); the watchlist's three ETFs are not in the equity universe so
+their volume-versus-average is `n/a`; and the extended-hours print is a single-vendor snapshot of a
+moving tape (CBRS read +18.34% on the scanner against +12% to +18.41% elsewhere for the same
+session). The `### Signal` bullet count, the ten-row after-hours table's level set and the three
+"tomorrow's things" bullets all passed on the second run.

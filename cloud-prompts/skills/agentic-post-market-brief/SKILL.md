@@ -450,6 +450,10 @@ rules below. The checker asserts all four.
    so a bullet naming GOGO and the FCC is a two-ticker bullet and the run fails. On 2026-11-06
    that was the only check the contract caught. When a second capitalised token appears, name the
    organisation in words ("the spectrum regulator"), not in caps.
+   **Clinical-trial and programme names are the recurring case** (a 2026-11-12 reply failed on
+   "REGAL", the trial name in a SELLAS bullet — the rule fires on the trial name, not the
+   company). Write the trial in words ("the Phase 3 trial"), and keep the caps token for the
+   ticker alone.
 3. **A `### Tomorrow's three things to watch` section** with exactly three bullets, each naming
    one ticker and its level and catalyst (§5.4). This is the section the reply was missing.
 4. **The top item of the open research queue is carried into the reply** — as the first bullet
