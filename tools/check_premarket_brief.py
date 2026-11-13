@@ -78,7 +78,7 @@ REQUIRED_LEVELS = ("prior_close", "premarket_last", "gap_pct", "key_level",
 BOTTOM_LINE_LABELS = ("the one setup", "the one risk", "the one thing to watch")
 
 # --- C5: the verdict vocabulary -----------------------------------------------------
-THESIS_VERDICTS = ("HELD", "BROKE", "PARTIAL", "UNJUDGED")
+THESIS_VERDICTS = ("WORKED", "HELD", "SURVIVED", "BROKE", "PARTIAL", "UNJUDGED")
 NO_DATA_MARKERS = (
     "no prior brief", "not available", "no setups", "nothing to review",
     "unavailable", "no data", "could not be", "couldn't be", "no reviewed brief",

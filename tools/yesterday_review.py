@@ -65,7 +65,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 MAX_LOOKBACK_DAYS = 8
-VERDICTS = ("HELD", "BROKE", "PARTIAL", "UNJUDGED")
+VERDICTS = ("WORKED", "HELD", "SURVIVED", "BROKE", "PARTIAL", "UNJUDGED")
 
 
 # ----------------------------------------------------------------------------------
@@ -327,6 +327,8 @@ def pick_setups(brief_date: str, md: str, csv_text: str | None):
         prior_close = r.get("prior_close") or r.get("prev_close") or ""
         premarket_last = r.get("premarket_last") or r.get("premarket_close") or ""
         gap_pct = r.get("gap_pct") or r.get("premarket_change_pct") or ""
+        premarket_high = r.get("premarket_high") or ""
+        premarket_low = r.get("premarket_low") or ""
         derived = ""
         if not invalidation:
             # A brief published before the v2 contract carries no invalidation column.
@@ -364,6 +366,8 @@ def pick_setups(brief_date: str, md: str, csv_text: str | None):
             "gap_pct": gap_pct,
             "premarket_last": premarket_last,
             "prior_close": prior_close,
+            "premarket_high": premarket_high,
+            "premarket_low": premarket_low,
             "level_derived": derived,
         })
     return setups
@@ -478,6 +482,48 @@ def evaluate(setups, brief_date, bars_by_sym, closes_by_sym):
         # invalidation means the setup was long (it dies if price falls), an UPSIDE
         # invalidation means it was short (it dies if price rises).
         thesis_long = direction != "up"
+
+        # THE TRIGGER is the level the setup had to REACH before it was a live trade.
+        # Without it "the invalidation held" is a very low bar: for a gap-up long it
+        # only means the gap did not fully fill, which a +2% drift clears. The reviewed
+        # brief publishes the trigger in its own CSV:
+        #   a gap-up long   -> a break of the pre-market high it published;
+        #   a gap-down long -> a reclaim of the prior close (the C2 key level);
+        #   a short         -> a break of the pre-market low it published.
+        trigger = None
+        trigger_desc = ""
+        try:
+            _gap = float(s.get("gap_pct"))
+        except (TypeError, ValueError):
+            _gap = None
+        if thesis_long:
+            if _gap is not None and _gap < 0:
+                _cand = s.get("key_level") or s.get("prior_close")
+                trigger_desc = "prior-close reclaim"
+            else:
+                _cand = s.get("premarket_high")
+                trigger_desc = "pre-market-high break"
+        else:
+            _cand = s.get("premarket_low")
+            trigger_desc = "pre-market-low break"
+        try:
+            trigger = float(_cand) if _cand not in (None, "") else None
+        except (TypeError, ValueError):
+            trigger = None
+
+        triggered_on = ""
+        if trigger is not None:
+            for d in covered:
+                b = bars.get(d, {})
+                if not b:
+                    continue
+                if thesis_long and b.get("h") is not None and b["h"] >= trigger:
+                    triggered_on = d
+                    break
+                if not thesis_long and b.get("l") is not None and b["l"] <= trigger:
+                    triggered_on = d
+                    break
+
         verdict = ""
         reason = ""
         if level is None:
@@ -495,9 +541,20 @@ def evaluate(setups, brief_date, bars_by_sym, closes_by_sym):
                 verdict = "UNJUDGED"
                 reason = "no close for the last completed session"
             elif (move >= 0) if thesis_long else (move <= 0):
-                verdict = "HELD"
-                reason = (f"the {level:g} invalidation held and the session moved with "
-                          f"the setup")
+                if trigger is not None and triggered_on:
+                    verdict = "WORKED"
+                    reason = (f"the {level:g} invalidation held, the {trigger:g} "
+                              f"{trigger_desc} was reached on {triggered_on}, and the "
+                              f"session moved with the setup")
+                elif trigger is not None:
+                    verdict = "SURVIVED"
+                    reason = (f"the {level:g} invalidation held but the {trigger:g} "
+                              f"{trigger_desc} was never reached - the setup never "
+                              f"activated")
+                else:
+                    verdict = "HELD"
+                    reason = (f"the {level:g} invalidation held and the session moved with "
+                              f"the setup")
             else:
                 verdict = "PARTIAL"
                 reason = (f"the {level:g} invalidation held but the session moved against "
@@ -608,9 +665,13 @@ def main() -> int:
                 f"(**{last_session}**); \"Today's move\" is that session's % change vs its own "
                 f"prior close. \"Thesis held?\" is tested against the invalidation level the "
                 f"{brief_date} brief published, across every session from {brief_date} to "
-                f"{last_session}: **BROKE** = the level was traded through, **HELD** = the level "
-                f"held and the session moved with the setup, **PARTIAL** = the level held but "
-                f"the session moved against it, **UNJUDGED** = no level or no price."
+                f"{last_session}: **WORKED** = the invalidation held, the setup's trigger "
+                f"was reached and the session moved with it, **HELD** = the invalidation held "
+                f"and the session moved with the setup but the trigger could not be resolved, "
+                f"**SURVIVED** = the invalidation held but the trigger was never reached, so "
+                f"the setup never activated, **BROKE** = the level was traded through, "
+                f"**PARTIAL** = the level held but the session moved against it, "
+                f"**UNJUDGED** = no level or no price."
               + (f" {len(derived_rows)} of these names are from a brief published before the "
                  f"invalidation column existed, so their level is derived from that brief's own "
                  f"published prior close (the gap-fill level) — the row says so."

@@ -101,6 +101,45 @@ Already on the watchlist? Skip the price fetch and reuse the Step 6 quote, but *
 
 ### Step 2 — Market-wide pre-market screen (PRIMARY data source)
 
+**PULL THE WHOLE TAPE WITH THE HELPER.** `_shared/brief26_pull.py` does the band, the
+de-overlapped targeted pull, the cap reconciliation and the earnings calendar in ONE command
+and writes ONE merged table — which is what the "one pull per brief" rule actually means.
+
+```bash
+mkdir -p /workspace/tools
+for F in brief26_pull.py shibui_caps.py tv_scan.py; do
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/$F?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/$F" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/$F" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/workspace/tools/$F.tmp" "$U" 2>/dev/null
+    if [ -s "/workspace/tools/$F.tmp" ] && head -1 "/workspace/tools/$F.tmp" | grep -q '^#!'; then
+      mv -f "/workspace/tools/$F.tmp" "/workspace/tools/$F"; break
+    fi
+    rm -f "/workspace/tools/$F.tmp"
+  done
+done
+python3 /workspace/tools/brief26_pull.py --date {date} \
+  --out /workspace/_mcp/merged.json --extra-tickers "<the trending list and the earnings names>"
+```
+
+**All THREE files must land in the SAME directory** — the helper calls its two siblings by
+path. `shibui_caps.py` is the capped shibui query (the window function and the `LIMIT` are
+baked in, so the 200-row cap can never be hit and the ticker list is never built in the
+shell); `tv_scan.py` is the validated scanner client.
+
+Measured 2026-11-13: the helper produced a **360-name merged table in 20.4 seconds** — band
+0.14 s per side, watchlist 0.11 s, targeted 0.14 s, Nasdaq `/summary` 15.9 s for 353 symbols
+at 12 threads, shibui 0.49 s, stockanalysis 3.4 s, earnings calendar 0.07 s. The same data
+assembled by hand took ~12 assistant turns of wall clock for 3.3 s of HTTP.
+
+**The helper is fetched at RUN time, so a change to it lands with the next fire.** It exits 3
+if the band is truncated — a truncated screen publishes floors, not counts, and a brief must
+not be built on one. It also refuses to be trusted after the open: during the regular session
+the scanner's `close` is the LIVE price, so the cap basis and every published prior close
+would be wrong.
+
 **Endpoint** (the `mcp__*` tool name in the original spec does not exist here):
 
 ```
@@ -210,12 +249,26 @@ Origin: https://www.tradingview.com
 > scanner's `close` unchallenged would have put a prior close of 4.00 next to a pre-market print of
 > 4.14 in the same row — a contradiction a reader can SEE, and a wrong number in the CSV.
 >
-> **The ±3% band is LIVE: re-pull it ONCE and publish THAT pull's counts.** Measured 2026-11-09: a
+> **The ±3% band is LIVE: pull it ONCE and publish THAT pull's counts.** Measured 2026-11-09: a
 > band pulled at 08:37 ET held 382 gainers / 199 decliners; the same band at 08:44 ET held 392 / 206,
 > because names that were absent at 08:37 had grown their pre-market volume past the filter and
 > crossed INTO the band. A count drawn from one pull and a table drawn from another disagree by
 > construction. Pull the band once, at the END of the data work, and take BOTH the counts and the
 > tables from that pull; earlier pulls are context only.
+>
+> **The targeted pull must NOT overlap the band — that is what makes "one pull" mechanical.**
+> The band cannot see the watchlist's ETFs (`type` is `stock`/`dr`, so a fund is filtered out) or
+> a trending name whose gap is under 3%, so a targeted pull is genuinely needed. But if it asks
+> for names the band ALREADY has, the two pulls disagree a minute apart and the operator has to
+> adjudicate. Measured 2026-11-12: a 33-name targeted pull overlapped the band on 22 names, the
+> two pulls disagreed on CDNL (-40.89% on the band, -41.11% on the targeted pull), and a "which
+> pull wins" rule had to be invented mid-run — after which a stale MSTR figure (-6.42% against
+> the band's -6.47%) reached the prose and only a bespoke script caught it.
+>
+> **The rule: ask the targeted pull for the names the band CANNOT see, and nothing else.**
+> `band_names` = the union of both screens; request `targets - band_names`. Then no name has two
+> prices, there is no tie-break to invent, and the CSV and the tables are born from one table.
+> `_shared/brief26_pull.py` does exactly this — see Step 2.
 >
 > **A row with no pre-market print is NOT a row with a blank price.** `premarket_close`,
 > `premarket_high`, `premarket_low` and `premarket_volume` are all null for a name with no
@@ -239,14 +292,47 @@ Origin: https://www.tradingview.com
 > about to publish, compare the scanner's implied share count against two independent caps:
 > Nasdaq's `/summary` `MarketCap` (unmetered; ~900 symbols in ~3 min at 12 threads) and shibui's
 > `valuation.market_cap` (the latest row `<= the prior-session date`, so it is already on the
-> gate's basis). Where they disagree by more than 15%, publish the **median** of the available
-> sources and recompute the gate flags from the PUBLISHED figure:
+> gate's basis). Where they disagree by more than 15%, **publish the CORROBORATED cap** — the
+> share count a DIRECT source confirms — and recompute the gate flags from the PUBLISHED figure:
 >
 > ```python
 > implied_scanner = market_cap_basic / close
 > implied_nasdaq  = nasdaq_market_cap / nasdaq_previous_close
-> implied_shibui  = shibui_market_cap / shibui_close
+> implied_shibui  = shibui_market_cap / close        # same basis as the scanner's close
+> implied_direct  = stockanalysis_shares_outstanding # a share count, not a cap
 > ```
+>
+> **DO NOT publish the median of the available sources. Measured 2026-11-12, it was wrong.**
+> On the six names where the three sources disagreed by more than 15%, the verified figure
+> (an independent share count) was:
+>
+> | Name | Scanner | Nasdaq `/summary` | shibui | Verified | Median's error | Scanner's error |
+> |---|---|---|---|---|---|---|
+> | BSBR | $18.36B | $38.55B | $36.55B | **$18.44B** | **+98%** | **−0.4%** |
+> | CDNL | $711.6M | $428.5M | $642.6M | **$711.6M** | −9.7% | **0.0%** |
+> | PSFE | $356.1M | $257.9M | $349.5M | **$356.1M** | −1.9% | **0.0%** |
+> | NBIS | $42.05B | $35.45B | $39.28B | **$42.40B** | −7.4% | **−0.8%** |
+> | BRUN | $618.8M | $472.9M | $453.3M | **$586.6M** | −19.4% | **+5.5%** |
+> | BZ | $8.10B | $6.55B | $7.76B | **$7.47B** | +3.8% | +8.4% |
+>
+> The median was further from the truth than the scanner's own number on **five of the six**,
+> and on BSBR it would have published a market cap **twice** the real one. The cause is
+> structural: **Nasdaq's `/summary` MarketCap is the weakest of the three** for ADRs and for
+> issuers with a complex share structure, and shibui sometimes inherits the same wrong count.
+> The scanner's implied share count agreed with the verified count to four significant figures
+> on CDNL and PSFE.
+>
+> **So the rule is: publish `shares x close` from the source whose SHARE COUNT is corroborated.**
+> stockanalysis.com publishes the share count directly (`id:"sharesout"`), so it is the only
+> uncorrupted tiebreak. If it is unavailable, take the median of the implied counts — never the
+> median of the caps. Measured 2026-11-13 on 75 flagged names: 74 resolved to
+> `stockanalysis_shares x close`, and on SHFS the scanner's implied count was **132,248,533
+> shares** against a direct count of **1,027,745** — a 1-for-128 reverse split that the old
+> median rule would have carried into a published cap.
+>
+> **The published cap is always `shares x close`**, so it is on the gate's basis by construction
+> and cannot go stale the way a cached market-cap field can. `_shared/brief26_pull.py` does the
+> whole sweep and records which source won in a `cap_source` field per name — publish it.
 >
 > On 2026-11-09 that sweep flagged **106 of 1,085** screened names (9%). It moved exactly one
 > published name between tables — NWGL, out of the headline table — and it is why `quality_screen`
@@ -513,6 +599,55 @@ additive, and the clustering is what makes a 44 KB artifact navigable.
 - The block sits above `## 1. TL;DR`, directly under the title/front-matter block. No prose
   between the heading and the first line.
 
+### C1b — How the one setup is chosen (and what to publish when there is none)
+
+The `## Bottom line` block MUST carry a setup, but the tape does not always offer one. So
+the choice is a RULE, and the rule is published so a reader can audit the pick.
+
+**The filter — a candidate must clear ALL of these:**
+
+| Test | Threshold | Why |
+|---|---|---|
+| Catalyst | a catalyst for THAT name is sourced in this run | a setup with no story is a forecast, not a setup |
+| Catalyst type | not a scheduled binary verdict | an FDA decision is a coin flip; a completed BLA submission with a priority-review request is a milestone |
+| Direction | the gap runs the way the setup bets | — |
+| The gap holds | pre-market last within 1% of the pre-market high (gap-up) or the pre-market low (gap-down) | a gap that gave its move back is not a setup |
+| The book | pre-market volume ≥ **5%** of the 30-day average | a +21% print on 3.98% of ADV is a thin book, not a market |
+| Size | published market cap ≥ **$100M** | Gate B |
+
+**If NOTHING clears the filter, the Bottom line SAYS SO.** Line 1 still names a level and its
+invalidation (the contract requires it) and still names the closest candidate, but it states
+that nothing qualified and says which test the candidate failed. Measured 2026-11-12: **zero**
+names cleared all six tests. The closest were KYTX (sourced non-binary catalyst, holding its
+pre-market high, but only **3.98% of ADV**), LUNR (**16.48% of ADV** but 3.6% off its
+pre-market high) and AVEX (4.45% of ADV and 7% off the high).
+
+**A rule that cannot be satisfied on a given tape is INFORMATION, not a failure.** "Nothing
+qualified today" is the correct answer and is more useful to the reader than a manufactured
+call. Never publish a setup you cannot defend with the filter.
+
+**Publish the book's weakness, not just the setup.** A setup line that names the level and
+hides a thin book is a trap.
+
+### C1c — The prose form the linter can verify
+
+`check_brief_consistency.py` cross-checks every percentage in the prose against the CSV. It
+can only do that when the ticker is resolvable, so write the figure the first way:
+
+```
+**NVDA -8.42%**     <- the form the SKILL mandates
+NVDA **-8.42%**    <- also recognised (since 2026-11-13)
+NVDA -8.42%        <- NOT recognised - nobody checked it
+```
+
+The linter reports how many prose figures it verified. **If that count is `0` it prints a
+note saying nothing was checked** — read it, do not ignore it. Measured 2026-11-12: a brief
+written as `NVDA **-8.42%**` reported `prose ticks checked: 0`, and a stale MSTR figure
+(-6.42% against the screen's -6.47%) shipped unverified. The linter now recognises both bold
+forms; the SKILL mandates the first.
+
+**A number in the prose that the linter cannot resolve is a number nobody checked.**
+
 ### C2 — Every published name carries its levels
 
 Every name published in **§2 (theme clusters)**, **§3 (pre-market gaps)** and **§4 (top losers)**
@@ -665,6 +800,17 @@ It appears in EVERY run, directly under `## Bottom line`, and carries exactly th
    MCP bridge (`market-recap price_history`) and the Yahoo chart API for the intraday extremes,
    and prints the table plus a JSON sidecar. It prints the legend line too — paste it above the
    table.
+
+   **The verdict vocabulary is six words and they are not interchangeable.** `WORKED` = the
+   invalidation held, the setup's TRIGGER was reached and the session moved with it.
+   `SURVIVED` = the invalidation held but the trigger was never reached, so the setup never
+   activated. `HELD` = the invalidation held and the session moved with the setup but the
+   trigger could not be resolved. `BROKE` = the level was traded through. `PARTIAL` = the
+   level held but the session moved against the setup. `UNJUDGED` = no level or no price.
+   Measured 2026-11-12: the old four-word vocabulary reported **44 `HELD`**; the six-word one
+   splits that into **40 `WORKED` and 4 `SURVIVED`** — and the four `SURVIVED` are exactly the
+   setups that never triggered. "The invalidation held" is a LOW bar for a gap-up long: it only
+   means the gap did not fully fill, which a +2% drift clears.
 
    **The trigger side comes from the reviewed brief's own cell.** `invalidation` reads
    `below PM low 29.14` / `back to/below prior close 404.40`, so the direction is stated rather

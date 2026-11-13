@@ -429,18 +429,33 @@ def main() -> int:
             if ref["px"] is not None and abs(ref["px"] - px) > max(0.011, abs(ref["px"]) * 0.001):
                 problems.append(f"table row {t}: markdown price {px} != CSV price {ref['px']}")
 
-    # --- 4. every bold ticker-% in the prose must agree with the CSV ---
+    # --- 4. every ticker-% in the prose must agree with the CSV ---
+    # THREE prose forms carry a ticker and a percentage, and ALL THREE must be
+    # checked. Before 2026-11-13 only the first was recognised, so an artifact
+    # written as "NVDA **-8.42%**" reported `prose ticks checked: 0` and every prose
+    # figure went unverified — the 2026-11-12 brief shipped a stale MSTR number for
+    # exactly this reason, and the linter had passed it.
+    PROSE_TICK_PATTERNS = (
+        r"\*\*([A-Z][A-Z0-9.\-]{0,6})\s+([+-][0-9.]+)%\*\*",           # **NVDA -8.42%**
+        r"(?<![\*\w])([A-Z][A-Z0-9.\-]{0,6})\s+\*\*([+-][0-9.]+)%\*\*",  # NVDA **-8.42%**
+    )
     prose_checked = 0
-    for m in re.finditer(r"\*\*([A-Z][A-Z0-9.\-]{0,6})\s+([+-][0-9.]+)%\*\*", md):
-        t, pct = m.group(1), round(float(m.group(2)), 1)
-        ref = rows.get(t)
-        if not ref:
-            continue  # a name that is not in the screen at all — not the linter's business
-        prose_checked += 1
-        cands = [v for v in (ref["pct"], ref["session_pct"]) if v is not None]
-        if not cands or min(abs(v - pct) for v in cands) > args.tolerance:
-            problems.append(f"prose {t}: says {pct:+.1f}%, the screen says "
-                            f"pre-market {ref['pct']} / session {ref['session_pct']}")
+    prose_seen = set()
+    for _pat in PROSE_TICK_PATTERNS:
+        for m in re.finditer(_pat, md):
+            t, pct = m.group(1), round(float(m.group(2)), 1)
+            key = (t, pct, m.start())
+            if key in prose_seen:
+                continue
+            prose_seen.add(key)
+            ref = rows.get(t)
+            if not ref:
+                continue  # a name that is not in the screen at all — not the linter's business
+            prose_checked += 1
+            cands = [v for v in (ref["pct"], ref["session_pct"]) if v is not None]
+            if not cands or min(abs(v - pct) for v in cands) > args.tolerance:
+                problems.append(f"prose {t}: says {pct:+.1f}%, the screen says "
+                                f"pre-market {ref['pct']} / session {ref['session_pct']}")
 
     # --- 5. the markdown must name the CSV (they ship as a pair) ---
     if "pre-market.csv" not in md:
@@ -453,6 +468,11 @@ def main() -> int:
     print(f"check-brief-consistency: {args.md}")
     print(f"  table rows checked : {table_checked}")
     print(f"  prose ticks checked: {prose_checked}")
+    if prose_checked == 0:
+        notes.append("NO PROSE FIGURES WERE MACHINE-CHECKED — this artifact carries bolded "
+                     "percentages but none of them carry a ticker the linter can resolve. "
+                     "Write a prose figure as **TICKER -8.42%** (the ticker INSIDE the bold) "
+                     "so it can be verified against the CSV.")
     print(f"  band names checked : {band_checked}")
     print(f"  set claims checked : {claim_checked}")
     print(f"  CSV names          : {len(rows)}")
