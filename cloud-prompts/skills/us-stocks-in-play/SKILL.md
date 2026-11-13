@@ -499,12 +499,17 @@ checker before you push, and fix the artifact if it fails.
 Both boards carry a marker line near the top:
 
 ```
-- **Contract:** `in-play-artifact-v1` · slot `open` · fire 2026-11-06 09:50 ET
+- **Contract:** `in-play-artifact-v2` · slot `open` · fire 2026-11-06 09:50 ET
 ```
 
 The marker tells the checker (and the next run) which contract the artifact was built
 against. A missing or stale marker means an older copy of this spec produced it — re-read
 the skill and rebuild.
+
+**`in-play-artifact-v2` (2026-11-13) adds the Tier B publication rule and the
+count-match rule below.** A board published under `in-play-artifact-v1` is GRANDFATHERED:
+the checker applies the rules that were in force when it was written, so a historical board
+is never failed for a rule that post-dates it. New boards carry v2.
 
 #### Section order
 
@@ -534,10 +539,32 @@ Two rules make the order matter:
   **The order is enforced by the checker.** The 2026-11-05 open board placed its gap annex
   *after* Tier C and would have failed the order check; the gap annex belongs **between
   Soft-A and TECH_WATCH**.
-- **`TECH_WATCH` is capped at 30 published rows and `Tier B` at 25**, but the heading
+- **`TECH_WATCH` is capped at 30 published rows and `Tier B` at 10**, but the heading
   must still state the **full** tier count (`610 names; the top 30 by turnover are
   published`). The count is what makes the tradeable-vs-technical imbalance visible —
   a 610-vs-14 imbalance that only exists in a heading nobody reads is invisible.
+- **The tier count in the heading must EQUAL the count in the candidates CSV.** The
+  table and the dataset describe the same set, and the checker asserts it. A count that
+  drifts from the CSV is a board that lies about its own size.
+- **`Tier B` is selected by MOVE, never by turnover (contract v2).** Tier B is the
+  demotion bin — a name that moved 3% or more with **no same-session catalyst** and
+  **below-normal volume** — and it is usually the largest tier on the board: measured
+  2026-11-12, **322 of the 527 published names (61%)** were Tier B. Ranking that tier by
+  turnover publishes the *least* informative names in the screen: on 2026-11-12 the
+  top-25-by-turnover Tier B table's biggest move was **-7.20%**, and 23 of its 25 rows
+  were under 5% — mega-caps drifting 2-3% (INTC -2.94%, ORCL -2.64%, LRCX -1.81%) — while
+  the names that had actually moved hard without a volume behind them (SMX -44.59%,
+  AGLT -14.80%, STAK -11.97%, FMC -11.59%, ERAS -9.29%) sat far below them in a
+  turnover ranking. The rule:
+  1. publish the Tier B names with **|move| ≥ 5%**, **biggest move first**, **max 10 rows**;
+  2. if fewer than 10 names clear 5%, publish them all — the table is then short and honest;
+  3. if **none** clears 5%, publish **no rows** and one line saying so;
+  4. the heading states the full count and names the selection rule, so the reader knows
+     the table is not turnover-ranked;
+  5. the CSV keeps every Tier B name, so nothing is hidden.
+  The 5% floor is the routine's own trigger line ("|chg%| ≥ 5% large/liquid"), and the
+  selection is pace-independent, so it does not move with the pace measure's known bias.
+  **The same rule applies to the pre-close slot's Tier B.**
 
 #### The "what changed" section is a table
 
@@ -642,7 +669,7 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_in_play_artifact.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && grep -q 'in-play-artifact-v1' "$C.tmp" 2>/dev/null; then
+  if [ -s "$C.tmp" ] && grep -q 'in-play-artifact-v2' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"

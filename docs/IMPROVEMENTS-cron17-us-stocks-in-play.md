@@ -693,3 +693,58 @@ it rather than trusting it.
 
 **The irreducible core** — the catalyst research, the curation, the prose and the push — is about
 **11 minutes**. Everything else was scheduling or a defect.
+
+## 2026-11-13 — contract v2: Tier B is selected by MOVE, and the tier counts must match the CSV
+
+**Why.** Tier B is the demotion bin — a name that moved 3% or more with **no same-session
+catalyst** and **below-normal volume** — and it is the LARGEST tier on the board. Measured on the
+2026-11-12 open board: **322 of the 527 published names (61%)** were Tier B. It was ranked by
+turnover, so the table published the least informative names in the screen:
+
+| The published Tier B table (2026-11-12, top 25 by turnover) | |
+|---|---|
+| biggest move in the table | **-7.20%** (TEM) |
+| rows below 5% | **23 of 25** |
+| what those rows were | mega-caps drifting 2-3% — INTC -2.94%, ORCL -2.64%, LRCX -1.81% |
+
+and the names that had actually moved hard **without a volume behind them** — the only Tier B rows
+with information in them — sat far below them in a turnover ranking:
+
+| name | move | $ vol to 09:50 | pace |
+|---|---|---|---|
+| SMX | -44.59% | $2.3m | 0.66 |
+| AGLT | -14.80% | $6.6m | n/a |
+| STAK | -11.97% | $0.9m | 0.56 |
+| FMC | -11.59% | $4.2m | 0.82 |
+| ERAS | -9.29% | $7.8m | 0.77 |
+
+**The rule (contract `in-play-artifact-v2`).** Tier B publishes the names with **|move| ≥ 5%**,
+**biggest move first**, **max 10 rows**. If fewer than 10 clear 5%, publish them all; if none
+clears it, publish no rows and one line saying so. The heading still states the FULL tier count,
+and the CSV still carries every Tier B name, so nothing is hidden. The 5% floor is the routine's
+own trigger line ("|chg%| ≥ 5% large/liquid"), and the selection is pace-independent, so it does
+not move with the pace measure's known bias. **The same rule applies to the pre-close slot.**
+
+**Two more rules came with v2:**
+
+1. **The tier count in the heading must EQUAL the count in the candidates CSV.** The table and the
+   dataset describe the same set; a heading that claims 610 while the CSV carries one row is a
+   board lying about its own size.
+2. **Grandfathering.** A board published under `in-play-artifact-v1` is checked against the rules
+   in force when it was written. Failing a historical board for a rule that post-dates it is a
+   FALSE ALARM, and the fleet's auditors treat false alarms as findings. The marker decides which
+   rule set applies.
+
+**The checker now asserts all of it** (`tools/check_in_play_artifact.py`, 40 open-slot checks /
+29 pre-close): the Tier B cap of 10, the 5% floor on every published Tier B row, that the
+published Tier B set is EXACTLY the rule's selection (not merely a valid-looking set), and the
+count match on every tier heading. Each new rule is fault-injection tested, and the repo's
+regression harness (`tools/test_in_play_contract.py`) carries the four new breach cases.
+
+**A self-inflicted defect this work exposed.** The `in-play-artifact-v1` checker change landed on
+2026-11-12 with two new assertions (the Python-repr checks) — and the repo's regression harness
+was NOT re-run. It pins the exact number of checks each slot reports (31 / 20), so that commit
+silently broke `tools/test_in_play_contract.py` for every session that ran it since. It is fixed
+here (40 / 29), and the lesson is the fleet's own rule: **a checker change is not landed until the
+repo's regression harness passes on it.**
+>>>>>>> e47065f (cron 17: contract v2 - Tier B is selected by move (>=5%, max 10), tier counts must match the CSV, legacy boards grandfathered)

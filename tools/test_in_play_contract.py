@@ -48,13 +48,17 @@ def _load(path, name):
 
 ck = _load(CK_PATH, "ck")
 
-CONTRACT = "in-play-artifact-v1"
+CONTRACT = "in-play-artifact-v2"
+# The legacy marker is still honoured: a board written before 2026-11-13 is checked
+# against the rules in force when it was written (grandfathered), so a historical
+# artifact is never failed for a rule that post-dates it.
+CONTRACT_V1 = "in-play-artifact-v1"
 
 # The number of checks the checker MUST report for a conforming OPEN artifact.
 # Every check reports on its PASS path — a silent pass is indistinguishable
 # from a check that never ran (see the delta-source check, fixed 2026-11-06).
-OPEN_CHECK_COUNT = 31
-PRECLOSE_CHECK_COUNT = 20
+OPEN_CHECK_COUNT = 40
+PRECLOSE_CHECK_COUNT = 29
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +154,7 @@ the newest file in the directory, which is the pre-close board).
 
 ---
 
-## TECH_WATCH — strong turnover, no same-session company catalyst (610 names; the top 30 by turnover are published)
+## TECH_WATCH — strong turnover, no same-session company catalyst (1 name; the top 1 by turnover is published)
 
 | Ticker | 09:50 chg | Gap | $ vol to 09:50 | pace | 20-min verdict | Catalyst |
 |---|---|---|---|---|---|---|
@@ -158,11 +162,11 @@ the newest file in the directory, which is the pre-close board).
 
 ---
 
-## Tier B — liquidity + move, no same-session catalyst (313 names; the top 25 by turnover are published)
+## Tier B — liquidity + move, no same-session catalyst (1 name; the top 1 by absolute move (5% and above) is published)
 
 | Ticker | 09:50 chg | Gap | $ vol to 09:50 | pace | 20-min verdict | Catalyst |
 |---|---|---|---|---|---|---|
-| **MNO** | +3.10% | +2.00% | 190m | 1.10 | held | no catalyst |
+| **MNO** | +7.10% | +2.00% | 190m | 1.10 | held | no catalyst |
 
 ---
 
@@ -221,7 +225,7 @@ def render_csv():
          2.6617, f"pace = (session vol to 09:50 / trailing-10 full-session avg) / {ck.PACE_CONSTANT}",
          198900000.0, 806387935966.31, "held", 2.30, "no catalyst", "T",
          "yahoo_chart_5m_0950ET", "no", "no catalyst"],
-        ["MNO", "Mu Inc", "B", 15.40, 3.10, 2.00, 2.00, 12000000, 0.8912, 27053867.85,
+        ["MNO", "Mu Inc", "B", 15.40, 7.10, 2.00, 2.00, 12000000, 0.8912, 27053867.85,
          3.5483, f"pace = (session vol to 09:50 / trailing-10 full-session avg) / {ck.PACE_CONSTANT}",
          184800000.0, 806387935966.31, "held", 3.30, "no catalyst", "B",
          "yahoo_chart_5m_0950ET", "no", "no catalyst"],
@@ -292,7 +296,7 @@ The board turned over into a de-rate. Twelve names matter into the close.
 
 ---
 
-## TECH_WATCH — liquid technical, no same-session catalyst, trading on size (610 names; the top 30 by turnover are published)
+## TECH_WATCH — liquid technical, no same-session catalyst, trading on size (1 name; the top 1 by turnover is published)
 
 | Ticker | chg | Gap | $ vol | RVol | gap verdict | Catalyst |
 |---|---|---|---|---|---|---|
@@ -300,11 +304,11 @@ The board turned over into a de-rate. Twelve names matter into the close.
 
 ---
 
-## Tier B — liquidity + move, no or weak same-session catalyst (313 names; the top 25 by turnover are published)
+## Tier B — liquidity + move, no or weak same-session catalyst (1 name; the top 1 by absolute move (5% and above) is published)
 
 | Ticker | chg | Gap | $ vol | RVol | gap verdict | Catalyst |
 |---|---|---|---|---|---|---|
-| **MNO** | +3.10% | +2.00% | 190m | 1.10 | held | no catalyst |
+| **MNO** | +7.10% | +2.00% | 190m | 1.10 | held | no catalyst |
 
 ---
 
@@ -371,7 +375,7 @@ def render_preclose_csv():
         ["JKL", "Jota Inc", "TECH_WATCH", 22.10, 2.00, 1.00, 9000000, 27053867.85, 2.66,
          "session_vol / trailing-10 full-session avg", 198900000.0, 806387935966.31,
          "held", "tradingview_settled", 1.10, "TECH_WATCH", 0.90, "T", "no", "no catalyst"],
-        ["MNO", "Mu Inc", "B", 15.40, 3.10, 2.00, 12000000, 27053867.85, 3.55,
+        ["MNO", "Mu Inc", "B", 15.40, 7.10, 2.00, 12000000, 27053867.85, 3.55,
          "session_vol / trailing-10 full-session avg", 184800000.0, 806387935966.31,
          "held", "tradingview_settled", 1.90, "B", 1.20, "B", "no", "no catalyst"],
         ["PQR", "Pi Ltd", "C", 9.80, 9.00, 8.00, 6000000, 27053867.85, 1.77,
@@ -608,7 +612,7 @@ def mut_raw_pace(md, csv_text):
 
 
 def mut_no_tier_count(md, csv_text):
-    res = mutate(md, csv_text, r"\(610 names; the top 30 by turnover are published\)", "")
+    res = mutate(md, csv_text, r"\(1 name; the top 1 by turnover is published\)", "")
     if res is None:
         return None
     m_md, m_csv = res
@@ -616,7 +620,7 @@ def mut_no_tier_count(md, csv_text):
 
 
 def mut_stale_contract_marker(md, csv_text):
-    res = mutate(md, csv_text, r"in-play-artifact-v1", "in-play-artifact-v0")
+    res = mutate(md, csv_text, r"in-play-artifact-v2", "in-play-artifact-v0")
     if res is None:
         return None
     m_md, m_csv = res
@@ -682,6 +686,47 @@ def mut_open_delta_wrong_source(md, csv_text):
     return m_md, m_csv, lambda a, b: "2026-11-05-open.md" not in a
 
 
+def mut_tier_b_sub_five(md, csv_text):
+    """A Tier B row publishes a move below the 5% floor — the v2 rule is that the
+    table is selected by MOVE, so a turnover-ranked row must not appear."""
+    res = mutate(md, csv_text, r"\| \*\*MNO\*\* \| \+7\.10%", "| **MNO** | +3.10%")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "+3.10%" in a
+
+
+def mut_tier_b_count_wrong(md, csv_text):
+    """The Tier B heading states a count the CSV does not carry."""
+    res = mutate(md, csv_text,
+                 r"\(1 name; the top 1 by absolute move \(5% and above\) is published\)",
+                 "(2 names; the top 1 by absolute move (5% and above) is published)")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "2 names" in a
+
+
+def mut_tier_b_extra_row(md, csv_text):
+    """The Tier B table carries more rows than the cap."""
+    extra = "| **ZZZ** | +6.00% | +1.00% | 100m | 1.00 | held | no catalyst |\n"
+    res = mutate(md, csv_text, r"\| \*\*MNO\*\* \|", extra + "| **MNO** |")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "**ZZZ**" in a
+
+
+def mut_tier_b_wrong_selection(md, csv_text):
+    """The Tier B table publishes a name that is not the rule's selection."""
+    res = mutate(md, csv_text, r"\| \*\*MNO\*\* \| \+7\.10%[^\n]*\n",
+                 "| **JKL** | +7.10% | +1.00% | 210m | 1.40 | held | no catalyst |\n")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "**JKL**" in a
+
+
 MUTATIONS = [
     ("the open board has no 'What to watch at the open' block", mut_no_watch_block),
     ("the pace regime band is not published", mut_no_band),
@@ -703,6 +748,11 @@ MUTATIONS = [
     ("the TECH_WATCH heading states no tier count", mut_no_tier_count),
     ("the artifact carries a stale contract marker", mut_stale_contract_marker),
     ("the watch block names fewer than 3 names", mut_watch_block_one_name),
+    ("a Tier B row publishes a move below the 5% floor", mut_tier_b_sub_five),
+    ("the Tier B heading states a count the CSV does not carry", mut_tier_b_count_wrong),
+    ("the Tier B table carries more rows than the cap", mut_tier_b_extra_row),
+    ("the Tier B table publishes a name that is not the rule's selection",
+     mut_tier_b_wrong_selection),
 ]
 
 
@@ -739,6 +789,25 @@ def main():
         print(f"{FAIL} the open slot reports {n_open} checks, expected {OPEN_CHECK_COUNT} — "
               "a check is missing its PASS-path output (a check that only speaks when it "
               "fails cannot be told apart from one that never ran)")
+        return 1
+
+    # --- 1aa. a LEGACY (v1) artifact must still be accepted --------------------
+    # A board published before 2026-11-13 is checked against the rules in force when
+    # it was written. Failing a historical board for a rule that post-dates it is a
+    # FALSE ALARM, and the fleet's auditors treat false alarms as findings.
+    legacy_md = md_text.replace(CONTRACT, CONTRACT_V1)
+    legacy_csv = csv_text
+    lpath = os.path.join(tmpdir, "legacy.md")
+    lcsv = os.path.join(tmpdir, "legacy.csv")
+    open(lpath, "w", encoding="utf-8").write(legacy_md)
+    open(lcsv, "w", encoding="utf-8").write(legacy_csv)
+    rc, out = run_checker(lpath, lcsv)
+    if rc == 0:
+        print(f"{PASS} a LEGACY (v1) artifact is still accepted — it is checked against the "
+              "rules in force when it was written")
+    else:
+        print(f"{FAIL} a LEGACY (v1) artifact is REJECTED — the grandfather path is broken:")
+        print(out)
         return 1
 
     # --- 1b. the PRE-CLOSE slot's contract must also be satisfiable -----------

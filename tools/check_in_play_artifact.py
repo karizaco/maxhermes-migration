@@ -29,7 +29,15 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "in-play-artifact-v1"
+CONTRACT_VERSION = "in-play-artifact-v2"
+# v1 boards (published before 2026-11-13) are GRANDFATHERED: they are checked against
+# the rules that were in force when they were written. A checker that fails a historical
+# board for a rule that post-dates it is a false alarm, and the fleet's auditors treat
+# those as findings — so the marker decides which rule set applies.
+LEGACY_CONTRACT_VERSIONS = ("in-play-artifact-v1",)
+# The Tier B publication rule that v2 introduces.
+TIER_B_MAX_ROWS = 10
+TIER_B_MIN_MOVE_PCT = 5.0
 
 # The two slots are different screens with different floors and different volume
 # measures. The slot selects the floors, the pace/RVol label, the delta source and
@@ -165,6 +173,8 @@ TIER_COUNT_SECTIONS = ("tiera", "softa", "techwatch", "tierb", "tierc")
 # A tier table publishes at most this many rows; the FULL tier count must still be
 # visible in the heading. (TECH_WATCH is capped at 30; Tier B at 25.)
 MAX_TIER_ROWS = {"tiera": 25, "softa": 25, "techwatch": 30, "tierb": 25, "tierc": 25}
+# Under v2 the Tier B table is selected by MOVE with a floor, not by turnover.
+MAX_TIER_ROWS_V2 = dict(MAX_TIER_ROWS, tierb=TIER_B_MAX_ROWS)
 
 # The open board's payoff block: three names, each with the prior close, the current
 # price and an invalidation level.
@@ -317,7 +327,7 @@ def count_in_heading(name):
     return None
 
 
-def check_md(path, slot):
+def check_md(path, slot, csv_rows=None):
     print(f"[markdown] {path}  (slot={slot})")
     with open(path, encoding="utf-8", errors="replace") as fh:
         raw = fh.read()
@@ -329,6 +339,14 @@ def check_md(path, slot):
     # routine records its slot, fire time and "Prior digest" lines.
     front = "\n".join(lines[:next((i for i, ln in enumerate(lines)
                                    if ln.startswith("## ")), len(lines))])
+
+    # which contract the board was built against (the marker decides the rule set)
+    contract_v2 = False
+    for ln in raw.split("\n")[:40]:
+        if "contract:" in ln.lower():
+            mm = re.search(r"contract:\s*[*_`\s]*(in-play-artifact-v\d+)", ln, re.I)
+            contract_v2 = bool(mm and mm.group(1) == CONTRACT_VERSION)
+            break
 
     # --- 1. the required sections, in order -----------------------------------
     groups = OPEN_SECTION_GROUPS if slot == "open" else PRECLOSE_SECTION_GROUPS
@@ -367,10 +385,14 @@ def check_md(path, slot):
         # tolerate markdown emphasis and backticks around the value:
         # "**Contract:** `in-play-artifact-v1`" is as good as a bare one.
         m = re.search(r"contract:\s*[*_`\s]*(in-play-artifact-v\d+)", ml, re.I)
-        if m and m.group(1) == CONTRACT_VERSION:
-            ok(f"the artifact carries the current contract marker ({m.group(1)})")
+        got = m.group(1) if m else None
+        if got == CONTRACT_VERSION:
+            ok(f"the artifact carries the current contract marker ({got})")
+        elif got in LEGACY_CONTRACT_VERSIONS:
+            ok(f"the artifact carries the LEGACY contract marker ({got}) — it is checked "
+               "against the rules in force when it was written")
         else:
-            bad(f"the artifact carries contract '{m.group(1) if m else '?'}', expected "
+            bad(f"the artifact carries contract '{got if got else '?'}', expected "
                 f"'{CONTRACT_VERSION}' — it was produced by an older copy of the spec. "
                 "Re-read the skill spec and rebuild it.")
 
@@ -440,11 +462,31 @@ def check_md(path, slot):
         rows = []
         for h, r in md_tables(tb):
             rows.extend(r)
-        cap = MAX_TIER_ROWS.get(key, 25)
+        caps = MAX_TIER_ROWS_V2 if contract_v2 else MAX_TIER_ROWS
+        cap = caps.get(key, 25)
         if len(rows) <= cap:
             ok(f"'{name}': full count {full} stated, {len(rows)} rows published (cap {cap})")
         else:
             bad(f"'{name}' publishes {len(rows)} rows — the cap is {cap}")
+        if contract_v2 and key == "tierb":
+            # v2: Tier B is selected by MOVE with a floor, never by turnover.
+            for r in rows:
+                mv = num(r.get("09:50 ET") or r.get("Change") or r.get("chg"))
+                if mv is None:
+                    cells = " ".join(str(v) for v in r.values())
+                    mm = re.search(r"(-?\d+\.?\d*)%", cells)
+                    mv = float(mm.group(1)) if mm else None
+                if mv is None:
+                    bad(f"a Tier B row carries no move to test against the 5% floor: "
+                        f"{str(list(r.values()))[:90]}")
+                    break
+                if abs(mv) < TIER_B_MIN_MOVE_PCT:
+                    bad(f"a Tier B row publishes a {mv:+.2f}% move — the Tier B table under "
+                        f"contract v2 carries only names that moved {TIER_B_MIN_MOVE_PCT}% or "
+                        "more (it is selected by MOVE, not by turnover)")
+                    break
+            else:
+                ok(f"every published Tier B row moved {TIER_B_MIN_MOVE_PCT}% or more")
 
     # --- 6. the "what changed" section is a TABLE with the required columns ----
     hit = find_section(secs, "whatchangedsincethe")
@@ -625,6 +667,62 @@ def check_md(path, slot):
     else:
         ok("no table row in the artifact looks like a Python repr")
 
+    # --- 7c. the tier counts must MATCH the CSV, and the Tier B selection must
+    # be the rule's selection (not just any set of rows) -------------------------
+    if csv_rows:
+        def csv_tier_counts():
+            c = {}
+            for r in csv_rows:
+                t = str(r.get("tier") or "").strip().upper()
+                c[t] = c.get(t, 0) + 1
+            return c
+        counts = csv_tier_counts()
+        KEY_TO_CSV_TIER = {"tiera": "A", "softa": "SOFT_A", "techwatch": "TECH_WATCH",
+                           "tierb": "B", "tierc": "C"}
+        for key, ct in KEY_TO_CSV_TIER.items():
+            hit = find_section(secs, key)
+            if not hit:
+                continue
+            stated = count_in_heading(hit[0])
+            actual = counts.get(ct, 0)
+            if stated is None:
+                continue
+            if stated != actual:
+                bad(f"the '{hit[0]}' heading states {stated} names but the candidates CSV "
+                    f"carries {actual} rows with tier '{ct}' — the table and the dataset "
+                    "must describe the same set")
+            else:
+                ok(f"'{hit[0]}': the stated count {stated} matches the CSV ({actual} rows)")
+
+        if contract_v2:
+            hit = find_section(secs, "tierb")
+            if hit:
+                tb = strip_fences(lines[hit[1][0] + 1:hit[1][1]])
+                published = []
+                for _headers, _rows in md_tables(tb):
+                    for r in _rows:
+                        for v in r.values():
+                            mm = re.match(r"\*\*([A-Z0-9.\-]{1,10})\*\*", str(v).strip())
+                            if mm:
+                                published.append(mm.group(1))
+                                break
+                chg_col = ("chg_pct_0950" if slot == "open" else "chg_pct")
+                expected = []
+                for r in csv_rows:
+                    if str(r.get("tier") or "").strip().upper() != "B":
+                        continue
+                    mv = num(r.get(chg_col))
+                    if mv is not None and abs(mv) >= TIER_B_MIN_MOVE_PCT:
+                        expected.append((abs(mv), str(r.get("ticker"))))
+                expected = [t for _, t in sorted(expected, key=lambda x: -x[0])][:TIER_B_MAX_ROWS]
+                if published == expected:
+                    ok(f"the Tier B table publishes exactly the rule's selection "
+                       f"({len(expected)} names: |move| >= {TIER_B_MIN_MOVE_PCT}%, biggest first)")
+                else:
+                    bad(f"the Tier B table does not match the rule's selection — the rule is "
+                        f"the {expected} names with |move| >= {TIER_B_MIN_MOVE_PCT}% biggest "
+                        f"first (max {TIER_B_MAX_ROWS}), the table publishes {published}")
+
     # --- 8. no halt COUNT anywhere ---------------------------------------------
     hits = []
     for pat in HALT_COUNT_PATTERNS:
@@ -782,7 +880,14 @@ def main():
     if slot is None:
         slot = "open" if args.md.endswith("-open.md") else "preclose"
 
-    check_md(args.md, slot)
+    _csv_rows = []
+    try:
+        with open(args.csv, newline="", encoding="utf-8") as _fh:
+            _csv_rows = list(csv.DictReader(_fh))
+    except Exception:
+        pass
+
+    check_md(args.md, slot, _csv_rows)
     check_csv(args.csv, slot)
     if args.reply:
         if os.path.exists(args.reply):
