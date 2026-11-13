@@ -1078,3 +1078,52 @@ guarantee — the artifact's numbers were re-verified against shibui's settled r
 2026-11-12 before publication, and the artifact says so in its reconstruction note. **A
 delayed replay is normal; a replay that silently drifts onto the resume day is not**, and
 the anchor check is what separates the two.
+
+---
+
+## 2026-11-13 — the pipeline's REPLAY path had three defects, and the run was rebuilt through it
+
+The 2026-11-12 fire was **resumed in place** on 2026-11-13 at ~08:47 ET, ~14 hours after
+its 18:30 ET fire. Rebuilding a run for its **scheduled** date out of saved passes is
+exactly what `tools/sweep_pipeline.py`'s replay flags are for — and three of them were
+broken. Each one cost real time on the night.
+
+### 1. `--scratch` was never created
+
+The pipeline writes its intermediate files into `--scratch` (the fresh book, the overlay,
+`book_symbols.txt`) but never made the directory. A replay pointed at a fresh scratch
+directory died with `FileNotFoundError: book_symbols.txt` **after** the theme pool had
+been built. **Landed:** the scratch directory is created at the start of `cmd_run`.
+
+### 2. `--fresh-json` was only READ, never STAGED
+
+`consume` is called with `--fresh-book <scratch>/tv_sweep.json`. The replay path read the
+saved book into memory and never wrote it at that name, so the run died with
+`fresh-book file not found` **after** the whole fetch had been spent.
+
+**Landed:** the saved fresh book is staged at `<scratch>/tv_sweep.json` before `consume`
+is called.
+
+### 3. `--branches-json` was read as a FLAT map, and a nested file produced an EMPTY book
+
+The branch collector writes `{"rows": {branch: [rows]}, "coverage": {...}}`. The replay
+path read `saved.get(branch, [])` straight off the top level, so **every branch came
+back `[]`** and the run published an artifact with no peoplewish rows and no parabolic
+lists. The check stage caught it (`peoplewish.md has ZERO rows`, `short-candidates.csv
+has no rows`), but only after the fetch.
+
+**Landed:** `_load_saved_branches()` accepts both shapes and raises on anything else —
+a saved file that is neither shape is a FAILURE, never an empty book.
+
+### 4. The overlay's one-request overlay, and the hernandez file's wrong population
+
+Both landed earlier the same session — see the three findings above. The overlay fix is
+in `tools/daily_sweep_engines.py` (chunk the symbol list), the hernandez fix is in
+`scripts/screen.py` (the file carries its own bucket).
+
+### The lesson: the REPLAY path is a production path
+
+A replay is not a debugging convenience — it is what runs when a fire is resumed, and
+it is the path a stalled, rate-limited or resumed fire will take. It now has its own
+test file, `tools/test_sweep_replay.py` (6 checks), and every fix above is asserted
+there rather than discovered again.

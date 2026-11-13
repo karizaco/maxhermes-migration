@@ -1725,6 +1725,27 @@ def _prev_session(date_str: str, back: int = 1) -> str:
     return d.isoformat()
 
 
+def _load_saved_branches(path: str) -> dict:
+    """Load a saved branch file for a REPLAY.
+
+    A saved branch file may be FLAT (`{branch: [rows]}`) or NESTED
+    (`{"rows": {branch: [rows]}, "coverage": {...}}`).  The nested shape is what
+    the branch collector writes, and reading it as a flat map silently
+    produced an EMPTY book: every branch came back as `[]`, so the run
+    published an artifact with no peoplewish rows and no parabolic lists.
+    Measured 2026-11-13 — the check stage caught it, but the whole fetch had
+    already been spent.
+
+    A saved file that is neither shape is a FAILURE, not an empty book.
+    """
+    saved = json.loads(Path(path).read_text())
+    if isinstance(saved.get("rows"), dict):
+        saved = saved["rows"]
+    if not isinstance(saved, dict):
+        raise PipelineError(f"saved branch file is not a branch map: {path}")
+    return saved
+
+
 def cmd_run(args) -> int:
     """Fetch everything, tier it, render every artifact, then CHECK it."""
     t0 = time.time()
@@ -1734,6 +1755,11 @@ def cmd_run(args) -> int:
 
     out_dir = Path(args.out) / cron_date
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The scratch dir holds the intermediate files (the fresh book, the overlay,
+    # the symbol list).  It is NOT created by the pipeline, and a replay that
+    # pointed --scratch at a fresh directory died with FileNotFoundError on
+    # book_symbols.txt AFTER the fetch.  Measured 2026-11-13.
+    Path(args.scratch).mkdir(parents=True, exist_ok=True)
 
     # 1. the shibui newest ingested session (T+1)
     if args.t1_date:
@@ -1756,6 +1782,12 @@ def cmd_run(args) -> int:
     if args.fresh_json:
         log(f"replay: using the saved fresh book {args.fresh_json}")
         fresh = json.loads(Path(args.fresh_json).read_text())
+        # STAGE it where `consume` looks for it.  `consume` is called below with
+        # `--fresh-book <fresh_path>`, so a saved book that was only READ here
+        # was never on disk at that name: the replay died with "fresh-book file
+        # not found" AFTER the whole fetch had been spent.  Measured 2026-11-13.
+        fresh_path.parent.mkdir(parents=True, exist_ok=True)
+        fresh_path.write_text(json.dumps(fresh))
     else:
         log("collecting the fresh book (tv-sweep) ...")
         rc = engines.cmd_tv_sweep(argparse.Namespace(
@@ -1769,7 +1801,7 @@ def cmd_run(args) -> int:
     # 3. the eight shibui sweep branches, in parallel
     if args.branches_json:
         log(f"replay: using the saved branch rows {args.branches_json}")
-        saved = json.loads(Path(args.branches_json).read_text())
+        saved = _load_saved_branches(args.branches_json)
         branch_rows = {b: saved.get(b, []) for b in SWEEP_BRANCHES}
         coverage = {
             b: {
