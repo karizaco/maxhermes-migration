@@ -28,6 +28,7 @@ EXIT CODES
 
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -146,7 +147,7 @@ def record(ok, name, detail=""):
 
 
 def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None,
-                procedure=None):
+                procedure=None, contract=None):
     s = tmp / "status.json"
     s.write_text(json.dumps(status, indent=1), encoding="utf-8")
     d = tmp / "digest.txt"
@@ -162,6 +163,8 @@ def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None,
         cmd += ["--prompt", str(prompt)]
     if procedure is not None:
         cmd += ["--procedure", str(procedure)]
+    if contract is not None:
+        cmd += ["--contract", str(contract)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     first = ""
     for line in p.stdout.splitlines():
@@ -247,6 +250,65 @@ def main():
         digest[0] = digest[0].replace("cause=platform_500 age_h=18.4",
                                        "the fire died with a platform 500")
     expect_catch(tmp, "a digest gap line without a cause is caught", digest_no_cause, "D04")
+
+    # --- 2b. the 2026-11-12 additions: connection_error, the per-routine
+    #        allowance (C17) and the degraded-artifact pairing (C18) ---------------
+
+    # a MISSING whose fire produced NO model call at all is `connection_error`
+    st = copy.deepcopy(STATUS)
+    dg = copy.deepcopy(DIGEST)
+    st["gaps"][0]["cause"] = "connection_error"
+    dg = dg.replace("cause=platform_500 age_h=18.4", "cause=connection_error age_h=18.4")
+    rc, detail = run_checker(tmp, st, dg, tasks=copy.deepcopy(TASKS))
+    record(rc == 0, "a MISSING caused by connection_error passes the gate", detail)
+
+    # C17: a routine over the allowance cannot be published as plain `delivered`
+    def over_but_delivered(s, digest, t):
+        s["routines"]["15-earnings-reaction-scanner"]["delivery_latency_min"] = 500.0
+    expect_catch(tmp, "a delivery over the allowance published as 'delivered' is caught",
+                 over_but_delivered, "C17")
+
+    # C17: a routine UNDER the allowance cannot be published as `delivered_late`
+    def under_but_late(s, digest, t):
+        s["routines"]["26b-agentic-pre-market-brief-refresh"]["delivery_latency_min"] = 10.0
+    expect_catch(tmp, "a delivery under the allowance published as 'delivered_late' is caught",
+                 under_but_late, "C17")
+
+    # C18: a degraded artifact is a failing delivery, published exactly once
+    st = copy.deepcopy(STATUS)
+    dg = copy.deepcopy(DIGEST)
+    st["gaps"].append({"routine": "15-earnings-reaction-scanner",
+                       "path": "earnings/2026-11-02-reactions.md",
+                       "label": "present_but_empty", "cause": "push_failure",
+                       "gap_age_hours": 18.4, "streak": 0})
+    dg = dg.replace("push: ok (verified)",
+                    "gap: 15-earnings-reaction-scanner present_but_empty "
+                    "earnings/2026-11-02-reactions.md — cause=push_failure age_h=18.4 — "
+                    "the push landed a stub\npush: ok (verified)")
+    rc, detail = run_checker(tmp, st, dg, tasks=copy.deepcopy(TASKS))
+    record(rc == 0, "a degraded artifact published as present_but_empty passes the gate",
+           detail)
+
+    def stub_on_a_missing_routine(s, digest, t):
+        s["gaps"].append({"routine": "25-ntrt-gap-brief-daily",
+                          "path": "ntrt/2026-11-02.md",
+                          "label": "present_but_empty", "cause": "push_failure",
+                          "gap_age_hours": 18.4, "streak": 1})
+    expect_catch(tmp, "a degraded artifact on a MISSING routine is caught",
+                 stub_on_a_missing_routine, "C18")
+
+    def stub_double_reported(s, digest, t):
+        # 25-ntrt already carries a MISSING gap. Make its state consistent with a
+        # delivered file (so C14/C16/C17 stay quiet) and then publish a STUB for the
+        # SAME routine: a routine cannot be both missing and degraded.
+        s["routines"]["25-ntrt-gap-brief-daily"]["state"] = "delivered"
+        s["routines"]["25-ntrt-gap-brief-daily"]["delivery_latency_min"] = 12.0
+        s["gaps"].append({"routine": "25-ntrt-gap-brief-daily",
+                          "path": "ntrt/2026-11-02.md",
+                          "label": "present_but_empty", "cause": "push_failure",
+                          "gap_age_hours": 18.4, "streak": 1})
+    expect_catch(tmp, "a routine published as both present_but_empty and MISSING is caught",
+                 stub_double_reported, "C18")
 
     def digest_bad_cause(s, digest, t):
         digest[0] = digest[0].replace("cause=platform_500", "cause=it_broke")
@@ -378,7 +440,9 @@ def main():
 
         # anchor on the inline contract block itself (a bare line), not on the first
         # mention of the token anywhere in the prose
-        broken = proc_text.replace("\nplatform_500 timeout", "\nplatform_500X timeout", 1)
+        # anchor on the inline causes LINE itself, so the test survives the vocabulary
+        # growing (connection_error was added to it on 2026-11-13)
+        broken = re.sub(r"\nplatform_500(\s|\n)", r"\nplatform_500X\1", proc_text, count=1)
         p3 = tmp / "procedure-broken.md"
         p3.write_text(broken, encoding="utf-8")
         rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST,

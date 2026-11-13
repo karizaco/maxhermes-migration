@@ -32,6 +32,7 @@
   "_gap_labels_note": "A LABEL says WHAT happened; a CAUSE says WHY. Every gap carries both, and the cause must come from `causes`. `possible_holiday`, `weekend_no_us_session` and `not_due` are NOT gap labels: a holiday or a weekend is a non-finding and is never reported as a gap line (a gap line without a cause is a failed audit).",
   "causes": [
     "platform_500",
+    "connection_error",
     "timeout",
     "quota_2056",
     "quota_2067",
@@ -55,10 +56,12 @@
     "skipped_by_design": "The routine ran and correctly wrote nothing (holiday window, fail-closed key, out-of-window).",
     "cron_update_failed": "A `cron_update` that was meant to change the routine's schedule or prompt did not land.",
     "slow_run": "The turn completed normally but later than the routine's allowed latency, and no platform failure is evidenced - the routine itself is slow, not blocked.",
-    "never_fired": "The scheduler never dispatched the routine on a day its own schedule said it should fire."
+    "never_fired": "The scheduler never dispatched the routine on a day its own schedule said it should fire.",
+    "connection_error": "The platform's transport to the model failed mid-fire: the session's last message is '[Error] Connection error.' with finish_reason 'error' and usage.total_tokens == 0 - the model call never completed, so the routine did NO work (no title set, no artifact, no commit). Measured 2026-11-12 on cron #13 (2026-11-11 14:00 ET fire). NOT a quota wall (no 2056/2067), NOT a push loss (nothing was ever staged) and NOT the routine's logic (it never ran). The fix is a re-run, not a code change."
   },
   "label_causes": {
     "stalled": [
+      "connection_error",
       "quota_2056",
       "quota_2067",
       "platform_500",
@@ -68,6 +71,7 @@
       "slow_run"
     ],
     "MISSING": [
+      "connection_error",
       "platform_500",
       "timeout",
       "quota_2067",
@@ -84,6 +88,7 @@
       "cron_update_failed"
     ],
     "present_but_empty": [
+      "connection_error",
       "platform_500",
       "timeout",
       "push_failure"
@@ -117,7 +122,9 @@
     "measure": "the commit that ADDED the routine's artifact on origin/main (git log --diff-filter=A --format=%ct -- <path>), minus the routine's scheduled fire time on the audited date",
     "default_allowed_minutes": 45,
     "_note": "The run record's started_at_ms/finished_at_ms measure the DISPATCH of the prompt to the agent, NOT the work: a fire that was blocked for hours and then resumed still shows ~1 s and status 1. The artifact's push time against scheduled_at_ms is the only honest measure of when the work actually happened.",
-    "_allowed_note": "45 minutes is the default for the whole fleet, measured across 2026-11-04 to 2026-11-08: the slowest HEALTHY routine landed 32 min after its schedule (#17's preclose slot) and #10 - which fires at 14:00 ET - landed at 14:07. A routine that is chronically slower than that needs its own allowed value named HERE, never a global widening."
+    "_allowed_note": "45 minutes is the default for the whole fleet, measured across 2026-11-04 to 2026-11-08: the slowest HEALTHY routine landed 32 min after its schedule (#17's preclose slot) and #10 - which fires at 14:00 ET - landed at 14:07. A routine that is chronically slower than that needs its own allowed value named HERE, never a global widening.",
+    "per_routine_allowed_minutes": {},
+    "_per_routine_note": "A routine that is CHRONICALLY slower than the default needs its own allowance HERE - never widen the global default to hide one slow routine. Measured 2026-11-12: cron #20's latencies were 42.7 (11-09), 50.5 (11-10) and 46.1 (11-11) min, so a single 45-minute default makes it flap between 'delivered' and 'delivered_late' on noise. Name the routine here with the allowance the OPERATOR accepts; the auditor reports the chronic condition and recommends a value, it never widens the allowance by itself. The gate (C17) reads this map."
   },
   "skip_marker": {
     "glob": "refs/skipped-markers/{date}_SKIPPED_*.md",
@@ -133,8 +140,8 @@
   },
   "digest": {
     "summary": "audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>",
-    "gap": "gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>",
-    "skipped": "skipped: <routine> <reason> — <marker path>",
+    "gap": "gap: <routine> <label> <path> \u2014 cause=<token> age_h=<n> \u2014 <detail>",
+    "skipped": "skipped: <routine> <reason> \u2014 <marker path>",
     "roster_gap": "roster_gap: <name> (task <id>) is live but not in schedule-ground-truth.json",
     "streak": "streak: <routine> <n> consecutive missed fires",
     "push": "push: ok (verified)",
@@ -195,5 +202,19 @@
       "failed_no_repo",
       "skipped_no_token"
     ]
+  },
+  "artifact_health": {
+    "rule": "'delivered' means the artifact is on the branch AND is a real artifact, not a stub. The metrics script reports health per artifact: size, line count and degraded markers (fetch_failed / PROCEDURE_FETCH_FAILED / skill_fetch_failed / prompt_blocks_fetch_failed). A degraded artifact is published as a 'present_but_empty' gap with cause=push_failure (the push landed a stub, not the artifact) and the routine's state stays 'delivered' - the file DID land, so the headline 'missing' count is unaffected.",
+    "markers": [
+      "fetch_failed",
+      "PROCEDURE_FETCH_FAILED",
+      "skill_fetch_failed",
+      "prompt_blocks_fetch_failed"
+    ]
+  },
+  "diagnostic_signals": {
+    "never_started_title": "A session titled '[cron] <file>.md' instead of the fleet's '[<DD-MM>] NN-<name>' means the routine never executed its FIRST step - the platform's fallback name. On 2026-11-11, 11 of 12 routine sessions carried the fleet title and the one that did not was the fire that died with zero tokens. It is free signal: the title is already in the session list.",
+    "zero_token_turn": "usage.total_tokens == 0 on the failing turn means the model call never produced output - the fire died before doing any work. Read it with mcp_invoke session_messages session_id=<id> (UNQUOTED id).",
+    "chronic_late": "A routine over the allowance on >= 2 of its last 3 due days is chronically late: name it in the gap detail, say how many consecutive days, and recommend the per-routine allowance for latency.per_routine_allowed_minutes."
   }
 }

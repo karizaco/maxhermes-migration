@@ -23,6 +23,19 @@
 #   --repo      owner/name of the artifact repo (default karizaco/minimax-cloud-outputs).
 #               Only used by the --nn check.
 #
+#   --verify-bytes
+#               OPT-IN byte-level check: the remote blob's sha256 against the LOCAL file's.
+#               Presence alone is not delivery - a push that staged a DIFFERENT file (a
+#               sanitized path, a truncated write, a re-push of older content) still leaves
+#               the path on the branch, and the existence check reports it as delivered.
+#               The blob is fetched through the GIT BLOB API for the sha the contents API
+#               names, because the contents API is CDN-cached and can serve a stale body.
+#               Default behaviour is UNCHANGED (presence only) so the other 21 routines
+#               are not affected; cron #90 opts in.
+#
+#   --local     the local file to compare against (default $SRC_DIR/<path>, SRC_DIR
+#               defaults to /workspace).
+#
 # EXIT CODES
 #   0 = present on origin/<branch> (and, with --nn, the subject carries the routine number)
 #   1 = ABSENT — the artifact did not land. Report this plainly; do not claim success.
@@ -31,12 +44,17 @@
 #       landed but is not attributable to a routine. Fix forward with a correctly-subjected
 #       commit; do NOT force-push (master mirrors main as a fast-forward, so rewriting a
 #       main commit permanently breaks the mirror's ancestry gate).
+#   5 = present, but the remote BYTES differ from the local file (--verify-bytes only).
+#       The path is on the branch and the content is NOT what was published.
 set -u
 
 PATH_=""; BRANCH="main"; NN=""; REPO="karizaco/minimax-cloud-outputs"
+VERIFY_BYTES=0; LOCAL_=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --path)   PATH_="${2:-}";   shift 2 ;;
+    --verify-bytes) VERIFY_BYTES=1; shift ;;
+    --local)  LOCAL_="${2:-}";  shift 2 ;;
     --branch) BRANCH="${2:-}"; shift 2 ;;
     --nn)     NN="${2:-}";     shift 2 ;;
     --repo)   REPO="${2:-}";   shift 2 ;;
@@ -145,6 +163,76 @@ if [ -z "$PATH_FOUND" ]; then
   exit 1
 fi
 echo "DELIVERY: ok (origin/$BRANCH:$PATH_FOUND present)"
+
+# ---------------------------------------------------------------------------------------------
+# Optional: are the BYTES on the branch the bytes we published?
+#
+# Presence is not delivery. The blob is read through the GIT BLOB API for the sha the
+# contents API names (the contents API is CDN-cached and can serve a stale body), and its
+# sha256 is compared with the local file's. Measured 2026-11-12: the routine's own
+# procedure described this script as "the stronger check ... compares the SHA-256 of the
+# remote blob against the local file", but the script only ever checked PRESENCE - so every
+# routine that trusted the wording had a weaker guarantee than it believed it had.
+#
+# The local file is located from --local, else $SRC_DIR/<path> (SRC_DIR defaults to
+# /workspace, which is where the routines write their output directories).
+# ---------------------------------------------------------------------------------------------
+if [ "$VERIFY_BYTES" = "1" ]; then
+  SRC_DIR_EFF="${SRC_DIR:-/workspace}"
+  LOCAL_FILE="$LOCAL_"
+  [ -n "$LOCAL_FILE" ] || LOCAL_FILE="$SRC_DIR_EFF/$PATH_FOUND"
+  [ -f "$LOCAL_FILE" ] || LOCAL_FILE="$SRC_DIR_EFF/$PATH_"
+  if [ ! -f "$LOCAL_FILE" ]; then
+    echo "BYTES: unverified (the local file was not found - looked at '$LOCAL_FILE'; pass --local)"
+    exit 0
+  fi
+  if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    echo "BYTES: unverified (curl or python3 is unavailable)"
+    exit 0
+  fi
+  BLOB_SHA=$(curl -sL --max-time 25 -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      "$API_BASE/repos/$REPO/contents/$PATH_FOUND?ref=$BRANCH" 2>/dev/null \
+    | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+print(d.get("sha","") if isinstance(d,dict) else "")
+' 2>/dev/null)
+  if [ -z "$BLOB_SHA" ]; then
+    echo "BYTES: unverified (the contents API did not name a blob for $PATH_FOUND)"
+    exit 0
+  fi
+  REMOTE_SHA256=$(curl -sL --max-time 25 -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      "$API_BASE/repos/$REPO/git/blobs/$BLOB_SHA" 2>/dev/null \
+    | python3 -c '
+import json,sys,base64,hashlib
+try:
+    d=json.load(sys.stdin)
+    b=base64.b64decode(d.get("content") or "")
+except Exception:
+    sys.exit(0)
+print(hashlib.sha256(b).hexdigest())
+' 2>/dev/null)
+  LOCAL_SHA256=$(python3 -c "
+import hashlib,sys
+print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())
+" "$LOCAL_FILE" 2>/dev/null)
+  if [ -z "$REMOTE_SHA256" ] || [ -z "$LOCAL_SHA256" ]; then
+    echo "BYTES: unverified (could not hash the remote blob or the local file)"
+    exit 0
+  fi
+  if [ "$REMOTE_SHA256" = "$LOCAL_SHA256" ]; then
+    echo "BYTES: ok (sha256 $REMOTE_SHA256 matches $LOCAL_FILE)"
+  else
+    echo "BYTES: FAILED (the remote blob's sha256 $REMOTE_SHA256 differs from the local file $LOCAL_SHA256)"
+    echo "  the path IS on origin/$BRANCH, but the published CONTENT is not what was written."
+    exit 5
+  fi
+fi
 
 # ---------------------------------------------------------------------------------------------
 # Optional: is the artifact ATTRIBUTABLE to a routine?

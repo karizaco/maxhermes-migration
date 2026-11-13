@@ -251,6 +251,53 @@ def check_status(status, contract, rep):
                           f"routines['{name}'] has state '{state}' but carries a "
                           f"delivery_latency_min ({lat!r}); only a delivered routine has one")
 
+    # C17 — the delivered / delivered_late call must agree with the ALLOWED latency.
+    # The allowed value is PER ROUTINE: `latency.per_routine_allowed_minutes` names the
+    # routines the operator accepts a slower run from; every other routine uses the
+    # default. A single global number makes a chronically-slow routine flap between
+    # 'delivered' and 'delivered_late' on noise - measured 2026-11-12: cron #20 ran
+    # 42.7 / 50.5 / 46.1 min over three days against a 45-minute default.
+    lat_contract = contract.get("latency") or {}
+    default_allowed = lat_contract.get("default_allowed_minutes", 45)
+    per_routine = lat_contract.get("per_routine_allowed_minutes") or {}
+    if isinstance(routines, dict):
+        for name, r in routines.items():
+            if not isinstance(r, dict):
+                continue
+            lat = r.get("delivery_latency_min")
+            state = r.get("state")
+            if state not in ("delivered", "delivered_late"):
+                continue
+            if not isinstance(lat, (int, float)) or isinstance(lat, bool):
+                continue                      # C16 already covers a missing latency
+            allowed = per_routine.get(name, default_allowed)
+            if not isinstance(allowed, (int, float)) or isinstance(allowed, bool):
+                continue
+            expected = "delivered_late" if lat > allowed else "delivered"
+            rep.check(state == expected, "C17",
+                      f"routines['{name}'] is '{state}' with a latency of {lat} min, but its "
+                      f"allowed value is {allowed} min - the state must be '{expected}'")
+
+    # C18 — a degraded artifact is a FAILING delivery, and it must say so exactly once.
+    # 'present_but_empty' means the push landed a stub: the file IS there (so the routine's
+    # state stays 'delivered' and the headline 'missing' count is untouched) but the same
+    # routine must not ALSO be published as a MISSING gap.
+    if isinstance(routines, dict):
+        for g in gaps:
+            if not isinstance(g, dict) or g.get("label") != "present_but_empty":
+                continue
+            name = g.get("routine")
+            entry = routines.get(name)
+            rep.check(isinstance(entry, dict) and entry.get("state") == "delivered", "C18",
+                      f"a 'present_but_empty' gap names '{name}', whose state is "
+                      f"{(entry or {}).get('state')!r} - a stub landed, so the state must be "
+                      f"'delivered' (the file IS on the branch)")
+            rep.check(name not in {x.get('routine') for x in gaps
+                                   if isinstance(x, dict) and x.get('label') == 'MISSING'},
+                      "C18",
+                      f"'{name}' is published as both present_but_empty and MISSING - a degraded "
+                      f"artifact and a missing artifact are different findings")
+
     # roster_gap entries
     rg = status.get("roster_gap")
     if rep.check(isinstance(rg, list), "C12", "status.json 'roster_gap' must be a list"):

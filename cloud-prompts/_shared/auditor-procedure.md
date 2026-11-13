@@ -1,7 +1,7 @@
 # cron #90 delivery-auditor — THE PROCEDURE
 
 AUDITOR_PROCEDURE_V1
-PROCEDURE_VERSION: 2026-11-09.1
+PROCEDURE_VERSION: 2026-11-13.1
 
 This file is the PROCEDURE for cron #90 (delivery-auditor). It is fetched at RUN time by the
 routine's prompt, which carries only the title block, the fetch ladder and the REPLY FORMAT.
@@ -30,6 +30,22 @@ WHAT IS NOT IN HERE
 The REPLY FORMAT lives in the PROMPT, not here - it is the contract with cron #91's triage,
 and the prompt is the thing that is deployed byte-exactly. If this file and the prompt ever
 disagree about the reply format, THE PROMPT WINS.
+
+HOW TO READ THIS FILE (it is ~64 KB and the read tool truncates at ~50 KB)
+----------------------------------------------------------------------
+Read it in TWO BOUNDED CHUNKS and never let a read come back truncated:
+
+    sed -n '1,520p' /workspace/auditor-procedure.md     # or: read with offset=1, limit=520
+    sed -n '521,1100p' /workspace/auditor-procedure.md   # or: read with offset=521
+
+A truncated read is not a shorter read: the tool drops the MIDDLE of the file and
+can alter a character on the way through. This file's tables carry ARTIFACT PATHS,
+and a path decides a MISSING verdict - a mangled path produces a false gap. If a
+read comes back truncated, re-read the missing range with an explicit offset and
+confirm any path you are about to publish with a `grep` against the file itself.
+
+The procedure is fetched at RUN time, so every fix in it lands on the next 07:00 ET
+fire with NO `cron_update` and NO prompt drift.
 
 The auditor writes one file to the outputs repo's `audit/status` branch and NOTHING to
 `main`. That is not negotiable and it is not in this file either - it is in the prompt.
@@ -79,7 +95,12 @@ git fetch -q origin main
 # is kept as a fast-forward MIRROR of `main` - the same commits, so a plain `git clone`
 # lands on current artifacts. Always fetch `main` explicitly.
 rm -rf /workspace/.audit
-git worktree add -f /workspace/.audit origin/main
+# --no-checkout: the audit NEVER reads a file from disk. Every check is
+# `git ls-tree` / `git log` / `git cat-file` against origin/main. The full
+# checkout wrote 1,936 files and printed ~8 KB of "Updating files: 6% (131/1936)"
+# progress noise into the context - measured 2026-11-12: 23.9 s of the 245 s run
+# for zero audit value. `--no-checkout` keeps the ref and the directory.
+git worktree add -f --no-checkout /workspace/.audit origin/main
 cd /workspace/.audit
 git rev-parse --short origin/main | sed 's/^/  origin\/main = /'
 
@@ -289,6 +310,53 @@ commit match `mcp-health` in the subject instead of the NN prefix. It writes tho
 nothing else, so there is no near-miss variant to hunt for: if the weekly report is absent,
 #01 did not deliver.
 
+### 4z — RUN THE MEASUREMENTS FIRST (one script, one pass)
+
+Everything the audit needs to MEASURE is deterministic: is the artifact on the branch, when
+was it first added, how stale is the newest artifact of this routine, is the file a real
+artifact or a stub. Do not compute that in bash loops — the 2026-11-12 fire did it by hand
+with 27 `git ls-tree` walks and 21 `git log` walks, which is ~9 s of redundant git work and
+~44 tool calls for a 245 s run. Run the engine; then JUDGE.
+
+```bash
+# the previous audit's status file - the history for the streak carry-forward (4c-3)
+cd /workspace/.audit
+git fetch -q origin audit/status || true
+git show origin/audit/status:_audit/status.json > /workspace/.audit-prev-status.json 2>/dev/null \
+  || echo "{}" > /workspace/.audit-prev-status.json
+
+python3 /workspace/auditor_metrics.py \
+    --date "$AUDIT_DATE" \
+    --repo /workspace/.audit \
+    --procedure /workspace/auditor-procedure.md \
+    --ground-truth "$S" \
+    --holidays /workspace/nyse-holidays.txt \
+    --prior /workspace/.audit-prev-status.json \
+    --json /workspace/_audit/metrics.json
+```
+
+It prints one row per roster row and writes the full table to `/workspace/_audit/metrics.json`:
+
+| field | what it means |
+|---|---|
+| `state_hint` | `due` / `not_due` / `not_yet_fired` / `self_check` — the SCHEDULE says so, from the ground truth |
+| `present` | the expected artifact is on `origin/main` right now |
+| `near_miss` | the routine published a VARIANT path instead — the near-miss triage, already done |
+| `delivery_latency_min` | minutes from the routine's scheduled fire to the commit that FIRST added its artifact |
+| `last_delivered` / `age_days` / `stale` | the STEP 4b staleness check, per routine, with that routine's own tolerance |
+| `health` | `ok` / `degraded` — a stub that carries a `fetch_failed` marker is NOT a delivery |
+| `market_closed` | the audited date is an NYSE closure (from `nyse-holidays.txt`), so a gap is probably a skip by design |
+| `notes` | a `ROSTER_DESYNC` when the table's schedule disagrees with the ground truth, a `STALE` line |
+| `prior_streak` / `prior_latency_min` | the carry-forward from the previous audit |
+
+**The engine measures; you judge.** It cannot see a session's `status_message`, a skip marker,
+a platform error or the run records — so the STATE, the CAUSE and the STORY still come from
+STEP 4c. What it removes is every hand-rolled loop.
+
+**If the engine cannot run** (fetch failed, parse error), say so once (`errors: 1`) and fall
+back to the per-routine loops in STEP 4 / 4b below. Never report the fleet as clean because a
+measurement failed.
+
 ### 4a — DELIVERY LATENCY: the artifact's push time vs the fire's scheduled time
 
 **A routine's run record CANNOT tell you when the work happened.** `started_at_ms` and
@@ -315,9 +383,22 @@ Subtract the routine's scheduled fire time on `$AUDIT_DATE` (the roster table's 
 - **> 45 minutes → `delivered_late`.** The artifact IS on the branch, so this is NOT `missing`;
   it is a finding. The routine MUST also carry a `stalled` gap line naming the cause, and the
   routine's state in the status file MUST be `delivered_late`.
+- **THE ALLOWED VALUE IS PER ROUTINE, NOT ONE GLOBAL NUMBER.** Read
+  `tools/auditor-contract.json` → `latency.per_routine_allowed_minutes` FIRST: a routine named
+  there uses ITS value; every other routine uses `latency.default_allowed_minutes` (45). The
+  gate (C17) checks your `delivered` / `delivered_late` call against the same map, so the two
+  cannot disagree.
 - **A routine that is chronically slower than 45 minutes** needs its own allowed value named in
   `tools/auditor-contract.json` (`latency.default_allowed_minutes` is the default) — never widen
   the global number to hide one slow routine.
+- **CHRONIC LATE — report it, do not absorb it.** Compare the routine's latency with its own
+  last 3 due days (the `audit/status` branch is the history). A routine over the allowance on
+  **≥ 2 of its last 3 due days** is chronically late: put the count in the `stalled` gap's
+  detail ("3rd late day in 4 — chronically slow, recommended allowance 55 min in
+  `latency.per_routine_allowed_minutes`, or optimise the routine") and recommend the value.
+  You do NOT widen the allowance yourself — that is the operator's call.
+  Measured 2026-11-12: cron #20 ran 42.7 → 50.5 → 46.1 min over 11-09/10/11, so the single
+  45-minute default made it flap between `delivered` and `delivered_late` on noise.
 
 **Publish the latency for EVERY due routine**, not only the late ones: `delivery_latency_min`
 is a required field on every entry of the status file's `routines` map — a number for a routine
@@ -425,6 +506,10 @@ newest artifact is older than that is **stale** — regardless of whether it was
 
 ```bash
 cd /workspace/.audit
+# ONE tree listing, reused by every routine. The loop below used to call
+# `git ls-tree -r --name-only origin/main` INSIDE the loop: 27 full walks of a
+# 1,936-file tree for one audit (measured 2026-11-12). List it once, grep it.
+git ls-tree -r --name-only origin/main > /workspace/.audit-tree.txt
 # Each entry is: routine|path-regex|tolerance-days
 # The path regex is ANCHORED to the real artifact layout on origin/main - a loose
 # substring match silently matches nothing and reports a healthy routine as NEVER_DELIVERED.
@@ -484,8 +569,7 @@ for entry in \
     echo "ok     $routine  not_yet_fired (first fire $firstfire - not a finding)"
     continue
   fi
-  last=$(git ls-tree -r --name-only origin/main \
-         | grep -E "$pat" \
+  last=$(grep -E "$pat" /workspace/.audit-tree.txt \
          | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-W[0-9]{2}' | sort -u | tail -1)
   # A WEEK token names the ISO week of the Sunday the routine ran. Jan 4 of a year always falls
   # in ISO week 1, so the Sunday of week w is Jan 4 + (w-1)*7 days. Plain date arithmetic only:
@@ -551,9 +635,14 @@ A healthy run has `status_message: ""`. A run killed by the billing quota carrie
 
 **Two ways to read a session's `status_message`.** `session_list agent_name="Mavis" limit=100`
 returns every recent conversation with its `title`, `status` and `status_message` in ONE call —
-use it to scan several routines at once. `session_get session_id="<id>"` reads ONE session
+use it to scan several routines at once. `session_get session_id=<id>` reads ONE session
 directly and is the precise path when you already have the id from `cron_read view=runs`; pass
-the id as a **quoted string** (verified working 2026-11-02 on six sessions). `session_update` and
+the id **UNQUOTED - as a JSON number, not a string** (measured 2026-11-12: the host parses
+a numeric-looking STRING into a number and then fails its own type check with
+`/session_id: Expected string`; passing the id unquoted works for `session_get` AND
+`session_messages`). The old instruction here said "quoted string (verified working
+2026-11-02)" - it is inverted now, and following it costs three failed calls per gap.
+`session_update` and
 `session_messages` still reject a numeric id. (`cron_read`'s `task_id` is not affected — numeric
 task ids pass fine.)
 
@@ -581,10 +670,11 @@ rebuilt from `migration-state.json` (the original local cron list).
 #   gen_roster.py               - the roster GENERATOR's ARTIFACTS map (STEP 4e-2)
 #   deploy_prompts.py           - the deploy harness's task map (STEP 4e-2)
 #   check_auditor_contract.py   - the gate on THIS run's own output (STEP 6b)
+#   auditor_metrics.py          - the MEASUREMENT engine (STEP 4z)
 # They are fetched at RUN time, so a fix to any of them lands on the next fire with no
 # redeploy and no prompt drift.
 for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.py \
-         check_auditor_contract.py gen_roster.py deploy_prompts.py; do
+         check_auditor_contract.py gen_roster.py deploy_prompts.py auditor_metrics.py; do
   D=/workspace/$F
   for U in \
     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/$F?ref=main" \
@@ -599,6 +689,24 @@ for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.p
   done
   [ -s "$D" ] || echo "fetch FAILED: $F"
 done
+
+# The NYSE closure calendar lives with the SHARED helpers, not in tools/. It is what
+# tells the auditor that a gap on a holiday is a skip by design and not a failure -
+# so the measurement engine needs it in the sandbox too.
+H=/workspace/nyse-holidays.txt
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/nyse-holidays.txt?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/nyse-holidays.txt" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/nyse-holidays.txt" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$H.tmp" "$U" 2>/dev/null
+  if [ -s "$H.tmp" ] && ! head -c 200 "$H.tmp" | grep -q '"message"'; then
+    mv -f "$H.tmp" "$H"; break
+  fi
+  rm -f "$H.tmp"
+done
+[ -s "$H" ] || echo "fetch FAILED: nyse-holidays.txt (a gap on a holiday will look like a failure)"
+
 S=/workspace/schedule-ground-truth.json
 ```
 
@@ -633,7 +741,7 @@ fix is different.
 Every gap line names a cause from this CLOSED list, as a token:
 
 <!-- AUDITOR-CONTRACT-CAUSES
-platform_500 timeout quota_2056 quota_2067 push_failure delayed_replay not_yet_fired skipped_by_design cron_update_failed slow_run never_fired
+platform_500 connection_error timeout quota_2056 quota_2067 push_failure delayed_replay not_yet_fired skipped_by_design cron_update_failed slow_run never_fired
 -->
 
 <!-- AUDITOR-CONTRACT-STATES
@@ -643,6 +751,7 @@ delivered delivered_late missing not_yet_fired skipped_by_design written_off not
 | Cause | Meaning |
 |---|---|
 | `platform_500` | The platform itself failed the fire (HTTP 500 / `CRON_EXECUTION_FAILED` / no session ever started). |
+| `connection_error` | The platform's transport to the model failed mid-fire. Evidence: the session's last message is `[Error] Connection error.`, `finish_reason: "error"`, and `usage.total_tokens == 0` — the model call never completed, so the routine did NO work (no title set, no artifact, no commit). NOT a quota wall (no 2056/2067), NOT a push loss (nothing was ever staged), NOT the routine's logic (it never ran). The fix is a re-run, not a code change. Measured 2026-11-12 on cron #13's 2026-11-11 14:00 ET fire. |
 | `timeout` | The run exceeded its time budget and was cut off before it could write or push. |
 | `quota_2067` | The Token Plan usage limit was reached and credit auto-consumption was OFF — a BILLING wall, not a code bug. |
 | `quota_2056` | The Token Plan **5-hour usage window** was exhausted (error 2056, surfaced by the platform as 42212). The fire's FIRST model call was rejected, so the turn died and could only be resumed in place later — the run record still says `status: 1` and ~1 s. The window ROLLS from the account's first use. |
@@ -697,6 +806,25 @@ git show origin/audit/status:_audit/status.json 2>/dev/null \
 
 **A streak of 3 or more is surfaced on its own line in the digest** — a dead routine must
 never hide inside a count.
+
+### 4c-4 — DID THE FIRE EVER START? (two free signals)
+
+Both of these come from data you already have — the session list and the session's own
+messages — and both turn "MISSING" into a diagnosis:
+
+- **THE TITLE.** Every fleet routine titles its session `[<DD-MM>] NN-<name>` as its FIRST
+  action. A session titled **`[cron] <file>.md`** is the platform's FALLBACK name: the routine
+  never executed its first step. Measured 2026-11-11: 11 of 12 routine sessions carried the
+  fleet title and the one that did not was the fire that died with zero tokens.
+- **THE TOKEN COUNT.** `usage.total_tokens == 0` on the failing turn means the model call never
+  produced output. Read it with
+  `mcp_invoke tool_name=session_messages arguments={"session_id":<id>,"limit":2}` — the id
+  **UNQUOTED** (see STEP 4c).
+
+A MISSING whose fire never started is `connection_error` (or `platform_500`), and its detail
+must say so: "the fire produced no model call (zero tokens) — re-run needed". A MISSING whose
+fire ran and built an artifact that never landed is `push_failure` instead. Those are different
+fixes, and the difference is free to detect.
 
 ## STEP 4d — A RUN THAT CORRECTLY PRODUCED NOTHING (`skipped_by_design`)
 
@@ -762,7 +890,19 @@ again.
 ```bash
 # 1. the live fleet, saved VERBATIM (never re-typed)
 #    mcp_invoke  tool_name=cron_read  arguments={"view":"list","limit":100}
-#    -> write the raw payload to /workspace/.audit-tasks.json
+#
+#    The payload is ~460 KB (29 tasks with their full prompts) and the tool TRUNCATES it.
+#    The FULL payload is persisted on disk under the tool-result artifact directory:
+#        /workspace/.mavis/tool-results/<session_id>/<tool_call_id>/chunks/*.txt
+#    Recover it from there - do NOT re-run cron_read and do NOT read it into your context:
+#        cat /workspace/.mavis/tool-results/<session_id>/<tool_call_id>/chunks/*.txt \
+#            > /workspace/.audit-tasks.json
+#    Then confirm it parses:
+#        python3 -c "import json;d=json.load(open('/workspace/.audit-tasks.json'));\
+#                    print('tasks:',len(d['response']['tasks']))"
+#    Measured 2026-11-12: the payload was 462,805 bytes; the truncated view showed a few KB
+#    and the whole thing was on disk. Re-running cron_read to "see the rest" costs 3 s and
+#    ~120k tokens of context for nothing.
 
 # 2. the detector (fetched at RUN time above) against the ground truth.
 #    The extra two fetches (gen_roster.py, deploy_prompts.py) are the OTHER TWO
@@ -843,12 +983,25 @@ LATE (STEP 4a). Every gap carries a label AND a cause (STEP 4c-1) AND an age in 
 |---|---|
 | `MISSING` | Due, expected, and the artifact is not on `origin/main`. **This is the important one.** |
 | `stalled` | The artifact IS on `origin/main` but landed later than the routine's allowed latency (STEP 4a). The run record's duration measures the DISPATCH, not the work, so the latency is the only measure of when the work actually happened. NOT a MISSING — the artifact is there. |
-| `present_but_empty` | The path exists but carries no data (a stub was pushed). |
+| `present_but_empty` | The path exists but carries no data (a stub was pushed). **A stub is a FAILING delivery, not a delivery**: the metrics script flags an artifact whose content carries a degraded marker (`fetch_failed`, `PROCEDURE_FETCH_FAILED`, `skill_fetch_failed`, `prompt_blocks_fetch_failed`). Publish it as a `present_but_empty` gap with `cause=push_failure` — the push landed a stub rather than the artifact — and leave the routine's state `delivered` (the file DID land, so the headline `missing` count is unaffected). |
 | `stale` | The artifact exists but is from an older date than expected. |
 | `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 | `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
 | `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are the only two. |
+
+**WHAT A GAP'S DETAIL MUST CARRY** (the detail is the evidence — never leave it bare):
+
+- **WHAT HAPPENED**, with the evidence quoted: the session's `status_message`, its
+  `finish_reason`, its `usage.total_tokens`, the commit that added the artifact, or the exact
+  reason a skip marker carries.
+- **WHETHER THE FIRE EVER STARTED** (STEP 4c-4): a fire that produced no model call is a
+  re-run candidate, and the detail must say so — "the fire produced no model call (zero
+  tokens) — re-run needed". A fire that ran and built an artifact that never landed is a push
+  failure instead. Different fixes.
+- **HOW MANY TIMES** the same finding has already been reported, when the routine's own history
+  shows it (the `audit/status` branch). A finding that has now been reported for three
+  consecutive days is a DEAD ROUTINE, and the operator must be able to see that from the line.
 
 **These are NOT findings and are NEVER published as a gap line:** `not_due`,
 `weekend_no_us_session`, `possible_holiday`, `not_yet_fired`, `written_off`,
@@ -949,6 +1102,12 @@ digest that breaks the contract must never be published as if it were clean.
 **Write the EXACT text you are going to reply with to `/workspace/digest.txt` FIRST**, then gate
 that file — so the gate checks the very bytes that get published.
 
+**Do NOT read `check_auditor_contract.py` to learn the rules.** Reading its 27 KB of source
+cost 21 s and ~40 KB of context on the 2026-11-12 fire and taught nothing the contract file
+does not already say. The contract itself (`auditor-contract.json`) carries the states, the
+causes, the labels and the reply templates; the gate prints one `FAIL <id> <message>` line per
+violation. Run it and fix what it names.
+
 ```bash
 python3 /workspace/check_auditor_contract.py \
         --status /workspace/_audit/status.json \
@@ -1007,8 +1166,18 @@ done
 AUDIT_DATE=$(TZ=America/New_York date -d "yesterday" +%Y-%m-%d)
 sh /workspace/push_artifact.sh --out _audit --add _audit/status.json --branch audit/status \
    --msg "cron 90 delivery-auditor $AUDIT_DATE"
-sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status
+
+# --verify-bytes: the auditor asks for the STRONGER check. Presence is not delivery -
+# a push that staged a different file still leaves the path on the branch. The blob is
+# read through the git blob API (the contents API is CDN-cached) and its sha256 is
+# compared with the local file's. The other 21 routines keep the presence-only default.
+sh /workspace/verify_delivery.sh --path _audit/status.json --branch audit/status --verify-bytes
 ```
+
+**If the byte check FAILS** (exit 5), the path is on the branch but the published content is
+not what was written. Do not claim delivery: report `push: FAILED (byte mismatch)` and say
+which file differs. If the byte check is `unverified` (no local file, no API), say so in the
+push line rather than rounding it up to a success.
 
 **The target branch is `audit/status`, not `main`** — the status file lives on its own branch so
 the audit trail does not pollute the artifact branch. The shared script takes the branch as a
