@@ -233,8 +233,10 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
             "tape_wave_count": len(pull.get("tape_waves") or []),
             "prior_session_change": (fmt(num(r.get("prior_session_change")), 3)
                                      if num(r.get("prior_session_change")) is not None else "n/a"),
-            "pm_volume_pct_30d": (fmt(num(r.get("pm_volume_pct_30d")), 2)
-                                  if num(r.get("pm_volume_pct_30d")) is not None else "n/a"),
+            # the computed ratio lives in `_volpct` - reading a differently named
+            # key here published "n/a" on EVERY row (measured 2026-11-13).
+            "pm_volume_pct_30d": (fmt(r["_volpct"], 2)
+                                  if r.get("_volpct") is not None else "n/a"),
             "driver_class": r.get("driver_class") or "",
             "driver_basis": r.get("driver_basis") or "",
             "sustained": "yes" if r["_sustained"] else "no",
@@ -254,7 +256,18 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
     # The renderer builds the marker ITSELF. The pull's stored marker_line is
     # NOT trusted: it can be an older contract (and the renderer is what
     # guarantees the artifact's contract version and capability markers).
-    ref_src = "prior sweep focus.csv"
+    # The marker must name the source that ACTUALLY provided the close. In the
+    # degraded-universe run that is the INDEPENDENT sources, never the stale
+    # focus.csv - naming "focus.csv" there was a false attribution (measured
+    # 2026-11-13).
+    ref_src = ""
+    for r in rows:
+        src = str(r.get("base_close_source") or "").split(" (")[0]
+        if src:
+            ref_src = src
+            break
+    if not ref_src:
+        ref_src = "prior sweep focus.csv"
     marker = ("_contract: %s · flagged: %d · scanned: %d · gate: |gap|>=%.1f%% and "
               "pm_volume>=%s and exec_shares>=%s · reference close: %s · pull: %s · "
               "renderer: %s_"

@@ -363,6 +363,16 @@ def check_csv(path, md_rows, md_verdict_flagged, md_scanned, version=CONTRACT_VE
             if not str(r.get("prior_session_change", "")).strip():
                 bad(f"CSV row {n} ({tick}) has no prior_session_change - 'n/a' is the honest "
                     f"value, an empty cell is not")
+        # a column that is a PLACEHOLDER on EVERY row is a silent failure, not a
+        # missing value (measured 2026-11-13: pm_volume_pct_30d published "n/a" on
+        # all 12 rows because the renderer read a differently named field).
+        if ver_at_least(version, "premarket-artifact-v6") and "pm_volume_pct_30d" in cols:
+            placeholders = sum(1 for r in rows
+                               if str(r.get("pm_volume_pct_30d", "")).strip().lower()
+                               in ("n/a", "na", "-", ""))
+            if placeholders == len(rows) and rows:
+                bad("pm_volume_pct_30d is a placeholder on EVERY row - a field that carries no "
+                    "information on every row is a silent failure, not a missing value")
     ok(f"every CSV row ({len(rows)}) carries verdict / exec_shares / ref_close_source")
 
     # --- the gate arithmetic -------------------------------------------------
