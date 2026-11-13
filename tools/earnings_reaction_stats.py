@@ -2,7 +2,7 @@
 """
 earnings_reaction_stats.py — reaction-potential columns for the cron #19 earnings reminder.
 
-REACTION_STATS_VERSION: 2026-11-06.2
+REACTION_STATS_VERSION: 2026-11-13.1
 
 Computes, for a list of US-traded tickers:
 
@@ -33,7 +33,10 @@ Exit codes: 0 ok, 1 usage error, 2 every ticker failed.
 import argparse, csv, json, os, re, subprocess, sys, tempfile, time
 from datetime import date, datetime, timedelta
 
-REACTION_STATS_VERSION = "2026-11-06.2"
+REACTION_STATS_VERSION = "2026-11-13.1"
+# CAPABILITY MARKER (2026-11-13): the Nasdaq earnings-surprise fallback for the prior result.
+# The SKILL fetch ladder demands this token, so a CACHED OLD COPY CANNOT WIN.
+REACTION_STATS_NASDAQ_PRIOR_RESULT = "nasdaq-prior-result-fallback"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 # The cookie jar NEVER lives next to the script: the script is fetched into a repo tree and a
@@ -225,16 +228,87 @@ def select_latest_report(history):
     return usable[0]
 
 
-def prior_report_result(symbol):
-    """Last reported quarter: beat / miss from Yahoo earningsHistory (the LATEST quarter)."""
-    res = yahoo_quote_summary(symbol, "earningsHistory")
+def nasdaq_prior_result(symbol):
+    """Last reported quarter: beat / miss from Nasdaq's earnings-surprise table.
+
+    REACTION_STATS_NASDAQ_PRIOR_RESULT - the FALLBACK for names whose Yahoo earningsHistory is
+    empty. Measured 2026-11-12: Brookfield Corporation's Yahoo `earningsHistory` AND
+    `earningsTrend` are both empty, so the prior result had to be read by hand from Nasdaq and
+    then typed into the artifact. The SAME Nasdaq call that already supplies the past report
+    dates carries the EPS actual, the consensus forecast and the surprise percentage, so this
+    fallback costs NO extra request.
+
+    The table's `dateReported` is M/D/YYYY (same trap as `nasdaq_report_dates`), its `eps` is the
+    actual, `consensusForecast` the estimate and `percentageSurprise` the surprise in percent.
+    """
+    d = _json(f"https://api.nasdaq.com/api/company/{symbol}/earnings-surprise",
+              headers=["Accept: application/json", "Referer: https://www.nasdaq.com/"])
     try:
-        hist = res["earningsHistory"]["history"]
+        rows = d["data"]["earningsSurpriseTable"]["rows"]
     except Exception:
         return None
-    h = select_latest_report(hist)
-    if h is None:
+    best = None
+    for row in rows or []:
+        act = row.get("eps")
+        if act is None:
+            continue
+        try:
+            act = float(act)
+        except (TypeError, ValueError):
+            continue
+        est = row.get("consensusForecast")
+        try:
+            est = float(est) if est is not None else None
+        except (TypeError, ValueError):
+            est = None
+        raw = (row.get("dateReported") or "").strip()
+        m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw)
+        if not m:
+            continue
+        try:
+            rd = date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            continue
+        if best is None or rd > best[0]:
+            best = (rd, act, est, row)
+    if best is None:
         return None
+    rd, act, est, row = best
+    sp = row.get("percentageSurprise")
+    try:
+        sp = float(sp) if sp is not None else None
+    except (TypeError, ValueError):
+        sp = None
+    if sp is None and est:
+        sp = (act - est) / abs(est) * 100.0
+    if sp is not None:
+        verdict = "beat" if sp >= 0 else "miss"
+    elif est is not None:
+        verdict = "beat" if act >= est else "miss"
+    else:
+        return None
+    return {"result": verdict, "surprise_pct": round(sp, 2) if sp is not None else None,
+            "eps_actual": act, "eps_estimate": est,
+            "quarter": row.get("fiscalQtrEnd"),
+            "source": "nasdaq_earnings_surprise", "report_date": rd.isoformat()}
+
+
+def prior_report_result(symbol):
+    """Last reported quarter: beat / miss. Yahoo earningsHistory first, Nasdaq second.
+
+    The source is returned in the dict so the artifact can name it per row - "one source per
+    field" is only checkable if the artifact says WHICH source produced the cell.
+    """
+    try:
+        res = yahoo_quote_summary(symbol, "earningsHistory")
+        hist = res["earningsHistory"]["history"]
+    except Exception:
+        hist = None
+    h = select_latest_report(hist) if hist else None
+    if h is None:
+        # Yahoo carries no history for this name -> the Nasdaq table is the fallback, not a
+        # manual read. Same request the helper already makes for the past report dates.
+        return nasdaq_prior_result(symbol)
     act = (h.get("epsActual") or {}).get("raw")
     est = (h.get("epsEstimate") or {}).get("raw")
     sp = (h.get("surprisePercent") or {}).get("raw")
@@ -242,12 +316,14 @@ def prior_report_result(symbol):
         verdict = "beat" if sp >= 0 else "miss"
         return {"result": verdict, "surprise_pct": round(sp * 100.0, 2),
                 "eps_actual": act, "eps_estimate": est,
-                "quarter": (h.get("quarter") or {}).get("fmt")}
+                "quarter": (h.get("quarter") or {}).get("fmt"),
+                "source": "yahoo_earningsHistory"}
     if est is not None:
         verdict = "beat" if act >= est else "miss"
         return {"result": verdict, "surprise_pct": None, "eps_actual": act,
-                "eps_estimate": est, "quarter": (h.get("quarter") or {}).get("fmt")}
-    return None
+                "eps_estimate": est, "quarter": (h.get("quarter") or {}).get("fmt"),
+                "source": "yahoo_earningsHistory"}
+    return nasdaq_prior_result(symbol)
 
 
 # ------------------------------------------------------------------ implied move
@@ -432,6 +508,7 @@ def main():
                 row["prior_report_result"] = pr["result"]
                 row["prior_report_surprise_pct"] = pr["surprise_pct"]
                 row["prior_report_quarter"] = pr["quarter"]
+                row["prior_report_source"] = pr.get("source", "yahoo_earningsHistory")
             else:
                 row["errors"].append("prior_report_result_unavailable")
             if event_date:
@@ -462,7 +539,8 @@ def main():
     if args.csv:
         cols = ["ticker", "timing", "prior_day_move_pct", "ytd_move_pct", "avg_abs_move_pct",
                 "avg_abs_move_events", "implied_move_pct", "reaction_score",
-                "prior_report_result", "prior_report_surprise_pct"]
+                "prior_report_result", "prior_report_surprise_pct",
+                "prior_report_source"]
         with open(args.csv, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
             w.writeheader()

@@ -34,6 +34,44 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
 - Cron: `0 6 * * 1-5` America/New_York (weekdays, 06:00 ET — ~2.5 h before the 08:30 ET pre-market brief)
 - Manual: user asks "who reports earnings today" or "today's earnings"
 
+## Run budget and fetch discipline (added 2026-11-13, after the 2026-11-12 fire)
+
+This routine exists to feed cron #26, the 08:30 ET pre-market brief. It is a SCREEN: a brief that
+arrives on time with the names that matter beats a complete one that arrives at 09:15. The
+2026-11-12 fire took **3h12m** and landed **42 minutes after the brief it feeds**, with a
+publishable draft already on disk at 07:17 ET.
+
+- **06:45 ET is the discovery cutoff.** Every candidate you intend to publish must have its report
+  date confirmed by 06:45 ET. After 06:45 ET you do not start a new investigation, you do not chase
+  a rabbit hole, and you do not re-pull a universe. You publish what you have.
+- **07:15 ET is the ship deadline.** Write the file, run the checker, push. If a check is still
+  open at 07:15 ET, publish without it and say what was not checked.
+- **Two fetches per candidate, then drop.** A candidate gets at most TWO issuer fetches. If the
+  date is still unconfirmed, drop it, count it in the notes, and move on. Measured 2026-11-12:
+  Mitsubishi UFJ consumed 19 minutes and seven files (six of them the same JS-rendered IR page)
+  and produced NO published row — the issuer confirms the date but publishes no release hour, so
+  the ET day cannot be fixed and the name could not be published anyway.
+- **Never construct an issuer URL.** Guessed IR paths die on 404: measured 2026-11-12, four of six
+  guessed paths 404'd (`/investors/financial-results`, `.../quarterly-results`,
+  `.../results-reports-and-presentations`, `.../financial-information/financial-results`) and one
+  host did not resolve at all. Resolve the canonical URL from the issuer's own newsroom or from a
+  search result, and keep the fetched page under `.cache/` so it is never fetched twice.
+- **Do not fetch a host that is blocked from this egress.** Each of these cost a dead call on
+  2026-11-12: `stockanalysis.com` (Cloudflare 403 — use Yahoo chart metadata
+  `meta.exchangeName` / `meta.currency` plus TradingView's `exchange` / `type` columns),
+  `marketbeat.com` (403 — read the indexed page, or use the declared primary source instead),
+  `vara-services.com` (403 / timeout — take the consensus figure from the press item that names
+  the vendor).
+- **One universe pull, not three.** The TradingView sweep is one POST with `range: [0, 30000]`
+  sorted by `market_cap desc`. On 2026-11-12 three successive pulls (`tv_universe`, `tv_bycap`,
+  `tv_full`) burned ten minutes and the first two were throwaway.
+- **Write every measurement to disk as you take it** — one JSON file per candidate under
+  `.cache/rows/<KEY>.json` (KEY = a slug, e.g. `MRK.DE`), written temp-file-then-rename so a
+  concurrent writer can never corrupt it. Fields: `key, ticker, report_time_et, actual, consensus,
+  source_url, source_type, cap_usd, notes`. The artifact's numbers come from that ledger, not from
+  the conversation: on 2026-11-12 a context compaction cost roughly an hour of re-verification
+  because six confirmed issuer results existed only in prose.
+
 ## Output
 
 - Local Mavis: `C:\Users\admin\.minimax\projects\coding-shared\research\earnings\YYYY-MM-DD-today.md`
@@ -117,6 +155,11 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
    - **If the US line IS the primary listing** (ARM on Nasdaq; CVE and MFC on NYSE, whose TSX lines
      are the secondary), keep the US ticker and name the other line:
      `ARM (Nasdaq, primary)`, `CVE (NYSE, primary; TSX: CVE.TO)`.
+   - **`stockanalysis.com` is Cloudflare-walled from the Cloud runtime — do not retry it.**
+     Measured 2026-11-12: four fetches (three quote pages and one search) returned 403 and
+     produced nothing. The working substitute is the Yahoo chart call below plus TradingView's
+     `exchange` and `type` columns, and every line published on 2026-11-12 was resolved without it.
+     Keep stockanalysis in the ladder only as "if reachable".
    Exchange suffixes: Tokyo `.T` · XETRA `.DE` · Frankfurt `.F` · SIX `.SW` · LSE `.L` · Paris `.PA`
    · Amsterdam `.AS` · Milan `.MI` · Madrid `.MC` · Lisbon `.LS` · Brussels `.BR` · Copenhagen `.CO`
    · Stockholm `.ST` · Oslo `.OL` · Helsinki `.HE` · Toronto `.TO` · Vancouver `.V` · Sao Paulo `.SA`
@@ -137,7 +180,9 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
       instant, not with the wall clock.
    2. **The stockanalysis.com primary-listing page** — `https://stockanalysis.com/quote/<exch>/<sym>/`
       carries `earningsDate` ("Nov 4, 2026"), `marketCap` in LOCAL currency, and a filings feed that
-      says whether the results are already out, with an EST timestamp.
+      says whether the results are already out, with an EST timestamp. **This source is blocked from
+      the Cloud runtime (403); when it does not answer, Yahoo chart metadata + TradingView's
+      exchange/type columns replace it and the artifact says so.**
    3. **Yahoo quote for the PRIMARY listing** (step 7) for the venue, the local currency and the
       local-currency market cap.
    4. **Consensus**: EarningsWhispers' `Rev est` is already USD even for ADRs and is the cleanest
@@ -165,7 +210,10 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
      "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/earnings_reaction_stats.py" ; do
      curl -sL --max-time 30 -A "Mozilla/5.0" -o "$S.tmp" "$U" 2>/dev/null
      # Require the CAPABILITY marker: an older copy silently lacks the columns.
-     if grep -q 'REACTION_STATS_VERSION' "$S.tmp" 2>/dev/null; then mv -f "$S.tmp" "$S"; break; fi
+     # 2026-11-13: the marker is the Nasdaq prior-result fallback token, so a CACHED OLD COPY
+     # (one without the fallback) cannot win the race and serve a name with no prior result.
+     if grep -q 'REACTION_STATS_NASDAQ_PRIOR_RESULT' "$S.tmp" 2>/dev/null &&
+        grep -q 'REACTION_STATS_VERSION' "$S.tmp" 2>/dev/null; then mv -f "$S.tmp" "$S"; break; fi
      rm -f "$S.tmp"
    done
    if [ ! -s "$S" ]; then echo "reaction-stats: UNAVAILABLE"; else
@@ -207,6 +255,15 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
      **Always select the entry with the latest quarter-end date.** `earnings_reaction_stats.py`
      does this in `select_latest_report()` and `tools/test_earnings_reaction_prior_result.py`
      guards it (it fails against the old behaviour).
+   - **Yahoo's `earningsHistory` is EMPTY for some names, and the Nasdaq table already answers the
+     question.** Measured 2026-11-12: Brookfield Corporation has no Yahoo `earningsHistory` AND no
+     Yahoo `earningsTrend`, so the prior result had to be read by hand from Nasdaq and typed into
+     the artifact. The helper now falls back automatically to the SAME Nasdaq
+     `earnings-surprise` call it already makes for the past report dates — that table carries `eps`
+     (actual), `consensusForecast` (estimate), `percentageSurprise` and `dateReported` (M/D/YYYY),
+     so the fallback costs no extra request. **The artifact names the source per row**
+     (`prior_report_source`: `yahoo_earningsHistory` or `nasdaq_earnings_surprise`); a prior result
+     with no source named is a defect, not a convenience.
    - **`reaction_score` is rounded to 2 decimals and the table is sorted by it DESCENDING.** Ties
      break by market cap descending. A name whose score could not be computed sorts last with
      `n/a` — it is NOT dropped from the roster.
@@ -251,6 +308,19 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
     6. **A covered issuer whose date cannot be confirmed from an issuer-owned page is not
        published.** Say in the notes how many candidates were checked and how many had no
        issuer-confirmed date.
+    7. **A batch calendar beats per-issuer fetching.** One page that lists many issuers' release
+       slots — a wire-service results calendar, an exchange's disclosure calendar, the issuer's own
+       events feed — resolves a whole evening's European wave in ONE request. Measured 2026-11-12:
+       a single dpa-AFX results-calendar page gave the local release slot for six European issuers
+       that then each had to be confirmed individually. Use the batch page to FIND candidates; every
+       published row is still confirmed on its issuer-owned page.
+    8. **A date without a release hour is an undetermined ET day, so it is not published.** If the
+       issuer confirms the DATE but publishes no local announcement TIME, the ET day cannot be
+       fixed — a JST-morning release lands on the previous ET day, an after-close release on the
+       next. Measured 2026-11-12: MUFG, SMFG and Mizuho each confirm Nov 13 in their own calendars
+       and publish no hour. They are NOT published, and the notes say how many were dropped for
+       that reason. (A Japanese issuer's release HOUR comes from the TDnet/TSE disclosure
+       timestamp, not from its IR PDF.)
 
 11. **The $50B floor is a cliff — publish what it excludes.** A hard floor decided by rounding is
     invisible to the reader. Publish the band just under it.
@@ -258,14 +328,37 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
     - **Band:** market cap in `[$40B, $50B)` — the names the floor excluded. `band_low_usd` in the
       front-matter carries the exact number used.
     - **Candidates:** the largest COMMON shares in that band that are NOT S&P 500 members (an S&P
-      500 member is already in the roster, whatever its cap). **Filter out every non-common line**:
-      preferreds, notes, depositary receipts, warrants, rights and units. The TradingView scanner
-      types several of them as `stock` and gives them plain symbols, so the filter is on the
-      DESCRIPTION, not on the symbol: exclude any name whose description contains
-      `Preferred`, `Notes`, `Subordinated`, `Depositary`, `Warrant`, `Right` or `Unit`. Measured
-      2026-11-05: Prudential's "5.625% Junior Subordinated Notes due 2058" and four sibling
-      preferred lines all carry a ~$43.7B cap and would otherwise fill the whole band table with
-      four rows of the same company.
+      500 member is already in the roster, whatever its cap) and that are **US-listed** — a foreign
+      issuer's OTC ordinary line belongs to Pass B, not to the US band. Measured 2026-11-12: the
+      literal reading of the rule put ten FOREIGN ordinary lines on top of the band (PICC Property
+      & Casualty Class H $49.9B, DSV $49.9B, Holcim $49.9B, Swiss Re $49.2B, Commerzbank,
+      Danone, ArcelorMittal, Reckitt, Nokia, Jiangsu Hengrui) — none of them a US name.
+    - **The non-common filter is MECHANICAL, and its denylist is longer than it looks.** The
+      TradingView scanner types several non-common lines as `stock` and gives them plain symbols, so
+      the filter is on the DESCRIPTION, not on the symbol. Exclude a row whose description contains
+      ANY of: `Preferred`, `Pref`, `Pfd`, `Notes`, `Bond`, `Subordinated`, `Subord`, `Depositary`,
+      `Deposit Shs`, `Perp`, `Warrant`, `Right`, `Unit`, `ADR`, `Sponsored`, `Unsponsored`, `LP`,
+      `Trust`, `Income`. Measured 2026-11-12: `Preferred|Notes|Subordinated|Depositary|Warrant|
+      Right|Unit` ALONE let through four junk lines — Fifth Third's `FITB/PI` ("…Non-Cum Perp")
+      and `FITB/PM` ("…Non-Cum Pfd Shs -M") at $49.16B, State Street's `STT/PG` ("Deposit Shs Repr
+      1/4000th Non Cum Perp Pfd") at $47.39B and Prudential's `PRS` ("5.625 % Bonds") at $42.20B.
+      That last one is the very line the 2026-11-05 note below warns about. Filter in code, never
+      by hand.
+    - **ONE source for the whole band table, and it is TradingView's ISSUER-LEVEL market cap.**
+      The candidate set comes from the scanner, so the caps and the ORDER come from the same
+      scanner row — mixing a TradingView candidate set with Yahoo caps is how a $44.5B row and a
+      $41.8B row end up in the wrong order. Yahoo is the cross-check; any spread beyond 5% between
+      the two is flagged in the notes. Measured 2026-11-12: Rocket Lab is $44.5B on Yahoo and
+      $41.81B on TradingView (a 6.4% spread, unflagged in the published artifact) and the two
+      sources rank it three places apart.
+    - **A multi-class issuer gets ONE row, at the issuer-level cap.** TradingView computes the
+      company cap for both classes (HEI and HEI.A both $41.34B); Yahoo computes each class's cap
+      as TOTAL SHARES x THAT class's price, so neither Yahoo figure is the company cap. Measured
+      2026-11-12: HEICO's Yahoo caps read HEI $48.8B and HEI-A $36.5B against a company cap of
+      ~$41.3B — the band table therefore published NEITHER and dropped a legitimate $41.3B NYSE
+      common share (HEICO is not in the S&P 500; it is in the band). **Publish the issuer-level cap
+      and name the other class in the notes — a broken per-symbol cap is a reason to say so, never a
+      reason to drop the row.**
     - **Columns:** `Ticker | Company | Mkt cap | Reports today` — the last column answers the
       question the reader actually has ("does this one matter today?"). Sort by market cap
       descending. Publish 5-10 rows; if fewer exist in the band, publish what exists and say so.
@@ -280,6 +373,19 @@ Lightweight morning reminder — just what's on the earnings calendar today, fil
     `non_us_count`, `reaction_ranked`, `band_low_usd`) so downstream consumers can parse it without
     guessing. `reaction_ranked` is `true`. If any reaction column was degraded, add
     `reaction_degraded: <n>`.
+    From 2026-11-13 add two more keys:
+    - `contract: EARNINGS_REMINDER_V3` — the contract version this artifact was written to.
+    - `coverage_receipt: calendar_rows=<n> s_and_p_500_hits=<n> bigcap_hits=<n>
+      us_roster_rows=<n> band_rows=<n>` — the artifact's own completeness basis:
+      `calendar_rows` = calendar rows scanned on the fire date, `s_and_p_500_hits` = how many of
+      them were S&P 500 constituents, `bigcap_hits` = how many were at or above the $50B floor,
+      `us_roster_rows` = rows published in the US roster, `band_rows` = rows published in the band.
+      **Every hit that is not published is named in the notes with its reason** (a non-US ADR line
+      covered in the non-US tables, an issuer-confirmed date that falls outside the fire day, a name
+      excluded on Rule B). Measured 2026-11-12: the calendar carried 377 rows, 2 of them S&P 500
+      members and 8 at or above the floor, and the roster published 4 — completeness that was
+      re-derived by hand after the run, because the artifact only said "47 standing candidates
+      checked".
 13. **Append audit line** (local Mavis only — skip on Cloud):
    `earnings_reminder target=earnings:{date} watchlist_hits={n} bigcap_hits={n}`
 
@@ -392,7 +498,7 @@ close, so already public at 06:00 ET) and **Constellation Software** released it
 the TSX close on 6 November (16:00 ET, issuer press release) — both belong to the 6 November ET
 day. The local announcement date is never the ET date; convert it.
 
-## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)
+## ARTIFACT FORMAT CONTRACT v3 (EARNINGS_REMINDER_V3)
 
 The artifact is a SCREEN, not a list. Three tables, in this order, then the notes.
 
@@ -412,8 +518,21 @@ The artifact is a SCREEN, not a list. Three tables, in this order, then the note
    issuer-owned page. `us_tradeable` is one of `ADR (US-listed)` / `ADR (OTC)` / `US-listed` /
    `none`.
 3. **`## Just below the line`** — the band just under the market-cap floor that the floor
-   excluded. Columns: `Ticker | Company | Mkt cap | Reports today`.
+   excluded. Columns: `Ticker | Company | Mkt cap | Reports today`. US-listed common shares only,
+   one row per ISSUER at the issuer-level market cap, ONE source for the whole table (the
+   scanner's issuer-level cap; the other source is the cross-check and a spread beyond 5% is
+   flagged in the notes). A broken per-symbol cap is a reason to publish the issuer-level cap and
+   say so — never a reason to drop the row.
 4. **`## Already reported (before 06:00 ET)`** — only when a name printed before the fire.
+   Columns:
+
+   `Ticker | Company | Released | Actual | vs consensus | us_tradeable`
+
+   The `Ticker` cell is the PRIMARY listing with the US line in parentheses
+   (`SIE.DE (SIEGY)`, `015760.KS (KEP)`) — never an OTC headline. `us_tradeable` says what the US
+   line actually is, from the same vocabulary as the non-US table. Measured 2026-11-12: 17 of the
+   18 overnight prints were OTC-only lines and only one was a NYSE ADR, so without this column
+   the reader cannot tell which of them are tradeable in the session the brief is written for.
 5. **`## Notes`**, **`## Source health`**, **`## Rules applied`**.
 
 **The three tables must not overlap.** A non-US issuer is published in ONE of them, never in two.
@@ -423,7 +542,14 @@ is a separate universe, not an extension of the roster.
 The front-matter carries `date`, `cron`, `fire_time_et`, `snapshot_et`, `source`,
 `primary_source`, `status`, `pending_count`, `already_reported_count`, `non_us_count`,
 `reaction_ranked: true` and `band_low_usd`; add `reaction_degraded: <n>` when a reaction column
-could not be computed for exactly `n` rows.
+could not be computed for exactly `n` rows. **From 2026-11-13 also carry `contract:
+EARNINGS_REMINDER_V3` and a `coverage_receipt`** (step 12) — the artifact states its own
+completeness basis and the checker proves the receipt matches the published tables.
+
+**Versioning.** Artifacts published before 2026-11-13 are checked under v2 and stay valid — a
+contract change must not retroactively fail an artifact that was legal when it was written. The
+checker applies the v3 rules (the coverage receipt, the already-reported tradeability column) to
+any artifact dated 2026-11-13 or later, or to any artifact that declares the contract key.
 
 **Verify the artifact before pushing.** The checker is a separate implementation of this contract:
 
@@ -454,6 +580,8 @@ already_reported_count: 3
 non_us_count: 2
 reaction_ranked: true
 band_low_usd: 40000000000
+contract: EARNINGS_REMINDER_V3
+coverage_receipt: calendar_rows=147 s_and_p_500_hits=3 bigcap_hits=7 us_roster_rows=3 band_rows=2
 ---
 
 # Earnings - Fri 2026-11-06
@@ -482,9 +610,9 @@ band_low_usd: 40000000000
 
 ## Already reported (before 06:00 ET)
 
-| Ticker | Company | Released | Actual | vs consensus |
-|---|---|---|---|---|
-| NOVO-B.CO (NVO) | Novo Nordisk A/S | ~01:00 ET | Q3 rev $12.19B, adj EPS $0.89 | beat |
+| Ticker | Company | Released | Actual | vs consensus | us_tradeable |
+|---|---|---|---|---|---|
+| NOVO-B.CO (NVO) | Novo Nordisk A/S | ~01:00 ET | Q3 rev $12.19B, adj EPS $0.89 | beat | ADR (US-listed) |
 
 ## Notes
 
@@ -533,6 +661,17 @@ band_low_usd: 40000000000
   one is not repeated in the other.
 - **The market-cap floor is published with what it excludes.** The band table names the names the
   floor kept out, and a row inside the floor by less than $0.5B is flagged `boundary_case`.
+- **The band is US-listed, one row per issuer, one source.** Foreign ordinary lines belong to Pass
+  B, non-common lines are filtered mechanically on the description, and the caps and the order come
+  from the same scanner row. A broken per-symbol cap is published as an issuer-level cap with a
+  note — never a dropped row.
+- **Every already-reported row carries its US line's tradeability** (`us_tradeable`). A reader must
+  be able to tell which overnight prints are tradeable in the session the brief is written for.
+- **The artifact states its own completeness basis.** The `coverage_receipt` names how many calendar
+  rows were scanned, how many were index members, how many cleared the floor, and how many rows
+  each table publishes — and every hit that is not published is named in the notes with its reason.
+- **A candidate gets two fetches, and the brief ships by 07:15 ET.** A brief that arrives on time
+  with the names that matter beats a complete one that arrives at 09:15.
 
 ## Source facts (measured 2026-11-04 — re-verify before relying on them)
 
@@ -642,6 +781,33 @@ band_low_usd: 40000000000
   constituent list (or an index-membership database) — `HEI` and `WCN` are both OUT of the index
   (the latter confirmed twice, by the Wikipedia list and by an index-membership database dated
   23 October 2026) and both belong in the band table.
+
+## Traps measured on the 2026-11-12 fire — re-verify, but they are not opinions
+
+- **A US issuer's release time can be a GENERIC after-close stamp on TradingView.** Measured
+  2026-11-12: AMAT carried 16:01 ET and NU carried 16:00 ET, while EarningsWhispers carried 16:00
+  and 17:40. Both TradingView stamps are placeholders (16:00/16:05 ET for every US name), and both
+  were wrong. **TradingView is a DISCOVERY instrument: every published time comes from
+  EarningsWhispers (US names) or the issuer (everything else), and the artifact says which.**
+- **A TradingView next-release stamp can be STALE, and a name can drop out of the roster because
+  of it.** Measured 2026-11-12: BN's `earnings_release_next_date` read 2027-02-11 while Brookfield's
+  own IR page confirmed a Nov 12 print at about 7:00 a.m. ET. A roster built on TradingView stamps
+  alone would have MISSED Brookfield. Cross-check every published name against the issuer.
+- **A TV scan of 20,000 rows can come back short, and the missing rows are the cap-0 tail.**
+  Measured 2026-11-12: the `america` sweep returned 20,186 of 20,345 rows, and every missing row
+  sat in the cap-0 tail of the market-cap-sorted response — below every threshold the band and the
+  floor tests use, so no threshold test was affected. Say so in the source-health notes rather than
+  implying a clean full-universe pull.
+- **A company page can carry a DIFFERENT report time from the calendar page.** Measured
+  2026-11-12: NU and BN are not on EarningsWhispers' Nov 12 calendar page at all, but their
+  company pages carry a Nov 12 slot. A roster built only from the calendar page loses them.
+- **A "not measured" consensus cell is a feature.** Measured 2026-11-12: five of the eighteen
+  overnight prints had a real like-for-like consensus comparison (Hon Hai, Merck KGaA, Sonova,
+  Telefonica, KEPCO) and each names its source; the rest read "not measured" rather than carrying
+  a number borrowed from a different quarter.
+- **The second source's number is often the one the reader should see.** Measured 2026-11-12:
+  Telefonica cut its revenue-growth target while raising three others, and KEPCO missed the
+  Yonhap Infomax consensus by 47% — a headline that a single "revenue grew" cell would have lost.
 
 ## Out of scope
 

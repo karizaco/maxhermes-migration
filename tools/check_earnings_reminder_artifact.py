@@ -3,10 +3,15 @@
 check_earnings_reminder_artifact.py — independent verifier for cron #19's artifact.
 
 The routine renders the artifact; this checks that the artifact on disk obeys the
-ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2) in
+ARTIFACT FORMAT CONTRACT v3 (EARNINGS_REMINDER_V3) in
 `cloud-prompts/skills/earnings-reminder/SKILL.md`. It is deliberately a SEPARATE
 implementation: the renderer is the producer, this is the verifier, and neither
 imports the other.
+
+The v3 rules (the coverage receipt and the already-reported tradeability column) apply to an
+artifact dated 2026-11-13 or later, or to one that declares `contract: EARNINGS_REMINDER_V3`.
+Artifacts published under v2 stay valid: a contract change must not retroactively fail an
+artifact that was legal when it was written.
 
 Checks (each failure is named and the tool exits 1):
 
@@ -23,6 +28,11 @@ Checks (each failure is named and the tool exits 1):
   BAND         the "just below the line" table exists and every row is inside the band
   BOUNDARY     a roster row inside the market-cap floor by less than the margin is
                flagged `boundary_case`; and only such a row may carry that flag
+  COVERAGE     (v3) the front-matter carries a `coverage_receipt` whose counts match the
+               published tables - the artifact states its own completeness basis
+  ALREADY      (v3) every "Already reported" row carries a `us_tradeable` cell from the
+               allowed vocabulary, and its ticker cell is the PRIMARY listing with the US
+               line in parentheses (never an OTC headline)
 
 Usage:
     python3 tools/check_earnings_reminder_artifact.py earnings/2026-11-06-reminders.md
@@ -35,7 +45,17 @@ import os
 import re
 import sys
 
-CONTRACT = "EARNINGS_REMINDER_V2"
+CONTRACT = "EARNINGS_REMINDER_V3"
+
+# The v3 rules (coverage receipt + the already-reported tradeability column) apply to an
+# artifact dated on or after this day, or to any artifact that declares
+# `contract: EARNINGS_REMINDER_V3` in its front-matter. Artifacts published under v2 stay
+# valid - a contract change must not retroactively fail an artifact that was legal when it
+# was written.
+V3_FROM_DATE = "2026-11-13"
+
+COVERAGE_KEYS = ["calendar_rows", "s_and_p_500_hits", "bigcap_hits",
+                 "us_roster_rows", "band_rows"]
 
 REQUIRED_SECTIONS = [
     "Big S&P 500 today",
@@ -107,6 +127,19 @@ def parse_num(cell):
         return float(c)
     except ValueError:
         return None
+
+
+def parse_coverage(value):
+    """'calendar_rows=377 s_and_p_500_hits=2 ...' -> {key: int}."""
+    out = {}
+    for part in (value or "").split():
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        n = parse_num(v)
+        if n is not None:
+            out[k.strip()] = int(n)
+    return out
 
 
 def split_row(line):
@@ -352,6 +385,64 @@ def check(path):
             if flagged and not marginal:
                 failures.append(f"BOUNDARY: row {i + 1} is flagged `boundary_case` but caps at "
                                 f"${cap / 1e9:.1f}B, which is more than $0.5B from the floor")
+
+    # ------------------------------------------------------ v3: COVERAGE + ALREADY
+    date = fm.get("date", "")
+    iso = re.match(r"^\d{4}-\d{2}-\d{2}$", date or "")
+    declared = fm.get("contract", "").strip().upper()
+    v3 = declared.endswith("V3") or bool(iso and date >= V3_FROM_DATE)
+
+    if v3:
+        # ---- COVERAGE: the artifact states its own completeness basis, and it matches the tables
+        cov_raw = fm.get("coverage_receipt", "")
+        cov = parse_coverage(cov_raw)
+        missing = [k for k in COVERAGE_KEYS if k not in cov]
+        if missing:
+            failures.append(f"FRONTMATTER: `coverage_receipt` is missing {missing} "
+                            f"(got {cov_raw!r}; expected "
+                            f"'{' '.join(k + '=<n>' for k in COVERAGE_KEYS)}')")
+        else:
+            if cov["us_roster_rows"] != len(us_rows):
+                failures.append(f"COVERAGE: coverage_receipt says us_roster_rows="
+                                f"{cov['us_roster_rows']} but the US roster publishes "
+                                f"{len(us_rows)} rows")
+            if cov["band_rows"] != len(band_rows):
+                failures.append(f"COVERAGE: coverage_receipt says band_rows="
+                                f"{cov['band_rows']} but the band table publishes "
+                                f"{len(band_rows)} rows")
+            if cov["calendar_rows"] < cov["s_and_p_500_hits"]:
+                failures.append("COVERAGE: calendar_rows is smaller than s_and_p_500_hits")
+            if cov["us_roster_rows"] > cov["calendar_rows"]:
+                failures.append("COVERAGE: more roster rows than calendar rows scanned")
+
+        # ---- ALREADY: every printed row carries its US line's tradeability and its PRIMARY ticker
+        _, ar_body = find_section(secs, "Already reported")
+        ar_header, ar_rows = parse_table(ar_body or [])
+        if ar_rows:
+            ar_idx = match_columns(ar_header, {
+                "ticker": COLUMN_PATTERNS["ticker"],
+                "us_tradeable": PASSB_PATTERNS["us_tradeable"]})
+            if "us_tradeable" not in ar_idx:
+                failures.append("ALREADY: the 'Already reported' table has no `us_tradeable` "
+                                f"column (header: {ar_header})")
+            for i, row in enumerate(ar_rows):
+                tv = ""
+                if "us_tradeable" in ar_idx and ar_idx["us_tradeable"] < len(row):
+                    tv = strip_md(row[ar_idx["us_tradeable"]])
+                    if not tv:
+                        failures.append(f"ALREADY: row {i + 1} has an empty `us_tradeable` cell")
+                    elif tv not in US_TRADEABLE_VOCAB:
+                        failures.append(f"ALREADY: row {i + 1} has us_tradeable={tv!r}, which is "
+                                        f"not in {sorted(US_TRADEABLE_VOCAB)}")
+                if "ticker" in ar_idx and ar_idx["ticker"] < len(row):
+                    cell = strip_md(row[ar_idx["ticker"]])
+                    m = re.match(r"^(\S+)(?:\s+\(([^()]+)\))?$", cell)
+                    if not m:
+                        failures.append(f"ALREADY: row {i + 1} ticker cell {cell!r} is neither "
+                                        "'PRIMARY' nor 'PRIMARY (US_LINE)'")
+                    elif m.group(2) is None and tv and tv != "none":
+                        failures.append(f"ALREADY: row {i + 1} ({cell}) names no US line in "
+                                        f"parentheses but its us_tradeable is {tv!r}")
 
     return failures
 
