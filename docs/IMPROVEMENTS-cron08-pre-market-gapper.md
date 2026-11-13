@@ -954,3 +954,45 @@ what a degraded run owes the reader.
    must not sink the Focus book. The rule is now: the engine's `market_ladder` decides
    (an empty ladder on both sides is fine; rows on one side and not the other is a
    failure).
+
+## 2026-11-13 — the re-pull wave crashed on an undefined attribute, so the mandatory second wave never ran
+
+**Symptom.** `python3 tools/premarket_pull.py --re-pull --out-dir <D> --re-pull-min-gap 2 --max-lag-min 45`
+died with `AttributeError: 'Namespace' object has no attribute 'no_ladder'` at
+`premarket_pull.py:1155`:
+
+```python
+if args.ladder and not args.no_ladder:      # args.no_ladder does not exist
+```
+
+`--no-ladder` is declared with `dest="ladder"`, so `args.ladder` is the only attribute that
+exists. The `AttributeError` fired **before** the wave merged a single tape, so the mandatory
+RE-PULL WAVE (SKILL §6.6) was silently skipped on every fire — the run still produced an
+artifact, which is exactly how a broken step stays invisible.
+
+**Fix (landed).** One line — `if args.ladder:` — in
+`cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py`
+(commit `fd4f13c`, run-time fetched, so the next fire has it with no `cron_update`).
+
+**Why it is not cosmetic.** The burst of pulls protects against a ROTATING cache; only a wave
+spread across the run protects against a tape that is simply OLD (a stable cache returns the
+same vintage however many times it is asked). On this fire the wave moved **AAON +2.27% →
++1.84%** and **HROW +6.01% → +3.50%** — two verdicts changed because the wave ran at all
+(HROW went from `BORDERLINE_THIN` on a 6% print to `BORDERLINE_INTRADAY` on a 3.5% tape that
+had faded).
+
+**The general rule.** The run-time fetch checks a **capability marker** (`premarket-pull-v2`),
+which proves the script is the right generation — it does not prove that every *path* in it
+runs. A path that was never exercised by a fire is a path that can be broken. The re-pull wave
+is the path most exposed to this, because on most fires it re-pulls nothing and the defect
+never changes an outcome.
+
+**Also checked on this fire (no action needed).** `_fetch_tv()` returns a **2-tuple**
+(`stocks, proxies`) and the call site unpacks **2** targets — the earlier report of a 7-key
+dict on `main` did not reproduce on the file fetched on 2026-11-13; the call site is
+`tv_rows, proxies = (_fetch_tv(syms) if args.tv else ({}, {}))`.
+
+**This fire's verified result.** Strict resolver failed on H3 (cron #09's 2026-11-12 sweep never
+published) → degraded resolver → pull → re-pull wave → renderer → checker:
+**34/34 contract checks passed**, `flagged: 0`, `scanned: 12`, `universe_date = 2026-11-11`,
+`ref_close_date = 2026-11-12`, `universe_stale` published in `## Flags` and in the TL;DR caveat.
