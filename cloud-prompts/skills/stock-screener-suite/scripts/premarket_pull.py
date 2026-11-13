@@ -1146,6 +1146,15 @@ def _do_repull(args, out_dir: Path) -> int:
             rec["flag_reason"] = reason
             rec["flagged"] = verdict == "FLAGGED"
 
+    # the LADDER is a snapshot too - refresh it in the same wave (2 requests)
+    if args.ladder and not args.no_ladder:
+        fresh_ladder = _fetch_market_ladder(args.gap_trigger)
+        if fresh_ladder:
+            payload["market_ladder"] = fresh_ladder
+    # and the driver classes, because a merged gap can change them
+    _classify_drivers(records, payload.get("proxies") or {}, payload.get("crypto_proxy"),
+                      payload.get("catalysts") or {}, payload.get("market_ladder") or [])
+
     waves = payload.get("tape_waves") or []
     waves.append({"wave": 2, "at_et": _now_et().strftime("%H:%M:%S ET"),
                   "symbols": len(targets), "targets": targets})
@@ -1304,6 +1313,7 @@ def main(argv: list[str] | None = None) -> int:
                         "close": v.get("close")} for k, v in proxies.items()},
         "crypto_proxy": crypto,
         "market_ladder": ladder,
+        "catalysts": catalysts,
         "records": records,
     }
     marker = _write_payload(payload, out_dir, args, syms)
