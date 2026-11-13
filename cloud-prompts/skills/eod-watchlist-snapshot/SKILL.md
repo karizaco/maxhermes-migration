@@ -299,6 +299,44 @@ Group Ltd Sponsored American Depositary Receipt Repr 2 Shs" against the AU line'
 Ltd", so strip the depositary/class suffix and compare the issuer name. A name that matches no
 US line is `none`.
 
+## The venue-collapse rule — the PRIMARY venue's line wins, and the change field must reconcile (2026-11-13)
+
+**The collapse picks the issuer's PRIMARY listing venue's line, not the busiest venue's.**
+Measured 2026-11-13: picking the busiest venue published `NEO:QBR.A` (Quebecor Class A, Cboe
+Canada) at C$74 with a **+105.56%** change, while the primary `TSX:QBR.A` closed at C$80,
++2.83%. The NEO line's own arithmetic (`close - close/(1 + change/100) = change_abs`, i.e. 38 off
+a C$74 close) implies a prior close of **C$36** — a price Quebecor did not trade at for months.
+The line's change field was stale and the stock never moved 105% that day. A file that looked
+perfect carried a fabricated move.
+
+**The test that catches it.** A line's **implied prior close** — `close / (1 + change/100)` —
+must reconcile with the **prior session's close for the same instrument**. The lookup key is the
+**symbol including its share-class suffix** (`BCE.PR.B`, not `BCE`), taken from the primary
+venue's line where the symbol was quoted on several venues. If the two differ by more than 5%,
+the line's print is not this session's: it is a `stale_venue_print`, and the issuer's primary
+venue line is published instead.
+
+**The corrected collapse order.**
+1. Primary venue first, then a reported cap, then volume, then cap — the busiest venue is not
+   the authoritative venue. Per region: au ASX; jp TSE, NAG, FSE, SAPSE; tw TWSE, TPEX; ca TSX,
+   TSXV, CSE, NEO; eu-de XETR, FWB, LSX, LS, GETTEX, DUS, MUN, SWB, TRADEGATE, HAM, HAN; the
+   single-venue regions keep their venue.
+2. Drop a line whose implied prior does not reconcile with the prior session's close, and count
+   it in the manifest's `off_official_rows` — it is the SAME unique instrument as the published
+   line, so it is NOT an `_excluded.json` row (that would break
+   `unique_instruments == written + sum(excluded)`).
+3. If EVERY line of a group is off-session, exclude the group once with reason
+   `stale_venue_print`.
+
+**Two traps on the way.**
+- **The prior-close lookup is per SYMBOL, not per issuer root.** Comparing a preferred line's
+  implied prior with the COMMON line's prior close flags every Canadian preferred as stale —
+  measured 2026-11-13: 183 false exclusions, and the Canadian file fell from 621 to 475 written
+  rows against a prior session of 631. `TSX:BCE.PR.B` is compared with `TSX:BCE.PR.B`.
+- **A carried-over close is NOT a stale print.** A row whose close EQUALS the prior close is a
+  carry-over (disclosed in `_carryover.json`), even when its change field is a leftover; the
+  implied-prior test applies only to rows whose close has MOVED.
+
 ## The venue-official price rule — the exchange's own print wins
 
 **Where an exchange's own official auction/close price is available and differs from the
