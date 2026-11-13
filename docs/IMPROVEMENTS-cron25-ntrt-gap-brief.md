@@ -1181,3 +1181,165 @@ at the instant the brief publishes.* That is now §2/§3/§4/§10 of the skill.
   names, and the defect is the *instant*, not the threshold.
 
 ---
+
+---
+
+# Round 2 (2026-11-13) — the tape's breadth, the pull clock, the gate's fourth leg, and 08:45 ET
+
+Five improvements to cron #25, landed in one commit (`0dd9110`) plus the live deploy. Everything
+in this section was **measured**, not reasoned about, and every measurement is reproducible from
+the repo's own tools.
+
+## 1. The pre-open tape was naming YESTERDAY's movers
+
+`cloud-prompts/_shared/preopen_capture.py` took its candidates from Yahoo's `top_movers`, a
+predefined screener over the **last completed regular session**. Before the open, that session
+is yesterday, so the tape was a record of yesterday's tape.
+
+| measurement | value |
+|---|---|
+| 2026-11-10 08:30 tape | 49 rows; covered **6 of the 50** names the brief published |
+| 2026-11-12 08:30 tape | covered **21 of 693** screen names (3.0%); **9 of 21** actionable names |
+| tape row count 11-04 → 11-12 | 678 → 700 → 849 → **47** → 49 → 47 → 47 |
+
+The fix: the candidate source is now the **current session's pre-market band** — every US stock
+trading more than ±2.5% pre-market, pulled from the TradingView scanner in **two disjoint
+halves** (gainers desc, decliners asc), the same shape as the movers scan's two halves, so no
+record can carry two prices. The movers scan is kept: it still supplies yesterday's movers,
+which is where a name being watched *before* it gaps comes from.
+
+Measured live on 2026-11-13 at 07:57 ET: the band held **458 names** (271 up / 187 down, no
+truncated half) and the tape carried **146 rows / 130 priced** — against 47 before.
+
+**The floor.** A pre-market print below **25,000 shares** is a quote, not a market, and it is
+dropped. It is a SHARE count, not a dollar notional, for two measured reasons: a share count is
+monotone in time (a name that printed 25,000 shares by 08:30 has printed more by 09:22, while a
+notional floor can be crossed by a falling price), and it is the **same number cron #25's gate
+uses**, so the tape and the brief speak one language.
+
+A $100K **notional** floor was measured and **rejected**: it kept 72 of 458 band names and
+dropped **CRIS (−10.6% on 39,053 shares, $19,956)** — a real mover on a cheap share, and one of
+the names cron #25 has to publish. The 25,000-share floor keeps 118 of the same 458 and keeps
+CRIS.
+
+## 2. SKILL §11 read the tape's schema wrong
+
+§11 said `ref` was "the source URL". It is not: **`ref` is prose evidence** — the search-result
+dump behind the row's `why`. Measured across six tapes (284 rows): `ref` contains `http` in **2**
+rows and is a URL in **0**; the citable article URL is **`news_url`**, present on **8** of 284.
+
+The usability rule is now explicit and measured: a row is usable when **`conf != low` AND `why`
+is present** (113 rows carry a `why`, 93 have `conf != low`, and there is **no** row with
+`conf != low` and no `why`). `conf: low` or no `why` ⇒ the row is a lead, and the driver must
+come from the run's own lookup.
+
+The fetch ladder also tries the **local** `/workspace/preopen-feed/{date}-0830.jsonl` FIRST: the
+08:30 tape reaches the outputs repo between 08:34 and 08:57 ET (once at 10:19), and cron #25 now
+fires at 08:45 — the local path is the only one reliably there when the brief starts.
+
+## 3. The pull clock is pinned
+
+| pull | when | what it is for |
+|---|---|---|
+| research pull | ~09:00 ET | selects names to research. **Its numbers are never published.** |
+| **published pull** | **~09:22 ET** | **the numbers the artifact publishes** |
+| delta pull | ~09:27 ET | **flags only** (§12) — never a published number |
+
+Measured on the 2026-11-12 fire: the brief published a 09:04 pull and pushed at **09:32** — 28
+minutes stale, and two minutes after the open. The mode banner now states the **published**
+pull's clock.
+
+## 4. The gate gains a fourth leg, and its ADV denominator is session-normalised
+
+The ADV leg asks "is this print heavy?", and the denominator has to be the ADV **as prorated to
+the pre-market session** — the pre-market session is **04:00–09:30 ET (330 min)** and the
+published pull is pinned at **09:22 ET**, so 322 of the 330 minutes have elapsed and the bar is
+`5.0% × 322/330 =` **4.8788%** of the raw 30-day ADV. The published `pct_of_adv` column stays
+**RAW**, so every earlier brief's number keeps its meaning and the checker compares like with like.
+
+The fourth leg is an **absolute pre-market share floor of 25,000 shares**. Measured on the
+2026-11-12 screen (693 names, 113 clearing 5% of ADV): the floor removes **37** of those 113 and
+**not one of them had a sourced catalyst** — they were quote prints. It costs exactly **one**
+actionable name (**SMHI**, 6,711 shares, $61.5K notional, no catalyst) and it re-admits
+**AXTI** (4.941% of ADV, 530,232 shares), which the old 5.000% bar dropped on the fourth
+decimal. Net on that screen: 21 names before, 21 after, with a better composition.
+
+A 100,000-share floor was measured and **rejected**: it demotes **PSFE** (−26.1% on a real
+$247.5M impairment), **SSYS** and **ALLT**, all of which have sourced catalysts.
+
+**The delivered 2026-11-12 artifact does not satisfy the new contract**, and that is correct: it
+publishes SMHI as actionable (6,711 shares) and omits AXTI. It is an artifact of record and is
+not rewritten. The checker's own output on it: 2 of 17 failed — `GATE` (SMHI) and `ALSO_CLEARED`
+(AXTI).
+
+**Why the bar is a constant and not a function of the banner clock.** The ADV leg was measured as
+clock-dependent: **12 names crossed the 5% bar between the 09:04 and the 09:24 pulls** on
+2026-11-12 (AU, AXTI and SMCI newly clearing it). Four scalings were measured for the same
+629-name common set — raw 12 crossings, market-volume-accrual 11, linear-session 10,
+screen-composition 17 (worse). A bar that moves with the pull minute also makes the contract
+depend on a string in the artifact's banner, which breaks the delivered artifacts. So the bar is
+pinned to the canonical 09:22 ET pull and the CHECKER uses that constant; the pull clock is
+pinned to 09:22 as well, so the rule and the clock agree.
+
+## 5. Cron #25 fires at 08:45 ET
+
+`0 9 * * 1-5` → `45 8 * * 1-5`, in the prompt, `tools/deploy_prompts.py` and
+`tools/schedule-ground-truth.json`. Deployed live with `cron_update` (schedule + timezone +
+session resent together — a prompt-only update silently resets the timezone to Etc/GMT-7).
+`next_run` moved from 09:00 ET to **08:45 ET**. The 08:45 fire is what buys the 09:22 published
+pull.
+
+**Deployed prompt verified byte-identical** to the repo file: 16,863 B,
+sha256 `4fbf2299a4595e80d6228142ca04ab8a981f06d26fab3bf067c9505b658413b1`,
+`prompt drift: 0 of 9 deployed prompts differ from the repo`. It took **three deploys** to get
+there: the first two pastes re-wrapped two lines and added a trailing newline — the exact drift
+`tools/prompt_bytes.py` exists to catch, and the reason it is a hash and not an eyeball.
+
+## The #92 contract test was green for the WRONG reason
+
+Found while making the capture's new behaviour testable, and it is the most important thing in
+this round.
+
+`tools/test_preopen_checkpoint_contract.py` called its mutators as `mutator(tape, digest, repo)`
+while **thirty of them were defined as `(repo, tape, digest)` or `(digest, tape, repo)`**. So the
+mutation edited the wrong file, `mutate()` raised, the exception was recorded as "the checker
+caught it", and the case went **green without the checker ever running**. Verified against the
+original file: **31/31 cases "passed", 18 of them vacuously.**
+
+Three fixes:
+1. Every mutator now takes `(tape, digest, repo)` — one order, the order the caller uses.
+2. A mutation that cannot be applied is a **TEST failure**, not a catch. (The version-marker
+   mutation also targeted `CAPTURE_SCRIPT_VERSION: 2026-11-11.1` while the script carried
+   `2026-11-11.2` — a literal version string in a test is a false PASS waiting to happen. It now
+   derives its target from the file.)
+3. The checker now asserts the things that were silently unasserted: the board's **|%| order**
+   (the check could never fire — `float("+40.00%")` raises, so every row read −1.0 and the list
+   was "sorted"), the **slot set**, the staleness **call** (not its name), the **share floor**
+   (a real number, not zero) and the **band call**.
+
+Result: **33/33 cases, every one of them a real test.** New cases: no band call, no share floor.
+
+## What a run must now do (the contract, v5)
+
+| file | change |
+|---|---|
+| `cloud-prompts/_shared/preopen_capture.py` | band as the candidate source; 25,000-share quote floor; `CAPTURE_SCRIPT_VERSION 2026-11-13.1` |
+| `cloud-prompts/_shared/preopen-capture.md` | the band, the floor, `PROCEDURE_VERSION 2026-11-13.1` |
+| `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` | contract v4 → **v5**; §2 the four legs; §7 the pinned pull clock; §11 the tape's real schema + the local path; §12 the 09:27 delta; the checker marker `NTRT_CONTRACT_CHECK_V3` |
+| `tools/check_ntrt_artifact.py` | `ntrt-artifact-v5`; the gate's fourth leg and the session-normalised bar; marker V3 |
+| `tools/test_ntrt_contract.py` | two new fault-injection cases (the share floor; the session bar) |
+| `tools/check_preopen_checkpoint.py` | the band, the floor, the order, the slot set, the staleness call |
+| `tools/test_preopen_checkpoint_contract.py` | one mutator order; a failed mutation is a failure; two new cases |
+| `cloud-prompts/cron-prompts/25-ntrt-gap-brief-daily.md` | the schedule line |
+| `tools/deploy_prompts.py`, `tools/schedule-ground-truth.json` | `45 8 * * 1-5` |
+
+## Do-not list
+
+- Do NOT rewrite the delivered 2026-11-12 artifact to the v5 gate — it is an artifact of record.
+- Do NOT go back to a dollar-notional floor on the tape: it deletes real movers (CRIS).
+- Do NOT make the gate's bar a function of the banner clock — the checker's verdict must not
+  depend on a string in the artifact, and the delivered artifacts must stay verifiable.
+- Do NOT trust a green contract test that has never been observed FAILING: the #92 suite was
+  green for the wrong reason, and the fix is in the test's own mechanics.
+
+---
