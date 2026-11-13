@@ -73,6 +73,99 @@ errors: 0
 
 ---
 
+## STEP 1 — ONE COMMAND, ONE PULL (the helpers do the arithmetic)
+
+The refresh does no research: it re-pulls one screen and reports what moved. The pull, the
+session-state test and the artifact build are TOOLS, not instructions, so every number in the
+artifact is COMPUTED by one script instead of typed by the agent.
+
+**Fetch them.** The capability marker is MANDATORY, not decoration: an older copy of a helper
+is still published and it silently ignores unknown flags, so without the marker a stale helper
+can win and the run publishes a hand-typed artifact that nothing checked. The contents API is
+authoritative and is not CDN-cached, so it is tried FIRST.
+
+```bash
+fetch_helper() {   # $1 = repo path, $2 = local path, $3 = capability marker
+  for U in \
+    "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$1?ref=main" \
+    "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/$1" \
+    "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/$1" ; do
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$2.tmp" "$U" 2>/dev/null
+    if [ -s "$2.tmp" ] && grep -q "$3" "$2.tmp" 2>/dev/null; then mv -f "$2.tmp" "$2"; return 0; fi
+    rm -f "$2.tmp"
+  done
+  return 1
+}
+fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v1 \
+  || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
+fetch_helper tools/session_state.py /workspace/session_state.py session-state-v1 \
+  || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v1 \
+  || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
+```
+
+**Then, in this order.**
+
+1. **THE PULL — one command.** `brief26_pull.py` is the same validated pull cron #26 uses: the
+   ±3% band on both sides with the scanner's own `totalCount` asserted, the market cap
+   reconciled with the CORROBORATED source, and the result written as one merged table.
+
+   ```bash
+   python3 /workspace/brief26_pull.py --date {date} --out /workspace/merged.json
+   ```
+
+   If the helper is unavailable, use the pull spec in `## The pull is a CONTRACT, not a
+   suggestion` below and write the same document shape.
+
+2. **THE SESSION STATE — is the regular session open?** The DATA decides, not the clock: this
+   environment's `America/New_York` has no DST (November is EST, UTC-5), so a hardcoded UTC-4
+   offset reads an hour late and a wall-clock test calls a 09:24 pull a 10:24 pull.
+
+   ```bash
+   python3 /workspace/session_state.py --merged /workspace/merged.json \
+     --morning-csv daily-briefs/{date}-pre-market.csv --out /workspace/state.json
+   ```
+
+   exit **0 = PRE-OPEN** (the normal case — `live_*` BLANK), **3 = OPEN** (take the LATE-PULL
+   branch: `pull_late: true` and `market_open_at_pull: true`), **4 = INDETERMINATE** (do not
+   guess — say so once in Source health).
+
+3. **THE BUILD — the artifact, from the frozen pull.**
+
+   ```bash
+   python3 /workspace/premarket_refresh_build.py \
+     --merged /workspace/merged.json \
+     --morning-md daily-briefs/{date}-pre-market.md \
+     --morning-csv daily-briefs/{date}-pre-market.csv \
+     --slots /workspace/slots.json \
+     --date {date} --session-state PRE-OPEN --out-dir daily-briefs
+   ```
+
+   The fire time and the snapshot clock are DERIVED (the fire is this routine's 09:20 ET slot;
+   the snapshot comes from the pull's own `pulled_at_et`) — **never hand-type a clock.**
+
+   **The slots file is the run's JUDGEMENT** — the only thing the agent supplies. It carries the
+   Driver map, read from the catalyst the 08:30 brief already sourced, PER NAME, and the risk
+   and watch picks:
+
+   ```json
+   {"drivers": {"TTEK": {"class": "EARNINGS-RECONFIRM", "anchored": true,
+                         "note": "adjusted EPS $0.49 against $0.47 expected, net revenue $1.15bn"}},
+    "setup": {"ticker": "TTEK"},
+    "risk":  {"ticker": "NVDA", "clause": "the AI complex's de-rating is accelerating"},
+    "watch": {"ticker": "KYTX", "clause": "the morning brief's own setup has collapsed"}}
+   ```
+
+   The builder enforces the vocabulary and the baseline: a class outside the fixed vocabulary
+   is published as `NONE` and reported; a name the morning CSV marks `has_news = no` is `NONE`
+   whatever the map says; a name the morning CSV does not carry is `NONE` — the refresh
+   sources no catalysts of its own. The setup slot is computed by the ladder; if the slots file
+   names a different one the run's pick wins, and the deviation is printed on stderr and
+   published in Source health.
+
+---
+
 ## What this produces
 
 `daily-briefs/{date}-pre-market-refresh.md` — a short addendum:
@@ -154,6 +247,15 @@ open and the reader needs the decision first.
   list was written from ONE session's evidence (2026-11-04). A name class may be ADDED to the
   eligible set when a second session shows an anchored gap of that class running — but a class
   may not be REMOVED, and no class may be invented at run time to fill the slot.
+  **The slot is a LONG on a GAP-UP.** Line 1's trigger is the PM high — the level that must
+  break for the gap to extend — so the candidates are the gainers. A rung-1 class sitting on a
+  gap-DOWN name is not a setup: its gap extends downward, there is no PM high to break, and if
+  the gap has already given back its pre-market range there is no gap left to extend.
+  Measured 2026-11-12: **CRWV** was the only name on the tape with a rung-1 class
+  (`EARNINGS-RAISE+ANCHORED` — a beat on $3.66bn of revenue, a $132.5bn backlog and FY2026
+  revenue guidance raised to $13.0-13.3bn) and it is a **-14.37% gap-down at Hold 6%**, 94% of
+  its range given back. The slot went to **TTEK**, the only anchored gainer whose gap was still
+  holding (Hold 100%), and the CRWV reasoning is published in Source health rather than buried.
 - Line 1's trigger level is the name's **PM high** (the level that must break for the gap to
   extend) and its invalidation is the name's prior close, written with its side.
 - The pm %ADV band is NOT part of this gate. It is a descriptor of the print, not a predictor —
@@ -351,9 +453,15 @@ count for corporate actions: measured 2026-11-09 it reported **$143,016,256** fo
 one-for-80 ADS reverse split and an ADS ratio change, pairing the POST-split price with the
 PRE-split share count — **87× too high**; the real cap sat in the $0.5M–$1.9M range, so a
 sub-$2M shell topped the headline gap table over Gate B. The error runs BOTH ways (a count that
-predates a later issuance makes the cap too LOW). **Reconcile the cap for every name whose
-scanner cap is near a gate boundary ($100M for Gate B, $200M for Gate A) before it tops a
-headline table**, and publish the reconciled figure.
+predates a later issuance makes the cap too LOW). **Take the cap from the MORNING BRIEF's CSV —
+it is already reconciled and corroborated, and re-sweeping it here costs a metered bridge call
+per name for the same answer.** The brief skill's Step 2b carries the corrected rule
+(**published 2026-11-13**: publish the **CORROBORATED** cap — `shares × close` from the source
+whose share count is corroborated — and **NOT the median of the caps**; on the 2026-11-12
+session the median was wrong on five of the six names where the three sources disagreed by more
+than 15%). Reconcile a name yourself ONLY when the morning CSV does not carry it, and publish
+the reconciled figure. **A missing cap is published EMPTY, never 0** — a cap of zero is a
+missing value, and a zero that reaches `pct_of_adv` becomes a fabricated number.
 
 **`premarket_time` is the pre-market session START (04:00 ET), not the last trade time.** It is
 unusable as a per-row snapshot stamp. **Publish the pull's own clock** as `snapshot_et` and on
@@ -504,8 +612,34 @@ screen_complete: true
 
 ## Output and push
 
-Write to `/workspace/daily-briefs/{date}-pre-market-refresh.md`, then push with the shared
-helper, staging only `daily-briefs/`:
+**Run the contract checker FIRST.** The refresh has a machine gate, and a failing artifact that
+has already been pushed is still broken — cron #90's triage sees the file on the branch and
+reports it delivered.
+
+```bash
+S=/workspace/check_premarket_refresh.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_refresh.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_refresh.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_refresh.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v1' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+python3 "$S" --md daily-briefs/{date}-pre-market-refresh.md \
+  --csv daily-briefs/{date}-pre-market-refresh.csv \
+  --morning-csv daily-briefs/{date}-pre-market.csv
+```
+
+A non-zero exit means **DO NOT PUSH** — fix the artifact and run it again. The checker's own
+mutations are in `tools/test_premarket_refresh_contract.py`, the builder's in
+`tools/test_premarket_refresh_build.py`. The checker also asserts the reply format when it is
+given `--reply <file>`.
+
+Then push the artifact the builder wrote, with the shared helper, staging only `daily-briefs/`:
 
 ```bash
 sh /workspace/push_artifact.sh --out daily-briefs --add daily-briefs/{date}-pre-market-refresh.md --branch main --nn 26b

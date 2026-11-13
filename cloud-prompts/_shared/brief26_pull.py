@@ -169,7 +169,7 @@ def num(v):
 # ------------------------------------------------------------------ sources
 def pull_band(workdir, timings):
     """The ±3% band, both sides, with totalCount asserted."""
-    band = {"gainers": [], "decliners": [], "complete": False}
+    band = {"gainers": [], "decliners": [], "complete": True}
     for label, body, key in (("gainers", BAND_GAIN, "gainers"), ("losers", BAND_LOSE, "decliners")):
         bf = os.path.join(workdir, "body_%s.json" % label)
         of = os.path.join(workdir, "band_%s.json" % label)
@@ -189,7 +189,10 @@ def pull_band(workdir, timings):
                 "FLOORS" % (label, len(rows), total))
         band[key] = rows
         log("%s: %d rows (totalCount %s)" % (label, len(rows), total))
-    band["complete"] = True
+    # The truncation guard above sets complete=False, and it used to be overwritten here by an
+    # unconditional `band["complete"] = True` — so a TRUNCATED band was published as complete and
+    # the counts read as exact when they were floors. That is the 2026-11-05 failure mode the
+    # whole `len(rows) == totalCount` assert exists to catch. (Fixed 2026-11-13.)
     return band
 
 
