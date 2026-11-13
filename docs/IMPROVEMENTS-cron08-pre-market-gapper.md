@@ -996,3 +996,54 @@ dict on `main` did not reproduce on the file fetched on 2026-11-13; the call sit
 published) → degraded resolver → pull → re-pull wave → renderer → checker:
 **34/34 contract checks passed**, `flagged: 0`, `scanned: 12`, `universe_date = 2026-11-11`,
 `ref_close_date = 2026-11-12`, `universe_stale` published in `## Flags` and in the TL;DR caveat.
+
+---
+
+## 2026-11-13 08:34 ET — the v6 pipeline FIRED: 32/32, and the live artifact exposed three defects
+
+**The fire.** Cron #08 fired at 08:34 ET and pushed at **08:41:38 ET** (7.6 min). The
+published artifact passes the **current** checker (fetched from the repo at the time of this
+check) **32/32**, and every v6 clause holds:
+
+| clause | result |
+|---|---|
+| the marker line | `premarket-artifact-v6 … pull: premarket-pull-v2 · renderer: premarket-render-v1` ✓ |
+| `## Market ladder` **before** `## Focus scan` | ✓ (line 13 vs line 47) |
+| the CSV's v6 fields | `tape_lag_min` / `driver_class` / `prior_session_change` / `pm_volume_pct_30d` / `sustained` ✓ |
+| the degraded universe | `universe_stale` published in `## Flags`; every row's `ref_close_source` = `tradingview+cboe+nasdaq-secondaryData+nasdaq_historical` (never `focus.csv`); `universe_date` 2026-11-11, `ref_close_date` 2026-11-12, `universe_source` `tradingview:close` ✓ |
+
+**The headline worked.** 0 of 12 Focus names flagged (the book is a session stale and the tape
+was thin), and the TL;DR leads with the MARKET's gaps — **NPCE −40.9%** (Q3 revenue $23.1M vs
+$27.05M consensus, FY26 guidance cut), **MOD +37.7%** (Samsung in talks to acquire Modine,
+~$5.6B), **CADL −33.7%** (BLA filing pushed to mid-2027), **LFTO +27.0%** (Q3 beat, guidance
+raised). On 2026-11-12 the same artifact's headline was "1 of 12 flagged" and the flagged name
+was a bitcoin-beta gap on a thin print. **That is the v6 change paying for itself on the first
+live fire.**
+
+**Three defects, all visible only in the LIVE artifact** (the offline replay could not see
+them — it used a hand-built fixture):
+
+1. **`pm_volume_pct_30d` published `n/a` on EVERY row.** The renderer computed the ratio into
+   `r["_volpct"]` and wrote a differently named key (`pm_volume_pct_30d`) into the CSV. The
+   30-day average volume was in the record all along (`tv_avg_volume_30d`). **A column that is
+   a placeholder on every row is a silent failure, not a missing value** — the checker now
+   fails it explicitly.
+2. **The marker named a close source that did not provide it.** It said
+   `reference close: prior sweep focus.csv` while the close came from the independent
+   sources (the stale universe's whole point). The marker now names the source the rows
+   actually used.
+3. **A NAMED context file that was not on disk published "no catalyst confirmed in this run"
+   for every name, silently.** Found by re-rendering: the renderer ignored a `--context` path
+   that did not exist, and the artifact looked complete with every catalyst gone. It now
+   **fails loudly** (exit 3) when the context file is missing or carries no `catalysts`.
+
+**Correction pushed.** The 2026-11-13 artifact was re-rendered from the **published**
+`_premarket-pull.json` and `premarket-context.json` — so every number is the fire's own —
+and the diff against the published artifact is **exactly two fields**: the marker's
+reference-close label and the `pm_volume_pct_30d` column. Pushed as a labelled correction
+commit (`cron 08 … 2026-11-13: correction`), both paths verified.
+
+**Also resolved: cron #09's 11-12 sweep.** The platform **resumed the crashed turn in place**
+and it published at **08:52 ET** — `daily-screens/2026-11-12/focus.csv` and `focus.md` are
+now on `main`. So the universe that today's fire had to run degraded is complete, and tonight's
+18:30 ET sweep will publish the 2026-11-13 Focus list for tomorrow's fresh fire.
