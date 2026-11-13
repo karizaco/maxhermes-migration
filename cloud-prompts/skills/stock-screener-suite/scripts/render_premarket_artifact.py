@@ -196,11 +196,12 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
     csv_rows = []
     for r in rows:
         csv_rows.append({
-            "universe_date": universe_date,
-            "ref_close_date": denom_date,
-            "universe_source": (manifest or {}).get("universe_source")
+            "universe_date": r.get("universe_date") or universe_date,
+            "ref_close_date": r.get("ref_close_date") or denom_date,
+            "universe_source": (r.get("universe_source")
+                                or (manifest or {}).get("universe_source")
                                 or ("focus.csv:%s" % (manifest or {}).get("ref_close_column")
-                                    if (manifest or {}).get("ref_close_column") else ""),
+                                    if (manifest or {}).get("ref_close_column") else "")),
             "ticker": r.get("ticker") or "",
             "ref_close": fmt(num(r.get("base_close")), 4),
             "ref_close_source": r.get("base_close_source") or "",
@@ -306,6 +307,12 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
     thin = [r for r in rows if (r["_es"] or 0) < MIN_EXECUTED_SHARES]
     stale = [r for r in rows if (r["_lag"] or 0) > STALE_TAPE_MIN]
     caveat_bits = []
+    if (manifest or {}).get("universe_stale"):
+        caveat_bits.append("**the Focus list is from %s, a session behind the denominator "
+                           "session %s** — the expected session's sweep has not published, so "
+                           "the universe is stale and every reference close was taken from the "
+                           "INDEPENDENT sources, never from the stale file"
+                           % (universe_date, denom_date))
     if stale:
         caveat_bits.append("**%d name(s) printed on a tape more than %d min old** (%s), so the "
                            "gap behind them is a snapshot, not a live market"
@@ -443,6 +450,13 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
     A("## Flags")
     A("")
     any_flag = False
+    # the universe's own flags come FIRST: if the Focus list is a session stale
+    # because the expected session's sweep has not published, the reader must
+    # see it before any per-name number.
+    man_flags = (manifest or {}).get("flags") or []
+    for mf in man_flags:
+        A("- **%s**" % mf)
+        any_flag = True
     for r in rows:
         bits = []
         if (r["_es"] or 0) < MIN_EXECUTED_SHARES and r["_gap"] is not None \

@@ -1700,10 +1700,30 @@ resolver now:
   published with NO close column"*, and `ref_close_source` names the independent source instead
   of a `focus.csv` that does not exist.
 
-**A stale universe is a FAIL, not a warning.** `--allow-stale-universe` downgrades H3 to a flag —
-and then the reference close **must** come from the independent sources, because the stale CSV's
-close belongs to the wrong session. Either way the artifact publishes the fact:
+**A stale universe is a FAIL on the STRICT path — and a DEGRADED READ on the fallback path.**
+Run the resolver strictly first. If it exits 3 **because the expected session's sweep has not
+published** (H2/H3), re-run it with `--allow-stale-universe` and publish the degradation:
 `universe_stale: the Focus list is from <date> but the denominator session is <date>`.
+
+Measured 2026-11-13: cron #09's 18:30 ET sweep for 2026-11-12 died mid-turn on a connection
+error and published **nothing**, so the strict resolver exited 3 with *"universe session
+2026-11-11 vs expected prior session 2026-11-12"* and the routine would have produced **no
+artifact at all**. With the fallback the run produces a board whose gaps are measured against the
+**correct 2026-11-12 close** (taken from the independent sources: TradingView + Cboe +
+Nasdaq's session-exact history, all three agreeing) and whose universe is one session old —
+stated in `## Flags`, in the TL;DR caveat and in the reply.
+
+**The fallback buys a board, not a clean one — so it must be loud, and the checker enforces it:**
+
+| rule | why |
+|---|---|
+| the reference close comes from the **independent sources only** when the universe is stale | the stale CSV's close belongs to a different session — using it is the wrong-number bug |
+| the artifact **must** publish `universe_stale` in `## Flags` | an unflagged stale universe is a hidden degradation |
+| the reply **must** name the stale universe | the reader is looking at yesterday's setups |
+| the checker FAILS an unflagged universe/denominator mismatch, and FAILS a stale close | the guard keeps its teeth — only the *declared* degradation passes |
+
+The fallback is for a **missing sweep**, never for a wrong close: if H4 or H5 fails (a name with
+no reference close, or a close nobody else can confirm), there is no board.
 
 **The reference close is confirmed session-exactly.** TradingView's and Cboe's `close` are always
 the LATEST session's close, so they can only confirm the denominator while the denominator IS the
@@ -1862,8 +1882,13 @@ the run so it can see whether the tape moved.
 ```bash
 D=/workspace/daily-screens/<date>
 
-# 1. PROVE the universe first (6.3a) - the manifest is authoritative
-python3 "$U" --fire-date <the fire's scheduled date> --out-dir "$D"
+# 1. PROVE the universe first (6.3a) - the manifest is authoritative.
+#    The STRICT run is the one that counts. If it exits 3 because the expected
+#    session's sweep has NOT published (H2/H3), fall back to the DEGRADED
+#    universe - it is a documented, published degradation, not a silent one.
+python3 "$U" --fire-date <the fire's scheduled date> --out-dir "$D" \
+  || python3 "$U" --fire-date <the fire's scheduled date> --out-dir "$D" \
+       --allow-stale-universe
 
 # 2. the tape pull - THE NUMBERS. The pull stops early once the cached vintage
 #    stops changing (min 2 pulls, max 4), and it also fetches the market-wide

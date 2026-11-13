@@ -847,6 +847,11 @@ def _one(sym: str, args, focus: dict | None = None,
     rec["origins"] = focus.get("origins") or ""
     rec["prior_session_change"] = focus.get("prior_session_change")
     rec["prior_session_change_col"] = focus.get("prior_session_change_col")
+    # the universe's own session, the denominator's session and WHERE the close
+    # came from - per row, so the renderer never has to guess them
+    rec["universe_date"] = focus.get("universe_date")
+    rec["ref_close_date"] = focus.get("ref_close_date")
+    rec["universe_source"] = focus.get("universe_source")
 
     return sym, rec
 

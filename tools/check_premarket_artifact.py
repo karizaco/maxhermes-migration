@@ -599,11 +599,13 @@ def check_ladder(lines, secs, version):
         return []
     body = strip_fences(section_body(lines, secs, "marketladder"))
     headers, lrows = md_table(body)
-    if not headers:
-        bad("the Market ladder section has no table")
-        return []
-    if not lrows:
-        bad("the Market ladder table is empty - the market's gaps are the point of the artifact")
+    if not headers or not lrows:
+        # No table. That is only OK when the ENGINE saw no gap leaders either -
+        # the ladder is CONTEXT and a failed ladder scan must not sink the
+        # Focus book. check_ladder_against_pull() decides, because it knows
+        # what the engine actually saw.
+        print("  note the Market ladder section has no table - the engine's data decides "
+              "whether that is a defect")
         return []
     ok(f"the Market ladder section carries a table ({len(lrows)} rows)")
     fs = find_section(secs, "focusscan")
@@ -633,7 +635,15 @@ def check_ladder_against_pull(pull_path, ladder_tickers):
         return
     expected = [str(t.get("ticker", "")).strip() for t in (pull.get("market_ladder") or [])]
     if not expected:
-        ok("the engine saw no market-wide gap leaders - nothing to cross-check")
+        if ladder_tickers:
+            bad("the engine saw no market-wide gap leaders but the artifact published a ladder "
+                "table - the table is not the engine's data")
+        else:
+            ok("the engine saw no market-wide gap leaders - nothing to cross-check")
+        return
+    if not ladder_tickers:
+        bad(f"the engine saw {len(expected)} market-wide gap leaders and the artifact published "
+            f"NO ladder table - the market's book was dropped")
         return
     # the markdown publishes the top N; the FULL list stays in the pull JSON
     expected = expected[:len(ladder_tickers)] if ladder_tickers else []
@@ -644,7 +654,7 @@ def check_ladder_against_pull(pull_path, ladder_tickers):
             f"market_ladder ({len(expected)} names) - the table was not rendered from the pull")
 
 
-def check_universe(rows, version=CONTRACT_VERSION):
+def check_universe(rows, version=CONTRACT_VERSION, flags_text=""):
     """v5: the artifact must name the universe's session and the denominator's
     session, and they must be ONE date each for the whole artifact.
 
@@ -671,8 +681,27 @@ def check_universe(rows, version=CONTRACT_VERSION):
     if len(udates) == 1 and len(rdates) == 1:
         u = next(iter(udates)); r = next(iter(rdates))
         if u != r:
-            bad(f"the universe session ({u}) and the denominator session ({r}) differ - "
-                f"the gaps are measured against a session the universe does not belong to")
+            # The DEGRADED state: the expected session's sweep has not published,
+            # so the Focus list is one session old and the reference close was
+            # taken from the INDEPENDENT sources. It is ACCEPTED only when the
+            # artifact says so in `## Flags` AND no row's close came from the
+            # stale file - otherwise the gap would be measured against a price
+            # that belongs to a different session, which is the bug this
+            # clause exists to stop.
+            flagged = "universe_stale" in (flags_text or "")
+            indep = all(("focus.csv" not in str(r_.get("ref_close_source") or ""))
+                        for r_ in rows)
+            if flagged and indep:
+                ok(f"the universe is a session stale ({u} vs {r}) and the artifact publishes it; "
+                   f"every reference close came from an independent source")
+            elif not flagged:
+                bad(f"the universe session ({u}) and the denominator session ({r}) differ and "
+                    f"the artifact does not publish `universe_stale` in ## Flags - a stale "
+                    f"universe must be stated, not hidden")
+            else:
+                bad(f"the universe session ({u}) and the denominator session ({r}) differ and a "
+                    f"reference close came from the STALE file - the close must come from the "
+                    f"independent sources only")
         else:
             ok(f"the universe session and the denominator session agree ({u})")
 
@@ -695,7 +724,8 @@ def main():
     lines, secs, md_rows, ver, flagged, scanned = check_md(args.md)
     version = ver or CONTRACT_VERSION
     rows = check_csv(args.csv, md_rows, flagged, scanned, version)
-    check_universe(rows, version)
+    check_universe(rows, version,
+                   "\n".join(strip_fences(section_body(lines, secs, "flags"))))
     ladder_tickers = check_ladder(lines, secs, version)
     check_ladder_against_pull(args.pull_json, ladder_tickers)
     check_nonqualifying(lines, secs, rows)
