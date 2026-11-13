@@ -208,3 +208,33 @@ who quotes the headline has the trap in front of them.
 All three findings are in the **procedure the skill executes**, so they are fixed in the skill
 spec — which is fetched at RUN time, so they land on the next fire with no `cron_update` and no
 prompt drift. The deployed cron prompt was not touched.
+
+## 2026-11-13 — the scanner's `country` filter silently truncated two markets
+
+**Symptom.** The step-2 screener body carried `{"left":"country","operation":"equal","right":"<Country>"}`.
+Measured on the 2026-11-13 fire: with the filter, Korea returned **0 rows** (totalCount 0) and
+Hong Kong returned **1 row**; without it, Korea returned 32 + 29 rows and Hong Kong 10 + 174.
+Japan (90 + 57) and Taiwan (71 + 11) were identical either way.
+
+**Why it matters.** The filter is a no-op on two markets and a silent truncation on the other
+two, and both kinds return HTTP 200 — so nothing errors. A zero-row Korea leg is
+indistinguishable from "the market did not trade", which is precisely the false-closure failure
+the date-provenance detector (index session date, Test A) was built to prevent: had Test A not
+been run first, the brief would have published a Korea holiday on a trading day.
+
+**Fix.** The `country` filter is removed from the step-2 body; the per-country endpoint already
+scopes the market. Fixed in the skill spec (run-time fetched), so the next fire picks it up with
+no `cron_update`.
+
+**Second defect, same run.** `tv_scan.py pull --names` truncated the venue-resolution pull:
+13 requested JP tickers came back as 18 rows against totalCount 27, and 4 names never came back
+at all, so a missing TSE line looked like a missing security. The skill now resolves venue rows
+with a wide-range `in_range` body (`{"left":"name","operation":"in_range","right":[...]}` with
+`range` at or above the row count): 27/27 rows for the 13 JP tickers, 15/15 for the TW TPEX
+names, 22/22 for the HK currency set.
+
+**Coverage gap recorded (not a source failure).** Four large Hong Kong names — Tencent (80700),
+Lenovo (80992), Geely (80175) and China Resources Beer (80291) — exist in the scanner only as
+CNY counters, and no HKEX HKD twin exists for them. The contract drops non-HKD rows, so these
+names cannot be published at all; press puts Tencent at about -3% and Lenovo at -6.33%. The
+2026-11-13 artifact states the gap rather than substituting the CNY print.

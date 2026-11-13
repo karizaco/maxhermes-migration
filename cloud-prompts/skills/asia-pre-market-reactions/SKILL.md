@@ -238,8 +238,7 @@ artifact.
          -H "Content-Type: application/json" -H "User-Agent: Mozilla/5.0" \
          -H "Origin: https://www.tradingview.com" -d '{
            "filter":[{"left":"type","operation":"equal","right":"stock"},
-                     {"left":"country","operation":"equal","right":"<Country>"},
-                     {"left":"change","operation":"'$OP'","right":'$RIGHT'},
+                      {"left":"change","operation":"'$OP'","right":'$RIGHT'},
                      {"left":"market_cap_basic","operation":"greater","right":<local_cap_floor>},
                      {"left":"close","operation":"greater","right":5}],
            "options":{"lang":"en"},
@@ -261,7 +260,24 @@ artifact.
    wait
    ```
 
-   `change` is read as **percent units** (Trap 13 — never multiply by 100). `market_cap_basic` is
+   **DO NOT put a `country` filter in this body (measured 2026-11-13).** The per-country
+  endpoint already scopes the market, and adding `{"left":"country","operation":"equal"}`
+  silently TRUNCATES two of the four markets instead of erroring: with `country="Korea"`
+  the Korea leg returned **0 rows** (totalCount 0) and with `country="Hong Kong"` the Hong
+  Kong leg returned **1 row** against 184 without it. Japan (90/57) and Taiwan (71/11) were
+  unaffected, so the defect is invisible on two markets and fatal on two others. A zero-row
+  Korea leg is indistinguishable from "the market did not trade" - the exact false-closure
+  failure Test A exists to prevent. Drop the filter; keep the `type=stock` filter.
+
+  **DO NOT use `tv_scan.py pull --names` to resolve venues (measured 2026-11-13).** Its
+  targeted pull TRUNCATED: 13 requested JP tickers came back as **18 rows against
+  totalCount 27**, and 4 names never came back at all - so a missing TSE line looked like a
+  missing security. Resolve venue rows with a **wide-range `in_range` body** instead
+  (`{"left":"name","operation":"in_range","right":[...]}` with `range` at or above the row
+  count), which returns every venue for every ticker in one call: 27/27 rows for the 13 JP
+  tickers, 15/15 for the TW TPEX names, 22/22 for the HK currency set.
+
+  `change` is read as **percent units** (Trap 13 — never multiply by 100). `market_cap_basic` is
    **local currency** — convert the $2bn floor with FX before filtering. The `range` must cover the
    market's row count or the tail is silently cut.
 
@@ -1007,6 +1023,21 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.7 - 2026-11-13.** Two silent scanner-truncation defects closed, both measured on the
+  2026-11-13 fire. (1) **The `country` filter truncated two of the four markets.** With
+  `{"left":"country","operation":"equal"}` in the step-2 body, the Korea leg returned **0 rows**
+  (totalCount 0) and the Hong Kong leg returned **1 row** against 184 without it; Japan (90/57)
+  and Taiwan (71/11) were unaffected, so the defect is invisible on two markets and fatal on two
+  others - and a zero-row Korea leg is indistinguishable from a holiday, which is the exact
+  false-closure failure the date-provenance detector exists to prevent. The filter is removed
+  from the body. (2) **`tv_scan.py pull --names` truncated the venue-resolution pull**: 13 JP
+  tickers came back as 18 rows against totalCount 27 and 4 names never came back, so a missing
+  TSE line looked like a missing security; the skill now resolves venue rows with a wide-range
+  `in_range` body (27/27, 15/15 and 22/22 rows measured). The 2026-11-13 run also confirmed the
+  JP regional-print rule at full strength: all 13 regional rows diverged from their TSE lines
+  (Takeda `SAPSE` +23.26% frozen again against TSE +1.48%; IBIDEN `NAG` +8.20% against TSE
+  -4.05%, a sign flip), and the four HK CNY-counter names (Tencent, Lenovo, Geely, CR Beer)
+  have no HKD twin in the scanner, so they cannot be published at all.
 - **v1.6 - 2026-11-11.** Three defects closed. (1) **The catalyst-cap contradiction**: the hard rule
   "capped at 4" could not coexist with the v1.5 `Top 3 real events` rule "never pad with unsourced
   rows" plus its machine assertion of exactly three items - a day with two sourced catalysts had no
