@@ -1152,7 +1152,7 @@ def _do_repull(args, out_dir: Path) -> int:
             rec["flagged"] = verdict == "FLAGGED"
 
     # the LADDER is a snapshot too - refresh it in the same wave (2 requests)
-    if args.ladder and not args.no_ladder:
+    if args.ladder:
         fresh_ladder = _fetch_market_ladder(args.gap_trigger)
         if fresh_ladder:
             payload["market_ladder"] = fresh_ladder
