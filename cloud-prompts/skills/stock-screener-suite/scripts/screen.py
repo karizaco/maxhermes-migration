@@ -1,8 +1,14 @@
 """stock-screener-suite deterministic orchestrator.
 
+CAPABILITY MARKER: STOCK_SCREENER_SUITE_V1
+
 The Agent invokes MCP tools (shibui-finance SQL, tradingview screens, etc.). This
 script does the deterministic bookkeeping: cache check, plan emission, tier merge,
 CSV / Markdown output, regime flag, and fallback URL builders.
+
+The CAPABILITY MARKER above is what a run-time fetch checks for, so a STALE
+copy of this file cannot be mistaken for the current one. `tools/sweep_pipeline.py`
+fetches this file by that marker when it is not already on disk.
 
 Subcommands
 -----------

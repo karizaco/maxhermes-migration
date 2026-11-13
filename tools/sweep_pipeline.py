@@ -82,8 +82,58 @@ _ENGINES = _HERE / "daily_sweep_engines.py"
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_SCREEN.parent))
 
-import daily_sweep_engines as engines  # noqa: E402
-import screen  # noqa: E402
+try:
+    import daily_sweep_engines as engines  # noqa: E402
+except ImportError:
+    # The pipeline is fetched ALONE by the skill's fetch ladder, so its two
+    # siblings (`daily_sweep_engines.py` and the skill's `screen.py`) may not
+    # be on disk. Fetch them from the repo — the same three-URL ladder, with
+    # the capability marker as the acceptance test.
+    _HERE.mkdir(parents=True, exist_ok=True)
+    for _name, _dest, _marker in (
+        ("daily_sweep_engines.py", _ENGINES, "DAILY_SWEEP_ENGINES_V1"),
+        ("screen.py", _SCREEN, "STOCK_SCREENER_SUITE_V1"),
+    ):
+        if _dest.exists() and _marker in _dest.read_text(errors="ignore"):
+            continue
+        _ok = False
+        for _u in (
+            f"https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/{_name}?ref=main",
+            f"https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/{_name}",
+            f"https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/{_name}",
+        ):
+            if _name == "screen.py":
+                _u = _u.replace("/tools/screen.py",
+                                "/cloud-prompts/skills/stock-screener-suite/scripts/screen.py")
+            try:
+                import urllib.request
+                _req = urllib.request.Request(
+                    _u, headers={"User-Agent": "Mozilla/5.0"})
+                _body = urllib.request.urlopen(_req, timeout=30).read().decode()
+            except Exception:
+                continue
+            # The marker is the acceptance test when it is present; a file
+            # without one is still better than no file, so accept it from the
+            # LAST url only (the authoritative raw CDN) rather than failing.
+            if _marker in _body or _u.startswith("https://raw.githubusercontent"):
+                _dest.parent.mkdir(parents=True, exist_ok=True)
+                _dest.write_text(_body, encoding="utf-8")
+                _ok = True
+                break
+        if not _ok:
+            raise SystemExit(
+                f"sweep_pipeline.py: could not fetch its dependency {_name} "
+                f"(marker {_marker}) — the pipeline cannot run"
+            )
+    import daily_sweep_engines as engines  # noqa: E402
+
+try:
+    import screen  # noqa: E402
+except ImportError:
+    raise SystemExit(
+        "sweep_pipeline.py: could not fetch the skill's screen.py — the pipeline "
+        "cannot run"
+    )
 
 TV_SCAN_URL = engines.TV_SCAN_URL
 USER_AGENT = engines.USER_AGENT
