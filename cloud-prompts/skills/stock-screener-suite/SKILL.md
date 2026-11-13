@@ -689,6 +689,25 @@ Stockbee 4% *and* Stockbee EP9M is one stylist with two hits.
 derived from Focus; when more than 8 names clear the bar the list is truncated and
 `_results.json` reports `tier_a_truncated: true` with the untruncated pool size.
 
+#### Who writes what (cron #09)
+
+`tools/sweep_pipeline.py` (§4.5.5) OWNS the mechanical production of the
+artifact. `screen.py consume` owns the tiering and writes the per-stylist books,
+the tier lists, `_regime.json`, `_results.json`, `_cache.json` and
+`_summary.md`. The pipeline additionally writes the five CSVs (`focus.csv`,
+`master.csv`, `tier-a.csv`, and the enriched `short-candidates.csv` /
+`long-reversal-candidates.csv`), `daily-sweep.md`, `breadth.md`,
+`same-day-prints.md` and `_same-day-prints.json`, then ASSERTS the whole
+contract. **Do not hand-write these — the pipeline's `check` stage is the
+guard, and it rejects a stub, a truncated book, an empty per-stylist file, a
+missing `.csv` companion and a blank ADR column.**
+
+The CSV schema is the one cron #08's resolver and cron #07 read: the close is
+resolved **BY DATE** (`close_<YYYY-MM-DD>` columns), `today_close` is the
+cron-day settled close, and `screen_close_resolved` is the T+1 screen date —
+which is NEVER a valid denominator. Picking the wrong one shifts a pre-market
+gap by up to 10%.
+
 #### Three traps when the tiering is re-implemented inline (the Cloud runtime does not execute scripts/screen.py)
 
 - **The per-stylist FILE names are slugs; the stylist BUCKET names are not.** The files are
@@ -822,7 +841,89 @@ The T+1 book is the **cross-check**, not the headline. The fresh book is
 primary. When they disagree, the artifact says so with both lists — it never
 substitutes one for the other.
 
-#### 4.5.5 The run order for cron #09
+#### 4.5.5 The run order for cron #09 — ONE COMMAND
+
+**`tools/sweep_pipeline.py` owns the mechanics.** It fetches, enriches, tiers,
+renders and CHECKS the whole artifact. Do not re-improvise it inline: the
+2026-11-10 fire spent ~46 minutes on it, and the MEASURED reason was not the
+data — the network cost of the entire run was ~48 seconds (53 shibui calls at a
+measured 0.45 s each, ~8 TradingView scans, one VIX double-pull, one quote
+batch). The other ~35 minutes was the Agent rewriting, on every fire, the same
+pipeline: ~1,675 lines of throwaway Python that the sandbox deleted at the end
+of the run, and ~1.5 MB of prior artifacts pulled in to reverse-engineer the
+output format (a 908 KB `results.json` alone is ~227K tokens).
+
+```bash
+# fetch the pipeline (run-time fetch: fixes land with NO redeploy)
+P=/workspace/tools/sweep_pipeline.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/sweep_pipeline.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/sweep_pipeline.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/sweep_pipeline.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$P.tmp" "$U" 2>/dev/null
+  if [ -s "$P.tmp" ] && grep -q 'SWEEP_PIPELINE_V1' "$P.tmp" 2>/dev/null; then
+    mv -f "$P.tmp" "$P"; break
+  fi
+  rm -f "$P.tmp"
+done
+[ -s "$P" ] || { echo "sweep_pipeline.py: UNAVAILABLE"; exit 1; }
+
+# 1. the mechanical pipeline — everything except the narrative
+python3 "$P" run --date <CRON_DATE> --out /workspace/daily-screens \
+  --scratch /workspace/scratch --bridge /workspace/mcp_bridge.py
+
+# 2. fill the narrative, then re-check
+python3 "$P" check --date <CRON_DATE> --t1-date <T1_DATE> --out /workspace/daily-screens
+```
+
+**The pipeline writes `daily-sweep.md` and `breadth.md` with
+`<!-- FILL: ... -->` slots** for the parts that need JUDGEMENT — the TL;DR, the
+per-name Tier-A notes, the focus notes, the theme note, the flags and the
+method/source-health blocks. This is the house pattern already proven by cron
+#10's `breadth_metrics.py`. **The Agent writes those blocks and saves them to
+`/workspace/scratch/live.json`; `run --live-json` renders them in, and `check`
+REJECTS an artifact that still carries a stub marker.** A stub cannot ship.
+
+Keys `live.json` may carry — `weekday`, `date_long`, `fire_time_et`, `tldr`,
+`tier_a_notes`, `focus_notes`, `theme_note`, `headline`, `flags_block`,
+`method_block`, `source_health_block`.
+
+**VERIFIED IDENTICAL (2026-11-13).** The pipeline was replayed against the
+published 2026-11-10 artifact and reproduces it EXACTLY: all 1,356 candidates
+with every field, `_regime.json`, `_cache.json`, all five CSVs (41,670 values
+compared, 0 differ) and all ten per-stylist books. The published numbers do not
+change — only the time to produce them drops from 46 minutes to under one.
+
+**What the pipeline does that the manual run did NOT:**
+
+* **The ADR%, the screen-session close and the GICS mapping are ONE query.**
+  They were three separate passes over `shibui.stock_quotes` (or
+  `general_info`) over the SAME symbol list — 19 metered calls for one table.
+* **The breadth universe is scanned ONCE.** The movers table used to need a
+  SECOND full 1,114-name scan, because the first scan's rows were not kept.
+* **The branches are fetched in PARALLEL** (bounded at 6 workers — shibui
+  degrades above 8 concurrent calls).
+* **The theme branch is a published screen, not an improvisation.** The theme
+  ETFs are SECTOR ETFs ONLY: a single STOCK can carry a strong relative-strength
+  reading and would otherwise displace a real sector theme (SKY — Champion
+  Homes, a homebuilders stock — ranked #2 by composite RS on 2026-11-10 and
+  displaced XRT, the retail theme).
+* **Every enrichment is ASSERTED.** An enrichment that returns nothing is a
+  silent failure (a wrong column filter, a throttled call), not "no data" — the
+  run FAILS instead of publishing a column that is blank on every row.
+* **A transient gateway error is retried**, and the run FAILS CLOSED: a failed
+  pipeline leaves nothing publishable behind.
+
+**Still the Agent's job:** the narrative. The TL;DR, the "what Tier-A is
+saying" notes, the flags and the method notes need judgement, and
+`check` will not let an unfilled slot ship. The numbers, the tables, the
+coverage assertion and the file set are the pipeline's.
+
+#### 4.5.5a Running the stages by hand (only when the pipeline is unavailable)
+
+If `tools/sweep_pipeline.py` cannot be fetched, fall back to the manual order —
+but note that this is the ~35-minute path the pipeline exists to remove:
 
 1. `tv-sweep` → the fresh book + extension metrics (no auth, no rate limit).
 2. The 8 shibui branches as before (the context branches + the T+1 cross-check).
@@ -838,6 +939,22 @@ python3 scripts/screen.py consume \
   --fresh-book /workspace/scratch/tv_sweep.json \
   --overlay     /workspace/scratch/overlay.json
 ```
+
+**Three traps the manual path has, which the pipeline handles:**
+
+* **The shibui rows are VENUE-SUFFIXED** (`TLS.NASDAQ`) but the book is keyed
+  on the BARE ticker. Leaving the suffix in place makes the two books DISJOINT
+  (the fresh book never joins the T+1 book) and makes the overlay query match
+  nothing — a SILENT ZERO.
+* **The enrichment must cover the UNION of the sweep book's symbols AND the
+  theme branch's pool.** The theme pool is drawn from the fresh book's whole
+  universe, so it is much wider than the sweep book; enriching only the sweep
+  symbols silently truncated the GICS map, and the theme branch published 72
+  names instead of 159.
+* **The ADR% must be merged into the sweep rows BEFORE tiering**, and the
+  ENRICHMENT's value wins over a branch's own: the enrichment query rounds in
+  SQL (`ROUND(..., 2)`) and so is the uniform 2dp value every row publishes,
+  while a branch's own ADR% is a raw float.
 
 ### 4.6 The extension label — which names are ALREADY EXTENDED
 

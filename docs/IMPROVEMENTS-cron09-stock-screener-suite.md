@@ -804,3 +804,155 @@ silently lost).
 `SELECT ticker, short_percent_float … WHERE ticker='AAPL'` → `{"ticker":"AAPL",
 "short_percent_float":0.009}`. Only `short_ratio` is absent — do not infer a missing `ticker`
 from that error message.
+
+---
+
+## 15. Fifth pass (2026-11-13): the pipeline — the 46-minute fire was AUTHORING, not data
+
+**Triggered by:** the question "can the 46-minute fire be faster with the exact same result?"
+The answer turned out to be a much bigger finding than a tuning problem.
+
+### 15.1 The MEASURED breakdown: the network cost was ~48 seconds
+
+The 2026-11-10 fire ran 46 minutes. Measured per-call latencies:
+
+| call | measured |
+|---|---|
+| shibui over the MCP bridge | **0.45 s** mean (10 sequential probes, 0.38–0.69 s) |
+| a TradingView scan of 3,820 names | **0.50 s** (2 pages) |
+| a TradingView scan of 1,114 names | **0.31 s** |
+| the Cboe VIX double-pull | 5 s (20 s in the run — the gap was my choice, not the contract's) |
+
+The run made ~53 shibui calls + ~8 TV scans + 1 VIX pair + 1 quote batch
+≈ **48 seconds of network time** against a **36-minute** measured data span.
+**~98% of the wall clock was AUTHORING and REASONING, not fetching.**
+
+Where the minutes went (from the gap between consecutive data steps):
+
+| gap | phase | what it actually was |
+|---|---|---|
+| 8.7 min | the GICS mapping | building the theme branch from scratch, and pulling a **908 KB `results.json` (~227K tokens)** to reverse-engineer what `H_hernandez_theme` was supposed to contain |
+| 5.3 min | the 8 sweep branches | reading the branch SQL, working out the paging protocol, writing the fetch loop |
+| 5.0 min | tiering | writing the 197-line builder that assembles `results.json` for `consume()` |
+| 4.3 min | the movers table | **a SECOND full 1,114-name scan** — the first scan already had every row; they just were not saved |
+| 3.8 min | the screen closes | writing the fetch script |
+| 2.6 min | ADR enrichment | **plus a failed 400-symbol-chunk attempt** (hit the 200-row ceiling) and a retry at 150 |
+| the rest | writing 5 artifact generators + a checker | **~1,675 lines of throwaway Python, deleted with the sandbox when the fire ended** |
+
+**The root cause is ONE thing: the routine has no repo script for its own assembly.**
+`tools/daily_sweep_engines.py` owns the fresh book and the overlay; `screen.py`
+owns the tiering. Everything between — fetching the branches, the ADR
+enrichment, the GICS mapping, the theme branch, the breadth read, the tiering
+input, and the rendering of eleven artifacts — was re-improvised by the Agent on
+every fire. This is the same defect already recorded for cron #20's base
+assembly (`build_eod_base.py`): **a stage that is re-improvised inline is
+re-improvised wrong, and it costs the most time.**
+
+### 15.2 The fix: `tools/sweep_pipeline.py` (capability marker `SWEEP_PIPELINE_V1`)
+
+One command owns fetch → enrich → tier → render → check:
+
+```bash
+python3 tools/sweep_pipeline.py run --date <D> --out /workspace/daily-screens \
+    --scratch /workspace/scratch --bridge /workspace/mcp_bridge.py
+python3 tools/sweep_pipeline.py check --date <D> --t1-date <T1> --out /workspace/daily-screens
+```
+
+**VERIFIED IDENTICAL.** The pipeline was replayed against the published
+2026-11-10 artifact and reproduces it EXACTLY:
+
+| artifact | result |
+|---|---|
+| `_results.json` (all 1,356 candidates, every field) | **IDENTICAL** |
+| `_regime.json`, `_cache.json` | **IDENTICAL** |
+| `focus.csv`, `tier-a.csv`, `master.csv`, `short-candidates.csv`, `long-reversal-candidates.csv` | **41,670 values compared, 0 differ** |
+| all 10 per-stylist books | **IDENTICAL** |
+| **wall clock** | **46 min → 0.4 min** |
+
+The published numbers do not change. Only the time to produce them does.
+
+### 15.3 What the pipeline does that the manual run did NOT
+
+* **The ADR%, the screen-session close and the GICS mapping are ONE query.**
+  They were three separate passes over `shibui.stock_quotes` (or `general_info`)
+  over the SAME symbol list — 19 metered calls for one table. One query per
+  chunk of 150 (the server rejects a chunk returning more than 200 rows) returns
+  all three. **VERIFIED IDENTICAL: 150/150 ADR values, 150/150 closes, 150/150
+  GICS rows** against the separate passes.
+* **The breadth universe is scanned ONCE.** The movers table used to need a
+  SECOND full 1,114-name scan because the first scan's rows were not kept.
+* **The branches are fetched in PARALLEL**, bounded at 6 workers — shibui
+  degrades above 8 concurrent calls.
+* **The VIX pair is pulled 5 s apart, not 20.** The skill requires TWO pulls
+  (to catch a transient pre-auction print); the 20 s gap was my choice and cost
+  20 s for no extra signal.
+* **Every enrichment is ASSERTED.** An enrichment that returns nothing is a
+  SILENT failure (a wrong column filter, a throttled call), not "no data" — the
+  run FAILS instead of publishing a column blank on every row.
+* **A transient gateway error is retried**, and the run **FAILS CLOSED**: a
+  failed pipeline leaves nothing publishable behind (verified: exit 1, zero files).
+* **The theme ETFs are SECTOR ETFs ONLY.** A single STOCK can carry a strong
+  relative-strength reading and displaces a real sector theme: SKY (Champion
+  Homes, a homebuilders stock) ranked #2 by composite RS on 2026-11-10 and
+  displaced XRT, the retail theme. A theme must be a THEME.
+
+### 15.4 Four bugs the replay caught — each a SILENT ZERO
+
+The replay was worth more than the speed-up: it found four defects that the
+manual run had, and each one is the exact failure class this suite keeps
+guarding against.
+
+1. **The shibui rows are VENUE-SUFFIXED** (`TLS.NASDAQ`) but the book is keyed
+   on the BARE ticker. Leaving the suffix in place makes the two books
+   **DISJOINT** (the fresh book never joins the T+1 book) and makes the overlay
+   query match nothing. The published run normalised it; the pipeline does it
+   ONCE, in one place, with a named helper.
+2. **The enrichment must cover the UNION of the sweep book's symbols AND the
+   theme branch's pool.** The theme pool is drawn from the fresh book's whole
+   universe, so it is much wider than the sweep book. Enriching only the sweep
+   symbols silently truncated the GICS map, and the theme branch published
+   **72 names instead of 159** — with every downstream count still plausible.
+3. **The ADR% must be merged into the sweep rows BEFORE tiering**, and the
+   **enrichment's** value wins over a branch's own: the enrichment query rounds
+   in SQL (`ROUND(..., 2)`) and so is the uniform 2dp value every row publishes,
+   while a branch's own ADR% is a raw float (6.734709…). Merged the other way
+   round, 21 of 41,670 published values differed in the last decimal.
+4. **Every T+1 row must carry `_source`.** The tiering keeps ONE `data` dict
+   per candidate, so a row without `_source` publishes a candidate whose
+   provenance is whatever the LAST writer left — 867 candidates published no
+   source at all.
+
+### 15.5 The narrative is NOT automated — and must not be
+
+The pipeline renders `daily-sweep.md` and `breadth.md` with `<!-- FILL: ... -->`
+slots for the parts that need JUDGEMENT (the TL;DR, the per-name Tier-A notes,
+the flags, the method notes) — the house pattern already proven by cron #10's
+`breadth_metrics.py`. The Agent writes those blocks into `live.json`; `run
+--live-json` renders them in, and `check` **REJECTS an artifact that still
+carries a stub marker**. A stub cannot ship.
+
+Automating the judgement would be automating the wrong thing: the numbers, the
+tables, the coverage assertion and the file set are mechanical; the read of
+what the numbers mean is not.
+
+### 15.6 The checks are a contract, and they are proven to bite
+
+`tools/test_sweep_pipeline.py` runs the check stage against deliberately broken
+artifacts and asserts it catches each one — 13 checks, all passing. The defects
+it proves are caught: a stub marker, a truncated book, a branch on a cap, a
+candidate with no session, an empty per-stylist file, a missing `.csv`
+companion, a `focus.csv` with no dated close column, a `focus.csv` row with no
+`today_close`, a parabolic CSV with no `m1`, a nested `_regime.json`, and an
+empty `atr_extensions` map.
+
+**A checker never observed failing is a claim, not a guard.** Every check in
+this test was run against a fixture broken in exactly that way, and every one
+of them made the checker exit non-zero.
+
+### 15.7 The replay flags (so the next session can reproduce the verification)
+
+`tools/sweep_pipeline.py` takes `--t1-date`, `--fresh-json`, `--breadth-json`,
+`--enrichment-json`, `--branches-json`, `--canslim-json` and `--overlay-json`.
+With them, the whole pipeline runs offline from saved inputs — which is how the
+identical-output proof above was made, and how a regression can be caught
+without spending a metered shibui call.
