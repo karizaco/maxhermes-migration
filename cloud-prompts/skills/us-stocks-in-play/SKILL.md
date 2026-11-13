@@ -228,6 +228,19 @@ figures are a **pace of 2.89** and **$13.4bn**. The error lands on the largest m
    name, 527 survivors in 35 seconds. The daily bar is the physical bound: the volume to
    09:50 cannot exceed the session volume at pull time. If the 5-minute sum still exceeds
    it, rescale the session's bars and flag the name.
+   **The bound is ONE-SIDED, and this is measured (2026-11-13).** Yahoo's *in-progress*
+   daily bar for the session being published can read BELOW the 5-minute series' own sum
+   for the same session (measured on MRVL at about 10:00 ET on 2026-11-13) — the daily bar
+   lags the intraday series rather than the other way round. So:
+   - the bound applies **only when the daily bar reads ≥ the 5-minute sum**;
+   - if the daily bar reads **below** the 5-minute sum, the daily bar is the stale one and
+     the bound is **simply not available** — do NOT rescale on that basis;
+   - **do NOT report "the physical bound could not be applied" as a degraded source.** It is
+     a known property of Yahoo's in-progress daily bar, it does not degrade the artifact,
+     and the cap in step 1 is the rule that actually protects the pace. On 2026-11-13 the
+     cap needed **0 repairs**; the board's numbers were unaffected, and the only cost of the
+     unavailable bound was a false degraded-source line in `## Source health` and one
+     inflated `errors:` count.
 3. **Take the prior close from the daily bar**, not from the 5-minute reconstruction — on
    2026-11-12 that corrected 21 of the 527 survivors by more than 0.5%.
 4. **Flag the repaired names in the candidates CSV** (`volume_prints_repaired`,

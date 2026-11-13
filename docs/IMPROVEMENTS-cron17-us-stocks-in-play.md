@@ -748,3 +748,38 @@ silently broke `tools/test_in_play_contract.py` for every session that ran it si
 here (40 / 29), and the lesson is the fleet's own rule: **a checker change is not landed until the
 repo's regression harness passes on it.**
 >>>>>>> e47065f (cron 17: contract v2 - Tier B is selected by move (>=5%, max 10), tier counts must match the CSV, legacy boards grandfathered)
+
+## 2026-11-13 (open slot) — the first `in-play-artifact-v2` board, and a ONE-SIDED correction to the daily-bar bound
+
+**The v2 board passed.** The 2026-11-13 open fire (dispatched 09:50:10 ET, board pushed 10:02:09
+ET — **12 minutes**, against 23 minutes on 2026-11-12) produced the first board under contract
+`in-play-artifact-v2`: the marker says v2, the Tier B table published exactly the rule's
+selection (10 names, every one of them ≥5%, biggest move first, out of a 190-name tier), every
+tier heading's count equalled its CSV count, and the repo checker reported **40 checks,
+CONTRACT OK**. The delta section named `2026-11-12-open.md` and the `open` fuel-log line landed.
+
+**The Tier B rule did what it was built for.** The 190-name tier's biggest moves were published
+(WYFI -8.27%, BTDR -8.22%, PEPG -8.13%, BW -7.53%, CIFR -7.48%, AEVA -7.46%, IAM -7.41%,
+HUT -7.37%, RXT -7.31%, ASTS -7.10%) — every one of them a name that moved hard with no
+catalyst of its own and no volume behind it, which is exactly the information a turnover-ranked
+table had buried under mega-caps drifting 2%.
+
+**The correction: the daily-bar bound is ONE-SIDED.** The 2026-11-12 fix added a physical-bound
+cross-check — "the volume to 09:50 cannot exceed the session volume at pull time" — and
+instructed the run to rescale the bars if the 5-minute sum exceeded the daily bar. On 2026-11-13
+the run found the opposite: **Yahoo's in-progress daily bar for 2026-11-13 read BELOW the
+5-minute series' own sum for the same session** (measured on MRVL at about 10:00 ET). The daily
+bar lags; the intraday series does not.
+
+So the bound is usable **only when the daily bar reads ≥ the 5-minute sum**. When it reads
+lower, the bound is **not available** — and the run reported it as a **degraded source**, which
+it is not: nothing in the board was degraded (the 8×-median cap in step 1 is what protects the
+pace, and it needed **0 repairs** that morning), but `degraded_sources:` and `errors:` each
+carried one entry for a check that was inapplicable. The fleet's own principle is that the audit
+line carries no false alarms. The spec now says so explicitly.
+
+**A second thing the 2026-11-13 board measured:** the official prior close re-based **324 of the
+374 published names** (against 21 of 527 on 2026-11-12) — the 5-minute series' last bar close is
+only an approximation of the session close, and on a day when the tape gapped hard the
+approximation was poor enough to move more than four-fifths of the board's prior closes onto the
+official daily close.
