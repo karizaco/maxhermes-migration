@@ -2259,7 +2259,18 @@ def cmd_consume(args: argparse.Namespace) -> int:
     stockbee_syms = {s for s, c in candidates.items() if any(o.startswith("A_stockbee") or o.startswith("B_stockbee") or o.startswith("K_stockbee") or o.startswith("A_tv_") or o.startswith("B_tv_") for o in _all(c))}
     qullamaggie_syms = {s for s, c in candidates.items() if any(o.startswith("C_qullamaggie") or o.startswith("D_qullamaggie") or o.startswith("E_qullamaggie") or o.startswith("F_qullamaggie") or o.startswith("D_tv_") for o in _all(c))}
     sun_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" or o == "TV_volume_breakout" for o in _all(c))}
-    ariel_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" for o in _all(c))}  # CANSLIM is the proxy; refine via sector ETF
+    # The hernandez FILE must carry the hernandez BUCKET's names - the theme ->
+    # group -> leaders funnel (H_hernandez_theme).  Routing it through the
+    # CANSLIM proxy put the funnel's own names NOWHERE (they reached master.md
+    # only) and silently duplicated jeff-sun.md's names inside the file
+    # (measured on the 2026-11-11 run: 69 CANSLIM names in a file whose own
+    # screen produced 153).  The bucket is the file's own population.
+    ariel_syms = {s for s, c in candidates.items()
+                  if any(_STYLIST_FROM_ORIGIN.get(o, o) == "hernandez" for o in _all(c))}
+    if not ariel_syms:
+        # No theme-funnel branch ran this run: fall back to the CANSLIM proxy
+        # rather than shipping an EMPTY per-stylist file.
+        ariel_syms = {s for s, c in candidates.items() if any(o == "jeff_sun_canslim" for o in _all(c))}
     peoplewish_syms = {s for s, c in candidates.items() if any(o.startswith("G_peoplewish") for o in _all(c))}
 
     short_cands = sorted({s for s, c in candidates.items() if any(o.startswith("E_qullamaggie_5d_gainers") for o in c.origins)})

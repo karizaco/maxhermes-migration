@@ -500,8 +500,29 @@ def _sql_list(symbols):
 
 
 def overlay_quality(bridge, symbols, t1_date, page=200):
-    """One shibui call per 200 symbols: the valuation/quality fields AND the
-    up-day streak, joined server-side so the result is one row per symbol."""
+    """The valuation/quality fields AND the up-day streak, joined server-side so
+    the result is one row per symbol.
+
+    THE SYMBOL LIST IS CHUNKED (200 per bridge call).  Measured 2026-11-12: a
+    single request carrying the whole book (3,814 tickers in one IN list) came
+    back as `{"error": "rpc_failed", "response": {"error":
+    "unparseable_response", "raw": ""}}` — an EMPTY body, not a query error, so
+    the run could not tell a transport failure from an empty result.  The
+    LIMIT/OFFSET paging inside a chunk did NOT help: the request size, not the
+    result size, is what the bridge refuses.  Chunking the IN list fixes it and
+    keeps the one-call-per-200-symbols budget the function always claimed.
+    """
+    if not symbols:
+        return {}
+    out: dict = {}
+    for i in range(0, len(symbols), page):
+        out.update(_overlay_chunk(bridge, symbols[i:i + page], t1_date, page))
+    return out
+
+
+def _overlay_chunk(bridge, symbols, t1_date, page=200):
+    """One chunk of the overlay: the valuation/quality fields AND the up-day
+    streak, joined server-side so the result is one row per symbol."""
     if not symbols:
         return {}
     sym_sql = _sql_list(symbols)

@@ -1007,3 +1007,74 @@ trace. The only durable mitigation on our side is to publish EARLY — the sweep
 list before the narrative work — so a later crash still leaves a usable universe for #07
 and #08. That is a change to the sweep's run order inside `sweep_pipeline.py` and is worth
 doing next.
+
+---
+
+## 2026-11-12 (fire) — three defects found while the 2026-11-12 sweep was rebuilt after a delayed replay
+
+The 2026-11-12 18:30 ET fire was dispatched on time and **resumed in place at 2026-11-13
+08:47 ET** — a delayed replay, ~14 hours later. The sweep was rebuilt for the *scheduled*
+date (2026-11-12), not the resume day, and the anchor was re-verified against shibui's own
+settled bars (SPY 757.12 / RSP 220.72 / QQQ 688.17 — identical on the TradingView scanner
+and on shibui's 2026-11-12 rows). Three defects surfaced while doing it. All three are
+landed in the repo, so the next fire inherits the fix with no `cron_update` and no prompt
+edit.
+
+### 1. The overlay sent the WHOLE book in one request, and the bridge answered with an EMPTY body
+
+`tools/daily_sweep_engines.py :: overlay_quality()` put every symbol into a single
+`IN (...)` list and paged with `LIMIT/OFFSET`. With the real book — **3,814 tickers** —
+the bridge replied:
+
+```
+{"error": "rpc_failed", "response": {"error": "unparseable_response", "raw": ""}}
+```
+
+An **empty body**, not a query error. The engine's contract says a failed call raises, so
+the run *did* fail loudly rather than publishing a silent zero — but the failure message
+names a transport fault, and the real cause is **request size**: the `LIMIT/OFFSET` paging
+never shrinks the `IN` list, because every page repeats it.
+
+**Landed:** `overlay_quality()` now **chunks the symbol list** (200 per bridge call) and
+merges the chunks; `_overlay_chunk()` holds the original body. Verified against the live
+bridge on 500 symbols (433 rows) and by `tools/test_daily_sweep_engines.py` (9 checks:
+the chunk sizes are `ceil(n/200)`, every chunk is ≤ 200 symbols, and a chunk that raises
+propagates instead of returning a short book).
+
+### 2. `consume` wrote `ariel-hernandez.md` from the CANSLIM proxy, so the Hernandez funnel reached no file
+
+`scripts/screen.py :: cmd_consume()` built the hernandez file from the names carrying
+`jeff_sun_canslim`. The hernandez *bucket* is the theme → group → leaders funnel
+(`H_hernandez_theme`), so the funnel's own names reached **no** per-stylist file — they
+appeared in `master.md` only — while `ariel-hernandez.md` silently **duplicated
+`jeff-sun.md`'s names**. Measured on the published 2026-11-11 run: 69 CANSLIM names in a
+file whose own screen produced 153. The 2026-11-11 artifact's prose described the funnel
+in that file, so the artifact and the file disagreed.
+
+**Landed:** the hernandez file is now built from the **hernandez bucket**, falling back to
+the CANSLIM proxy only when no theme-funnel branch ran (an empty per-stylist file is a
+failure class in its own right). Verified end-to-end: the patched `consume` reproduces the
+published `ariel-hernandez.md` **byte-identically** (62 rows).
+
+### 3. `fundamentals_derived_quarterly`'s `MAX(date)` is a ONE-ROW reporting date — CANSLIM's growth half comes back NULL
+
+The CANSLIM branch takes each symbol's latest reported quarter. Taking
+`date = (SELECT MAX(date) FROM fundamentals_derived_quarterly ...)` selects **2026-10-10,
+which carries exactly one row** — so the join produced **0 of 6,279** rows with a non-NULL
+`eps_growth_yoy`, and the branch returned nothing. The real quarter-ends are sparse per
+date (`2026-09-30` → 2,762 rows, `2026-10-03` → 35, `2026-10-04` → 7).
+
+**Landed (in the sweep SQL, published with the gate):** the quarter half is selected with
+`QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) = 1` over the last
+200 days, so each symbol contributes its own most recent reported quarter. With RSI 40-80,
+price > $5, market cap > $1B and the stock up on its session, **154 names** passed on the
+2026-11-11 session (the gate is published in the artifact).
+
+### Not a defect, but worth stating: the replay anchor
+
+The scanner's daily `close` before 09:30 ET is the **previous** session's settle, so a
+resumed run can still read the fire date's own bar. That is a convenience, not a
+guarantee — the artifact's numbers were re-verified against shibui's settled rows for
+2026-11-12 before publication, and the artifact says so in its reconstruction note. **A
+delayed replay is normal; a replay that silently drifts onto the resume day is not**, and
+the anchor check is what separates the two.
