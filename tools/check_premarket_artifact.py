@@ -21,16 +21,42 @@ Exit codes: 0 = contract satisfied; 1 = at least one FAIL (each is printed).
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
+
+# Capability marker. The fetch ladder demands it: an OLD checker does not know
+# about the v6 fields, and a run that passes an old check is not a checked run.
+PREMARKET_CHECK_V2 = "PREMARKET_CHECK_V2"
 
 # ---- the published constants (they live in the skill spec; keep the two in sync) ----
 GAP_TRIGGER_PCT = 4.0
 MIN_PM_VOLUME_SHARES = 50_000
 MIN_EXECUTED_SHARES = 25
 
-CONTRACT_VERSION = "premarket-artifact-v5"
+CONTRACT_VERSION = "premarket-artifact-v6"
+
+# The v5 clauses (the universe/denominator session) apply from v5 ONWARDS; the
+# v6 clauses (the tape lag, the driver class, the prior session's change) apply
+# from v6. A version comparison is explicit so that bumping CONTRACT_VERSION
+# never silently DISABLES a clause an older artifact already satisfies.
+V5_COLS = ("universe_date", "ref_close_date", "universe_source")
+V6_COLS = ("tape_lag_min", "driver_class", "prior_session_change")
+
+DRIVER_CLASSES = {"CATALYST", "CRYPTO_BETA", "MARKET_BETA", "SECTOR_BETA",
+                  "IDIOSYNCRATIC", "NO_MOVE"}
+
+PULL_MARKER = "premarket-pull-v2"
+RENDER_MARKER = "premarket-render-v1"
+
+
+def ver_at_least(ver, target):
+    """'premarket-artifact-v5' >= 'premarket-artifact-v5' -> True."""
+    def n(v):
+        m = re.search(r"v(\d+)$", str(v or ""))
+        return int(m.group(1)) if m else 0
+    return n(ver) >= n(target)
 
 VERDICTS = {
     "FLAGGED",              # clears on the tape AND size
@@ -239,6 +265,17 @@ def check_md(path):
             ok(f"the marker line publishes the scanned count ({scanned})")
         else:
             bad("the marker line has no parseable `scanned: N` count")
+        if ver_at_least(ver, "premarket-artifact-v6"):
+            if PULL_MARKER in (ml or ""):
+                ok(f"the marker line carries the pull capability marker ({PULL_MARKER})")
+            else:
+                bad(f"the marker line does not carry the pull capability marker "
+                    f"({PULL_MARKER}) - a cached OLD pull script can write the OLD shape")
+            if RENDER_MARKER in (ml or ""):
+                ok(f"the marker line carries the renderer capability marker ({RENDER_MARKER})")
+            else:
+                bad(f"the marker line does not carry the renderer capability marker "
+                    f"({RENDER_MARKER}) - the markdown must be engine-owned")
 
     # --- 3. the scan table carries a verdict column and every CSV name ---------
     scan_body = strip_fences(section_body(lines, secs, "focusscan"))
@@ -268,8 +305,10 @@ def check_csv(path, md_rows, md_verdict_flagged, md_scanned, version=CONTRACT_VE
         cols = rdr.fieldnames or []
         rows = list(rdr)
     req = list(REQUIRED_CSV_COLS)
-    if version != CONTRACT_VERSION:
-        req = [c for c in req if c not in ("universe_date", "ref_close_date", "universe_source")]
+    if not ver_at_least(version, "premarket-artifact-v5"):
+        req = [c for c in req if c not in V5_COLS]
+    if ver_at_least(version, "premarket-artifact-v6"):
+        req = req + list(V6_COLS)
     missing = [c for c in req if c not in cols]
     if missing:
         bad(f"the CSV header is missing required columns: {missing}")
@@ -280,9 +319,8 @@ def check_csv(path, md_rows, md_verdict_flagged, md_scanned, version=CONTRACT_VE
         return rows
 
     req_vals = list(REQUIRED_CSV_VALUES)
-    if version != CONTRACT_VERSION:
-        req_vals = [c for c in req_vals
-                    if c not in ("universe_date", "ref_close_date", "universe_source")]
+    if not ver_at_least(version, "premarket-artifact-v5"):
+        req_vals = [c for c in req_vals if c not in V5_COLS]
     for n, r in enumerate(rows, 1):
         tick = str(r.get("ticker", "")).strip()
         empties = [c for c in req_vals if not str(r.get(c, "")).strip()]
@@ -302,6 +340,29 @@ def check_csv(path, md_rows, md_verdict_flagged, md_scanned, version=CONTRACT_VE
             en = num(r.get("exec_notional"))
             if en is not None and es > 0 and en <= 0:
                 bad(f"CSV row {n} ({tick}) has exec_shares={es:g} but exec_notional={en:g}")
+        # v6: the driver class and the tape lag are FIELDS, and a field that is
+        # silently empty is a silent failure, not a missing value.
+        if ver_at_least(version, "premarket-artifact-v6"):
+            dc = str(r.get("driver_class", "")).strip().upper()
+            if not dc:
+                bad(f"CSV row {n} ({tick}) has no driver_class - a gap that clears the bar is "
+                    f"not automatically a setup, and the reader has to be told which it is")
+            elif dc not in DRIVER_CLASSES:
+                bad(f"CSV row {n} ({tick}) has an invalid driver_class: {dc} "
+                    f"(allowed: {', '.join(sorted(DRIVER_CLASSES))})")
+            lag = str(r.get("tape_lag_min", "")).strip()
+            if not lag:
+                bad(f"CSV row {n} ({tick}) has no tape_lag_min - a print's age against the wall "
+                    f"clock is what makes a stale tape visible")
+            else:
+                lv = num(lag)
+                if lv is None and lag.lower() not in ("n/a", "na"):
+                    bad(f"CSV row {n} ({tick}) has a non-numeric tape_lag_min: {lag!r}")
+                elif lv is not None and lv < 0:
+                    bad(f"CSV row {n} ({tick}) has a negative tape_lag_min: {lv}")
+            if not str(r.get("prior_session_change", "")).strip():
+                bad(f"CSV row {n} ({tick}) has no prior_session_change - 'n/a' is the honest "
+                    f"value, an empty cell is not")
     ok(f"every CSV row ({len(rows)}) carries verdict / exec_shares / ref_close_source")
 
     # --- the gate arithmetic -------------------------------------------------
@@ -490,6 +551,99 @@ def check_reply(path, rows):
             bad(f"FLAGGED name {tick} is not named in the reply's Signal section")
 
 
+def check_reply_ladder(pull_path, region):
+    """v6: the reply's Signal section must name the market's biggest gaps.
+
+    The artifact's PRIMARY table is the market ladder, so the reply's Signal
+    section leads with it. A reply that names only the Focus book is reporting
+    the wrong book at the reader.
+    """
+    if not pull_path or not os.path.exists(pull_path):
+        return
+    print("[reply] the market ladder")
+    try:
+        with open(pull_path, encoding="utf-8") as fh:
+            pull = json.load(fh)
+    except Exception as e:
+        bad(f"the pull JSON could not be read ({e})")
+        return
+    ladder = pull.get("market_ladder") or []
+    if not ladder:
+        ok("the engine saw no market-wide gap leaders - nothing to name")
+        return
+    top = [str(t.get("ticker", "")).strip() for t in ladder[:3]]
+    named = [t for t in top if re.search(rf"\b{re.escape(t)}\b", region)]
+    if len(named) >= min(3, len(top)):
+        ok(f"the reply's Signal section names the market's top gaps ({', '.join(top)})")
+    else:
+        bad(f"the reply's Signal section names {len(named)} of the market's top gaps "
+            f"({', '.join(top)}) - the market's book leads the artifact, so it leads the reply")
+
+
+def check_ladder(lines, secs, version):
+    """v6: the MARKET's gaps are the PRIMARY table.
+
+    The Focus list is a momentum screen built on the PREVIOUS session, so it
+    structurally cannot contain a name whose move has not happened yet -
+    measured 2026-11-12, the Focus book held 0 of the day's real movers. A
+    pre-market gapper whose headline is the Focus book's count is therefore
+    reporting the wrong book.
+    """
+    if not ver_at_least(version, "premarket-artifact-v6"):
+        return []
+    print("[section] Market ladder")
+    hit = find_section(secs, "marketladder")
+    if not hit:
+        bad("the artifact has no '## Market ladder' section - the market's pre-market gaps are "
+            "the PRIMARY table and the Focus book follows them")
+        return []
+    body = strip_fences(section_body(lines, secs, "marketladder"))
+    headers, lrows = md_table(body)
+    if not headers:
+        bad("the Market ladder section has no table")
+        return []
+    if not lrows:
+        bad("the Market ladder table is empty - the market's gaps are the point of the artifact")
+        return []
+    ok(f"the Market ladder section carries a table ({len(lrows)} rows)")
+    fs = find_section(secs, "focusscan")
+    if fs and hit[1][0] > fs[1][0]:
+        bad("the Market ladder comes AFTER the Focus scan - the market's book must lead")
+    else:
+        ok("the Market ladder comes before the Focus scan")
+    tickers = []
+    for r in lrows:
+        for h in (r.keys() or []):
+            if norm(h) in ("ticker", "symbol", "name"):
+                tickers.append(str(r.get(h, "")).strip().strip("*"))
+                break
+    return tickers
+
+
+def check_ladder_against_pull(pull_path, ladder_tickers):
+    """The ladder the artifact published must be the ladder the ENGINE saw."""
+    if not pull_path or not os.path.exists(pull_path):
+        return
+    print("[pull] the market ladder against the engine's data")
+    try:
+        with open(pull_path, encoding="utf-8") as fh:
+            pull = json.load(fh)
+    except Exception as e:
+        bad(f"the pull JSON could not be read ({e})")
+        return
+    expected = [str(t.get("ticker", "")).strip() for t in (pull.get("market_ladder") or [])]
+    if not expected:
+        ok("the engine saw no market-wide gap leaders - nothing to cross-check")
+        return
+    # the markdown publishes the top N; the FULL list stays in the pull JSON
+    expected = expected[:len(ladder_tickers)] if ladder_tickers else []
+    if sorted(ladder_tickers) == sorted(expected):
+        ok(f"the published ladder matches the engine's market_ladder ({len(expected)} names)")
+    else:
+        bad(f"the published ladder ({len(ladder_tickers)} names) differs from the engine's "
+            f"market_ladder ({len(expected)} names) - the table was not rendered from the pull")
+
+
 def check_universe(rows, version=CONTRACT_VERSION):
     """v5: the artifact must name the universe's session and the denominator's
     session, and they must be ONE date each for the whole artifact.
@@ -497,7 +651,7 @@ def check_universe(rows, version=CONTRACT_VERSION):
     A gap computed against a different session than the universe belongs to is
     the wrong-number bug this contract exists to stop, so it is a hard failure.
     """
-    if version != CONTRACT_VERSION:
+    if not ver_at_least(version, "premarket-artifact-v5"):
         print("[universe] skipped (the artifact predates the universe contract)")
         return
     print("[universe] the universe date and the denominator session")
@@ -528,6 +682,9 @@ def main():
     ap.add_argument("--md", required=True)
     ap.add_argument("--csv", required=True)
     ap.add_argument("--reply", default=None)
+    ap.add_argument("--pull-json", default=None,
+                    help="the _premarket-pull.json - lets the checker cross-check the published "
+                         "market ladder against the engine's data")
     args = ap.parse_args()
 
     for p in (args.md, args.csv):
@@ -539,10 +696,29 @@ def main():
     version = ver or CONTRACT_VERSION
     rows = check_csv(args.csv, md_rows, flagged, scanned, version)
     check_universe(rows, version)
+    ladder_tickers = check_ladder(lines, secs, version)
+    check_ladder_against_pull(args.pull_json, ladder_tickers)
     check_nonqualifying(lines, secs, rows)
     check_flags(lines, secs, rows)
     if args.reply and os.path.exists(args.reply):
         check_reply(args.reply, rows)
+        if args.reply:
+            with open(args.reply, encoding="utf-8", errors="replace") as fh:
+                reply_raw = fh.read()
+            rlines = reply_raw.split("\n")
+            start = None
+            for i, ln in enumerate(rlines):
+                if re.match(r"^\s*#{2,4}\s*Signal", ln, re.I):
+                    start = i
+                    break
+            end = len(rlines)
+            if start is not None:
+                for j in range(start + 1, min(len(rlines), start + 80)):
+                    if re.match(r"^\s*#{2,4}\s", rlines[j]):
+                        end = j
+                        break
+            region = "\n".join(rlines[start:end]) if start is not None else reply_raw
+            check_reply_ladder(args.pull_json, region)
     elif args.reply:
         bad(f"reply file not found: {args.reply}")
 

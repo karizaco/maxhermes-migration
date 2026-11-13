@@ -825,3 +825,91 @@ only failures were (1) the tool timeout and (2) my own thin-header curl.
 4. Split §6 into **`specs/premarket.md`** so the routine fetches ~50 KB of instruction, not 177 KB.
 5. Put the **event-book filters** (`type=stock`, cap > $200M) and the **catalyst-confirmation rule**
    in the spec, so neither depends on a run's judgement.
+
+---
+
+## 2026-11-13 — the v6 PIPELINE: the markdown is engine-owned, the ladder leads, the lag is published
+
+The run analysis above ended with five changes. **Three of them are landed here** (the ones
+approved on 2026-11-13): the renderer, the new published fields, and the adaptive pull with the
+re-pull wave. The other two (splitting §6 into its own spec file, and the search budget) are
+noted below as the remaining work.
+
+### 1. THE CONTRACT MARKDOWN IS NOW ENGINE-OWNED
+
+`scripts/render_premarket_artifact.py` (marker **`premarket-render-v1`**) writes BOTH contract
+files — `pre-market-gapper.md` and `pre-market-gapper.csv` — from the pull's
+`_premarket-pull.json` plus the universe manifest. The pull (marker **`premarket-pull-v2`**)
+owns the NUMBERS and no longer writes the CSV, so **there is one owner per output file** and
+the two can never disagree about a column set.
+
+Until now the markdown was typed into the chat context on every fire (~140 lines, every number
+a transcription, the builder living only in one sandbox). The renderer is fetched at RUN time
+behind its marker, and the skill says plainly: **never hand-write the markdown; if the renderer
+is unavailable there is no artifact.**
+
+### 2. THE MARKET LADDER IS THE PRIMARY TABLE
+
+The renderer publishes `## Market ladder — the day's pre-market gaps` **before** the Focus
+scan, from the engine's own `market_ladder` (TradingView, `type=stock`, market cap > $200M,
+pre-market volume > 20,000, `|gap| >= 4%`). The Focus book follows. The checker asserts the
+section exists, that it comes first, and — with `--pull-json` — that its rows ARE the engine's
+rows.
+
+### 3. THREE NEW PUBLISHED FIELDS
+
+| field | why |
+|---|---|
+| `tape_lag_min` | the newest print's age against the wall clock. Measured 2026-11-12: 14–24 min for 11 of 12 names and **86 min** for one, and the v5 artifact said nothing. A lag over 30 min is named in `## Flags`. |
+| `driver_class` | `CATALYST` / `CRYPTO_BETA` / `MARKET_BETA` / `SECTOR_BETA` / `IDIOSYNCRATIC` / `NO_MOVE`. **A gap that clears the bar is not automatically a setup** — MARA cleared the gate on 2026-11-12 and was a bitcoin gap. The class is the STRUCTURAL driver; a confirmed catalyst is appended to `driver_basis` rather than overriding it. |
+| `prior_session_change` | the denominator session's own move, from the sweep's `focus.csv` — costs no extra call and separates a continuation from a reversal. |
+
+`pm_volume_pct_30d`, `sustained` and `catalyst` ride along in the same contract.
+
+The driver is measured against the index proxy (SPY), the sector proxy and bitcoin **on the
+same TradingView snapshot as the name**, so the two numbers are comparable; the published gap
+stays the Nasdaq tape's.
+
+### 4. THE PULL STOPS EARLY, AND A SECOND WAVE IS SPREAD ACROSS THE RUN
+
+- **Adaptive pulls:** the loop stops when two consecutive pulls carry the same vintage (min 2,
+  max 4) and keeps going while the vintage rotates. Measured 2026-11-12: 36 of the 48 requests
+  were redundant (~9 s of wall clock at 6-way parallelism) — with identical output.
+- **The re-pull wave** (`--re-pull`) re-pulls only the **decision-relevant** names (`|gap| >= 2%`
+  or a lag over 45 min), merges a newer print when it finds one, recomputes the verdict, and
+  records the wave. It is the divergence record the spec asked for in §6.5 rule 5 and the burst
+  of pulls could never produce.
+
+### 5. THE CHECKER, THE TEST AND THE CONTEXT FILE
+
+- `tools/check_premarket_artifact.py` is now `PREMARKET_CHECK_V2`: it asserts the two
+  capability markers in the marker line, the v6 fields on every row, the driver vocabulary, the
+  ladder's presence, its position and its agreement with the engine, and that the reply names
+  the market's top 3 gaps. The v5 clauses still apply to a v5 artifact — the version comparison
+  is explicit so that bumping the contract never silently DISABLES a clause.
+- `tools/test_premarket_pipeline.py` — **20 offline checks**, and it caught two of my own bugs
+  while it was being written (a fixture that met the gate but was not marked FLAGGED, and a
+  driver precedence that was not what the spec said). It pins the adaptive pull, the lag and the
+  driver classes, and it renders an artifact and asserts the checker ACCEPTS it.
+- `premarket-context.json` is the only channel for what a machine cannot derive — the
+  **confirmed** catalysts. A TradingView `earnings_release_date` is a candidate, not a
+  catalyst; a name with none is published as "no catalyst confirmed in this run".
+
+### STILL TO DO (not landed here)
+
+- **Split §6 into `specs/premarket.md`** (~15 KB) so the routine fetches ~50 KB of instruction
+  instead of 177 KB. The run analysis measured the instruction payload as the largest single
+  lever on the routine's wall clock.
+- **Cap the searches** at 4 and skip any name whose only "catalyst" is a TV timestamp.
+
+### THE CHANGE A FIRE MUST MAKE
+
+```bash
+python3 "$U" --fire-date <date> --out-dir "$D"                       # prove the universe
+python3 "$S" --from-csv <focus.csv> --universe-manifest "$D/_universe.json" --out-dir "$D"
+python3 "$S" --re-pull --out-dir "$D" --re-pull-min-gap 2 --max-lag-min 45
+python3 "$R" --pull-json "$D/_premarket-pull.json" --universe-manifest "$D/_universe.json" \
+    --context "$D/premarket-context.json" --out-dir "$D" --date <date>
+python3 "$C" --md "$D/pre-market-gapper.md" --csv "$D/pre-market-gapper.csv" \
+    --pull-json "$D/_premarket-pull.json" --reply /workspace/reply.txt
+```

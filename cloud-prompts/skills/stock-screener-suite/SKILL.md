@@ -1645,34 +1645,59 @@ Responses carry a `cache-hit` header, and a unique query string does **not** rel
 
 Rules for this scan:
 
-1. **Never trust a single tape pull.** Pull the endpoint N times (N >= 4) and keep the payload
-   with the **newest internal timestamp** (the latest `tradeDetailTable` clock time, after
-   sorting — the table is served newest-first). A stale vintage can never win a max-timestamp
-   comparison.
-2. **The published gap comes from the tape's last EXECUTED print**, never from the live quote.
+1. **Never trust a single tape pull — but do not pay for four when two agree.** Pull the
+   endpoint until the cached vintage **stops changing** (min 2, max 4) and keep the payload with
+   the **newest internal timestamp** (the latest `tradeDetailTable` clock time, after sorting —
+   the table is served newest-first). A stale vintage can never win a max-timestamp comparison.
+   *Measured 2026-11-12:* every one of the 48 responses carried a cache-hit and **10 of 12
+   symbols returned a SINGLE vintage across all four pulls**, so the rule had nothing to choose
+   from and 36 of the 48 requests were redundant (the endpoint answers in 1.2–3.3 s). The loop
+   now stops on the first repeat and keeps going while the vintage rotates — which is the only
+   case the rule exists for.
+2. **The burst of pulls cannot see an OLD tape — publish the LAG.** A stable cache returns the
+   same vintage however many times it is asked, so "pull it four times" does not make a 90-minute-old
+   print any fresher. Measured 2026-11-12: the newest print was 14–24 minutes behind the wall
+   clock for 11 of 12 names and **86 minutes** for one. `tape_lag_min` is published on every row
+   (6.7), a lag over 30 minutes is named in `## Flags`, and the **re-pull wave** (6.6) is spread
+   across the run so the artifact can see whether the tape actually moved.
+3. **The published gap comes from the tape's last EXECUTED print**, never from the live quote.
    The live quote is published as a separate column (`quote_price`, `quote_gap_pct`) and it is
    what makes `BORDERLINE_TAPE_ONLY` visible.
-3. **Prefer the Cboe delayed-quote CDN** as the independent price cross-check:
+4. **Prefer the Cboe delayed-quote CDN** as the independent price cross-check:
    `https://cdn.cboe.com/api/global/delayed_quotes/quotes/{SYM}.json` returns an explicit
    `last_trade_time` and `timestamp`, so its freshness is verifiable from the payload rather
    than inferred. It is not subject to the Nasdaq cache.
-4. **Volume:** the `infoTable` cumulative counter can itself be faulty (ADT jumped 6,500 ->
+5. **Volume:** the `infoTable` cumulative counter can itself be faulty (ADT jumped 6,500 ->
    606,500 mid-session while its complete 71-row tape stayed at 6,726). The trade-detail table
    is capped at 100 rows, so **when `tape_n < 100` the tape is complete** and can arbitrate a
    contradictory counter. Prefer the tape sum and record the rejection in `pm_volume_source`.
-5. **Take multiple snapshots across the run** (e.g. 08:46 / 08:52 / 08:57 / a paired 09:00
+6. **Take multiple snapshots across the run** (e.g. 08:46 / 08:52 / 08:57 / a paired 09:00
    pull). They serve as the liveness proof, the max-timestamp source, and the divergence record.
 
 Because a stale vintage can move an individual name's gap by ~2.4pp, publish the margin against
 the trigger: if the widest gap on any source is well inside the 4% band, the flag decision is
 immune to the cache and should be stated as such.
 
-#### 6.6 THE HELPER — run it, it is the reference implementation
+#### 6.6 THE TWO ENGINES — run them, they are the reference implementation
 
-`scripts/premarket_pull.py` implements the whole defence (N tape pulls + max-newest-timestamp,
-the live `/info` price, the complete-tape volume arbitration, the Cboe and TradingView
-cross-checks, the focus.csv join, the verdict and the contract CSV). Fetch it at RUN time and
-require the capability marker — an OLD copy would write the OLD artifact shape:
+**From 2026-11-13 the contract markdown is ENGINE-OWNED.** Until then it was written by the
+agent, by hand, on every fire: the pull produced the numbers and the CSV, and then ~140 lines
+of markdown were typed into the chat context and written out. Every number in it was a
+transcription, the builder lived only in one sandbox, and the next fire re-invented it —
+differently. That is the exact drift class the artifact contract exists to prevent.
+
+So there are now TWO engines and **one owner per output file**:
+
+| engine | marker | owns |
+|---|---|---|
+| `scripts/premarket_pull.py` | `premarket-pull-v2` | the NUMBERS: `_premarket-pull.json` (full per-symbol provenance), `premarket-pull.md` (helper table), the market ladder, the driver classes |
+| `scripts/render_premarket_artifact.py` | `premarket-render-v1` | the CONTRACT FILES: `pre-market-gapper.md` and `pre-market-gapper.csv` |
+
+**Never hand-write `pre-market-gapper.md`.** If the renderer is unavailable there is NO
+artifact — the same rule the pull has always had.
+
+Fetch both at RUN time and require their capability markers — an OLD copy would write the OLD
+artifact shape, and the checker would then fail the run for no visible reason:
 
 ```bash
 mkdir -p /workspace/tools
@@ -1683,50 +1708,128 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-artifact-v5' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'premarket-pull-v2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
-if [ ! -s "$S" ] || ! grep -q 'premarket-artifact-v5' "$S"; then
+if [ ! -s "$S" ] || ! grep -q 'premarket-pull-v2' "$S"; then
   echo "premarket_pull.py: UNAVAILABLE (no copy carrying the current contract)"
   echo "no artifact; no push"
   exit 1
 fi
 
-# the universe is resolved and PROVEN first (6.3a) - the manifest is authoritative
-python3 "$U" --fire-date <the fire's scheduled date> --out-dir /workspace/daily-screens/{date>
-python3 "$S" --from-csv <the focus.csv the resolver used> \
-    --universe-manifest /workspace/daily-screens/{date>/_universe.json} \
-    --out-dir /workspace/daily-screens/{date} --pulls 4 \
-    --gap-trigger 4 --volume-floor 50000 --min-exec 25
+R=/workspace/tools/render_premarket_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/skills/stock-screener-suite/scripts/render_premarket_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/skills/stock-screener-suite/scripts/render_premarket_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/skills/stock-screener-suite/scripts/render_premarket_artifact.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$R.tmp" "$U" 2>/dev/null
+  if [ -s "$R.tmp" ] && grep -q 'premarket-render-v1' "$R.tmp" 2>/dev/null; then
+    mv -f "$R.tmp" "$R"; break
+  fi
+  rm -f "$R.tmp"
+done
+if [ ! -s "$R" ] || ! grep -q 'premarket-render-v1' "$R"; then
+  echo "render_premarket_artifact.py: UNAVAILABLE - there is no artifact, because the contract"
+  echo "markdown is engine-owned. Never hand-write it."
+  exit 1
+fi
 ```
 
-It writes `_premarket-pull.json` (full per-symbol provenance), `premarket-pull.md` (a helper
-table) and **`pre-market-gapper.csv` — the contract CSV, one row per Focus name**. It also
-prints the **marker line** the artifact must carry (§6.7).
+**THE RUN SEQUENCE.** The order matters: the universe is proven before any tape is pulled, the
+catalysts are confirmed before the artifact is rendered, and the RE-PULL WAVE is spread across
+the run so it can see whether the tape moved.
+
+```bash
+D=/workspace/daily-screens/<date>
+
+# 1. PROVE the universe first (6.3a) - the manifest is authoritative
+python3 "$U" --fire-date <the fire's scheduled date> --out-dir "$D"
+
+# 2. the tape pull - THE NUMBERS. The pull stops early once the cached vintage
+#    stops changing (min 2 pulls, max 4), and it also fetches the market-wide
+#    gap-leader ladder and the index/sector/crypto proxies.
+python3 "$S" --from-csv <the focus.csv the resolver used> \
+    --universe-manifest "$D/_universe.json" \
+    --out-dir "$D" --pulls 4 \
+    --gap-trigger 4 --volume-floor 50000 --min-exec 25
+
+# 3. the CONTEXT file - the catalysts only an agent can confirm (6.6a)
+#    write "$D/premarket-context.json"
+
+# 4. the RE-PULL WAVE - decision-relevant names only, spread across the run
+python3 "$S" --re-pull --out-dir "$D" --re-pull-min-gap 2 --max-lag-min 45
+
+# 5. RENDER the contract files
+python3 "$R" --pull-json "$D/_premarket-pull.json" \
+    --universe-manifest "$D/_universe.json" \
+    --context "$D/premarket-context.json" \
+    --out-dir "$D" --date <the fire's date>
+
+# 6. CHECK (6.11) - a non-zero exit means the run FAILS
+```
+
+**The RE-PULL WAVE is not optional.** The burst of pulls protects against a ROTATING cache, but
+it cannot see a tape that is simply OLD: a stable cache returns the same vintage however many
+times it is asked (measured 2026-11-12: 10 of 12 symbols served ONE vintage across four pulls,
+and the newest print was 14–24 minutes behind the wall clock — 86 minutes for one name). A wave
+spread across the run is what produces the divergence record. It re-pulls only the
+**decision-relevant** names — `|gap| >= 2%` (the near-miss band) or a tape lag over 45 minutes —
+because a name below the near-miss band cannot change the flag decision. When the second wave
+finds a newer print, the record is merged, the verdict is recomputed, and the artifact publishes
+the NEWEST tape.
 
 The prior sweep's `focus.csv` is the input that carries three things at once: the tickers, the
 **reference close** (the latest dated `close_<date>` column) and the **screen provenance**
 (`stylists`, `origins`) — the last one is what lets you say "CDNA, five origins and three
-stylists" instead of dropping a high-quality setup that went nowhere. Fetch it from
-`karizaco/minimax-cloud-outputs` `main`, `daily-screens/<prior-date>/focus.csv`.
+stylists" instead of dropping a high-quality setup that went nowhere. It also carries
+`today_change`, the **prior session's own move**, which costs no extra call and tells the reader
+whether today's gap is a continuation or a reversal. Fetch it from `karizaco/minimax-cloud-outputs`
+`main`, `daily-screens/<prior-date>/focus.csv`.
 
-If you re-implement the logic inline instead of running the helper, the artifact must carry
-exactly the same fields — the checker verifies the artifact, not the route you took.
+#### 6.6a THE CONTEXT FILE — what only an agent can know
 
-#### 6.7 ARTIFACT FORMAT CONTRACT v5
+The engines can measure a gap, a lag and a beta. They cannot know WHY a company moved. The
+context file is the only channel for that, and it is deliberately small:
+
+```json
+{
+  "catalysts": {
+    "LUNR": {"confirmed": true,
+             "source": "issuer press release, 11/12",
+             "note": "Q3 revenue $269M vs $250.8M consensus; record $1.9B backlog"}
+  },
+  "notes": ["anything the agent wants in the Method section"],
+  "source_health": [{"source": "web_search", "status": "ok", "role": "the catalysts"}]
+}
+```
+
+**A catalyst is `confirmed` only when the issuer's release or the wire says so.** The
+TradingView `earnings_release_date` field is a **candidate**, not a catalyst: measured
+2026-11-12, NBIS carried `2026-08-12` while it gapped −13.5% on its Q3 print, and several
+names carry a 10:30 ET stamp that is neither a pre-open nor a post-close slot. A name with no
+confirmed catalyst is published as **"no catalyst confirmed in this run"** — never a guess.
+
+A confirmed catalyst on a name whose move is structurally a BETA does not override the beta: the
+structural driver is what tells the trader how the name will behave today, and the catalyst is
+appended to the driver basis.
+
+#### 6.7 ARTIFACT FORMAT CONTRACT v6
 
 Two files, same directory: `daily-screens/<date>/pre-market-gapper.md` and
 `daily-screens/<date>/pre-market-gapper.csv`. Never let a row exist in one and not the other.
+**Both are written by the renderer (6.6) — the agent does not hand-write either.**
 
 **The marker line** — the first line of the markdown, or within the first 10:
 
 ```
-_contract: premarket-artifact-v5 · flagged: N · scanned: M · gate: |gap|>=4.0% and pm_volume>=50,000 and exec_shares>=25 · reference close: <source> · universe: <session> · denominator session: <session>_
+_contract: premarket-artifact-v6 · flagged: N · scanned: M · gate: |gap|>=4.0% and pm_volume>=50,000 and exec_shares>=25 · reference close: <source> · pull: premarket-pull-v2 · renderer: premarket-render-v1_
 ```
 
-`flagged` and `scanned` MUST match the CSV. The checker asserts both.
+`flagged` and `scanned` MUST match the CSV. The checker asserts both, and it asserts that the
+**capability markers are present** — a cached OLD pull script would write the OLD shape.
 
 **The markdown skeleton — these sections, in this order:**
 
@@ -1734,27 +1837,41 @@ _contract: premarket-artifact-v5 · flagged: N · scanned: M · gate: |gap|>=4.0
 # Pre-Market Gapper — <Weekday, DD Month YYYY>
 <banner: 2 lines — the session, the snapshot time(s), the source of record>
 ## TL;DR
+## Market ladder — the day's pre-market gaps
 ## Focus scan — all names
 ## Focus names that did not qualify
 ## Flags
 ## Method, source health & caveats
+## Catalyst ahead
 ```
 
 - **`<banner>`** — two lines, before anything else: the session and the snapshot clock times
   (ET) and the source of record. The tape moves; the reader needs to know how live it is.
-- **`## TL;DR`** — 3 bullets: the headline count, the most consequential name, and the caveat
-  that most changes how the run should be read.
+- **`## TL;DR`** — 3 bullets: the headline count and its driver, the market's biggest gaps
+  (they are outside the Focus list), and the caveat that most changes how the run should be read.
+- **`## Market ladder`** — **the PRIMARY table.** The Focus universe is a momentum screen built
+  on the PREVIOUS session, so it structurally cannot contain a name whose move has not happened
+  yet: measured 2026-11-12 the Focus book held **0** of the day's real movers (LUNR +11.5%,
+  TTEK +11.1%, NBIS −13.5%, CRWV −10.0%) and produced **no positive gappers at all**. A
+  pre-market artifact whose headline is the Focus book's count is reporting the wrong book.
+  The ladder is the market's gap leaders — TradingView, `type=stock`, market cap > $200M,
+  pre-market volume > 20,000, `|gap| >= 4%` — with the driver and the catalyst on each row.
+  The top 25 are published; the full list is in `_premarket-pull.json` (`market_ladder`).
+  **The filters are not optional:** pulled raw the list is 79 up / 313 down and the top of it is
+  PLCE +489% ($0.1985) plus a wall of single-stock leveraged ETFs whose move is a derivative of
+  the underlying, not a gap anyone can trade.
 - **`## Focus scan — all names`** — one table, one row per Focus name, **sorted by absolute
   gap, largest first**. Columns: `Ticker | Ref close | PM price (last executed print) | Gap % |
-  PM volume | Exec shares | Exec notional | PM high | PM low | Quote % | Verdict`. The
-  `Verdict` column is mandatory. `Exec shares` and `Exec notional` are mandatory — the reader
-  must see *why* a name did not qualify, numerically.
+  PM volume | Exec shares | Exec notional | PM high | PM low | Quote % | Driver | Lag (min) |
+  Prior sess % | Verdict`. The `Verdict` column is mandatory. `Exec shares` and `Exec notional`
+  are mandatory — the reader must see *why* a name did not qualify, numerically.
 - **`## Focus names that did not qualify`** — see 6.8.
 - **`## Flags`** — see 6.9.
 - **`## Method, source health & caveats`** — about the RUN, not about names: every source
   tried and its status, the denominator and which sources agreed on it, the margin against the
   trigger, the Nasdaq defects you checked, the snapshot timestamps, the provenance. **Data
   caveats live here** — never in `## Flags`.
+- **`## Catalyst ahead`** — the forward calendar: which names print after today's close.
 
 **The CSV columns** (the contract set — keep these names):
 
@@ -1762,17 +1879,31 @@ _contract: premarket-artifact-v5 · flagged: N · scanned: M · gate: |gap|>=4.0
 universe_date, ref_close_date, universe_source,
 ticker, ref_close, ref_close_source, pm_price, pm_gap_pct, exec_shares, exec_notional,
 pm_volume, pm_volume_source, quote_price, quote_gap_pct, bid, ask, pm_high, pm_low,
-pm_high_gap_pct, pm_low_gap_pct, tv_pm_pct, tv_pm_volume, stylists, origins, verdict, flag_reason
+pm_high_gap_pct, pm_low_gap_pct, tv_pm_pct, tv_pm_volume, stylists, origins, verdict, flag_reason,
+tape_newest_print, tape_lag_min, tape_pulls, tape_vintage_count, tape_wave_count,
+prior_session_change, pm_volume_pct_30d, driver_class, driver_basis, sustained, catalyst
 ```
 
 `universe_date` is the session the Focus list belongs to; `ref_close_date` is the session the gap
 is measured against. **They are the same date in a healthy run** — when they are not, the artifact
 says so in `## Flags` and the checker FAILS it.
 
-Every row carries a **non-empty** `verdict`, `exec_shares` and `ref_close_source`. `verdict` is
-one of the six values in 6.2. `exec_shares` is the size of the print that carried the published
-gap; `exec_notional` is `exec_shares × pm_price`. `flag_reason` is one plain sentence saying
-why the row got that verdict.
+Every row carries a **non-empty** `verdict`, `exec_shares`, `ref_close_source`, `tape_lag_min`,
+`driver_class` and `prior_session_change`. `verdict` is one of the six values in 6.2.
+`exec_shares` is the size of the print that carried the published gap; `exec_notional` is
+`exec_shares × pm_price`. `flag_reason` is one plain sentence saying why the row got that
+verdict.
+
+**The v6 fields, and what each one is for:**
+
+| field | meaning | why it exists |
+|---|---|---|
+| `tape_lag_min` | how many minutes the newest print is BEHIND the wall clock (ET) | measured 2026-11-12: 14–24 minutes for 11 of 12 names and **86 minutes** for one, and nothing in the v5 artifact said so. A stable cache returns the SAME vintage however many times it is asked, so the burst of pulls cannot see an old tape — only the lag can. A lag over 30 minutes is named in `## Flags`. |
+| `driver_class` | `CATALYST` / `CRYPTO_BETA` / `MARKET_BETA` / `SECTOR_BETA` / `IDIOSYNCRATIC` / `NO_MOVE` | **a gap that clears the bar is not automatically a setup.** MARA cleared the 4%/50,000/25 gate on 2026-11-12 and was a BITCOIN gap; NBIS and CRWV were an index/news drag. The class is the STRUCTURAL driver (it tells the trader how the name will behave today) and a confirmed catalyst is appended to `driver_basis`, not allowed to override it. |
+| `prior_session_change` | the denominator session's own move, from the sweep's `focus.csv` | costs no extra call and tells the reader whether the gap is a CONTINUATION (the name was already running) or a REVERSAL — which changes how it should be read. `n/a` is the honest value when the sweep did not publish it; an empty cell is not. |
+| `pm_volume_pct_30d` | pre-market volume as a % of the name's 30-day average | the 50,000-share floor is scale-blind: 9,120 shares is a real market on a $53B retailer and 694 shares is a quote on a penny. The absolute floor stays (6.1); the ratio ranks. |
+| `sustained` | did the pre-market low stay above the prior close | the cheapest quality filter in the scan, and it needs no new source. |
+| `catalyst` | the confirmed catalyst's note/source | the one thing a machine cannot derive. `no catalyst confirmed in this run` is a legitimate value. |
 
 #### 6.8 `## Focus names that did not qualify` — what was in the scan but did not make the list
 
@@ -1835,6 +1966,13 @@ routine-specific rules on top of it:
 - **The verdict carries the line, not a paragraph.** `PURR +3.07% tape / +4.43% quote —
   BORDERLINE_TAPE_ONLY` is the shape. The tables live in the file; the chat carries the verdict,
   the risk and the counts.
+- **`### Signal` LEADS WITH THE MARKET'S BIGGEST GAPS.** The artifact's primary table is the
+  market ladder, so the reply's Signal section names the **top 3 ladder names** with their gap
+  and their driver or catalyst — before the Focus book. A reply that names only the Focus book
+  is reporting the wrong book at the reader. The checker asserts it (it needs `--pull-json`).
+- **A `driver_class` decides how a line is written.** A `CRYPTO_BETA` / `MARKET_BETA` /
+  `SECTOR_BETA` name is a beta gap: say so in the line, because "a gap" and "a setup" are
+  different things.
 
 #### 6.11 VERIFY THE ARTIFACT BEFORE YOU REPORT IT
 
@@ -1846,20 +1984,30 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_artifact.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_premarket_artifact.py'; then
+  if [ -s "$C.tmp" ] && grep -q 'PREMARKET_CHECK_V2' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
+if [ ! -s "$C" ] || ! grep -q 'PREMARKET_CHECK_V2' "$C"; then
+  echo "check_premarket_artifact.py: UNAVAILABLE (no copy carrying the current contract)"
+  echo "no artifact; no push"
+  exit 1
+fi
 python3 "$C" \
   --md  /workspace/daily-screens/{date}/pre-market-gapper.md \
   --csv /workspace/daily-screens/{date}/pre-market-gapper.csv \
+  --pull-json /workspace/daily-screens/{date}/_premarket-pull.json \
   --reply /workspace/reply.txt
 ```
 
 Save the final chat reply to `/workspace/reply.txt` before running the checker — the
 `--reply` check asserts that the reply's `### Signal` section names the top 2 non-qualifying
-names and every `FLAGGED` name.
+names, every `FLAGGED` name and **the market's top 3 gaps**, and the `--pull-json` check
+cross-checks the published market ladder against the engine's own `market_ladder`.
+
+The checker is pinned by the marker `PREMARKET_CHECK_V2`: an OLD copy would not know about the
+v6 fields, and a run that silently passes an old check is not a checked run.
 
 **Both files ship.** `push_artifact.sh --out daily-screens` stages the whole output tree, so the
 CSV is pushed with the markdown — but verify BOTH paths, because a companion CSV that never
@@ -1870,8 +2018,11 @@ sh /workspace/verify_delivery.sh --path daily-screens/{date}/pre-market-gapper.m
 sh /workspace/verify_delivery.sh --path daily-screens/{date}/pre-market-gapper.csv --branch main
 ```
 
-It asserts the section skeleton and its order, the contract marker, the `flagged`/`scanned`
-counts against the CSV, the required columns on every row, the verdict vocabulary, that
+It asserts the section skeleton and its order, the contract marker **and both capability
+markers**, the `flagged`/`scanned` counts against the CSV, the required columns on every row
+(including the v6 `tape_lag_min` / `driver_class` / `prior_session_change`), the verdict and
+driver vocabularies, that the **market ladder is present and comes before the Focus scan** and
+matches the engine's data, that
 `count(FLAGGED)` equals the number of rows meeting the gate, that **no row below
 `MIN_EXECUTED_SHARES` is counted as a flag**, that every non-qualifying name appears in
 `## Focus names that did not qualify` with its provenance and a setup verdict, that every thin
@@ -1893,8 +2044,20 @@ Do not eyeball these things; the 2026-11-03 artifact looked fine and failed them
   including ARI (−63.9%), the largest mover of that day.
 - **Do not drop a name because it did not qualify.** The names that did not move are the
   feedback; they go in `## Focus names that did not qualify` and two of them go in the reply.
+- **Do not hand-write `pre-market-gapper.md`.** It is engine-owned from 2026-11-13 (6.6). A
+  hand-written artifact is a transcription, and the next fire's builder would be a different
+  builder.
+- **Do not publish a ladder row without its filter.** The market-wide book is `type=stock`,
+  market cap > $200M, pre-market volume > 20,000. Without those filters the "gap leaders" are
+  penny stocks and single-stock leveraged ETFs.
+- **Do not call a TradingView `earnings_release_date` a catalyst.** It is a candidate; a
+  catalyst is `confirmed` only when the issuer or the wire says so.
 
-#### 6.13 PUBLISHING MORE THAN THE FLAG — the five additions (v5)
+#### 6.13 PUBLISHING MORE THAN THE FLAG — the five additions (v6)
+
+**From 2026-11-13 addition 4 (the event book) is no longer an appendix — it is the PRIMARY
+table** (6.7), because the Focus book structurally cannot contain the day's gappers. The
+renderer publishes it, with the filters and the driver class on every row.
 
 The 4% / 50,000 / 25-share gate in 6.1 is the **FLAG** gate and it does not change. These five
 additions change what the artifact **shows** around it, so a reader sees the near-misses, the
