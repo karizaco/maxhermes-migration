@@ -475,3 +475,74 @@ All three scripts are **fetched at RUN time**, so these fixes land on the next f
 `us-eod/2026-11-12.manifest.json` in `karizaco/minimax-cloud-outputs` (`main`, commit `cbbe8b5`).
 Checker: 34/34 assertions pass; the settle fault-injection test 8/8; the numeric formatter
 reproduces the prior session's 99,869 numeric cells with **0 drift**.
+
+---
+
+## 2026-11-14 — the venue stage's three pulls now run CONCURRENTLY (the ~19 minutes off the critical path)
+
+### What was measured, and what it cost
+
+The venue stage is three data pulls: the venue's **settled print** (`/info`, 4,890 symbols),
+the venue's **own day range** for the rows no other range brackets (`/summary`, ~400-600
+rows), and the **independent reading** (Yahoo's 1-minute final bar, 4,890 symbols). Run one
+after the other they cost, measured on 2026-11-12:
+
+| pull | measured |
+|---|---|
+| the venue's settled print | 255 s — and **777 s** on the second run of the same sweep (Nasdaq's throttle is 3x) |
+| the venue's day range | ~10 min for 605 rows (**0.4 req/s** measured sequentially; ~1 row/s at 64 threads) |
+| the independent reading | ~9 min for 4,890 (8.8 req/s, the Yahoo egress ceiling) |
+
+**26-35 minutes after the probe exits** — and none of it was waiting for the market.
+
+### What changed
+
+- **OVERLAP A — the independent reading runs concurrently with the venue sweep.** The 1-minute
+  final bar is a pure data pull that does not depend on the venue; only the COMPARISON does.
+  It now runs in its own thread for the whole sweep.
+- **OVERLAP B — the day-range pass STREAMS.** The candidate ranges (the vendor's bar range and
+  the quote service's day range) are a PRE-PASS over the history and the quotes — no venue
+  needed — so the moment a row's close arrives, the row's range need is decided and the
+  venue's own day range is pulled for it **while the sweep is still running**. The range pass
+  no longer follows the sweep; it interleaves with it. The row-selection rule is unchanged
+  (a row needs the venue's range only when no candidate range brackets its close).
+
+### Measured, on the 2026-11-13 session (a full re-run of the whole pipeline)
+
+| stage | measured |
+|---|---|
+| the vendor sweep (25 bridge calls) | 63 s |
+| the quote batch | 6 s |
+| pass 1 (4,906 symbols, a year of bars) | 340 s |
+| the probe loop (2 quiet rounds on settled data) | 4.8 min |
+| **the venue stage — sweep + streamed range + independent reading, CONCURRENT** | **418 s = 7.0 min** |
+| patch + base + derive + report + checker | ~1 min |
+
+**The venue stage went from 26-35 minutes to 7.** The artifact is unchanged: **34/34**
+assertions passed and **4,823 of 4,846 closes (99.53%) are identical to the fleet's published
+2026-11-13 file** (23 differ, all thin names, the largest 4%).
+
+### The wall clock, with the numbers
+
+The publish time is now dominated by the SETTLE, not by the code:
+
+```
+16:00  start
+16:02  the universe + the quote batch
+16:05  pass 1 done (340 s)
+16:45  the feed's quiet   <- the thin tail's last ingestion; NO source publishes it earlier
+16:49  the probe exits (two quiet rounds, +4 min)
+16:56  the venue stage (7 min, everything concurrent)
+17:00  the artifact is built, pushed and verified
+```
+
+**The floor is the settle itself (~16:45).** The code removes the waste around it: the blind
+second pull of 4,909 symbols is gone, the 27-minute idle is a measured wait, and the three
+venue-stage pulls no longer queue behind each other.
+
+### One window caveat the re-run made visible
+
+The venue's day range is **only populated close to the session** — a Saturday-morning re-run
+got `N/A` from `/summary` for the illiquid names, so 4,561 rows publish a range against the
+in-window run's 4,842. Outside the window those rows publish an EMPTY range (flagged
+`HIGH_LOW_UNAVAILABLE`), never an invented one.

@@ -69,7 +69,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MARKER = "EOD_SETTLE_V1"
 
@@ -206,8 +206,13 @@ def fetch_day_range(ticker: str) -> tuple[str, dict]:
     return ticker, {"day_high": hi, "day_low": lo}
 
 
-def rows_needing_venue_range(tickers, venue, history_path, quotes_path, session) -> list[str]:
-    """The rows whose published close no candidate range brackets."""
+def candidate_ranges(history_path, quotes_path, session) -> dict:
+    """{ticker: [(lo, hi), ...]} - the ranges that could bracket a close: the vendor's daily
+    bar's own high/low and the quote service's day range.
+
+    This is a PRE-PASS: it needs only the history and the quotes, never the venue, so the
+    range decision can be made while the venue sweep is still running.
+    """
     import time as _time
     hist: dict[str, list] = {}
     for line in open(history_path):
@@ -224,21 +229,30 @@ def rows_needing_venue_range(tickers, venue, history_path, quotes_path, session)
                 hist[rec.get("ticker", "")] = b
                 break
     quotes = json.load(open(quotes_path)) if os.path.exists(quotes_path) else {}
-    need = []
-    for t in tickers:
-        close = (venue.get(t) or {}).get("close")
-        if close is None:
-            continue
+    out: dict[str, list] = {}
+    for t, b in hist.items():
         cands = []
-        b = hist.get(t)
-        if b and b[2] is not None and b[3] is not None:
+        if b[2] is not None and b[3] is not None:
             cands.append((b[3], b[2]))
         q = quotes.get(t) or {}
         if q.get("dayHigh") is not None and q.get("dayLow") is not None:
             cands.append((q["dayLow"], q["dayHigh"]))
-        if not any(lo <= close <= hi for lo, hi in cands):
-            need.append(t)
-    return need
+        out[t] = cands
+    return out
+
+
+def needs_range(ticker: str, close, cands: dict) -> bool:
+    """True when no candidate range brackets this close."""
+    if close is None:
+        return False
+    return not any(lo <= close <= hi for lo, hi in cands.get(ticker, []))
+
+
+def rows_needing_venue_range(tickers, venue, history_path, quotes_path, session) -> list[str]:
+    """The rows whose published close no candidate range brackets."""
+    cands = candidate_ranges(history_path, quotes_path, session)
+    return [t for t in tickers
+            if needs_range(t, (venue.get(t) or {}).get("close"), cands)]
 
 
 def fetch_one(ticker: str, timeout: float = 25.0) -> tuple[str, dict]:
@@ -339,39 +353,90 @@ def main() -> int:
         return 2
 
     out: dict[str, dict] = {}
+    final_bar: dict[str, float] = {}
+    fb_thread = None
+
+    # ---- OVERLAP A: the independent reading is a PURE DATA PULL.
+    #
+    # Yahoo's 1-minute final bar does not depend on the venue - only the COMPARISON does.
+    # Measured on the 2026-11-12 session: the final-bar pull is ~9 minutes and the venue
+    # sweep is 4-13 minutes (Nasdaq throttles), so running them one after the other put
+    # ~9 minutes of pure waiting on the critical path. They run concurrently instead.
+    if args.settle_map and not args.skip_confirm:
+        def _final_bars():
+            final_bar.update(fetch_final_bars(tickers, min(args.threads, 48)))
+        fb_thread = threading.Thread(target=_final_bars, daemon=True)
+        fb_thread.start()
+        print("  the independent reading is pulling concurrently with the venue sweep",
+              flush=True)
+
+    # The range decision needs the candidate ranges (a PRE-PASS over the history and the
+    # quotes - no venue), so the venue's own day range can be pulled for a row AS SOON AS
+    # that row's close is known.
+    cands = {}
+    if args.history and args.quotes and not args.skip_range:
+        cands = candidate_ranges(args.history, args.quotes, args.session)
+
     if args.skip_info and os.path.exists(args.out):
         out = json.load(open(args.out))
         print(f"venue: reusing {len(out)} records from {args.out}")
+        if cands:
+            need = [t for t in tickers
+                    if needs_range(t, (out.get(t) or {}).get("close"), cands)]
+            print(f"venue range: {len(need)} row(s) need the venue's own day range", flush=True)
+            if need:
+                range_lock = threading.Lock()
+                with ThreadPoolExecutor(max_workers=min(args.threads, 32)) as pool:
+                    for t, rec in pool.map(fetch_day_range, need):
+                        if rec.get("day_high") is not None:
+                            with range_lock:
+                                out[t] = {**out.get(t, {}), **rec}
+                json.dump(out, open(args.out, "w"))
     else:
         lock = threading.Lock()
+        range_lock = threading.Lock()
         t0 = time.time()
         done = 0
+        # ---- OVERLAP B: the sweep STREAMS, and the venue's day range is pulled for a row
+        # while the sweep is still running (the range pass no longer follows the sweep).
+        range_pool = ThreadPoolExecutor(max_workers=min(args.threads, 32)) if cands else None
+
+        def _pull_range(ticker):
+            _, rec = fetch_day_range(ticker)
+            if rec.get("day_high") is not None:
+                with range_lock:
+                    out[ticker] = {**out.get(ticker, {}), **rec}
+
         with ThreadPoolExecutor(max_workers=args.threads) as pool:
-            for ticker, rec in pool.map(lambda t: fetch_one(t, args.timeout), tickers):
+            futures = [pool.submit(fetch_one, t, args.timeout) for t in tickers]
+            for fut in as_completed(futures):
+                ticker, rec = fut.result()
                 with lock:
                     out[ticker] = rec
                 done += 1
                 if done % 1000 == 0:
                     print(f"  venue {done}/{len(tickers)} {time.time()-t0:.0f}s", flush=True)
+                if range_pool is not None and rec.get("close") is not None \
+                        and needs_range(ticker, rec["close"], cands):
+                    range_pool.submit(_pull_range, ticker)
+        if range_pool is not None:
+            range_pool.shutdown(wait=True)
         json.dump(out, open(args.out, "w"))
         ok = sum(1 for v in out.values() if v.get("ok"))
         print(f"venue: {ok}/{len(tickers)} settled prints in {time.time()-t0:.0f}s -> {args.out}")
+
+    if fb_thread is not None:
+        fb_thread.join()
+        print(f"  the independent reading resolved {len(final_bar)}/{len(tickers)} names",
+              flush=True)
 
     # ---- the VENUE'S DAY RANGE, for the rows whose close no candidate range brackets.
     #
     # The published close is the venue's settled print, and on a thin name that print can sit
     # OUTSIDE the vendor's bar range (the bar holds a pre-auction print). The venue's own
     # day range (`/summary` -> `TodayHighLow`) is the only range that brackets it, so it is
-    # pulled for exactly those rows - not for the whole universe.
-    if args.history and args.quotes and not args.skip_range:
-        need = rows_needing_venue_range(tickers, out, args.history, args.quotes, args.session)
-        print(f"venue range: {len(need)} row(s) need the venue's own day range", flush=True)
-        if need:
-            with ThreadPoolExecutor(max_workers=args.threads) as pool:
-                for t, rec in pool.map(fetch_day_range, need):
-                    if rec.get("day_high") is not None:
-                        out[t] = {**out.get(t, {}), **rec}
-            json.dump(out, open(args.out, "w"))
+    # pulled for exactly those rows - not for the whole universe. It is pulled WHILE the
+    # sweep runs (see OVERLAP B above), so this block only fires for a reused venue file.
 
     # ---- the INDEPENDENT CONFIRMATION of the published close.
     #
@@ -388,7 +453,8 @@ def main() -> int:
     # outside it, `last_time` degrades to a DATE ("2026-11-11") and the "stamped exactly
     # 16:00:00" test cannot be applied.
     if args.settle_map and not args.skip_confirm:
-        final_bar = fetch_final_bars(tickers, args.threads)
+        if not final_bar:
+            final_bar = fetch_final_bars(tickers, args.threads)
         # the PUBLISHED close falls back to the vendor's settled bar when the venue carries
         # no print (29 rows on 2026-11-11) - so the status must follow the published close,
         # not the venue's: a row that publishes the bar's close is UNCONFIRMED (or

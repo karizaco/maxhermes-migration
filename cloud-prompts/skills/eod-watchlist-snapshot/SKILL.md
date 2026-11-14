@@ -761,6 +761,23 @@ the rows whose close no candidate range brackets (605 rows on 2026-11-11, ~2 min
 must run inside the window. A row whose range no source can supply publishes **empty**
 high/low and is flagged `HIGH_LOW_UNAVAILABLE` — never an invented range.
 
+**THE VENUE STAGE'S THREE PULLS RUN CONCURRENTLY (2026-11-14).** They are independent data
+pulls, and run one after the other they cost **26–35 minutes** after the probe exits (the
+venue's settled print 255 s — and 777 s when Nasdaq throttles — the day-range pass ~10 min,
+the independent reading ~9 min). Now: the **independent reading runs concurrently with the
+sweep** (it does not depend on the venue; only the comparison does), and the **day-range pass
+streams** — the candidate ranges are a pre-pass over the history and the quotes, so a row's
+range need is decided the moment its close arrives and the venue's own range is pulled for it
+**while the sweep is still running**. Measured on the 2026-11-13 session: **the whole venue
+stage costs 418 s (7.0 min)** against 26–35 min sequential, with the artifact unchanged
+(34/34 assertions, and 4,823 of 4,846 closes identical to the published 2026-11-13 file).
+
+**THE WALL CLOCK, WITH THE NUMBERS.** The publish time is dominated by the SETTLE, not by
+the code: `16:00` start → `16:05` pass 1 → `~16:45` the feed's quiet (the thin tail's last
+ingestion — **no source publishes the auction print earlier**) → `+4 min` the probe's second
+quiet round → `+7 min` the venue stage → `+4 min` build, push and verify → **~17:00**. The
+floor is the settle itself; the code removes the waste around it.
+
 **THE CAP IS PUBLISHED ON THE SESSION'S PRICE BASIS.** The vendor's cap table lags the
 session (its rows are dated T+1), so the issuer's **share count** is taken from the vendor's
 carrier row and multiplied by the published close:
@@ -934,7 +951,10 @@ python3 /workspace/eod_scripts/fetch_eod_settled.py --symbols /workspace/work/sy
     --probe-size 300 --probe-interval 240 --max-rounds 12
 
 # 3. the venue's settled print (THE CLOSE OF RECORD) + the venue's day range (targeted) +
-#    the independent confirmation - the settle map is updated in place
+#    the independent confirmation - the settle map is updated in place.
+#    The three pulls run CONCURRENTLY (measured 2026-11-14: the stage costs 7.0 min instead
+#    of 26-35) - the independent reading does not depend on the venue, and the day-range
+#    need is decided per row as the sweep streams.
 python3 /workspace/eod_scripts/fetch_eod_venue.py --symbols /workspace/work/symbols.csv \
     --out /workspace/work/venue_info.json --settle-map /workspace/work/settle_map.json \
     --history /workspace/work/history.jsonl --quotes /workspace/work/quote_batch.json \
