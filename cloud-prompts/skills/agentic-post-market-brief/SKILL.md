@@ -165,6 +165,18 @@ four.
      as such, say explicitly that the post-18:00 ET Globex/Asia move is not in the data, and count
      it in `degraded_sources:`. A stale settlement presented as the overnight setup is a
      fabricated setup, not a caveat.
+   - **On a Friday fire there is NO overnight print to find — and the futures scanner will still
+     offer you one.** CME equity-index futures trade Sunday 18:00 ET to Friday 17:00 ET and are
+     then closed for the weekend. Measured 2026-11-13 (a Friday fire): the bridge and Yahoo both
+     carried only the 16:59:59 ET settlement, and the TradingView futures scanner
+     (`https://scanner.tradingview.com/futures/scan`, symbol `CME_MINI:ES1!`, column `update_time`)
+     returned a post-close **indicative** print stamped 20:56 ET — about 0.3% above the
+     settlement (ES 7583.00 against a 7561.00 settlement; NQ 28034.75 against 27927.25). Its
+     `update_time` is a FEED stamp, not a trade. **On a Friday, publish the settlement as the
+     settlement, state that the CME equity-index week closed and Globex reopens Sunday 18:00 ET,
+     and treat any post-close indicative as an observation rather than as an overnight setup.**
+     Count the futures source in `degraded_sources:` either way — on a Friday it is always
+     degraded, because the overnight move genuinely does not exist yet.
    - Tomorrow's earnings: `web_search` `earnings calendar tomorrow <day>` against the watchlist
      and the top movers.
    - Tomorrow's economic releases: `web_search` `economic calendar <tomorrow-iso-date>` (payrolls,
@@ -423,6 +435,21 @@ postmarket_change  ==  (postmarket_close − close) / close × 100
 `close` here is the settled 16:00 ET close and `postmarket_change` is measured against it. If a
 row fails the identity, **drop that row** and say so in `## Source health` — do not publish a row
 whose own numbers disagree.
+
+**The identity check does NOT catch a stale prior close — check the VENUE too.** The identity
+proves a row is internally consistent, not that its prior close is real. Measured 2026-11-13: the
+over-the-counter line for Banco Santander printed **+14.80%** against a rounded, stale $12.00 prior
+close while the primary New York listing (SAN) closed **flat at $12.21**; the HSBC line printed
++3.32% while the primary listing was +0.61%. Three further over-the-counter rows failed the same
+way (Sage Group, Banco de Sabadell, and one more). **All four PASSED the identity check** — it
+cannot fail them, because the scanner's `close` and `postmarket_change` are both computed from
+the same stale base.
+
+The tells, together: `exchange` starts with `OTC:`; `postmarket_high == postmarket_low` (a single
+print); and the prior close is a suspiciously round number. **Exclude rows whose venue is not a
+major US exchange from the published table**, and confirm any print above +3% against the primary
+listing with the bridge `get_quotes` before publishing it. Then say what you excluded in
+`## Source health` — the reader must know the session's leaderboard is not what the table shows.
 
 **Do not publish a level you did not read.** If a field is unavailable for a name, publish `n/a`
 in that cell and say which field is missing — never a zero and never a guess.

@@ -507,3 +507,71 @@ their volume-versus-average is `n/a`; and the extended-hours print is a single-v
 moving tape (CBRS read +18.34% on the scanner against +12% to +18.41% elsewhere for the same
 session). The `### Signal` bullet count, the ten-row after-hours table's level set and the three
 "tomorrow's things" bullets all passed on the second run.
+
+---
+
+## 6.0 The 2026-11-13 fire — a phantom after-hours leader, and a Friday with no overnight at all
+
+Two defects found on the 2026-11-13 Friday fire (22:30 ET). Both were fixed in the SKILL spec,
+which is fetched at RUN time, so the next fire inherits them with no `cron_update` and no prompt
+drift. The checker was NOT changed — neither defect is machine-checkable from the artifact alone,
+and both are procedural.
+
+### 6.1 The after-hours identity check CANNOT catch a stale prior close — four OTC rows passed it
+
+§5.7's self-verifying identity (`postmarket_change == (postmarket_close − close) / close × 100`)
+proves a row is internally consistent. It does **not** prove the row's prior close is real, because
+the scanner computes both sides from the same base. On 2026-11-13 the over-the-counter line for
+Banco Santander printed **+14.80%** against a rounded, stale $12.00 prior close, while the primary
+New York listing (`SAN`) closed **flat at $12.21** — a bridge `get_quotes` cross-check confirmed
+it. The same failure hit HSBC (OTC +3.32% against a primary listing of +0.61%), the Sage Group
+line and Banco de Sabadell's. **All four PASSED the identity check.** Left alone, the brief would
+have published a +14.80% after-hours leader that never happened.
+
+The tells, together: `exchange` starts with `OTC:`; `postmarket_high == postmarket_low` (a single
+print, and the range reads `0.00`); the prior close is a suspiciously round number. The fix in
+§5.7 is to exclude any row whose venue is not a major US exchange from the published table, and to
+confirm any print above +3% against the primary listing via the bridge before publishing it — and
+to name the exclusions in `## Source health`, because the reader has to know the session's
+leaderboard is not what the table shows.
+
+**This is the generalisable lesson: an internal consistency check is not a validity check.** It
+certifies that a row agrees with itself. The check that would have caught this one — the primary
+listing — is a check against a DIFFERENT source, and it has to be asked for explicitly.
+
+### 6.2 On a Friday there is no overnight print, and the futures scanner will invent a timestamp
+
+§7 already required reading `as_of` on every futures row, because the bridge freezes at the
+16:59:59 ET settlement. On 2026-11-13 that rule was not enough on its own. CME equity-index
+futures trade **Sunday 18:00 ET to Friday 17:00 ET** and are then closed for the weekend, so a
+Friday 22:30 fire fires *after* the weekly close and **no overnight print can exist**. The
+TradingView futures scanner (`scanner.tradingview.com/futures/scan`, symbol `CME_MINI:ES1!`)
+nevertheless returned a post-close indicative level stamped 20:56 ET — ES 7583.00 against the
+7561.00 settlement, NQ 28034.75 against 27927.25, about 0.3% higher on both. Its `update_time` is
+a FEED stamp, not a trade.
+
+Publishing that as "the overnight setup" would have been a fabricated setup, and it is exactly the
+failure mode §7 was written to prevent. The fix in §7 now states the CME weekly-close rule, names
+the futures scanner as a source that will offer an indicative print on a Friday, and says to
+publish the settlement as the settlement, state that Globex reopens Sunday 18:00 ET, and treat any
+post-close indicative as an observation.
+
+**The futures source is therefore ALWAYS degraded on a Friday fire** — the overnight move genuinely
+does not exist yet — and it belongs in `degraded_sources:` (and in the reply's `errors:`) even
+though every futures number published is correct.
+
+### 6.3 Carried forward from this run
+
+The artifact and the reply agreed on `degraded_sources: 3` / `errors: 3`, and all three were real
+and published: the futures settlement (no overnight exists on a Friday), the CBOE put/call page
+whose payload carries `selectedDate` 2026-11-12 — the 13 November session was not published at the
+22:30 fire — and Elevance's after-hours print, which three vendors had at three different levels
+(the scanner $442.00, another vendor $440.49, a third $416.01). The scanner's number was published
+as the source of record and the others were named in `## Source health` rather than blended.
+
+Two more measurement notes for the next run. The scanner's `market_cap_basic` is **USD** and the
+$1B after-hours floor hid the session's real leaders — the same screen without the floor surfaced
+names at +84.12% and -34.50%. And cron #20's universe file prices its own closes marginally
+differently from the bridge on a couple of names (Modine 135.80 vs 135.66, Dell 344.30 vs 344.53);
+the artifact now discloses that the movers table's closes are the universe file's while the bridge
+is the quote source of record everywhere else.
