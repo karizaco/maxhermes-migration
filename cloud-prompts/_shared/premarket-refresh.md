@@ -496,6 +496,7 @@ screen_complete: true
 ### Top 15 gainers
 ### Top 10 decliners
 ### Thin tape
+### Tail — refreshed
 ## 2. Gap quality — can this gap hold?
 ## 3. What changed since the morning brief
 ## 4. Verdict
@@ -510,6 +511,20 @@ screen_complete: true
   the assert held on both screens.
 - `## 5. Source health` is where every caveat lives. A caveat that lives only in prose above it
   is a caveat the reader has to find.
+- **`### Tail — refreshed`** carries the brief's tail tier (§C7 of the morning brief's skill
+  spec) with the **09:20 ET print instead of the 08:30 one**. The tail is the cohort the
+  morning brief's gates and its top-25 cap left out — measured over seven sessions, **33% of
+  the day's top movers failed a gate** and moved just as far as the ones that passed. The
+  refresh already merges the morning CSV (`--morning-csv`), so the tail is the one place
+  where a **54-minute-old print can still be corrected before the open**: a name that was
+  flat at 08:30 and is printing hard at 09:20 belongs in the refresh's tail, not in its
+  top-of-book.
+  - **Rank it by `|gap|`, not by gap** — a name that gapped down and then ran is not a loser.
+  - Carry the **same level columns** as the morning brief (prior close, pre-market last, gap %,
+    PM range, key level, invalidation) and the same **cohort labels** (`gate-fail`,
+    `flat-print`, `unranked`).
+  - It is a **watchlist**, not a second set of setups. Do not promote a tail name into the
+    top-of-book.
 
 ---
 

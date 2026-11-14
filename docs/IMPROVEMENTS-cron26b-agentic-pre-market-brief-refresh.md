@@ -224,3 +224,26 @@ later** rather than landed under an active editor.
 `docs/IMPROVEMENTS-2026-11-10-cron26-market-cap-gate.md` and
 `docs/IMPROVEMENTS-2026-11-10-cron26-claims-about-the-screen.md` are that session's evidence for
 E9; this document does not repeat them.
+
+---
+
+## 2026-11-14 — the refresh now carries the morning brief's TAIL tier
+
+**Why.** The morning brief (§C7, added 2026-11-14) publishes a **tail tier**: the names its own
+gates and its top-25 cap left out. Measured over seven sessions, **33% of the day's top movers
+failed a gate** and moved just as far as the ones that passed (+26.75% vs +26.05% median).
+
+**What changed.** `cloud-prompts/_shared/premarket-refresh.md` — the pinned skeleton gains
+**`### Tail — refreshed`**, carrying the same tier with the **09:20 ET print instead of the
+08:30 one**. The refresh already merges the morning CSV (`--morning-csv`), so this is the one
+place a **54-minute-old print can still be corrected before the open**: a name that was flat at
+08:30 and is printing hard at 09:20 belongs in the refresh's tail, not in its top-of-book.
+
+The tail keeps the brief's rules: ranked by **|gap|** (not by gap — a name that gapped down and
+then ran is not a loser), the same level columns, the same cohort labels (`gate-fail` /
+`flat-print` / `unranked`), and it is a **watchlist, not a second set of setups** — a tail name is
+never promoted into the top-of-book.
+
+**No `cron_update`** — this procedure is fetched at RUN time from
+`cloud-prompts/_shared/premarket-refresh.md`, so the next 09:20 ET fire picks it up with no
+prompt drift. The deployed #26b prompt was NOT touched.

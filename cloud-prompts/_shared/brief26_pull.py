@@ -88,6 +88,32 @@ BAND_LOSE = dict(BAND_GAIN,
                  sort={"sortBy": "premarket_change", "sortOrder": "asc"})
 
 
+# THE TAIL SCREEN - the names the +/-3% band cannot see.
+#
+# WHY (measured 2026-11-02..2026-11-10, seven sessions, 175 top regular-session
+# gainers): the band only ever fetches a name that ALREADY moved 3%. The day's
+# extremes were mostly not movers before the open - 45 of the 74 absent top-25
+# gainers had a pre-market gap inside +/-3% - so the band never saw them. This
+# screen fetches every name with a pre-market print and a gap inside +/-15%,
+# sorted by PRE-MARKET VOLUME, which is what puts the "printed hard, has not
+# moved" names at the front.
+#
+# It does NOT affect band["complete"]: that flag is about the +/-3% counts, and
+# the tail screen is truncated by design (its totalCount is far above the row
+# cap), so it carries its own tail_complete flag.
+BAND_TAIL = {
+    "filter": [
+        {"left": "type", "operation": "in_range", "right": ["stock", "dr"]},
+        {"left": "exchange", "operation": "in_range", "right": ["NASDAQ", "NYSE", "AMEX"]},
+        {"left": "premarket_change", "operation": "in_range", "right": [-15, 15]},
+        {"left": "premarket_volume", "operation": "greater", "right": 0}],
+    "options": {"lang": "en"}, "markets": ["america"],
+    "symbols": {"query": {"types": []}, "tickers": []},
+    "columns": COLS,
+    "sort": {"sortBy": "premarket_volume", "sortOrder": "desc"},
+    "range": [0, 400]}
+
+
 # ------------------------------------------------------------------ utilities
 def now_et():
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-5)))
@@ -169,8 +195,10 @@ def num(v):
 # ------------------------------------------------------------------ sources
 def pull_band(workdir, timings):
     """The ±3% band, both sides, with totalCount asserted."""
-    band = {"gainers": [], "decliners": [], "complete": True}
-    for label, body, key in (("gainers", BAND_GAIN, "gainers"), ("losers", BAND_LOSE, "decliners")):
+    band = {"gainers": [], "decliners": [], "tail": [], "complete": True,
+            "tail_complete": True}
+    for label, body, key in (("gainers", BAND_GAIN, "gainers"), ("losers", BAND_LOSE, "decliners"),
+                             ("tail", BAND_TAIL, "tail")):
         bf = os.path.join(workdir, "body_%s.json" % label)
         of = os.path.join(workdir, "band_%s.json" % label)
         with open(bf, "w") as fh:
@@ -184,9 +212,16 @@ def pull_band(workdir, timings):
         rows = norm_rows(d)
         total = d.get("totalCount")
         if total is not None and len(rows) != total:
-            band["complete"] = False
-            log("!! the %s screen returned %d rows against totalCount %d - the counts are "
-                "FLOORS" % (label, len(rows), total))
+            if key == "tail":
+                band["tail_complete"] = False
+                log("!! the tail screen returned %d rows against totalCount %d - the tail is "
+                    "a FLOOR, not the whole cohort" % (len(rows), total))
+            else:
+                band["complete"] = False
+                log("!! the %s screen returned %d rows against totalCount %d - the counts are "
+                    "FLOORS" % (label, len(rows), total))
+        for r in rows:
+            r["screen"] = key
         band[key] = rows
         log("%s: %d rows (totalCount %s)" % (label, len(rows), total))
     # The truncation guard above sets complete=False, and it used to be overwritten here by an
@@ -221,6 +256,8 @@ def pull_targeted(names, workdir, timings):
         log("targeted pull failed: %s" % err)
         return [], 0
     rows = norm_rows(json.load(open(path)))
+    for r in rows:
+        r["screen"] = "targeted"
     log("targeted: %d names asked, %d rows" % (len(names), len(rows)))
     return rows, len(names)
 
@@ -401,9 +438,10 @@ def main():
         log("!! " + msg)
 
     band = pull_band(workdir, timings)
-    band_names = {r["ticker"] for r in band["gainers"] + band["decliners"]}
-    log("band: %d gainers, %d decliners, complete=%s"
-        % (len(band["gainers"]), len(band["decliners"]), band["complete"]))
+    band_names = {r["ticker"] for r in band["gainers"] + band["decliners"] + band["tail"]}
+    log("band: %d gainers, %d decliners, %d tail, complete=%s tail_complete=%s"
+        % (len(band["gainers"]), len(band["decliners"]), len(band["tail"]),
+           band["complete"], band["tail_complete"]))
 
     watch = pull_watchlist(timings)
     extra = [t.strip().upper() for t in (args.extra_tickers or "").split(",") if t.strip()]
@@ -414,7 +452,10 @@ def main():
     targeted, asked = pull_targeted(want, workdir, timings)
 
     merged = {}
-    for r in band["gainers"] + band["decliners"] + targeted:
+    # The TAIL goes in FIRST so a name the +/-3% band also carried keeps the band's
+    # row (and its "band" screen tag) - the tail screen is the wider net, not a
+    # replacement for the band.
+    for r in band["tail"] + band["gainers"] + band["decliners"] + targeted:
         merged[r["ticker"]] = r
     rows = list(merged.values())
     log("merged: %d names (%d from the band, %d targeted)"

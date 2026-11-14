@@ -439,7 +439,7 @@ def check_yesterday(lines):
 # band (547 decliners), so `down_3pct` was a FLOOR and read as a count. The routine must
 # assert `len(rows) == totalCount` at pull time and publish the outcome; when the assert
 # failed the artifact must SAY the counts are floors.
-FRONT_MATTER_FIELDS = ("up_3pct", "down_3pct", "screen_complete")
+FRONT_MATTER_FIELDS = ("up_3pct", "down_3pct", "screen_complete", "tail_rows")
 
 
 def front_matter(raw):
@@ -465,6 +465,107 @@ def front_matter(raw):
         k, v = line.split(":", 1)
         out[k.strip()] = v.split("#", 1)[0].strip()
     return out
+
+
+# --- C7: the tail tier (added 2026-11-14) ---------------------------------------
+# The measurement behind it (seven sessions, 2026-11-02..2026-11-10, 175 top
+# regular-session gainers): 58 of them (33%) FAILED at least one gate, and the
+# gate-failing movers' median session move was +26.75% against the gate-passing
+# names' +26.05%. The gates were not excluding junk - they were excluding a third
+# of the day's best movers. The tail tier publishes them.
+TAIL_MARKER = "premarket-brief-tail-v1"
+TAIL_COHORTS = ("gate-fail", "flat-print", "unranked")
+COHORT_COLS = (r"^cohort$", r"^tailcohort$", r"^group$", r"^cohortlabel$")
+
+
+def check_tail_tier(lines, csv_rows, raw):
+    """C7 - the tail tier: the names the gates and the top-25 cap left out.
+
+    Ranked by |gap|, NOT by gap: a name that gapped DOWN and then ran (GOGO on
+    2026-11-06 was -1.10% pre-market and closed +71.52%) is filed under "losers"
+    by a gap-sorted table, which misfiles the day's single biggest winner.
+    """
+    problems = []
+    fm = front_matter(raw)
+    if fm.get("tail_tier") != TAIL_MARKER:
+        problems.append(
+            "the front matter does not carry `tail_tier: %s` - the tail tier is part of "
+            "the contract, and the marker is how a reader knows it was published" % TAIL_MARKER)
+
+    span = section_span(lines, "tail")
+    if not span:
+        problems.append(
+            "there is NO tail section - a third of the day's movers failed a gate and "
+            "moved just as far as the ones that passed (+26.75% vs +26.05% median over "
+            "seven sessions), and the tail tier is where they are published")
+        return problems
+    body = strip_fences(body_of(lines, span))
+    tbls = tables(body)
+    if not tbls:
+        problems.append("the tail section has no table - a heading with no names is a "
+                        "section that silently disappears")
+        return problems
+    header, rows = tbls[0]
+    if col_index(header, (r"^ticker$", r"^symbol$", r"^name$")) is None:
+        problems.append("the tail table has no ticker column")
+        return problems
+    missing = [human for _cid, pats, human in LEVEL_COLUMNS
+               if col_index(header, pats) is None]
+    if missing:
+        problems.append("the tail table is missing the level column(s) %s - a published name "
+                        "carries its levels or it is not a name" % missing)
+        return problems
+    coh = col_index(header, COHORT_COLS)
+    if coh is None:
+        problems.append("the tail table has no 'Cohort' column - every tail row says which "
+                        "cohort it is (%s)" % ", ".join(TAIL_COHORTS))
+        return problems
+
+    idx = {cid: col_index(header, pats) for cid, pats, _h in LEVEL_COLUMNS}
+    gaps = []
+    for r in rows:
+        t = ticker_of(r)
+        if not t:
+            continue
+        label = (r[coh] if coh < len(r) else "").strip().lower()
+        if label not in TAIL_COHORTS:
+            problems.append("the tail row for %s carries the cohort '%s', which is not one "
+                            "of %s" % (t, label, ", ".join(TAIL_COHORTS)))
+        ref = csv_rows.get(t)
+        if not ref:
+            problems.append("the tail row for %s is not in the companion CSV - a published "
+                            "name must exist in the artifact" % t)
+            continue
+        for cid in ("prior_close", "premarket_last", "gap_pct"):
+            i = idx[cid]
+            mv = num(r[i]) if i < len(r) else None
+            cv = ref.get(cid)
+            if mv is None or cv is None:
+                continue
+            if cid == "gap_pct":
+                if abs(cv - mv) > 0.15:
+                    problems.append("the tail row for %s reads %+.2f%% against the CSV's "
+                                    "%+.4f%%" % (t, mv, cv))
+                gaps.append((t, abs(mv)))
+            elif abs(cv - mv) > max(0.011, abs(cv) * 0.001):
+                problems.append("the tail row for %s has %s %s against the CSV's %s"
+                                % (t, cid, mv, cv))
+    for (t1, g1), (t2, g2) in zip(gaps, gaps[1:]):
+        if g2 > g1 + 0.01:
+            problems.append(
+                "the tail table is not ordered by |gap| descending: %s (%.2f) comes before "
+                "%s (%.2f) - a gap-sorted table files a name that gapped DOWN and then ran "
+                "under 'losers'" % (t1, g1, t2, g2))
+            break
+
+    tl = section_span(lines, "1tldr")
+    tlb = strip_fences(body_of(lines, tl)) if tl else []
+    if not any("post-open" in ln.lower() for ln in tlb):
+        problems.append(
+            "the TL;DR does not state the post-open limit - 71% of every session's 20%+ "
+            "moves happen after 09:30, and a brief that does not say so reads as a promise "
+            "it cannot keep")
+    return problems
 
 
 def check_screen_complete(raw):
@@ -539,6 +640,9 @@ def main() -> int:
 
     record("C6_SCREEN_COMPLETE", check_screen_complete(raw),
            "the front matter publishes the ±3% counts and whether they are exact")
+
+    record("C7_TAIL_TIER", check_tail_tier(lines, csv_rows, raw),
+           "the tail tier is published, carries levels and a cohort, and is ranked by |gap|")
 
     print()
     if PROBLEMS:

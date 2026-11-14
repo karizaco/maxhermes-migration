@@ -58,6 +58,13 @@ ROWS = [
     ["INTC", "Intel", 62.20, 63.10, 61.40, 59.97, 3.72, -8.81, 990000,
      25582543, 3.87, 317008000000, "Technology", "NASDAQ", "pass", "pass", "no",
      "59.97", "a trade back to or below 59.97 - the gap filled", "", "no"],
+    # the tail tier: one gate-failing mover, one printed-but-flat watcher
+    ["TAILA", "Tailco Alpha", 11.40, 12.40, 11.20, 12.00, -5.00, 1.20, 50000,
+     900000, 5.56, 25000000, "Health Technology", "NASDAQ", "fail", "fail", "no",
+     "12.00", "below 11.20", "", "no"],
+    ["TAILB", "Tailco Bravo", 8.16, 8.20, 7.95, 8.00, 2.00, -0.80, 80000,
+     1200000, 6.67, 45000000, "Technology", "NASDAQ", "pass", "fail", "no",
+     "8.00", "back to or below 8.00", "", "no"],
 ]
 
 buf = io.StringIO()
@@ -81,6 +88,8 @@ themes: 1
 up_3pct: 1
 down_3pct: 1
 screen_complete: true
+tail_tier: premarket-brief-tail-v1
+tail_rows: 2
 ---
 
 ## Bottom line
@@ -103,6 +112,8 @@ prior close.
 ## 1. TL;DR — one theme, clustered
 
 1. **The AI complex sold off again.** **AMD -17.26%** Monday, **MRVL -16.43%**.
+2. **The post-open tail is out of reach.** 71% of every session's 20%+ moves happen after the
+   open, so this brief cannot name them - it gives you the pre-open setup and the tail it can see.
 
 ## 2. Theme clusters
 
@@ -118,6 +129,16 @@ prior close.
 | Ticker | Name | Prior close | Pre-market last | Gap % | PM range | Key level | Invalidation | Pm vol | %ADV | Mkt cap |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **MRVL** | Marvell Technology | 133.55 | 151.32 | +13.31% | 150.00 - 156.70 | 156.70 | below 150.00 - the gap filled | 1,005,470 | 3.9% | 117,110M |
+
+### Tail — the names the gates and the table cap left out
+
+Ranked by |gap| so a name that gapped down and then ran is not filed under losers. A watchlist,
+not a second set of setups.
+
+| Ticker | Prior close | Pre-market last | Gap % | PM range | Key level | Invalidation | Cohort |
+|---|---|---|---|---|---|---|---|
+| TAILA | 12.00 | 11.40 | -5.00% | 11.20 - 12.40 | 12.00 | below 11.20 | gate-fail |
+| TAILB | 8.00 | 8.16 | +2.00% | 7.95 - 8.20 | 8.00 | back to or below 8.00 | flat-print |
 
 ## 4. Top losers — top 10 market-wide
 
@@ -359,6 +380,71 @@ def m20(t, c):
 @mutation("the contract marker is missing")
 def m16(t, c):
     return t.replace("contract: premarket-brief-artifact-v2\n", ""), c
+
+
+@mutation("the tail capability marker is missing from the front matter")
+def m21(t, c):
+    return t.replace("tail_tier: premarket-brief-tail-v1\n", ""), c
+
+
+@mutation("the tail section is deleted")
+def m22(t, c):
+    out = []
+    skip = False
+    for ln in t.split("\n"):
+        if ln.startswith("### Tail "):
+            skip = True
+            continue
+        if skip and ln.startswith("## "):
+            skip = False
+        if not skip:
+            out.append(ln)
+    return "\n".join(out), c
+
+
+@mutation("the tail table loses its Cohort column")
+def m23(t, c):
+    return t.replace("| Ticker | Prior close | Pre-market last | Gap % | PM range | Key level | "
+                      "Invalidation | Cohort |",
+                      "| Ticker | Prior close | Pre-market last | Gap % | PM range | Key level | "
+                      "Invalidation |"), c
+
+
+@mutation("the tail table is ordered by gap, not by |gap|")
+def m24(t, c):
+    return t.replace(
+        "| TAILA | 12.00 | 11.40 | -5.00% | 11.20 - 12.40 | 12.00 | below 11.20 | gate-fail |\n"
+        "| TAILB | 8.00 | 8.16 | +2.00% | 7.95 - 8.20 | 8.00 | back to or below 8.00 | flat-print |",
+        "| TAILB | 8.00 | 8.16 | +2.00% | 7.95 - 8.20 | 8.00 | back to or below 8.00 | flat-print |\n"
+        "| TAILA | 12.00 | 11.40 | -5.00% | 11.20 - 12.40 | 12.00 | below 11.20 | gate-fail |"), c
+
+
+@mutation("a tail row's gap disagrees with the companion CSV")
+def m25(t, c):
+    return t.replace("| TAILB | 8.00 | 8.16 | +2.00% |", "| TAILB | 8.00 | 8.16 | +9.00% |"), c
+
+
+@mutation("a tail row carries a cohort outside the vocabulary")
+def m26(t, c):
+    return t.replace("| flat-print |", "| thin-tape |"), c
+
+
+@mutation("the TL;DR drops the post-open limit")
+def m27(t, c):
+    return t.replace("2. **The post-open tail is out of reach.** 71% of every session's 20%+ moves "
+                      "happen after the\n   open, so this brief cannot name them - it gives you the "
+                      "pre-open setup and the tail it can see.\n", ""), c
+
+
+@mutation("a tail row is not in the companion CSV")
+def m28(t, c):
+    rows = list(csv.reader(io.StringIO(c)))
+    rows = [r for r in rows if r and r[0] != "TAILA"]
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    for r in rows:
+        w.writerow(r)
+    return t, buf.getvalue()
 
 
 def main() -> int:

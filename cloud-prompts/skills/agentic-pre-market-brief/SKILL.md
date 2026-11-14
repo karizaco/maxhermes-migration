@@ -199,6 +199,27 @@ Origin: https://www.tradingview.com
 
 **Losers screen:** identical but `"premarket_change" in_range [-1000,-3]`, `sortOrder:"asc"`.
 
+**The TAIL screen** (the wider net — `_shared/brief26_pull.py` pulls it as part of the ONE
+command, so this is not an extra round trip):
+
+```
+"filter": [ type in [stock,dr], exchange in [NASDAQ,NYSE,AMEX],
+             premarket_change in_range [-15, 15], premarket_volume > 0 ],
+"sort": {"sortBy":"premarket_volume","sortOrder":"desc"}, "range":[0,400]
+```
+
+*Why it exists.* The ±3% band can only ever fetch a name that **already moved 3%**, so it is
+structurally blind to the day's extremes that were not movers before the open. Measured over
+seven sessions (2026-11-02 → 2026-11-10, 175 top regular-session gainers): **45 of the 74
+absent top-25 gainers had a pre-market gap inside ±3%** — the band never saw them at all. The
+tail screen fetches every printed name with a gap inside ±15%, sorted by **pre-market volume**,
+which is what puts the "printed hard, has not moved" names at the front.
+
+*What it is NOT.* The tail screen is a **candidate pool, not a ranking**. A name in it has no
+proven signal beyond "it printed"; the tail tier (§C7) publishes it as a **watchlist**, labelled
+as one. The tail screen's `totalCount` is far above its row cap by design, so it carries its own
+`tail_complete` flag and **must not** set `screen_complete` — that flag is about the ±3% counts.
+
 > **The screen has a ROW CAP, and a truncated screen publishes FLOORS, not counts.**
 > The range is `[0,1000]`, and the ±3% band is routinely larger than a single page:
 > on 2026-11-05 the band held 379 gainers and **547** decliners, and the old
@@ -354,9 +375,15 @@ Universe: every US-listed common stock **and ADR** on NASDAQ/NYSE/AMEX. Do NOT r
 
 **GATE B — quality floor for the HEADLINE tables.** Market cap ≥ **$100M**. Decided on the **reconciled** market cap, not the scanner's — see the `market_cap_basic` trap in Step 2.
 
-- Names that pass Gate A but fail Gate B are still real moves: publish them in a compact
-  **"thin tape" block** under the headline table (ticker, %, price, cap, pre-market volume) so
-  nothing is hidden — but they never top a headline table.
+- **THE GATES DECIDE PLACEMENT, NOT EXISTENCE.** A name that fails a gate is still a real
+  move, and it is PUBLISHED — in the **tail tier (§C7)** with its gate cohort as a label. It
+  never tops a headline table and it never disappears from the artifact.
+  Measured over seven sessions (2026-11-02 → 2026-11-10, 175 top regular-session gainers):
+  **58 of them (33%) failed at least one gate**, and the gate-failing movers' median session
+  move was **+26.75%** against the gate-passing names' **+26.05%**. The gates were excluding a
+  third of the day's best movers, not junk.
+- Keep the compact **"thin tape"** block under the headline table too (ticker, %, price, cap,
+  pre-market volume) so the Gate-A-only names are visible next to the headline table.
 - **Gate B applies to the screen-driven tables only.** §2's theme clusters are chosen by catalyst,
   not by screen, so an event-driven name of any size (an FDA approval, a take-private, a
   bankruptcy) belongs in its cluster with a sourced catalyst. Do not drop it for being sub-cap.
@@ -492,6 +519,8 @@ themes: <n>
 up_3pct: <n>
 down_3pct: <n>
 screen_complete: <true|false>   # false => the ±3% band exceeded the screen's row cap and
+tail_tier: premarket-brief-tail-v1   # the tail tier is published (§C7)
+tail_rows: <n>                  # how many names the tail tier published
                                  # the two counts above are FLOORS, not exact counts
 ---
 ```
@@ -503,9 +532,9 @@ number.
 
 1. **`## Bottom line`** — exactly three lines, the decision. See §C1.
 2. **`## Yesterday's brief — what happened`** — the scorecard on yesterday's calls. See §C5.
-3. **`## 1. TL;DR`** — clustered, theme-first. ≥ 4 named themes from Step 4 with their tickers and magnitudes in bullet form. Single-sentence "watchlist" line at the bottom that says which watchlist names happen to align with the day's themes.
+3. **`## 1. TL;DR`** — clustered, theme-first. ≥ 4 named themes from Step 4 with their tickers and magnitudes in bullet form. Single-sentence "watchlist" line at the bottom that says which watchlist names happen to align with the day's themes. **Plus one closing line that states the post-open limit** — it must contain the phrase "post-open" and say, in one sentence, that most of the day's biggest moves happen *after* the open (measured: 71% of every session's 20%+ moves over seven sessions), so this brief cannot name them.
 4. **`## 2. Theme clusters`** — one section per cluster with anchors, leader, corroborators, magnitudes, news URL. **Every name carries the §C2 level columns.**
-5. **`## 3. Pre-market gaps — top 25 market-wide`** — from the Step 2 **gainer screen** (`premarket_*` columns), Gate A + Gate B, plus a "thin tape" block for the Gate A-only names. Add a **"yesterday's tape"** sub-table (`change`/`close` columns) for context — clearly labelled as the prior session. **Every name carries the §C2 level columns.**
+5. **`## 3. Pre-market gaps — top 25 market-wide`** — from the Step 2 **gainer screen** (`premarket_*` columns), Gate A + Gate B, plus a "thin tape" block for the Gate A-only names. Add a **"yesterday's tape"** sub-table (`change`/`close` columns) for context — clearly labelled as the prior session. **Every name carries the §C2 level columns.** Add the **`### Tail`** sub-section (§C7) at the end of §3.
 6. **`## 4. Top losers — top 10 market-wide`** — from the Step 2 **loser screen** (`premarket_*` columns), same gates. **Every name carries the §C2 level columns.**
 7. **`## 5. StockTwits lead read`** — trending list with thesis text shown inline, not buried. Truncate each thesis to ~300 characters and cap the column; a full-sentence dump makes the table unreadable.
 8. **`## 6. Watchlist`** — quote + pre-market gap, sorted. **Omit the whole section if there is no published watchlist** (Step 7).
@@ -836,6 +865,46 @@ It appears in EVERY run, directly under `## Bottom line`, and carries exactly th
 cross-check for the session's closes; when it names a setup name in its movers tables, its close
 must agree with the helper's. If it does not, the section says so rather than publishing two
 numbers.
+
+### C7 — the tail tier: the names the gates and the table cap left out
+
+Added 2026-11-14, from a seven-session scorecard (2026-11-02 → 2026-11-10). The measurement
+behind it: of the **175 top regular-session gainers** across those seven sessions, **58 (33%)
+failed at least one gate** — 25 failed Gate A (liquidity) only, 12 failed Gate B (quality) only,
+21 failed both — and the gate-failing movers' median session move was **+26.75%** against the
+gate-passing names' **+26.05%**. The gates were excluding a third of the day's best movers.
+
+**C7.1 — The front matter carries `tail_tier: premarket-brief-tail-v1` and `tail_rows: <n>`.**
+The marker is the capability: an artifact without it was built from an older spec.
+
+**C7.2 — A `### Tail` sub-section exists, inside §3, with a table.** The heading starts with
+"Tail". The table's columns are the §C2 level set **plus a `Cohort` column**:
+
+| Column | Values |
+|---|---|
+| `Cohort` | `gate-fail` (failed Gate A or Gate B) · `flat-print` (printed but with a gap inside 3%) · `unranked` (passed the gates, is in the CSV, but did not make the top-25 table) |
+
+**C7.3 — The tail table is ranked by `|gap|` DESCENDING, not by gap.** A gap-sorted table files
+a name that gapped **down** and then ran under "losers": on 2026-11-06 GOGO was **−1.10%**
+pre-market and closed **+71.52%**. The tail tier is direction-agnostic by construction.
+
+**C7.4 — Every tail row is in the companion CSV and carries the §C2 levels.** The tail tier
+publishes names; they are held to the same standard as the headline tables.
+
+**C7.5 — The TL;DR states the post-open limit.** One closing line containing the phrase
+"post-open", saying that most of the day's biggest moves happen after the open (measured: 71%
+of every session's 20%+ moves over seven sessions), so the brief cannot name them. A brief that
+reads as a promise it cannot keep is worse than one that says so.
+
+**What the tail tier is NOT.** It is not a second set of setups and it is not a ranking of the
+day's extremes. The "flat-print" cohort — printed but with a gap inside 3% — is a **watchlist**
+with one session of evidence behind it (on 2026-11-13 it held 2 of that day's top 25 gainers;
+on the seven-session sample the equivalent cohort returned a median of +1.82%, better than the
+market on three sessions and negative on two). Label it as a watchlist. Do not rank the whole
+brief by relative volume: measured across seven sessions, a %ADV-ranked cohort produced a
+**worse** median session move than the gap-ranked one on **6 of 7 sessions** (−8.65% vs +12.74%
+on 2026-11-06).
+
 
 ## Failure modes (these are real, learned from prior runs)
 

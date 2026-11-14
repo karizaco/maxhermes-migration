@@ -604,3 +604,53 @@ defensively.
 
 The contract is fetched at RUN time, so these land on the next fire (Monday 2026-11-09 08:30 ET)
 with **no `cron_update`** and no prompt drift.
+
+---
+
+## 2026-11-14 — the tail tier: the gates become labels, not filters
+
+**Why.** A seven-session scorecard (2026-11-02 → 2026-11-10, seven published briefs scored against
+their own settled sessions) measured two things that change what this routine should do:
+
+1. **The ±3% band never saw a third of the day's extremes.** Of the **175 top regular-session
+   gainers** across those sessions, **74 (42%) never entered the artifact at all** — and **45 of
+   those had a pre-market gap inside ±3%**, so the band (which can only fetch a name that
+   *already moved 3%*) structurally could not have seen them. Only **19%** of the day's top
+   gainers were named in a headline table; **34%** were in the CSV and never named; **13%** of
+   the top losers were named.
+2. **The gates were excluding the best movers, not junk.** **58 of the 175 (33%) failed at least
+   one gate** — 25 failed Gate A (liquidity) only, 12 failed Gate B (quality) only, 21 failed
+   both — and the gate-failing movers' median session move was **+26.75%** against the
+   gate-passing names' **+26.05%**. The gates were throwing away a third of the day's best
+   movers.
+
+**What changed (no `cron_update` — every file below is fetched at RUN time).**
+
+| File | Change |
+|---|---|
+| `cloud-prompts/_shared/brief26_pull.py` | a **TAIL screen**: `premarket_change in_range [-15,15]` + `premarket_volume > 0`, sorted by **pre-market volume**, `range:[0,400]`. It is the wider net the ±3% band cannot be. It carries its own `tail_complete` flag and **must not** set `screen_complete` (that flag is about the ±3% counts). Every merged row now carries a `screen` tag (`band` / `tail` / `targeted`). |
+| `cloud-prompts/skills/agentic-pre-market-brief/SKILL.md` | Step 2 documents the tail screen; **Step 2b: "THE GATES DECIDE PLACEMENT, NOT EXISTENCE"**; the front matter gains `tail_tier` + `tail_rows`; §3 gains the `### Tail` sub-section; §1 gains the **post-open limit** line; and a new **§C7** clause pins the tail tier. |
+| `tools/check_premarket_brief.py` | **C7_TAIL_TIER** — the front-matter capability marker, the presence of a `### Tail` table, the §C2 level columns plus a `Cohort` column, the cohort vocabulary (`gate-fail` / `flat-print` / `unranked`), the **\|gap\| descending** ordering, every tail row's agreement with the CSV, and the TL;DR's post-open limit. `tail_rows` joins the required front-matter fields. |
+| `tools/test_premarket_brief_contract.py` | the synthetic artifact gains the tail tier, and **eight new fault-injection cases** (marker removed, section deleted, Cohort column renamed, ordered by gap instead of \|gap\|, a gap that disagrees with the CSV, a cohort outside the vocabulary, the post-open line removed, a tail row absent from the CSV). The suite is now **28 breaches, all caught**. |
+| `cloud-prompts/_shared/premarket-refresh.md` | cron #26b's pinned skeleton gains **`### Tail — refreshed`**: the same tier with the **09:20 ET print instead of the 08:30 one**. The refresh already merges the morning CSV, so this is the one place a 54-minute-old print can still be corrected before the open. |
+
+**Three things this change deliberately does NOT do.**
+
+- **It does not rank the brief by relative volume.** Measured across seven sessions, a
+  %ADV-ranked cohort produced a *worse* median session move than the gap-ranked one on **6 of 7
+  sessions** (−8.65% vs +12.74% on 2026-11-06). Ordering the *residual* pool by %ADV gave
+  **−4.05%** against **+4.63%** for ordering it by the gap. The earlier recommendation to do
+  this is retracted.
+- **It does not promise the day's extremes.** 71% of every session's 20%+ moves happen *after*
+  the open, and the absent names had **no gap** (45 of 74 inside ±3%), **no pre-market print**
+  (2 of 74) and **no catalyst** (0 of 74 appear in cron #19's roster or cron #15's reactions).
+  A pre-market brief cannot name them, so the artifact now says so in the TL;DR.
+- **It does not change the gates on the headline tier.** Gate A still stops a ±20% print on 100
+  shares from reaching a headline table, and the picks it lets through beat the market's median
+  move on **6 of 7 sessions** (+6% to +12%). The gates move only where they were not earning
+  their keep.
+
+**Fail-closed by design.** An artifact built from the older spec has no `tail_tier` marker and no
+tail section, so **C7 fails and the fire refuses to push** — verified against the 2026-11-10
+artifact, which fails C6 and C7 and passes C0–C5 unchanged. The reverse combination (a fresh
+skill spec with a stale checker) can only weaken the gate, never ship a wrong artifact.
