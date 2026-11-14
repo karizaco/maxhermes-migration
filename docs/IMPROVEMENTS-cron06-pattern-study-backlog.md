@@ -203,3 +203,34 @@ is unavailable".
 * The 2026-11-07 artifacts were NOT re-rendered. They were built before the state series
   had a second sample, so their `NO_PRIOR_SNAPSHOT` was true at the time and re-rendering
   them from a later snapshot would publish numbers that were never measured.
+
+### 4.5 The universe shrank 374 → 134 for a REASON THAT IS NOT THE MARKET
+
+The 2026-11-07 run published a 374-name short-float universe. The 2026-11-14 run published 134,
+and the naive reading — "the short-float book collapsed by 64% in a week" — is false.
+
+The gate decomposition (measured on the same live `ownership_stats` snapshot, 2026-11-14):
+
+| Gate set | Names |
+|---|---|
+| `short_percent_float > 20%` | 389 |
+| + `type = 'Common Stock'` | 374 |
+| + `volume > 1,000,000` on the resolved date | 219 |
+| + `market_cap > $1B` (valuation row on the resolved date) | 130 (134 without the type filter) |
+
+374 is EXACTLY the short-interest gate plus the type filter. The 2026-11-07 run therefore applied
+only those two gates and **not** the liquidity and size floors that `references/filters.md` §O
+specifies. Re-running the documented gate set on the PRIOR week's date (2026-11-06) gives 151
+names, so the like-for-like move is **151 → 134**, and 23 of the 24 names that left last week's
+top 30 are still above 20% short float — they fell off on the $1B market-cap floor (EROC $405M,
+QMCO $605M, SHOE $390M) or on a single day's volume below 1M shares (RH, $2.45B cap but 463K
+shares traded on 2026-11-13). Only ATYR genuinely left the universe (short interest fell to
+10.5%).
+
+Two lessons, both now written into the skill spec (§8b):
+
+* **The gate set belongs in the artifact's coverage line.** A universe that changes because the
+  SCREEN changed must be distinguishable from a universe that changed because the MARKET changed.
+* **`ownership_stats` is a live snapshot**, so both weeks' screens read the SAME short-interest
+  numbers — the prior week's table is not a replayable snapshot and the prior week's universe
+  size cannot be re-derived from it. Only the price/volume history is date-pinned.

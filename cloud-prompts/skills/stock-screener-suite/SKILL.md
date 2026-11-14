@@ -2442,7 +2442,7 @@ one state series. The file names are the DEPLOYED ones — do not write the suit
 | File | Content |
 |---|---|
 | `daily-screens/<fire-date>/weekly-ipo.md` | filter N — recent US common-stock IPOs, mcap > $1B |
-| `daily-screens/<fire-date>/weekly-high-short-float.md` | filter O — common stock with `short_percent_float > 20%` |
+| `daily-screens/<fire-date>/weekly-high-short-float.md` | filter O — common stock with `short_percent_float > 20%` **AND the documented gates: `market_cap > $1B` (valuation row on the resolved date) AND `volume > 1,000,000` on the resolved date** (see `references/filters.md` §O) |
 | `daily-screens/<fire-date>/peoplewish-backlog.md` | the 1000%-in-10-years backlog ledger + this week's live re-score |
 | `daily-screens/<fire-date>/peoplewish-backlog-run-full.json` | the machine-readable full 10y scan |
 | `daily-screens/<fire-date>/cron06-refresh.json` | **the contract companion** — universes, intersections, verdicts, coverage |
@@ -2544,6 +2544,13 @@ checker rejects it.
   `ownership_stats` is a current snapshot with no `date` column, so names lose their row
   between runs — a name above the gate with a lower stamp is a RE-STAMP, a name with no
   row at all has LEFT the universe. Say which.
+* **The short-float universe is the DOCUMENTED gate set — do not loosen it.** `references/filters.md` §O
+  defines filter O as `short_percent_float > 20%` **and** `market_cap > $1B` **and**
+  `volume > 1,000,000` on the resolved date. The 2026-11-07 run applied only the short-interest
+  gate and published a 374-name universe; the 2026-11-14 run applied the documented gates and
+  published 134. **The 240-name "shrink" was a GATE change, not a market event** — the like-for-like
+  count under the documented gates is 151 a week earlier. Publish the gate set in the artifact's
+  coverage line so the reader can tell a universe change from a screen change.
 * **The week-over-week short-float delta is keyed by TICKER, not by symbol.** The state
   snapshot's `universe_pct` is `{ticker: short_pct_float}` while the screen rows carry the
   full `TICKER.EXCHANGE` symbol. A lookup on the symbol key never matches, so every row
