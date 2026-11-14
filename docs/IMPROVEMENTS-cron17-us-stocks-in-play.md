@@ -783,3 +783,57 @@ line carries no false alarms. The spec now says so explicitly.
 only an approximation of the session close, and on a day when the tape gapped hard the
 approximation was poor enough to move more than four-fifths of the board's prior closes onto the
 official daily close.
+
+---
+
+## 2026-11-14 — the published prior close was NOT the official close: two boards corrected
+
+**The defect.** The open slot's reference price was the 5-minute series' **last bar close**. That
+is an approximation of the session close — **the closing auction does not always land in the bar
+series** — so for many names the published gap and move were measured against a pre-auction print
+instead of the settled close. The engine's **G2** gate (the reconstructed prior close vs Yahoo's
+OWN daily close for the prior session) found it on the first full-scale run.
+
+**Measured against Yahoo's own daily bars (2026-11-14):**
+
+| board | prior close off (>0.05%) | move >0.5pp | gap >0.5pp | gap verdicts flip | names wrongly on the board | Tier A affected |
+|---|---|---|---|---|---|---|
+| **2026-11-10 open** | 302/531 | 23 (max **1.77pp**) | 25 | **17** | **15 off, 0 missing** | 0 |
+| **2026-11-11 open** | 287/516 | 40 | 39 | 7 | **6 off, 0 missing** | 2 (GEVO +42.76→+43.88%; **SATL's verdict `faded`→`held`**) |
+| 2026-11-12 open | **0/527** | 0 | 0 | 0 | 0 | 0 |
+| 2026-11-13 open | **0/374** | 0 | 0 | 0 | 0 | 0 |
+
+The 2026-11-12 and 2026-11-13 boards were already clean — **the fix landed and works end-to-end in
+production** (the 11-13 board ran on the new engine).
+
+**What was corrected.** Both affected boards were re-published on 2026-11-14 with every name's move,
+gap and 20-minute gap verdict recomputed on the official prior close, the tier tables and the
+gap-annex buckets rebuilt, the tier counts and the audit lines updated, and the watch block's
+invalidation levels corrected. **The correction is subtraction-only: no name joins either board**, so
+no new tier, reason or catalyst was invented. **The published `pace` column is unaffected** — it
+never used the prior close. Each corrected board carries a dated correction block at the top, and
+the original bytes stay in the git history.
+
+**The rule used for membership.** A name leaves the board when the corrected trigger fails AND the
+published reference price was materially wrong (more than the gate's own 0.5% tolerance). Every
+one of the 15 (11-10) and 6 (11-11) removals cleared the 3% trigger by 0.01–0.4pp on a price that
+was wrong — MOD's published gap was -3.064% and its corrected gap is under 3%; SPAI's published move
+was -4.46% and its corrected move is -3.00%.
+
+**The chain was corrected too.** The 11-11 board's delta table read the (uncorrected) 11-10 board
+and the 11-12 board's read the (uncorrected) 11-11 board, so both delta tables now read the
+corrected base: the yesterday column, today's column and the Δ are recomputed, and the rows that
+no longer move 3pp are dropped. **The corrected top-18 set is the SAME set as published** in both
+boards (only the order moves), so no row was invented.
+
+**A by-product finding, NOT corrected here.** On the 2026-11-12 board, **5 published names do not
+meet the board's own published trigger** (MRVI's published gap is 2.987%, WIX's move -2.897%, and
+three more) — that board's trigger was evaluated on the SCANNER's live quote while its published
+numbers are the 09:50 reconstruction, i.e. **a mixed basis** ("one instant" per row). It is a
+different defect from the prior close, it does not move a tradeable name, and it is left as-is
+rather than rewritten on a late correction.
+
+**The guard.** `tools/open_0950_pull.py` now re-bases every published name on the official daily
+close, re-applies the trigger and the floors afterwards, and publishes both counts (measured on the
+2026-11-12 session: **524 re-based, 11 dropped**). G2 fails the run if a published name's prior
+close is more than 0.5% from Yahoo's own daily bar.
