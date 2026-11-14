@@ -507,3 +507,68 @@ reproduce the false `DELIVERY: FAILED`. 7/7 as required.
 `verify_delivery.sh` with no `REPO_DIR`, so every routine in the fleet inherited the false
 failure. Fixing the shared helper fixes every routine at once — and no `cron_update` is
 needed, because the helper is fetched at RUN time.
+
+---
+
+## 2026-11-13 — the catalyst pipeline: ARTICLE FIRST and PARALLEL, and `conf` means something
+
+Measured on the 2026-11-12 09:50 and 2026-11-13 09:50 checkpoints and on the live providers
+during the night of 2026-11-13. Five changes, all in the REPO, all landing on the next fire
+with **no `cron_update`** (the deployed prompt does not pin the script marker — only the
+run-time-fetched procedure does).
+
+**1. THE CATALYST IS THE ARTICLE'S TICKER-SCOPED INSIGHT, NOT ITS HEADLINE.** Every article
+carries `insights`: a per-ticker entry with a `sentiment` and a one-clause
+`sentiment_reasoning`. Measured 2026-11-13 23:14 ET: the newest headline for **SST (System1,
+-38.92%)** was *"NIQ Global Intelligence plc (NIQ) Q3 Earnings and Revenues Surpass
+Estimates"* — a story about a DIFFERENT company, and a POSITIVE one, on a row that fell 39%.
+The provider tags that article to both tickers, so `tickers` does not exclude it; the
+`insights` do, and the SST entry reads *"Expected to post a quarterly loss of $1.30 per share
+with a 43.5% year-over-year deterioration, and revenues projected to decline 50.7%"* at
+`sentiment: negative` — the direction of the move. The insight is matched EXACTLY (a `SST.WS`
+warrant entry cannot pass for `SST`).
+
+**2. THE FEED GOES FIRST, AND BOTH PHASES RUN IN PARALLEL.** The article feed costs 0.21-0.24s
+and answers with a date AND a URL; the router costs 15s when it answers and 21s when it
+REFUSES, and its own polygon path returned `tool_error` on 4 of 8 names the feed served.
+Measured on the same 8 names at the same moment: **old (router first, sequential) 160.0s, 2
+catalysts, 1 dated; new (article first, parallel) 22.6s, 2 catalysts, 2 dated** — 7.1x faster
+and one more dated catalyst. 8 concurrent grounded calls: 20.19s vs 101.77s serial, no rate
+limiting. The sequential grounded calls had been ~264s of the capture's 270s — 98% of it.
+
+**3. `conf` NOW MEANS SOMETHING.** `high`/`medium` is reserved for a catalyst that is DATED,
+in-window and checkable. Measured 2026-11-12: **10 of the tape's 12 `high` rows were retail
+chatter** — no publication stamp, no article — and the checker's rule was scoped to
+`src == "pipeworx"`, so they passed unchecked. The rule now covers EVERY provenance, and the
+script never ASSIGNS `high` at row creation (only a dated catalyst may raise it).
+
+**4. THE SIGN PROBE.** A cause that points the OTHER way from the move is not an explanation of
+that move. With a provider sentiment the comparison is exact; otherwise it is a direction-word
+probe that reads only the text BEFORE the hedge clause ("… though some question whether
+backlog can convert"), because the negative words in a debate belong to the bears. Measured
+against every catalyst on the 2026-11-12 and 2026-11-13 tapes: it flags exactly DGII -20.50%
+on "beat Q4 2026 earnings expectations", GLW -5.93% on "strong Q3 results" and ONDS -5.41% on
+"stronger revenue outlook" — and nothing else (28 material catalyst rows, 3 flags).
+
+**5. A ROW WITH NEITHER A NUMBER NOR A CAUSE IS NOT A ROW** (measured: 11 of the 2026-11-12
+tape's 45 rows were exactly this), and **`pm_notional`** — the pre-market dollar behind each
+print — rides on every priced row, so a consumer can tell a real mover from a thin one
+(measured 2026-11-13: 10 of the board's 15 rows sat on under $3M of pre-market notional).
+
+### The finding that outranks all five: A CREDIT FAILURE IS NOT "NO NEWS"
+
+At 23:40 ET the Pipeworx account answered **every** pack with *"Insufficient credits. This
+tool costs 200 credits"* / *"Today's free allowance is used up"*. A caller that cannot tell
+that from an empty result publishes a tape with **193 rows, no catalysts, and `errors=0`** — a
+quiet pre-market that is a lie. The capture now recognises the credit failure, does not retry
+it, and REPORTS it (`article_errors=20 provider_errors=1 errors=5`). The provider spend is
+also bounded: the pool of names in contention for a cause **is** the budget (`--top`), not
+twice it, because every article call is a metered provider call.
+
+### The gates
+
+`tools/check_preopen_checkpoint.py` grew from 94 to **111 checks** (the undated-confidence
+rule now covers every provenance; plus the empty-row rule, the sign-conflict demotion, the
+notional field, the article-first order, the worker pool, the credit recogniser and the
+`"conf": "high"` prohibition) and `tools/test_preopen_checkpoint_contract.py` grew from 30 to
+**41 fault-injection cases, all OBSERVED catching their breach**.

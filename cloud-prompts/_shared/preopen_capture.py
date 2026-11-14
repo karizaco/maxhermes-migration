@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-13.1
+CAPTURE_SCRIPT_VERSION: 2026-11-13.2
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -20,12 +20,26 @@ FIVE CALLS, FIVE JOBS
       be both a top gainer and a top loser), so merging them can never put two prices
       on one record. A gainers-only scan is not a pre-open tape: on 2026-11-09 it
       missed IRTC -30.7%, DKNG -21.3% and AXON -18.2%, the day's worst decliners.
-  4. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with evidence
-      and a confidence score, for the movers that call 1 did not cover.
-  5. polygon_io_news      (polygon-io pack)   -> the DATE the catalyst broke, and the
-      article it came from. Call 4 answers "what happened" but it does not say WHEN:
-      measured 2026-11-09, it returned ARWR's January 6, 2026 obesity press release
-      for a name that fell 16.6% that morning, and stamped it `conf: high`.
+THE CATALYST PIPELINE - ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
+-------------------------------------------------------------------------
+  4. polygon_io_news      (polygon-io pack)   -> THE CATALYST, consulted FIRST.
+      It answers in 0.21-0.24s with the publication stamp AND the article URL,
+      and it is consulted before the router because it is 60-100x cheaper and
+      more reliable at the one thing the router cannot do: say WHEN. Measured
+      2026-11-13: the direct feed returned a dated article for 6 of 8 large
+      names while the router's own polygon path errored on 4 of the same 8.
+      The published article is the provider's NEWEST, so its stamp IS the
+      provider's freshest stamp - the ARWR/NOVT defect cannot arise here.
+  5. ask_pipeworx_grounded (market-recap pack) -> a per-name catalyst with
+      evidence and confidence, spent ONLY on a name the feed could not date.
+
+  Both phases run in PARALLEL: measured 2026-11-13, 8 concurrent grounded calls
+  took 20.19s against 101.77s serial, with no rate limiting. The sequential
+  calls had been ~264s of the capture's 270s - 98% of its wall clock.
+
+  A row's confidence is `low` unless a DATED, in-window, checkable catalyst
+  raises it; a retail-chatter reason can never earn more than `low`. A cause
+  whose direction contradicts the move is demoted and flagged `sign_conflict`.
 
 The grounded-call budget is spent on the biggest movers by |%|, in BOTH directions:
 ranking by change_pct instead would put every decliner behind every gainer and the
@@ -135,11 +149,13 @@ EXIT CODES
 """
 
 import argparse
+import concurrent.futures as _cf
 import datetime
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -216,6 +232,88 @@ BAND_PCT = 2.5
 # day was 2026-09-30, so a four-day window rejects the claim; the honest tape row is
 # the price with no catalyst.
 CATALYST_MAX_AGE_DAYS = 4
+
+# ---------------------------------------------------------------------------
+# THE CATALYST PIPELINE - ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
+# ---------------------------------------------------------------------------
+# Measured 2026-11-13 (the 2026-11-13 09:50 checkpoint): the SEQUENTIAL grounded
+# calls were ~264s of the capture's 270s - 98% of it - while the four feed calls
+# took 2.6s. And the two paths are not equally good:
+#
+#   * the ARTICLE feed (polygon_io_news) costs 0.21-0.24s per name and answers
+#     DIRECTLY: measured 2026-11-13 at 22:49 ET, 6 of 8 large names returned a
+#     dated article from the feed;
+#   * the ROUTER (ask_pipeworx_grounded) costs 15s when it answers and 21s when
+#     it REFUSES - and its own polygon path returned `tool_error` on 4 of the
+#     same 8 names the direct feed served. The useless path is the slow one.
+#
+# So the feed goes FIRST and the router only spends a call on a name the feed
+# could not date. The router's 15-25s is then spent on the names that actually
+# need it (a press release the feed missed), instead of on a name that was
+# going to refuse anyway.
+#
+# PARALLELISM is safe at this width: measured 8 concurrent grounded calls in
+# 20.19s against 101.77s serial - 5.0x - with no rate limiting and no HTTP
+# failure (the `tool_error`/`not_in_source` values are the router's own
+# refusals, identical to its serial behaviour). 8 concurrent article fetches
+# took 1.98s against 14.80s serial.
+CATALYST_WORKERS = 8
+# How many names are put in contention for a catalyst at all. The pool is the
+# cheapest pass - one article fetch each - so it can be wider than the router
+# budget; the router budget stays `top_n` and is spent only on pool names the
+# feed could not date.
+# The pool IS the budget: one article call per name that can earn a cause. It is
+# NOT wider than that, because every article call is a metered provider call
+# (200 credits each, measured 2026-11-13) and the wallet is finite - a pool twice
+# the budget would double the checkpoint's provider spend for names that never
+# reach the board.
+CATALYST_POOL_MULT = 1
+
+# ---------------------------------------------------------------------------
+# THE SIGN PROBE - does the catalyst's direction agree with the move's?
+# ---------------------------------------------------------------------------
+# A positive story on a negative row is the ARWR defect in a new costume: on
+# 2026-11-12 DGII (-20.50%) carried "Digi International beat Q4 2026 earnings
+# expectations with $0.78 EPS versus consensus of $0.76" at `conf: high` WITH a
+# date. The price was right (the regular session closed -11.72%), so the stock
+# did fall - but the cause published on the tape does not explain the fall, and
+# cron #17 reads this text at 15:50 as THE reason.
+#
+# The probe counts direction words in the catalyst and compares the SIGN of the
+# score with the sign of the move. A margin is required, because a story can
+# carry both directions ("sold off despite a strong beat"): a score of zero or
+# one is no evidence of a contradiction. Measured against all 18 catalysts on
+# the 2026-11-12 tape, a margin of 2 flags exactly the rows whose published
+# cause does not explain the move and nothing else.
+SIGN_MARGIN = 2
+SIGN_POS = ("beat", "beats", "record", "upgrade", "upgraded", "approval", "approved",
+            "surge", "surged", "surging", "soared", "soars", "spiked", "spikes",
+            "skyrocketed", "jumped", "jumps", "climbed", "rallied",
+            "strong", "stronger", "bullish",
+            "rally", "rallying", "higher", "buyback", "repurchase", "awarded",
+            "boost", "surpass", "surpassing", "exceed", "exceeding", "tops",
+            "outperform", "growth", "positive", "upbeat", "improved",
+            "raised guidance", "raises guidance", "raised its", "raises its",
+            "record revenue", "record profit")
+SIGN_NEG = ("miss", "missed", "misses", "fell short", "short of", "downgrade",
+            "downgraded", "weak", "weaker", "weakness", "softer", "lower", "sell-off",
+            "selloff", "sold off", "slump", "plunge", "plunged", "warning", "warns",
+            "delay", "delayed", "resign", "resignation", "probe", "lawsuit",
+            "trading halt", "luld", "loss", "losses", "dilution", "worry", "worried", "concern",
+            "concerns", "turmoil", "turbulent", "troubled", "unfavorable", "negative",
+            "offering", "at-the-market", "shelf offering", "raise capital",
+            "raises capital", "raising capital", "cut guidance", "cuts guidance",
+            "lowers guidance", "pullback", "give back", "short interest", "bearish")
+# THE HEDGE CLAUSE. A catalyst often states the cause and then reports the DEBATE
+# about it - "..., though some question whether backlog can convert into sustained
+# profitability and point to continuing operating losses and dilution concerns".
+# The negative words there belong to the bears, not to the cause, and counting them
+# makes the probe fire on a perfectly good catalyst. So the probe reads only the
+# text BEFORE the hedge: the cause is always stated first.
+SIGN_HEDGE = re.compile(
+    r"\b(?:though|although|however|while others|others (?:worry|focus|caution|argue|note|question)"
+    r"|some (?:traders|see|argue|question|count)|while bulls|bulls argued|bears)\b", re.I)
+
 UA = {"User-Agent": "MaxHermes-Cron/1.0"}
 
 # The checkpoint slots cron #17 merges by NAME. A slot is a slot, never a wall clock.
@@ -259,6 +357,21 @@ def _et():
         return datetime.timezone(datetime.timedelta(hours=-5))
 
 
+# A CREDIT FAILURE IS NOT A "NO NEWS" ANSWER. The gateway answers an exhausted
+# account with "Insufficient credits. This tool costs 200 credits" or "This is a
+# paid feature. Today's free allowance is used up" - and a caller that cannot tell
+# that from an empty result silently publishes a tape with NO catalysts and reports
+# no error at all. Measured 2026-11-13 23:40 ET: every pack answered that way
+# after the account's balance ran out mid-run.
+CREDIT_MARKERS = ("insufficient credit", "paid feature", "free allowance",
+                  "purchase more", "upgrade your plan")
+
+
+def _is_credit_error(msg):
+    m = str(msg or "").lower()
+    return any(k in m for k in CREDIT_MARKERS)
+
+
 def rpc(pack, tool, args, timeout=120, prefer=None):
     """One JSON-RPC tools/call against a gateway pack.
 
@@ -295,7 +408,12 @@ def rpc(pack, tool, args, timeout=120, prefer=None):
                 except Exception:
                     pass
     if not isinstance(data, dict) or "result" not in data:
-        return {"error": "rpc_failed", "raw": raw[:200]}
+        msg = ""
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            msg = str(data["error"].get("message") or "")
+        return {"error": (f"rpc_failed: {msg[:140]}" if msg else "rpc_failed"),
+                "detail": msg[:200], "raw": raw[:200],
+                "credit": _is_credit_error(msg)}
     res = data["result"]
     if res.get("isError"):
         return {"error": "tool_error", "detail": str(res.get("content"))[:300]}
@@ -501,6 +619,37 @@ def call_grounded(ticker, name=None):
             "tool_used": r.get("tool_used"), "second_source": r.get("second_source")}
 
 
+def fetch_articles(ticker, limit=8, attempts=3):
+    """The provider's articles for one ticker, with the FAILURE kept separate.
+
+    Returns (articles, error).
+
+    IT RETRIES, because the pack FAILS INTERMITTENTLY: measured 2026-11-13
+    23:50-00:20 ET, the same ticker returned `tool_error` for 8 calls in one batch
+    and answered the next 18. And the failure is kept SEPARATE from the empty
+    result on purpose: "the provider errored" and "the provider holds nothing" are
+    different facts, and the second one silently costs a name its dated catalyst -
+    the pipeline would send it to the expensive router and publish a price with no
+    cause, which is exactly what the article-first design is here to prevent.
+    """
+    err = None
+    detail = None
+    for i in range(attempts):
+        out = rpc(PACK_POLYGON, "polygon_io_news", {"ticker": ticker, "limit": limit},
+                  prefer=["results"])
+        if "error" not in out:
+            res = out.get("results")
+            return (res if isinstance(res, list) else []), None
+        err = out.get("error")
+        detail = out.get("detail")
+        if out.get("credit"):
+            # The account is exhausted. Retrying cannot help and would only spend
+            # the run's wall clock: fail fast and let the run REPORT it.
+            return [], f"{err}: {detail}" if detail else err
+        time.sleep(0.4 * (i + 1))
+    return [], (f"{err}: {detail}" if detail else err)
+
+
 def call_polygon_news(ticker, limit=8):
     """The provider's articles for one ticker, each with its own publication stamp.
 
@@ -518,13 +667,8 @@ def call_polygon_news(ticker, limit=8):
     article carries `published_utc`, `article_url`, `title` and `description`. That is
     the field the staleness gate needs.
     """
-    out = rpc(PACK_POLYGON, "polygon_io_news",
-              {"ticker": ticker, "limit": limit},
-              prefer=["results"])
-    if "error" in out:
-        return []
-    res = out.get("results")
-    return res if isinstance(res, list) else []
+    arts, _err = fetch_articles(ticker, limit=limit)
+    return arts
 
 
 def _parse_iso(s):
@@ -555,7 +699,7 @@ def _tokens(text):
     return {t for t in re.findall(r"[a-z0-9]{3,}", str(text).lower()) if t not in _STOP}
 
 
-def resolve_news_date(ticker, answer, cutoff):
+def resolve_news_date(ticker, answer, cutoff, articles=None):
     """Date a grounded catalyst, and expose how fresh that company's news actually is.
 
     Returns (news_date_iso, news_url, freshest_iso):
@@ -576,16 +720,27 @@ def resolve_news_date(ticker, answer, cutoff):
 
     `cutoff` is the capture instant: an article published after the snapshot cannot
     be the cause of a move the snapshot recorded.
+
+    `articles` is the ALREADY-FETCHED article list, when the caller has one. The
+    article-first pipeline fetches every name's articles ONCE and reuses the list
+    here, so a dated catalyst costs one provider call instead of two.
     """
-    articles = call_polygon_news(ticker)
+    if articles is None:
+        articles = call_polygon_news(ticker)
     dated = []
     for a in articles:
-        dt = _parse_iso(a.get("published_utc"))
+        # The caller may hand over the RAW articles or the ALREADY-PARSED (dt, a)
+        # pairs the pipeline built. Both are accepted, so one fetch serves both.
+        if isinstance(a, tuple):
+            dt, art = a
+        else:
+            dt = _parse_iso(a.get("published_utc"))
+            art = a
         if dt is None:
             continue
         if cutoff is not None and dt > cutoff:
             continue
-        dated.append((dt, a))
+        dated.append((dt, art))
     if not dated:
         return None, None, None
     dated.sort(key=lambda p: p[0], reverse=True)
@@ -613,6 +768,266 @@ def infer_cat(text):
         if re.search(pat, t):
             return cat
     return "other"
+
+
+def pm_notional(pr):
+    """The DOLLAR behind a pre-market print: shares x price.
+
+    The tape is a tape of MOVERS, and a mover is measured in money, not in percent.
+    The share floor keeps a QUOTE out; this number is what tells a consumer which of
+    the survivors was real. Measured on the 2026-11-13 tape: of the board's 15 rows,
+    10 sat on under $3M of pre-market notional and only 5 on $5M or more - so the
+    board's top was, that day, a thin-money board.
+    """
+    try:
+        return round(float(pr.get("volume") or 0) * float(pr.get("price") or 0), 2)
+    except Exception:
+        return None
+
+
+def sign_score(text):
+    """The direction-word score of a catalyst text: (positive hits, negative hits).
+
+    POSITIVE = a cause that should push the stock UP (a beat, an approval, a raise).
+    NEGATIVE = a cause that should push it DOWN (a miss, a cut, a resignation).
+
+    Only the text BEFORE the hedge clause is read - see SIGN_HEDGE.
+    """
+    t = str(text or "").lower()
+    m = SIGN_HEDGE.search(t)
+    if m:
+        t = t[:m.start()]
+    pos = sum(1 for w in SIGN_POS if re.search(r"\b" + re.escape(w), t))
+    neg = sum(1 for w in SIGN_NEG if re.search(r"\b" + re.escape(w), t))
+    return pos, neg
+
+
+def sentiment_conflict(sentiment, pct):
+    """True when the provider's OWN sentiment for the ticker contradicts the move.
+
+    The provider's `sentiment` is EXACT for that ticker - it is the provider's own
+    judgement of the story - where the direction-word probe over the prose is a
+    guess. So a row that carries a sentiment is judged by it, and the word probe is
+    the fallback for a router or a chatter catalyst that carries none.
+
+    None when there is no usable opinion (no sentiment, or no move to compare).
+    """
+    s = str(sentiment or "").lower()
+    if s not in ("positive", "negative"):
+        return None
+    if pct is None:
+        return None
+    try:
+        p = float(pct)
+    except Exception:
+        return None
+    if p == 0:
+        return None
+    return (s == "positive") != (p > 0)
+
+
+def sign_conflict(text, pct):
+    """True when the catalyst's direction contradicts the move's direction.
+
+    None when there is nothing to compare (no number, or no text).
+
+    TWO GUARDS, both earned on real data:
+      * a MARGIN is required. A catalyst can carry both directions - "sold off
+        despite a strong Q3 beat" - and a score of zero or one is no evidence of a
+        contradiction;
+      * a MATERIAL move is required. A row that did not move (|%| below the
+        band's own width) has no direction to contradict.
+
+    Measured against every catalyst on the 2026-11-12 and 2026-11-13 tapes, this
+    flags exactly the rows whose published cause does not explain the move
+    (DGII -20.50% on "beat Q4 earnings expectations"; ONDS -5.41% on "stronger
+    revenue outlook") and nothing else - it stays silent on LUNR +17.82%, whose
+    negative words all belong to the hedge clause, and on AMD +3.01% and
+    AVGO +3.28%, whose negative words are about a DIFFERENT company.
+    """
+    if pct is None or not text:
+        return None
+    try:
+        p = float(pct)
+    except Exception:
+        return None
+    if abs(p) < BAND_PCT:
+        return None
+    pos, neg = sign_score(text)
+    score = pos - neg
+    if abs(score) < SIGN_MARGIN:
+        return False
+    return (score > 0) != (p > 0)
+
+
+def article_catalyst(ticker, cutoff, limit=8, name=None):
+    """The provider's TICKER-SCOPED insight for this company, as a dated catalyst.
+
+    Every article carries `insights`: a per-ticker entry with a `sentiment` and a
+    one-clause `sentiment_reasoning`. THAT entry is the catalyst - not the headline.
+
+    WHY THE INSIGHT AND NOT THE HEADLINE. Measured 2026-11-13 23:14 ET: the newest
+    headline for SST (System1, -38.92%) was "NIQ Global Intelligence plc (NIQ) Q3
+    Earnings and Revenues Surpass Estimates" - a story about a DIFFERENT company,
+    and a POSITIVE one, on a row that fell 39%. The provider tags that article to
+    both tickers, so the article's `tickers` list does NOT exclude it. But the
+    article's `insights` carry a SEPARATE entry per ticker, and the SST entry
+    reads "Expected to post a quarterly loss of $1.30 per share with a 43.5%
+    year-over-year deterioration, and revenues projected to decline 50.7% from the
+    year-ago quarter" - at `sentiment: negative`, which is the direction of the
+    move. The insight is the ticker-scoped, direction-scoped explanation; the
+    headline is neither.
+
+    So the catalyst is the insight for the REQUESTED ticker (matched EXACTLY, so a
+    "SST.WS" warrant entry cannot pass for "SST"), and the direction comes from the
+    provider's own `sentiment` - which is exact, where a direction-word probe over
+    the prose is a guess.
+    """
+    articles, ferr = fetch_articles(ticker, limit=limit)
+    want = (ticker or "").upper()
+    dated = []
+    for a in articles:
+        dt = _parse_iso(a.get("published_utc"))
+        if dt is None:
+            continue
+        if cutoff is not None and dt > cutoff:
+            continue
+        ins = None
+        for i in (a.get("insights") or []):
+            if str(i.get("ticker") or "").upper() == want:
+                ins = i
+                break
+        if ins is None:
+            # No insight scoped to THIS ticker: the article is about other companies
+            # (the provider tags multi-company articles to every ticker in them), so
+            # it is not this company's cause.
+            continue
+        dated.append((dt, a, ins))
+    if not dated:
+        return {"title": None, "date": None, "url": None, "freshest": None,
+                "articles": [], "in_window": False, "error": ferr,
+                "sentiment": None}
+    dated.sort(key=lambda p: p[0], reverse=True)
+    dt, a, ins = dated[0]
+    age = (cutoff.date() - dt.date()).days if cutoff is not None else 0
+    why = (ins.get("sentiment_reasoning") or "").strip() or (a.get("title") or "").strip()
+    return {"title": why or None,
+            "date": _iso_z(dt), "url": a.get("article_url"), "freshest": _iso_z(dt),
+            "articles": [(d, art) for d, art, _ in dated],
+            "in_window": age <= CATALYST_MAX_AGE_DAYS,
+            "error": ferr, "sentiment": ins.get("sentiment")}
+
+
+def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
+    """The catalyst pipeline: the ARTICLE FEED FIRST, then the router. Both parallel.
+
+    Returns {ticker: result}, where a result carries the catalyst and its proof:
+      why     - the catalyst text
+      date    - the article's publication stamp, or None
+      url     - the article, so the claim can be checked
+      conf    - the confidence token this cause earns (see the rules below)
+      src     - the row's provenance after the catalyst is applied
+      tool    - which provider produced it
+      origin  - "article" | "router" | "stale" | "none"
+      ref     - the router's evidence string, when the router produced it
+
+    THE ORDER IS THE POINT. The feed is 60-100x cheaper than the router and it
+    answers with a date and a URL, so it goes first and the router's 15-25s is
+    spent only on a name the feed could not date - a press release the feed
+    missed. Measured 2026-11-13: 8 sequential grounded calls cost 264s and 8 of the
+    16 calls on the live tape REFUSED; 8 concurrent calls cost 20.2s.
+
+    THE CONFIDENCE RULES, in one place:
+      * an article catalyst is dated, in-window, checkable AND its direction agrees
+        with the move -> "high"; if the direction cannot be confirmed -> "medium";
+        and a CONTRADICTED one is demoted to "low" and flagged (see sign_conflict);
+      * a router catalyst keeps the router's own confidence, but only while it is
+        DATED and in-window - an undated cause is "low", and a stale one is
+        DROPPED (the cause goes, the price stays);
+      * a retail-chatter cause is "low" - it has no date and no URL, so it cannot
+        be a verified cause however loudly it is phrased.
+    """
+    names = names or {}
+    pcts = pcts or {}
+    pool = [t for t in pool if t]
+    if not pool:
+        return {}
+    # PHASE A - the article feed, for every name in the pool. Cheap, and it dates.
+    with _cf.ThreadPoolExecutor(max_workers=CATALYST_WORKERS) as ex:
+        art = dict(zip(pool, ex.map(lambda t: article_catalyst(t, cutoff), pool)))
+    # PHASE B - the router, only for the names the feed could not date, and never
+    # more than the budget.
+    need = [t for t in pool if not (art.get(t) or {}).get("in_window")][:budget]
+    with _cf.ThreadPoolExecutor(max_workers=CATALYST_WORKERS) as ex:
+        gnd = dict(zip(need, ex.map(lambda t: call_grounded(t, names.get(t)), need)))
+
+    out = {}
+    for t in pool:
+        a = art.get(t) or {}
+        if a.get("in_window") and a.get("title"):
+            # The headline is the provider's OWN record of what happened: dated,
+            # checkable, and its direction is measurable. It earns "high" when it
+            # agrees with the move and the move is material; "medium" when the
+            # direction cannot be confirmed. A headline that points the OTHER way
+            # is demoted and flagged by sign_conflict().
+            pct = pcts.get(t)
+            agree = sentiment_conflict(a.get("sentiment"), pct)
+            try:
+                material = pct is not None and abs(float(pct)) >= BAND_PCT
+            except Exception:
+                material = False
+            if agree is True:
+                # The provider's own sentiment for this ticker contradicts the move.
+                conf = "low"
+            elif agree is False and material:
+                conf = "high"
+            else:
+                conf = "medium"
+            out[t] = {"why": a["title"], "date": a["date"], "url": a.get("url"),
+                      "conf": conf, "src": "pipeworx", "tool": "polygon_io_news",
+                      "origin": "article", "ref": a.get("url"), "error": a.get("error"),
+                      "sentiment": a.get("sentiment")}
+            continue
+        g = gnd.get(t) or {}
+        if not (g.get("answer") and not g.get("refusal")):
+            out[t] = {"why": None, "date": None, "url": None, "conf": "low",
+                      "src": "scanner", "tool": None, "origin": "none", "ref": None,
+                      "error": a.get("error")}
+            continue
+        nd, nurl, freshest = resolve_news_date(t, g["answer"], cutoff, a.get("articles"))
+        conf = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
+        fresh = _parse_iso(freshest)
+        if fresh is None:
+            # No dated evidence for this company at all. Keep the cause, but stop
+            # claiming to know when it broke and stop calling it high confidence:
+            # an undated cause is a weaker claim, not a false one.
+            nd = nurl = None
+            conf = "low"
+        elif (cutoff.date() - fresh.date()).days > CATALYST_MAX_AGE_DAYS:
+            # STALE. The newest thing the provider holds for this company is older
+            # than the window, so this answer cannot be describing today's move
+            # however confident it sounds. Drop the cause, keep the price.
+            out[t] = {"why": None, "date": None, "url": None, "conf": "low",
+                      "src": "scanner", "tool": None, "origin": "stale", "ref": None,
+                      "error": a.get("error")}
+            continue
+        else:
+            # The gate above proved the provider HOLDS something newer than the
+            # window for this company. It did NOT prove that the article this answer
+            # matched IS that newer thing: the match is textual, so it can land on a
+            # months-old article from the same company. Publishing that stamp as
+            # "when it broke" is the ARWR defect in a new costume - measured
+            # 2026-11-11 08:30 ET, NOVT carried a catalyst dated 2026-02-22 (262 days
+            # old) while the provider held a fresh article for Novanta. A date we
+            # cannot vouch for is not a date: keep the cause, drop the stamp, demote.
+            nd_dt = _parse_iso(nd) if nd else None
+            if nd_dt is not None and (cutoff.date() - nd_dt.date()).days > CATALYST_MAX_AGE_DAYS:
+                nd = nurl = None
+                conf = "low"
+        out[t] = {"why": g["answer"], "date": nd, "url": nurl, "conf": conf,
+                  "src": "pipeworx", "tool": g.get("tool_used"), "origin": "router",
+                  "ref": g.get("evidence"), "error": a.get("error")}
+    return out
 
 
 def build(date_str, checkpoint, top_n=8):
@@ -705,10 +1120,25 @@ def build(date_str, checkpoint, top_n=8):
     if pm_rows:
         candidates.sort(key=lambda tk: (-abs((pm_rows.get(tk) or {}).get("pct") or 0), tk))
 
+    # THE CATALYST POOL - the names in contention for a dated cause, biggest mover
+    # first. The pool is the CHEAP pass (one article fetch each), so it is wider
+    # than the router budget; the router budget stays `top_n` and is spent only on
+    # pool names the feed could not date.
+    run_dt = datetime.datetime.now(_et())
+    pool_n = max(CATALYST_POOL_MULT * top_n, top_n)
+    pool = [tk for tk in candidates if tk in pm_rows][:pool_n]
+    pool_names = {}
+    for tk in pool:
+        pool_names[tk] = ((pm_rows.get(tk) or {}).get("name")
+                          or (movers.get(tk) or {}).get("name")
+                          or (trending.get(tk) or {}).get("name"))
+    pool_pcts = {tk: (pm_rows.get(tk) or {}).get("pct") for tk in pool}
+    cats = resolve_catalysts(pool, run_dt, top_n, pool_names, pool_pcts)
+
     rows = []
     stale_dropped = []          # names whose catalyst was rejected as too old
     thin_dropped = []           # names whose pre-market print was a quote, not a market
-    grounded_budget = top_n
+    empty_dropped = []          # names that carried neither a number nor a cause
     for tk in candidates:
         mv = movers.get(tk)
         trr = trending.get(tk)
@@ -740,11 +1170,21 @@ def build(date_str, checkpoint, top_n=8):
                 "cat": infer_cat((trr or {}).get("why")),
                 "why": (trr or {}).get("why"),
                 "ref": None,
-                "conf": "high" if trr and trr.get("why") else "low",
+                # A RETAIL NARRATIVE IS NOT A VERIFIED CAUSE. The chatter summary has
+                # no publication stamp and no article behind it, so it can never earn
+                # more than "low" however loudly it is phrased. Measured on the
+                # 2026-11-12 tape: 10 of the 12 "high" rows were exactly this - a
+                # stocktwits reason, undated and uncheckable.
+                "conf": "low",
                 "trending_ts": (trr or {}).get("ts"),
                 "trending_score": (trr or {}).get("score"),
                 "volume": pr.get("volume"),
                 "exchange": pr.get("exchange"),
+                # The DOLLAR behind the print, and the sign probe's verdict.
+                "pm_notional": pm_notional(pr),
+                "sign_conflict": False,
+                # The provider's own sentiment for this ticker, when it has one.
+                "sentiment": None,
                 # WHEN the catalyst broke, and the article it came from. Both are null
                 # until a grounded catalyst is dated; see resolve_news_date().
                 "news_date": None,
@@ -769,72 +1209,48 @@ def build(date_str, checkpoint, top_n=8):
                 "trending_score": (trr or {}).get("score"),
                 "volume": None,
                 "exchange": (mv or {}).get("exchange"),
+                "pm_notional": None,
+                "sign_conflict": False,
+                "sentiment": None,
                 "news_date": None,
                 "news_url": None,
             }
-        # A mover with no trending reason: ask the grounded router for one, then DATE
-        # it. The router is good at "what happened" and blind to "when" - so every
-        # answer it gives is age-checked against the provider's own stamps before it
-        # is allowed onto the tape.
-        # A grounded catalyst is only worth a call for a row that HAS a number: the
-        # catalyst explains a MOVE, and a row with no pre-market print has no move to
-        # explain. It also keeps `src` honest - a pipeworx row carries a price.
-        if pr and not rec["why"] and grounded_budget > 0:
-            grounded_budget -= 1
-            g = call_grounded(tk, rec["name"])
-            if g.get("answer") and not g.get("refusal"):
-                rec["why"] = g["answer"]
-                rec["cat"] = infer_cat(g["answer"])
-                rec["ref"] = g.get("evidence")
-                rec["conf"] = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
-                rec["src"] = "pipeworx"
-                rec["grounded_tool"] = g.get("tool_used")
-                nd, nurl, freshest = resolve_news_date(tk, rec["why"], row_dt)
-                if freshest is None:
-                    # No dated evidence for this company at all. Keep the cause, but
-                    # stop claiming to know when it broke and stop calling it high
-                    # confidence: an undated cause is a weaker claim, not a false one.
-                    rec["news_date"] = None
-                    rec["news_url"] = None
-                    rec["conf"] = "low"
-                elif (row_dt.date() - _parse_iso(freshest).date()).days > CATALYST_MAX_AGE_DAYS:
-                    # STALE. The newest thing the provider holds for this company is
-                    # older than the window, so this answer cannot be describing
-                    # today's move however confident it sounds. Drop the cause and
-                    # keep the price - the honest row is a price with no catalyst.
-                    rec["why"] = None
-                    rec["ref"] = None
-                    rec["cat"] = "other"
-                    rec["conf"] = "low"
-                    # The row keeps its price and loses only the cause. It was priced
-                    # from the scanner, so "scanner" is still its true provenance.
-                    rec["src"] = "scanner"
-                    rec["grounded_tool"] = None
-                    rec["news_date"] = None
-                    rec["news_url"] = None
-                    stale_dropped.append(tk)
-                else:
-                    # The gate above proved the provider HOLDS something newer than the
-                    # window for this company. It did NOT prove that the article this
-                    # answer matched IS that newer thing: the match is textual, so it can
-                    # land on a months-old article from the same company. Publishing that
-                    # stamp as "when it broke" is the ARWR defect in a new costume -
-                    # measured 2026-11-11 08:30 ET, NOVT carried a catalyst dated
-                    # 2026-02-22 (262 days old) while the provider held a fresh article
-                    # for Novanta, so the board would have dated a pre-open catalyst to
-                    # the previous fiscal year. A date we cannot vouch for is not a
-                    # date: keep the cause, drop the stamp, demote the confidence.
-                    nd_dt = _parse_iso(nd) if nd else None
-                    stale_match = (nd_dt is not None and
-                                   (row_dt.date() - nd_dt.date()).days
-                                   > CATALYST_MAX_AGE_DAYS)
-                    if stale_match:
-                        rec["news_date"] = None
-                        rec["news_url"] = None
-                        rec["conf"] = "low"
-                    else:
-                        rec["news_date"] = nd
-                        rec["news_url"] = nurl
+        # THE CATALYST. The pool's results are already computed (the article feed
+        # first, then the router, both in parallel), so applying one is a lookup -
+        # not a 15-25s call in the middle of the row loop. A grounded catalyst is
+        # only worth a call for a row that HAS a number: the catalyst explains a
+        # MOVE, and a row with no pre-market print has no move to explain.
+        cat = cats.get(tk)
+        if cat and cat.get("origin") == "stale":
+            # The provider's newest article for this company is older than the
+            # window, so the cause cannot be today's news. It goes; the price stays.
+            stale_dropped.append(tk)
+        if cat and cat.get("why"):
+            rec["why"] = cat["why"]
+            rec["cat"] = infer_cat(cat["why"])
+            rec["ref"] = cat.get("ref")
+            rec["conf"] = cat.get("conf") or "low"
+            rec["src"] = cat.get("src") or "scanner"
+            rec["grounded_tool"] = cat.get("tool")
+            rec["news_date"] = cat.get("date")
+            rec["news_url"] = cat.get("url")
+            rec["sentiment"] = cat.get("sentiment")
+        # THE SIGN PROBE. A cause that points the OTHER way is not an explanation of
+        # this move, so it can never be published as a confident one. Measured on the
+        # 2026-11-12 tape: DGII (-20.50%) carried "beat Q4 2026 earnings expectations"
+        # at `conf: high` WITH a date - the price was right (the regular session closed
+        # -11.72%), the cause was not.
+        _conflict = (sentiment_conflict(rec["sentiment"], rec["pct"])
+                     if rec.get("sentiment") else sign_conflict(rec["why"], rec["pct"]))
+        if _conflict:
+            rec["conf"] = "low"
+            rec["sign_conflict"] = True
+        # A ROW WITH NEITHER A NUMBER NOR A CAUSE IS NOT A ROW. It says nothing a
+        # reader can use, and every consumer pays to carry it. Measured on the
+        # 2026-11-12 tape: 11 of its 45 rows were exactly this.
+        if rec["pct"] is None and not rec["why"]:
+            empty_dropped.append(tk)
+            continue
         rows.append(rec)
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
@@ -855,8 +1271,23 @@ def build(date_str, checkpoint, top_n=8):
             "premarket_candidates_priced": priced_candidates,
             "premarket_error": pm_error,
             "stale_dropped": stale_dropped,
+            "thin_dropped": thin_dropped,
+            "empty_dropped": empty_dropped,
+            # THE CATALYST PIPELINE's own ledger, so the run reports what it spent.
+            "catalyst_pool": len(pool),
+            "article_errors": sum(1 for c in cats.values() if c.get("error")),
+            # A CREDIT FAILURE MUST APPEAR IN THE RUN'S ERRORS. The provider answers
+            # an exhausted account with an error, and a caller that treats it as an
+            # empty result publishes a tape with no catalysts and reports no error.
+            "provider_errors": sorted({c.get("error") for c in cats.values()
+                                        if c.get("error")}),
+            "catalyst_dated": sum(1 for r in rows if r.get("news_date")),
+            "catalyst_article": sum(1 for c in cats.values() if c.get("origin") == "article"),
+            "catalyst_router": sum(1 for c in cats.values() if c.get("origin") == "router"),
+            "sign_conflicts": sum(1 for r in rows if r.get("sign_conflict")),
             "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
-                                   band_error, pm_error) if e]}
+                                   band_error, pm_error) if e]
+                      + sorted({c.get("error") for c in cats.values() if c.get("error")})}
 
 
 def main():
@@ -936,6 +1367,12 @@ def main():
           f"premarket_priced={res.get('premarket_priced')}, "
           f"premarket_unprinted={res.get('premarket_unprinted')}, "
           f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
+          f"catalysts: dated={res.get('catalyst_dated')} "
+          f"(article={res.get('catalyst_article')}, router={res.get('catalyst_router')}), "
+          f"pool={res.get('catalyst_pool')}, article_errors={res.get('article_errors')}, "
+          f"sign_conflicts={res.get('sign_conflicts')}, "
+          f"empty_dropped={len(res.get('empty_dropped') or [])}, "
+          f"provider_errors={len(res.get('provider_errors') or [])}, "
           f"errors={len(res.get('errors') or [])})")
     return 0
 

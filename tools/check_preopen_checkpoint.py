@@ -47,7 +47,7 @@ TAPE_KEYS = ["ts", "src", "ticker", "name", "pct", "price", "cat", "why", "ref",
 # Provenance extras the capture script adds. They are additive: the consumer ignores
 # them, and the board reads the timestamp and the volume from them.
 TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "grounded_tool",
-                    "news_date", "news_url"]
+                    "news_date", "news_url", "pm_notional", "sign_conflict", "sentiment"]
 # How old a catalyst may be and still explain a move that happened today. This MUST
 # equal the capture script's own CATALYST_MAX_AGE_DAYS - check_script() asserts it,
 # because a gate that reads a different window than the one that wrote the tape
@@ -250,6 +250,60 @@ def check_script(path):
     check(m is not None and int(m.group(1)) == CATALYST_MAX_AGE_DAYS,
           f"the script's staleness window matches the checker's ({CATALYST_MAX_AGE_DAYS} days)")
 
+    # ------------------------------------------------------------------
+    # THE CATALYST PIPELINE. Article first, then the router, both in parallel.
+    #
+    # Measured 2026-11-13: the SEQUENTIAL grounded calls were ~264s of the
+    # capture's 270s - 98% of it - and 8 of the 16 calls on the live tape REFUSED.
+    # The article feed answers the same question in 0.21-0.24s with a date AND a
+    # URL, and 8 concurrent calls cost 20.2s against 101.8s serial, with no rate
+    # limiting. So the feed goes first and the router's 15-25s is spent only on a
+    # name the feed could not date.
+    m_w = re.search(r"CATALYST_WORKERS\s*=\s*(\d+)", t)
+    check("ThreadPoolExecutor" in t and m_w is not None and int(m_w.group(1)) > 1,
+          "the catalyst calls run in parallel (a worker pool wider than one)")
+    check("resolve_catalysts" in t and "article_catalyst" in t,
+          "the capture resolves catalysts through the article-first pipeline")
+    # THE ORDER IS THE POINT, and it is assertable from the source: the feed is
+    # fetched before the router is consulted.
+    m_ord = re.search(r"def resolve_catalysts.*?article_catalyst\(t, cutoff\).*?"
+                      r"call_grounded\(t, names", t, re.S)
+    check(m_ord is not None,
+          "the article feed is consulted BEFORE the router (article first)")
+
+    # ------------------------------------------------------------------
+    # THE SIGN PROBE and the notional field.
+    check("sign_conflict" in t and "SIGN_MARGIN" in t,
+          "the capture probes the catalyst's direction against the move's")
+    check("pm_notional" in t,
+          "the capture publishes the pre-market dollar notional behind each print")
+
+    # ------------------------------------------------------------------
+    # A RETAIL NARRATIVE IS NOT A VERIFIED CAUSE. The base confidence on a row is
+    # always "low"; only a DATED, in-window catalyst may raise it. Measured
+    # 2026-11-12: 10 of the tape's 12 "high" rows were chatter with no date and
+    # no article, and the checker's rule was scoped to the pipeworx provenance, so
+    # they passed unchecked.
+    check('"conf": "high"' not in t,
+          "the script never ASSIGNS a 'high' confidence at row creation (only a "
+          "dated catalyst may raise it)")
+    check('"conf": "low"' in t,
+          "the script assigns 'low' confidence to a row's default catalyst")
+
+    # ------------------------------------------------------------------
+    # A CREDIT FAILURE IS NOT "NO NEWS". The gateway answers an exhausted account
+    # with "Insufficient credits", and a capture that cannot tell that from an
+    # empty result publishes a tape with NO catalysts and reports no error at all.
+    # Measured 2026-11-13 23:40 ET: every pack answered that way after the
+    # balance ran out mid-run - and the run had to be made to SAY so.
+    m_cm = re.search(r"CREDIT_MARKERS\s*=\s*\(([^)]*)\)", t)
+    check(m_cm is not None
+          and "insufficient credit" in norm(m_cm.group(1))
+          and "_is_credit_error" in t,
+          "the capture recognises a CREDIT failure and does not treat it as 'no news'")
+    check(re.search(r"provider_errors", t) is not None,
+          "the capture reports the provider failures in its own ledger")
+
 
 def check_digest_script(path):
     print("digest renderer:")
@@ -436,15 +490,45 @@ def check_tape(tape_path):
                 stale.append((r.get("ticker"), nd, f"{(tape_date - d).days}d old"))
         # A catalyst the tape is CONFIDENT about has to be dated. An undated one may
         # only ever ride at `low` confidence, because we cannot say when it broke.
-        if (r.get("src") == "pipeworx" and r.get("conf") in ("high", "medium")
-                and not nd):
-            undated_confident.append((r.get("ticker"), r.get("conf")))
+        #
+        # EVERY PROVENANCE, and that is the point. The rule used to be scoped to
+        # `src == "pipeworx"`, so a stocktwits chatter reason - no publication stamp,
+        # no article behind it - rode at `conf: high` unchecked. Measured on the
+        # 2026-11-12 tape: 10 of the 12 "high" rows were exactly that, undated and
+        # uncheckable, while only 2 were dated grounded catalysts.
+        if (r.get("conf") in ("high", "medium") and not nd
+                and (r.get("why") or r.get("src") == "pipeworx")):
+            undated_confident.append((r.get("ticker"), r.get("conf"), r.get("src")))
     check(not stale,
           f"no catalyst is dated outside the {CATALYST_MAX_AGE_DAYS}-day window "
           f"(got {stale[:3]})")
     check(not undated_confident,
           f"no undated catalyst is published as high/medium confidence "
           f"(got {undated_confident[:3]})")
+
+    # ------------------------------------------------------------------
+    # A ROW WITH NEITHER A NUMBER NOR A CAUSE IS NOT A ROW.
+    # It says nothing a reader can use and every consumer pays to carry it.
+    # Measured on the 2026-11-12 tape: 11 of its 45 rows were exactly this.
+    empty = [r.get("ticker") for r in rows
+             if r.get("pct") is None and not r.get("why")]
+    check(not empty,
+          f"no row is published with neither a number nor a cause (got {empty[:5]})")
+
+    # ------------------------------------------------------------------
+    # THE SIGN PROBE. A cause that points the OTHER way from the move is not an
+    # explanation of that move, so it cannot be published as a confident one.
+    # Measured 2026-11-12: DGII (-20.50%) carried "beat Q4 2026 earnings
+    # expectations" at `conf: high` WITH a date - the price was right, the cause
+    # was not, and cron #17 reads this text at 15:50 as THE reason.
+    conflicted = [r.get("ticker") for r in rows if r.get("sign_conflict")]
+    check(all(r.get("conf") == "low" for r in rows if r.get("sign_conflict")),
+          f"every row whose catalyst contradicts its move is demoted to low confidence "
+          f"(got {[r.get('ticker') for r in rows if r.get('sign_conflict') and r.get('conf') != 'low'][:5]})")
+    check(all(isinstance(r.get("sign_conflict"), bool) for r in rows),
+          f"every row carries a sign_conflict verdict ({len(conflicted)} flagged)")
+    check(all(("pm_notional" in r) for r in rows),
+          "every row carries the pre-market dollar notional behind its print")
     return rows
 
 

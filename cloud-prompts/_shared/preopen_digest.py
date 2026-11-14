@@ -140,10 +140,16 @@ def render(rows, date_str, slot, tape_name, scan_note):
     out.append(f"- **Named catalysts:** {named} of {n} records")
     grounded_rows = sum(1 for r in rows if r.get("src") == "pipeworx")
     dated_rows = sum(1 for r in rows if r.get("news_date"))
+    conflicts = sum(1 for r in rows if r.get("sign_conflict"))
     out.append(f"- **Dated catalysts:** {dated_rows} of {grounded_rows} grounded rows carry a "
                f"news date (`news_date`, and the article it came from in `news_url`). An "
                f"undated catalyst shows an em-dash in **When it broke** - never the capture "
                f"clock, which is when the script ran, not when the news broke.")
+    if conflicts:
+        out.append(f"- **Sign conflicts:** {conflicts} row(s) carry a catalyst whose direction "
+                   f"CONTRADICTS the move (marked `low ⚠` in the table). A cause that points "
+                   f"the other way is not an explanation of this move, so it is demoted rather "
+                   f"than published as a confident one.")
     out.append("")
     out.append("| " + " | ".join(DIGEST_COLUMNS) + " |")
     out.append("|---|---|---|---|---|")
@@ -155,6 +161,11 @@ def render(rows, date_str, slot, tape_name, scan_note):
         conf = (r.get("conf") or "low")
         if conf == "unverified":
             conf = "⚠ unverified"
+        elif r.get("sign_conflict"):
+            # THE SIGN PROBE FIRED: the cause points the OTHER way from the move.
+            # The confidence is already demoted on the tape; the board marks it so a
+            # reader can see WHY the row is not offered as a confident cause.
+            conf = "low ⚠"
         # WHEN THE NEWS BROKE - and never the capture clock.
         #
         # The capture clock (`ts`) is the moment THIS SCRIPT RAN. Printing it in a

@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-13.1
+PROCEDURE_VERSION: 2026-11-13.2
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -53,7 +53,7 @@ for U in \
   # provider's newest article. 2026-11-11.1 dated the tape from the previous
   # session's closes, and it published a matched article's stamp without checking
   # that stamp was inside the window - both are defects this version fixes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-13.1' "$S.tmp" 2>/dev/null; then
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-13.2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -146,8 +146,8 @@ Five Pipeworx gateway calls plus one TradingView scanner POST, each with one job
 | `top_movers` (gainers) | `market-recap` | YESTERDAY's movers universe, in one direction — the names being watched before they gap. |
 | `top_movers` (losers) | `market-recap` | the same universe for the other direction. |
 | TradingView scanner — **the band** | direct POST | **TODAY's pre-market movers**: every US stock trading more than ±2.5% pre-market, in two DISJOINT halves. **This is the tape's candidate source.** |
-| `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence and confidence, for movers the first call did not cover. It does **not** say WHEN the news broke. |
-| `polygon_io_news` | `polygon-io` | the article feed, straight from the provider: `published_utc`, `article_url`, title and description. This is where the catalyst gets its DATE. |
+| `polygon_io_news` | `polygon-io` | the article feed, straight from the provider: `published_utc`, `article_url`, title and description. **This is where the catalyst gets its DATE — and it is consulted FIRST.** |
+| `ask_pipeworx_grounded` | `market-recap` | a per-name catalyst with evidence and confidence, spent ONLY on a name the article feed could not date. It does **not** say WHEN the news broke. |
 | TradingView scanner | direct POST | **the PRICE**: this session's `premarket_change` and `premarket_close` for every name on the tape. |
 
 **THE CANDIDATE SOURCE IS TODAY'S PRE-MARKET BAND, NOT YESTERDAY'S MOVERS.**
@@ -205,6 +205,83 @@ scan still contributes the names that have not moved yet. Two rules follow:
 **Prices are never taken from the narrative calls.** The script also drops a grounded answer
 that merely restates the price move, and drops one whose source was a filing index rather than
 news — a name with no findable catalyst is left with no catalyst, which is the honest result.
+
+## THE CATALYST PIPELINE — ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
+
+**The article feed goes FIRST.** It costs **0.21–0.24 s** per name and it answers directly,
+with the publication stamp and the article URL; the router costs **15 s** when it answers and
+**21 s** when it *refuses*. Measured 2026-11-13 at 22:49 ET on 8 large names: the direct feed
+returned a dated article for **6 of 8**, while the router's own polygon path returned
+`tool_error` on **4 of the same 8**. The router is 60–100× more expensive and less reliable
+at the one thing it cannot do — say WHEN.
+
+**THE CATALYST IS THE ARTICLE'S TICKER-SCOPED INSIGHT, NOT ITS HEADLINE.** Every article
+carries `insights`: a per-ticker entry with a `sentiment` and a one-clause
+`sentiment_reasoning`. THAT entry is the catalyst. Measured 2026-11-13 23:14 ET: the newest
+headline for **SST (System1, −38.92 %)** was *"NIQ Global Intelligence plc (NIQ) Q3 Earnings
+and Revenues Surpass Estimates"* — a story about a **different company**, and a **positive** one,
+on a row that fell 39 %. The provider tags that article to both tickers, so the article's
+`tickers` list does **not** exclude it; but its `insights` carry a separate entry per ticker,
+and the SST entry reads *"Expected to post a quarterly loss of $1.30 per share with a 43.5 %
+year-over-year deterioration, and revenues projected to decline 50.7 % from the year-ago
+quarter"* — at `sentiment: negative`, which is the direction of the move. The insight is the
+ticker-scoped, direction-scoped explanation; the headline is neither. The insight is matched
+**exactly**, so a `SST.WS` warrant entry cannot pass for `SST`.
+
+**AND THE DIRECTION COMES FROM THE PROVIDER, NOT FROM A WORD LIST.** The `sentiment` field is
+the provider's own judgement of that ticker, which is exact; a direction-word probe over prose
+is a guess. So a row that carries a sentiment is judged by it, and the word probe is the
+fallback for a router or a chatter catalyst that carries none.
+
+So the pipeline is: **one article fetch per name in contention** → if the provider holds an
+**in-window** article, that article's TITLE is the catalyst (dated, with its URL) and the
+router is never called; only a name the feed **could not date** spends a router call. The
+article that is published is the provider's **newest** one, so its stamp IS the provider's
+freshest stamp — the ARWR/NOVT defect (a months-old article matched by text and published as
+today's news) **cannot arise from this path at all**.
+
+**Both phases run in parallel.** Measured 2026-11-13: 8 concurrent grounded calls in
+**20.19 s** against **101.77 s** serial — 5.0× — with no rate limiting and no HTTP failure.
+The sequential grounded calls had been ~264 s of the capture's 270 s: **98 % of the capture's
+wall clock**, while the four feed calls took 2.6 s.
+
+**THE CONFIDENCE TOKEN now means something.** `high`/`medium` is reserved for a catalyst that
+is **DATED, in-window and checkable**; a retail-chatter reason — no publication stamp, no
+article behind it — can never earn more than `low`. Measured on the 2026-11-12 tape: **10 of
+the 12 `high` rows were chatter**, undated and uncheckable, while only 2 were dated grounded
+catalysts. The old rule (`conf` was `high` whenever the row carried any reason at all) is
+why.
+
+**A CREDIT FAILURE IS NOT "NO NEWS".** The gateway answers an exhausted account with *"Insufficient
+credits. This tool costs 200 credits"* — and to a caller that cannot tell that from an empty
+result it looks exactly like a quiet news day. Measured 2026-11-13 23:40 ET, every pack
+answered that way after the balance ran out mid-run: the tape published 193 rows with **no
+catalysts at all** and would have reported **no error**. So the capture recognises the credit
+failure, does not retry it, and **reports it** (`article_errors=`, `provider_errors=`,
+`errors=`). A quiet tape with a loud error beats a loud-looking tape with a silent one.
+
+**THE PROVIDER SPEND IS BOUNDED.** The pool of names put in contention for a cause **is** the
+budget (`--top`), not twice it: every article call is a metered provider call (200 credits,
+measured 2026-11-13) and the wallet is finite.
+
+**THE SIGN PROBE.** A cause that points the **other way** from the move is not an explanation
+of that move. The capture compares the catalyst's direction with the sign of the move; a row
+that contradicts is demoted to `low` and flagged `sign_conflict: true` (the board marks it
+`low ⚠`). With a provider sentiment the comparison is exact; otherwise it is a direction-word
+probe, and that one reads only the text **before** the hedge clause (*"… though some question
+whether backlog can convert"*), because the negative words in a debate belong to the bears and
+not to the cause, and it stays silent unless the move is material (|%| ≥ 2.5 %). Measured
+against every catalyst on the 2026-11-12 and 2026-11-13 tapes, the probe flags exactly the
+rows whose published cause does not explain the move — DGII −20.50 % on *"beat Q4 2026
+earnings expectations"*, GLW −5.93 % on *"strong Q3 results"*, ONDS −5.41 % on *"stronger
+revenue outlook"* — and nothing else.
+
+**A ROW WITH NEITHER A NUMBER NOR A CAUSE IS NOT A ROW** and is not published. Measured on the
+2026-11-12 tape: 11 of its 45 rows were exactly this.
+
+**`pm_notional`** — the pre-market dollar notional behind each print (shares × price) — rides
+on every priced row, so a consumer can tell a real mover from a thin one. Measured on the
+2026-11-13 tape: of the board's 15 rows, 10 sat on under $3M of pre-market notional.
 
 ## THE CATALYST IS DATED, AND AGE-CHECKED
 

@@ -111,6 +111,9 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             # carries the keys; a grounded row carries a value.
             "news_date": "2026-11-09T11:30:00Z" if grounded else None,
             "news_url": ("https://news.example.test/m%d" % i) if grounded else None,
+            # The pre-market DOLLAR behind the print, and the sign probe's verdict.
+            "pm_notional": round(1234567 * (10.0 + i), 2),
+            "sign_conflict": False,
         })
     for i in range(n_narrative):
         rows.append({
@@ -121,15 +124,19 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             "pct": None,
             "price": None,
             "cat": "other",
-            "why": None if i % 5 == 0 else f"retail chatter about a catalyst ({i})",
+            # A narrative row carries a REASON. A row with neither a number nor a
+            # cause is not published at all, so the conforming tape has none.
+            "why": f"retail chatter about a catalyst ({i})",
             "ref": None,
-            "conf": "low" if i % 5 == 0 else "medium",
+            "conf": "low",
             "trending_ts": "2026-11-09T08:17:43-05:00",
             "trending_score": 5.2,
             "volume": None,
             "exchange": None,
             "news_date": None,
             "news_url": None,
+            "pm_notional": None,
+            "sign_conflict": False,
         })
     with open(tape, "w", encoding="utf-8") as fh:
         for r in rows:
@@ -336,6 +343,142 @@ def m_no_version_marker(tape, digest, repo):
     return True
 
 
+def m_chatter_high(tape, digest, repo):
+    """A RETAIL-CHATTER reason published as high confidence with no date.
+
+    Measured 2026-11-12: 10 of the tape's 12 "high" rows were exactly this - a
+    stocktwits reason with no publication stamp and no article behind it. The
+    checker's rule used to be scoped to the pipeworx provenance, so they passed
+    unchecked. An undated catalyst may only ever ride at "low".
+    """
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        if r.get("src") == "stocktwits" and r.get("why"):
+            r["conf"] = "high"
+            break
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_sign_conflict_high(tape, digest, repo):
+    """A catalyst that CONTRADICTS its move, published as high confidence.
+
+    Measured 2026-11-12: DGII (-20.50%) carried "beat Q4 2026 earnings
+    expectations" at `conf: high` WITH a date. The price was right, the cause was
+    not, and cron #17 reads that text at 15:50 as THE reason. A contradicted cause
+    must be demoted.
+    """
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        if r.get("src") == "pipeworx":
+            r["sign_conflict"] = True
+            r["conf"] = "high"
+            break
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_empty_row(tape, digest, repo):
+    """A row with NEITHER a number NOR a cause.
+
+    Measured 2026-11-12: 11 of the tape's 45 rows were exactly this. Such a row
+    says nothing a reader can use, and every consumer pays to carry it.
+    """
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    rows.append({
+        "ts": "2026-11-09T08:47:31-05:00", "src": "stocktwits", "ticker": "Z999",
+        "name": "Nothing Inc", "pct": None, "price": None, "cat": "other", "why": None,
+        "ref": None, "conf": "low", "trending_ts": None, "trending_score": None,
+        "volume": None, "exchange": None, "news_date": None, "news_url": None,
+        "pm_notional": None, "sign_conflict": False,
+    })
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_missing_pm_notional(tape, digest, repo):
+    """A row with no pre-market notional.
+
+    The notional is what tells a consumer which of the survivors was real: measured
+    2026-11-13, 10 of the board's 15 rows sat on under $3M of pre-market notional.
+    """
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        if r.get("pct") is not None:
+            r.pop("pm_notional", None)
+            break
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+    return True
+
+
+def m_router_before_article(tape, digest, repo):
+    """The capture consults the ROUTER before the article feed.
+
+    The order is the point: the feed answers in 0.21-0.24s with a date AND a URL,
+    while the router takes 15-25s and refuses more often than it answers (measured
+    2026-11-13: its own polygon path errored on 4 of 8 names the feed served). A
+    capture that spends the router first spends 98% of its wall clock there.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "art = dict(zip(pool, ex.map(lambda t: article_catalyst(t, cutoff), pool)))",
+           "art = {}")
+    mutate(p, "gnd = dict(zip(need, ex.map(lambda t: call_grounded(t, names.get(t)), need)))",
+           "gnd = dict(zip(need, ex.map(lambda t: call_grounded(t, names.get(t)), need)))"
+           "  # router first")
+    return True
+
+
+def m_no_parallelism(tape, digest, repo):
+    """The capture runs its catalyst calls one at a time.
+
+    Measured 2026-11-13: the sequential grounded calls were ~264s of the capture's
+    270s - 98% of it - while 8 concurrent calls took 20.2s against 101.8s serial.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "CATALYST_WORKERS = 8", "CATALYST_WORKERS = 0")
+    mutate(p, "with _cf.ThreadPoolExecutor(max_workers=CATALYST_WORKERS) as ex:",
+           "with _cf.ThreadPoolExecutor(max_workers=1) as ex:")
+    return True
+
+
+def m_script_assigns_high(tape, digest, repo):
+    """The capture ASSIGNS a 'high' confidence at row creation.
+
+    A row's confidence may only be raised by a DATED, in-window catalyst. If the
+    script hands out 'high' by default, a retail-chatter reason rides at 'high'
+    unchecked - measured 2026-11-12, 10 of the tape's 12 'high' rows.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, '"conf": "low",', '"conf": "high",', replace_all=True)
+    return True
+
+
+
+def m_credit_failure_ignored(tape, digest, repo):
+    """The capture stops recognising a CREDIT failure.
+
+    The gateway answers an exhausted account with "Insufficient credits. This tool
+    costs 200 credits" - which looks like an empty result to a caller that cannot
+    tell them apart. A capture that cannot tell them apart publishes a tape with
+    NO catalysts and reports no error: the tape looks like a quiet pre-market, and
+    the quiet is a lie.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "CREDIT_MARKERS = (\"insufficient credit\", \"paid feature\", \"free allowance\",\n"
+               "                  \"purchase more\", \"upgrade your plan\")",
+           "CREDIT_MARKERS = ()")
+    return True
+
+
+
 def m_no_band_call(tape, digest, repo):
     """The capture stops taking its candidates from TODAY's pre-market band.
 
@@ -502,6 +645,19 @@ CASES = [
     ("a renderer that ignores news_date is caught", False, m_board_ignores_news_date),
     ("a capture script that does not age-check the PUBLISHED date is caught", False,
      m_published_date_not_age_checked),
+    ("a retail-chatter reason published as high confidence is caught", False, m_chatter_high),
+    ("a catalyst that contradicts its move at high confidence is caught", False,
+     m_sign_conflict_high),
+    ("a row with neither a number nor a cause is caught", False, m_empty_row),
+    ("a row with no pre-market notional is caught", False, m_missing_pm_notional),
+    ("a capture script that consults the router before the article feed is caught", False,
+     m_router_before_article),
+    ("a capture script that runs its catalyst calls one at a time is caught", False,
+     m_no_parallelism),
+    ("a capture script that assigns 'high' confidence at row creation is caught", False,
+     m_script_assigns_high),
+    ("a capture script that cannot tell a credit failure from 'no news' is caught", False,
+     m_credit_failure_ignored),
 ]
 
 
