@@ -567,7 +567,7 @@ twice it, because every article call is a metered provider call.
 
 ### The gates
 
-`tools/check_preopen_checkpoint.py` grew from 94 to **111 checks** (the undated-confidence
+`tools/check_preopen_checkpoint.py` grew from 94 to **113 checks** (the undated-confidence
 rule now covers every provenance; plus the empty-row rule, the sign-conflict demotion, the
 notional field, the article-first order, the worker pool, the credit recogniser and the
 `"conf": "high"` prohibition) and `tools/test_preopen_checkpoint_contract.py` grew from 30 to
