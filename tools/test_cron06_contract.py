@@ -164,7 +164,8 @@ def run_checker(d: Path, md: Path, reply: Path | None = None):
            "--md-dir", str(md),
            "--json", str(md / "cron06-refresh.json"),
            "--state", str(d / "pattern-study" / "cron06-state" / f"short-float-{FIRE}.json"),
-           "--prior-backlog", str(d / "prior_backlog.md")]
+           "--prior-backlog", str(d / "prior_backlog.md"),
+           "--prior-state", str(d / "prior_state.json")]
     if reply:
         cmd += ["--reply", str(reply)]
     return subprocess.run(cmd, capture_output=True, text=True)
@@ -213,15 +214,21 @@ def main():
         names = ("weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-backlog.md",
                  "cron06-refresh.json")
 
+        # The reply is part of the artifact set: without restoring it, the C14
+        # mutation leaves a broken reply behind and EVERY LATER mutation is
+        # "caught" by C14 instead of its own clause — a green run that proves
+        # nothing.  Restored and unrestored with the files (2026-11-14).
         def restore():
             for f in names:
                 shutil.copy(md / f, (md / f).with_suffix(".bak"))
             shutil.copy(state_file, state_file.with_suffix(".bak"))
+            shutil.copy(reply, reply.with_suffix(".bak"))
 
         def unrestore():
             for f in names:
                 shutil.move(str((md / f).with_suffix(".bak")), str(md / f))
             shutil.move(str(state_file.with_suffix(".bak")), str(state_file))
+            shutil.move(str(reply.with_suffix(".bak")), str(reply))
 
         def edit_json(fn):
             p = md / "cron06-refresh.json"
@@ -291,6 +298,12 @@ def main():
 
         mut("C14 the reply omits a newly tagged ticker", "C14",
             lambda: reply.write_text("### Signal\n\n- nothing here\n"))
+
+        def blank_delta(j):
+            for r in j["short_float_rows"]:
+                r["short_float_delta_pp"] = "NO_PRIOR_SNAPSHOT"
+        mut("C15 the week-over-week short-float delta is silently empty", "C15",
+            lambda: edit_json(blank_delta))
 
         failures = []
         for label, clause, fn in mutations:

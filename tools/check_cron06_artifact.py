@@ -34,7 +34,7 @@ REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-bac
                    "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
-CHECKS = 14
+CHECKS = 15
 
 
 def fail(clause: str, msg: str) -> None:
@@ -98,6 +98,9 @@ def main():
     ap.add_argument("--json", required=True)
     ap.add_argument("--state", required=True)
     ap.add_argument("--prior-backlog", default=None)
+    ap.add_argument("--prior-state", default=None,
+                    help="the PRIOR week's state snapshot — C15 recomputes the "
+                         "week-over-week short-float delta from it")
     ap.add_argument("--reply", default=None)
     args = ap.parse_args()
 
@@ -336,6 +339,49 @@ def main():
         for t in (inter.get("union") or []):
             if t not in reply:
                 fail("C14", f"the reply does not name the intersection name {t}")
+
+    # ---------------------------------------------------------------- C15 delta
+    # The week-over-week short-float delta is the whole point of the state series.
+    # It is computed against the PRIOR week's snapshot, which is keyed by TICKER.
+    # A lookup keyed on the full `TICKER.EXCHANGE` symbol silently yields
+    # NO_PRIOR_SNAPSHOT on every row — an artifact that looks complete and says
+    # nothing.  This clause recomputes the delta from the prior snapshot.
+    prior_state = None
+    if args.prior_state and os.path.exists(args.prior_state):
+        prior_state = json.loads(read(args.prior_state))
+    prior_pct = (prior_state or {}).get("universe_pct") or {}
+    by_ticker = {r.get("ticker"): r for r in sf}
+    if prior_pct:
+        for t, pv in prior_pct.items():
+            r = by_ticker.get(t)
+            if not r:
+                continue  # the name left the universe this week — that is not a delta failure
+            want = round((r.get("short_pct_float") or 0) - pv, 1)
+            got = r.get("short_float_delta_pp")
+            if num(got) is None:
+                fail("C15", f"short-float row {t}: it WAS in the prior state snapshot ({pv}%) "
+                            f"but the published delta is {got!r} — the delta lookup is keyed on "
+                            f"the wrong key, so the week-over-week change is empty")
+            elif abs(float(got) - want) > 0.15:
+                fail("C15", f"short-float row {t}: published delta {got} != recomputed {want} "
+                            f"({r.get('short_pct_float')} - {pv})")
+        for t, r in by_ticker.items():
+            if t not in prior_pct and num(r.get("short_float_delta_pp")) is not None:
+                fail("C15", f"short-float row {t}: it was NOT in the prior snapshot but publishes "
+                            f"a delta of {r.get('short_float_delta_pp')!r}")
+    elif data.get("prior_state_fire_date"):
+        if sf and all(num(r.get("short_float_delta_pp")) is None for r in sf):
+            fail("C15", f"the artifact names a prior state snapshot "
+                        f"({data.get('prior_state_fire_date')}) but no row carries a "
+                        "week-over-week delta — the delta lookup is keyed on the wrong key")
+    for cells in [r for r in sf_display if r and re.match(r"^\d+$", r[0])]:
+        r = by_ticker.get(cells[1])
+        if not r or len(cells) < 6:
+            continue
+        if cells[5] != str(r.get("short_float_delta_pp")):
+            fail("C15", f"weekly-high-short-float.md row {cells[1]}: the published delta "
+                        f"{cells[5]!r} does not match the JSON companion's "
+                        f"{r.get('short_float_delta_pp')!r}")
 
     report()
 

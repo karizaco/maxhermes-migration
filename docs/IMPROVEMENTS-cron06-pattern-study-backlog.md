@@ -135,3 +135,71 @@ Because the skill and the engine are fetched at RUN time, this lands on the next
   2026-11-09 would have produced a short-float book that was never measured on 2026-11-06 —
   a fabricated artifact. The only re-read data is date-pinned price history, which does not
   drift.
+
+---
+
+## 4. The 2026-11-14 fire: the week-over-week delta was silently empty
+
+### 4.1 The defect
+
+The 2026-11-14 fire (Saturday 15:00 ET, data date 2026-11-13) found a defect in the
+ENGINE, not in the data. The short-float delta is computed against the PRIOR week's state
+snapshot, whose `universe_pct` map is keyed by **ticker**:
+
+```python
+"universe_pct": {r["ticker"]: r["short_pct_float"] for r in sf_rows}
+```
+
+but the lookup used the **full symbol**:
+
+```python
+if sym in prior_pct:                 # sym == "VG.NYSE", prior_pct key == "VG"
+    delta = round(sp - prior_pct[sym], 1)
+else:
+    delta = "NO_PRIOR_SNAPSHOT"
+```
+
+So the lookup never matched. **All 134 rows published `NO_PRIOR_SNAPSHOT`**, including the
+128 names that WERE in the 2026-11-07 snapshot, and the artifact's note told the reader
+that the delta was "the change against the 2026-11-07 state snapshot" — a claim the data
+did not support. The whole point of the state series is that it answers "what changed this
+week", and the answer was empty on its second run.
+
+The 2026-11-07 fire could not catch it: that run wrote the FIRST snapshot, so
+`prior_state_fire_date` was null and `NO_PRIOR_SNAPSHOT` was the correct answer for every
+row. The bug was latent until a second sample existed.
+
+### 4.2 The fix
+
+* `cloud-prompts/_shared/cron06_refresh.py` — the lookup is keyed by `r["ticker"]`, and the
+  delta is normalised with `or 0.0` so a published "-0.0 pp" does not read as a defect.
+* `tools/check_cron06_artifact.py` — new clause **C15**: when `--prior-state` is supplied,
+  the checker RECOMPUTES every delta from the prior snapshot and fails a row that says
+  `NO_PRIOR_SNAPSHOT` while it was in that snapshot, a delta that does not match the
+  recomputation, a name that was NOT in the snapshot but claims a delta, or a markdown
+  cell that disagrees with the JSON companion. Without `--prior-state` it still fails an
+  artifact that names a prior snapshot while no row carries a delta.
+* `tools/test_cron06_contract.py` — the C15 mutation (blank every delta) is now in the
+  fault-injection set, and the harness restores the REPLY file between mutations. Without
+  that restore, the C14 mutation left a broken reply behind and every later mutation was
+  "caught" by C14 instead of its own clause — a green run that proved nothing.
+* `cloud-prompts/skills/stock-screener-suite/SKILL.md` §8b.3/§8b.5 — the enrichment now
+  covers the WHOLE short-float universe, not just the intersection and the top 40, so
+  `NO_QUOTE` means "no volume history" instead of "not measured this run".
+
+### 4.3 What it changed in the numbers
+
+The 2026-11-14 artifact now carries a real week-over-week delta on 128 of 134 names. The
+largest moves: SOUN -4.2pp (37.7%), DKS +4.0pp (24.2%), AAP -3.3pp (25.6%), NUVB +1.8pp
+(29.4%). Six names carry `NO_PRIOR_SNAPSHOT` because they were not in the 2026-11-07
+snapshot — they entered the universe this week, which is a different fact from "the delta
+is unavailable".
+
+### 4.4 Deliberately NOT done
+
+* The contract version stays `cron06-refresh-v2`. A defect fix that changes no published
+  field, no vocabulary and no file set is not a new contract; bumping it would have made
+  the 2026-11-07 artifacts look non-conforming.
+* The 2026-11-07 artifacts were NOT re-rendered. They were built before the state series
+  had a second sample, so their `NO_PRIOR_SNAPSHOT` was true at the time and re-rendering
+  them from a later snapshot would publish numbers that were never measured.

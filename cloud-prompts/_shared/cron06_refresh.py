@@ -359,8 +359,15 @@ def main():
             chg30 = (close / e["close_30d_ago"] - 1) * 100
         elif close and prev:
             chg30 = (close / prev - 1) * 100
-        if sym in prior_pct:
-            delta = round(sp - prior_pct[sym], 1)
+        # The prior state snapshot is keyed by TICKER (see the state writer below:
+        # `universe_pct` = {ticker: short_pct_float}), while `sym` is the full
+        # `TICKER.EXCHANGE` symbol.  Looking up `sym` here never matched, so every
+        # row published NO_PRIOR_SNAPSHOT even when the name WAS in last week's
+        # snapshot — the week-over-week change the state series exists to publish
+        # was silently empty.  Fixed 2026-11-14.
+        if r["ticker"] in prior_pct:
+            # `or 0.0` normalises -0.0 to 0.0 — a published "-0.0 pp" reads as a defect
+            delta = round(sp - prior_pct[r["ticker"]], 1) or 0.0
         else:
             delta = "NO_PRIOR_SNAPSHOT"
         sf_rows.append({

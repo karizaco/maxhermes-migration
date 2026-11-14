@@ -2505,7 +2505,9 @@ markdown. A hand-typed price is a defect, not a style choice.
 3. `python3 cron06_refresh.py --intersections-only ...` → the enrichment symbol list. The
    intersection names are needed BEFORE the enrichment query can be built.
 4. Enrich those symbols (30-bar average dollar volume, close, close 30 bars ago, market
-   cap) in ONE query, plus the IPO names' liquidity.
+   cap) in ONE query, plus the IPO names' liquidity — **and every remaining name in the
+   short-float universe**, so that no published row carries a `NO_QUOTE` verdict that only
+   means "this run did not measure it". `NO_QUOTE` must mean NO VOLUME HISTORY.
 5. Fetch the prior ledger (`pattern-study/peoplewish-1000pct-backlog.md`) and the most
    recent PRIOR state snapshot (`pattern-study/cron06-state/short-float-*.json` with a
    fire_date earlier than this one) from the outputs repo. Both are needed: the ledger
@@ -2542,6 +2544,12 @@ checker rejects it.
   `ownership_stats` is a current snapshot with no `date` column, so names lose their row
   between runs — a name above the gate with a lower stamp is a RE-STAMP, a name with no
   row at all has LEFT the universe. Say which.
+* **The week-over-week short-float delta is keyed by TICKER, not by symbol.** The state
+  snapshot's `universe_pct` is `{ticker: short_pct_float}` while the screen rows carry the
+  full `TICKER.EXCHANGE` symbol. A lookup on the symbol key never matches, so every row
+  published `NO_PRIOR_SNAPSHOT` — an artifact that looks complete and reports no change at
+  all (fixed 2026-11-14; `tools/check_cron06_artifact.py` clause C15 now recomputes the
+  delta from the prior snapshot and refuses that artifact).
 * **The backlog is a discovery ledger, not a quote sheet.** The carried-forward rows stay
   FROZEN at their first-tagging values, with their `First Tagged` date. The live re-score
   carries this week's tags. Freezing the TAGS too would hide the coil -> breakout
