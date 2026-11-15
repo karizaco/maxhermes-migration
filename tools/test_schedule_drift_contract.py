@@ -379,6 +379,97 @@ def main():
     else:
         results.append((FAIL, "a stale repo copy produced a phantom SPEC-DRIFT line"))
 
+    # ==============================================================================
+    # 2b. THE REFRESH ITSELF -- the path that actually fires when a clone lands
+    #     on the previous commit. Nothing exercised it: the guard proved only
+    #     that a copy it CANNOT pin is refused. Two destructive hazards, both
+    #     proven here.
+    #
+    #     A. A copy that CAN be brought to the tip must be brought there.
+    #     B. A copy with LOCAL CHANGES must never be hard-reset -- `reset --hard`
+    #        destroys them, and the copy can be a live checkout.
+    #     C. A FAILED fetch must not move the copy: the old code reset to
+    #        FETCH_HEAD whatever the fetch had left there, so a failed refresh
+    #        moved the copy BACKWARDS to a stale commit.
+    # ==============================================================================
+    def _git(args, cwd=None):
+        return subprocess.run(["git"] + args, cwd=str(cwd) if cwd else None,
+                              capture_output=True, text=True, timeout=120)
+
+    tmp = Path(tempfile.mkdtemp(prefix="refresh-repo-"))
+    origin = tmp / "origin.git"
+    _git(["init", "-q", "--bare", str(origin)])
+    _git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=origin)
+    work = tmp / "work"
+    _git(["init", "-q", str(work)])
+    _git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=work)
+    (work / "cloud-prompts").mkdir(parents=True, exist_ok=True)
+    (work / "cloud-prompts" / "x.md").write_text("x\n", encoding="utf-8")
+    _git(["add", "."], cwd=work)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "one"], cwd=work)
+    _git(["remote", "add", "origin", str(origin)], cwd=work)
+    _git(["push", "-q", "origin", "main"], cwd=work)
+    clone = tmp / "clone"
+    _git(["clone", "-q", str(origin), str(clone)])
+
+    # the origin moves on; the clone stays where it was
+    (work / "cloud-prompts" / "y.md").write_text("y\n", encoding="utf-8")
+    _git(["add", "."], cwd=work)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "two"], cwd=work)
+    _git(["push", "-q", "origin", "main"], cwd=work)
+    tip2 = _git(["rev-parse", "refs/heads/main"], cwd=origin).stdout.strip()
+
+    ok, detail = sd.ensure_repo_at_tip(str(clone), tip_sha=tip2)
+    head2 = _git(["rev-parse", "HEAD"], cwd=clone).stdout.strip()
+    if ok and head2 == tip2:
+        results.append((PASS, "a repo copy that CAN be pinned to the tip is brought to it"))
+    else:
+        results.append((FAIL, f"a refreshable repo copy was not brought to the tip "
+                              f"(ok={ok} head={head2[:12]} tip={tip2[:12]} -- {detail})"))
+
+    # B. local changes must survive a refresh attempt
+    (clone / "cloud-prompts" / "x.md").write_text("LOCAL WORK\n", encoding="utf-8")
+    (work / "cloud-prompts" / "z.md").write_text("z\n", encoding="utf-8")
+    _git(["add", "."], cwd=work)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "three"], cwd=work)
+    _git(["push", "-q", "origin", "main"], cwd=work)
+    tip3 = _git(["rev-parse", "refs/heads/main"], cwd=origin).stdout.strip()
+    ok, detail = sd.ensure_repo_at_tip(str(clone), tip_sha=tip3)
+    kept = (clone / "cloud-prompts" / "x.md").read_text(encoding="utf-8") == "LOCAL WORK\n"
+    if not ok and kept:
+        results.append((PASS, "a repo copy with local changes is refused, and the local "
+                              "work is NOT destroyed"))
+    else:
+        results.append((FAIL, f"a repo copy with local changes was reset anyway "
+                              f"(ok={ok} local_work_kept={kept} -- {detail})"))
+
+    # C. A refresh must land the copy ON THE TIP or on NOTHING -- never on a
+    #    third commit. The old code reset to whatever FETCH_HEAD named, so a
+    #    fetch that returned a commit OTHER than the tip (main moved between
+    #    the tip read and the fetch) moved the copy onto a commit nobody asked
+    #    for and left the comparison to be made against it.
+    clone4 = tmp / "clone4"
+    _git(["clone", "-q", str(origin), str(clone4)])          # a copy pinned at tip3
+    (work / "cloud-prompts" / "v.md").write_text("v\n", encoding="utf-8")
+    _git(["add", "."], cwd=work)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "four"], cwd=work)
+    _git(["push", "-q", "origin", "main"], cwd=work)
+    tip4 = _git(["rev-parse", "refs/heads/main"], cwd=origin).stdout.strip()
+    (work / "cloud-prompts" / "w.md").write_text("w\n", encoding="utf-8")
+    _git(["add", "."], cwd=work)
+    _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "five"], cwd=work)
+    _git(["push", "-q", "origin", "main"], cwd=work)
+    head_before = _git(["rev-parse", "HEAD"], cwd=clone4).stdout.strip()
+    ok, detail = sd.ensure_repo_at_tip(str(clone4), tip_sha=tip4)
+    head_after = _git(["rev-parse", "HEAD"], cwd=clone4).stdout.strip()
+    if not ok and head_after == head_before:
+        results.append((PASS, "a refresh that cannot land ON the tip does not move the "
+                              "repo copy at all"))
+    else:
+        results.append((FAIL, f"the repo copy was moved onto a commit other than the tip "
+                              f"(ok={ok} before={head_before[:12]} after={head_after[:12]} "
+                              f"asked_for={tip4[:12]} -- {detail})"))
+
     # the PROMPT drift check must compare the deployed prompt with the repo's
     # file, byte-exactly -- and it must fire on a difference and stay quiet on a
     # match. It is the check that catches a routine still running a prompt the

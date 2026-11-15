@@ -562,12 +562,33 @@ def repo_tip_sha(timeout=30):
 
 def repo_head_sha(repo_dir):
     """The sha the local checkout is sitting on."""
+    return repo_rev_sha(repo_dir, "HEAD")
+
+
+def repo_rev_sha(repo_dir, rev="HEAD"):
+    """The sha a revision resolves to, or None."""
     try:
-        r = subprocess.run(["git", "-C", repo_dir, "rev-parse", "HEAD"],
+        r = subprocess.run(["git", "-C", repo_dir, "rev-parse", rev],
                            capture_output=True, text=True, timeout=30)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:                                 # noqa: BLE001
         return None
+
+
+def repo_tracked_changes(repo_dir):
+    """Does the copy carry TRACKED changes that a hard reset would destroy?
+
+    Untracked files are ignored on purpose: `git reset --hard` does not delete
+    them, so they are not a reason to refuse a refresh. Tracked edits and staged
+    changes ARE destroyed by it, so they are.
+    """
+    try:
+        r = subprocess.run(["git", "-C", repo_dir, "status", "--porcelain",
+                            "--untracked-files=no"],
+                           capture_output=True, text=True, timeout=60)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except Exception:                                 # noqa: BLE001
+        return False
 
 
 def ensure_repo_at_tip(repo_dir, tip_sha=None, timeout=30):
@@ -595,14 +616,40 @@ def ensure_repo_at_tip(repo_dir, tip_sha=None, timeout=30):
                       "runs UNVERIFIED against the local copy")
     if head == tip:
         return True, f"the repo copy is at main's tip {tip[:12]}"
-    # behind: try to fast-forward the checkout to the tip
+    # behind: try to bring the copy to the tip.
+    #
+    # A refresh must be SAFE, and there are two ways to get that wrong:
+    #   1. `git reset --hard` DESTROYS tracked local changes. The copy this
+    #      guard reads can be a live checkout (its search path includes one), so
+    #      a copy with local work is never reset -- it is left alone and the
+    #      comparison is refused instead. An unchecked comparison beats a wrong
+    #      one; a destroyed working tree beats neither.
+    #   2. The reset used to go to whatever FETCH_HEAD named. A fetch that
+    #      returns a commit OTHER than the tip (main moved between the tip read
+    #      and the fetch) therefore moved the copy onto a commit nobody asked
+    #      for, and the comparison was then made against it. The copy now lands
+    #      ON the tip or on nothing.
+    #
+    # (A FAILED fetch truncates FETCH_HEAD, so the old unconditional reset
+    # failed harmlessly in that case -- the hazard was the commit it COULD
+    # land on, not the one it could not.)
+    if repo_tracked_changes(repo_dir):
+        return False, (f"the repo copy is at {head[:12] if head else 'unknown'} but main's "
+                       f"tip is {tip[:12]} and the copy has LOCAL CHANGES, so it was NOT "
+                       f"refreshed -- every spec comparison against it would be a false drift")
+    fetched = False
     try:
-        subprocess.run(["git", "-C", repo_dir, "fetch", "-q", "--depth", "1",
-                        "origin", "main"], capture_output=True, text=True, timeout=180)
-        subprocess.run(["git", "-C", repo_dir, "reset", "-q", "--hard", "FETCH_HEAD"],
-                       capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["git", "-C", repo_dir, "fetch", "-q", "--depth", "1",
+                            "origin", "main"], capture_output=True, text=True, timeout=180)
+        fetched = r.returncode == 0
     except Exception:                                 # noqa: BLE001
-        pass
+        fetched = False
+    if fetched and repo_rev_sha(repo_dir, "FETCH_HEAD") == tip:
+        try:
+            subprocess.run(["git", "-C", repo_dir, "reset", "-q", "--hard", "FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=60)
+        except Exception:                             # noqa: BLE001
+            pass
     head = repo_head_sha(repo_dir)
     if head == tip:
         return True, (f"the repo copy was behind main and has been fast-forwarded "
