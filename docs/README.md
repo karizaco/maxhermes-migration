@@ -8,6 +8,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 
 | Document | What it is |
 |---|---|
+| [`ARCHITECTURE-run-time-fetch.md`](ARCHITECTURE-run-time-fetch.md) | ARCHITECTURE — the run-time fetch, and why the fleet is built this way — **Date:** 2026-11-15 · **Scope:** the whole fleet — how a routine's code reaches it at fire |
 | [`BUGREPORT-2026-11-10-deploy-registry-and-prompt-drift.md`](BUGREPORT-2026-11-10-deploy-registry-and-prompt-drift.md) | Bug report — the deploy registry carried a stale schedule, and #08's deployed prompt was 5 bytes off the repo — **Found by:** cron #91 (schedule-drift-guard), daily 04:05 ET check of 2026-11-10. |
 | [`BUGREPORT-gui-schedule-corruption.md`](BUGREPORT-gui-schedule-corruption.md) | Bug report — web GUI save silently corrupts a scheduled task's day-of-week field — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
 | [`BUGREPORT-minimax-2056-reset-time-dropped.md`](BUGREPORT-minimax-2056-reset-time-dropped.md) | Bug report — the Token Plan 2056 error drops the window's reset time, so a blocked fire cannot say when it recovers — **Submit via:** the app's **Feedback** dialog (user menu → Help, or a task's top bar, or a |
@@ -24,7 +25,9 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-2026-11-10-cron26-claims-about-the-screen.md`](IMPROVEMENTS-2026-11-10-cron26-claims-about-the-screen.md) | IMPROVEMENTS — 2026-11-10: cron #26's brief made CLAIMS about the screen that nothing checked — - **Date:** 2026-11-10 (the 2026-11-09 08:30 ET fire's artifact, corrected and republished) |
 | [`IMPROVEMENTS-2026-11-10-cron26-market-cap-gate.md`](IMPROVEMENTS-2026-11-10-cron26-market-cap-gate.md) | IMPROVEMENTS — 2026-11-10: cron #26's market-cap GATE was decided on a stale share count — - **Date:** 2026-11-10 (correcting the 2026-11-09 08:30 ET fire) |
 | [`IMPROVEMENTS-2026-11-11-cron26-seven-session-scorecard.md`](IMPROVEMENTS-2026-11-11-cron26-seven-session-scorecard.md) | IMPROVEMENTS — 2026-11-11: cron #26 scored across seven sessions — and a correction to the Nov 9 post-mortem — **Date:** 2026-11-11 |
+| [`IMPROVEMENTS-2026-11-12-push-subject-name-and-connector-guard.md`](IMPROVEMENTS-2026-11-12-push-subject-name-and-connector-guard.md) | IMPROVEMENTS — 2026-11-12 — the push helper lost the routine NAME, and the connector fallback writes to PRODUCTION — Two defects in `cloud-prompts/_shared/push_artifact.sh`, both found by the cron #04 fire on |
 | [`IMPROVEMENTS-2026-11-12-tv-scanner-pull-completeness.md`](IMPROVEMENTS-2026-11-12-tv-scanner-pull-completeness.md) | IMPROVEMENTS — 2026-11-12: the scanner pull's completeness test is a SET test, and it now lives where every routine can see it — - **Date:** 2026-11-12 |
+| [`IMPROVEMENTS-2026-11-13-auditor-measurement-engine.md`](IMPROVEMENTS-2026-11-13-auditor-measurement-engine.md) | IMPROVEMENTS — 2026-11-13 — cron #90's measurement engine, the cause vocabulary and the byte-level delivery check — **Why this document exists:** the 2026-11-12 07:00 ET audit (of 2026-11-11) was measured |
 | [`IMPROVEMENTS-cron-fleet-output-layout.md`](IMPROVEMENTS-cron-fleet-output-layout.md) | IMPROVEMENTS — 2026-11-12: the fleet's output layout, and a roster that had drifted in FOUR places — **Date:** 2026-11-12 · **Scope:** the whole fleet's output layout in `karizaco/minimax-cloud-outputs`, |
 | [`IMPROVEMENTS-cron02-asia-pre-market-reactions.md`](IMPROVEMENTS-cron02-asia-pre-market-reactions.md) | Improvements — cron #02 `asia-pre-market-reactions` — Date: 2026-11-10. Scope: cron #02's skill spec (`cloud-prompts/skills/asia-pre-market-reactions/SKILL.md`), |
 | [`IMPROVEMENTS-cron04-reversal-bullish.md`](IMPROVEMENTS-cron04-reversal-bullish.md) | Improvements — cron #04 `reversal-bullish-3:55` — - **Date:** 2026-11-10 (the 15:55 ET fire, session `2026-11-10`) |
@@ -32,6 +35,7 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 | [`IMPROVEMENTS-cron06-pattern-study-backlog.md`](IMPROVEMENTS-cron06-pattern-study-backlog.md) | Improvements — cron #06 `stock-screener-pattern-study-backlog` — Date: 2026-11-09. Scope: the weekly refresh screens (IPO / high short float / 1000%-in-10-years) |
 | [`IMPROVEMENTS-cron07-focus-rvol.md`](IMPROVEMENTS-cron07-focus-rvol.md) | Improvements — cron #07 `stock-screener-focus-rvol-09:45` — - **Audited:** 2026-11-12 (the 09:45 ET fires of `2026-11-09`, `2026-11-10` and `2026-11-11` — |
 | [`IMPROVEMENTS-cron08-pre-market-gapper.md`](IMPROVEMENTS-cron08-pre-market-gapper.md) | Improvements — cron #08 `stock-screener-pre-market-gapper` — - **Audited:** 2026-11-04 (the 08:30 ET fire, `2026-11-04`) |
+| [`IMPROVEMENTS-cron09-cron10-path-ownership-guard.md`](IMPROVEMENTS-cron09-cron10-path-ownership-guard.md) | Cron #09 — the checker's cron #10 path guard compared EXISTENCE instead of CONTENT — **Date:** 2026-11-13 |
 | [`IMPROVEMENTS-cron09-stock-screener-suite.md`](IMPROVEMENTS-cron09-stock-screener-suite.md) | Cron #09 `stock-screener-daily-sweep-18:30` — General Improvement Audit — **Audited:** 2026-11-03. Scope: the routine as a *system* — the skill spec, its SQL, its data |
 | [`IMPROVEMENTS-cron10-breadth-snapshot.md`](IMPROVEMENTS-cron10-breadth-snapshot.md) | IMPROVEMENTS — cron #10 `stock-screener-breadth-snapshot` — The run itself was clean: window check OK (`fire-date: 2026-11-10`, `replay: no`, `stall_min: 3`), |
 | [`IMPROVEMENTS-cron12-cross-asset-correlation-snapshot.md`](IMPROVEMENTS-cron12-cross-asset-correlation-snapshot.md) | Cron #12 — cross-asset-correlation-snapshot: improvements — The skill spec's render command references three data files: |
@@ -52,4 +56,5 @@ Regenerate this index with `python3 tools/gen_docs_index.py` after adding a file
 `IMPROVEMENTS-cronNN-<routine>.md` — a review of one routine and what changed.
 `CROSSCHECK-<topic>.md` — two routines checked against each other.
 `BUGREPORT-<topic>.md` — a defect found outside the routine-review flow.
+`ARCHITECTURE-<topic>.md` — how the fleet is built, for a human who has to change it.
 `remediation/` — the larger fleet-wide remediation records.

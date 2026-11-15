@@ -64,6 +64,7 @@ def build() -> str:
             "`IMPROVEMENTS-cronNN-<routine>.md` — a review of one routine and what changed.",
             "`CROSSCHECK-<topic>.md` — two routines checked against each other.",
             "`BUGREPORT-<topic>.md` — a defect found outside the routine-review flow.",
+            "`ARCHITECTURE-<topic>.md` — how the fleet is built, for a human who has to change it.",
             "`remediation/` — the larger fleet-wide remediation records.", ""]
     return "\n".join(out)
 

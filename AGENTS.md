@@ -10,6 +10,7 @@ cloud-prompts/_shared/         the fleet-wide blocks every routine downloads
 cloud-prompts/_shared/PROMPT-BLOCKS.md      the rules that are identical across the fleet
 cloud-prompts/_shared/RUNTIME-CONTRACT.md   the measured state of every data source
 docs/                          one file per review: IMPROVEMENTS- / CROSSCHECK- / BUGREPORT-
+                               ARCHITECTURE- = how the fleet is built (docs/ARCHITECTURE-run-time-fetch.md)
 tools/                         the deterministic helpers (see below)
 archive/                       frozen 2026-09-25 local Mavis snapshot (NOT live — see archive/README.md)
 ```
