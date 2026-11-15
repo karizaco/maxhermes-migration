@@ -538,6 +538,80 @@ def find_repo_dir(explicit=None):
     return None
 
 
+def repo_tip_sha(timeout=30):
+    """The sha of main's TIP, read from the API (which is not CDN-cached).
+
+    Returns None when the API cannot be read -- the caller then treats the
+    comparison as UNVERIFIED rather than as a finding.
+    """
+    import urllib.request
+    token = os.environ.get("GITHUB_TOKEN", "")
+    headers = {"User-Agent": "schedule-drift-guard",
+               "Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"https://api.github.com/repos/{REPO_SLUG}/commits/main"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+        return json.loads(body.decode("utf-8", "replace")).get("sha") or None
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
+def repo_head_sha(repo_dir):
+    """The sha the local checkout is sitting on."""
+    try:
+        r = subprocess.run(["git", "-C", repo_dir, "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:                                 # noqa: BLE001
+        return None
+
+
+def ensure_repo_at_tip(repo_dir, tip_sha=None, timeout=30):
+    """Make sure the repo copy IS main's tip before it is used as the reference.
+
+    WHY THIS EXISTS: a repo copy that lags main turns EVERY spec comparison into
+    a false drift. Measured 2026-11-15: a clone taken one minute after a push
+    still landed on the PREVIOUS commit, and the guard reported 10 phantom
+    SPEC-DRIFT lines across six routines whose specs had not moved -- the live
+    fetch was right and the CLONE was behind. The check was silent because the
+    two sides of the comparison were expected to differ.
+
+    So the reference copy must be pinned to main's tip, and when it cannot be
+    (offline, no permission to fetch) the spec check must NOT run at all: an
+    unchecked comparison is honest, a wrong one is not.
+
+    Returns (ok, detail).
+    """
+    if not repo_dir or not os.path.isdir(os.path.join(repo_dir, ".git")):
+        return False, "the repo copy is not a git checkout"
+    tip = tip_sha if tip_sha is not None else repo_tip_sha(timeout=timeout)
+    head = repo_head_sha(repo_dir)
+    if not tip:
+        return True, ("main's tip sha could not be read -- the spec comparison "
+                      "runs UNVERIFIED against the local copy")
+    if head == tip:
+        return True, f"the repo copy is at main's tip {tip[:12]}"
+    # behind: try to fast-forward the checkout to the tip
+    try:
+        subprocess.run(["git", "-C", repo_dir, "fetch", "-q", "--depth", "1",
+                        "origin", "main"], capture_output=True, text=True, timeout=180)
+        subprocess.run(["git", "-C", repo_dir, "reset", "-q", "--hard", "FETCH_HEAD"],
+                       capture_output=True, text=True, timeout=60)
+    except Exception:                                 # noqa: BLE001
+        pass
+    head = repo_head_sha(repo_dir)
+    if head == tip:
+        return True, (f"the repo copy was behind main and has been fast-forwarded "
+                      f"to {tip[:12]}")
+    return False, (f"the repo copy is at {head[:12] if head else 'unknown'} but main's tip "
+                   f"is {tip[:12]} -- the repo copy is STALE, so every spec comparison "
+                   f"against it would be a false drift")
+
+
 def clone_repo(dest="/workspace/guard/mig"):
     """Clone the repo if it is not on disk. The spec check needs a repo-side copy
     that came over a DIFFERENT transport than the live fetch, or the comparison
@@ -923,9 +997,25 @@ def main():
     repo_dir = find_repo_dir(args.repo)
     if not repo_dir:
         repo_dir = clone_repo()
+    # The repo copy must be main's TIP before it is used as the reference side of
+    # a spec comparison. A copy that lags main makes every comparison false, and
+    # the false direction is the expensive one (it buries a real finding under
+    # phantom drift). If the copy cannot be pinned to the tip, the spec check is
+    # NOT RUN and the reason is reported -- an unchecked comparison beats a wrong
+    # one. Measured 2026-11-15: a clone one minute old still landed on the
+    # previous commit and produced 10 phantom SPEC-DRIFT lines.
+    repo_state = None
+    repo_ok = True
+    if repo_dir:
+        try:
+            repo_ok, repo_state = ensure_repo_at_tip(repo_dir)
+        except Exception as exc:                     # noqa: BLE001
+            repo_ok, repo_state = False, f"{type(exc).__name__}: {exc}"
     if not args.no_spec_check:
         if not repo_dir:
             spec_error = "no repo clone available (clone failed and no --repo was given)"
+        elif not repo_ok:
+            spec_error = repo_state
         else:
             try:
                 spec_findings, spec_checked = check_spec_drift(
@@ -1020,6 +1110,8 @@ def main():
         else:
             print(f"spec drift: {len(spec_checked)} routine(s) compared, "
                   f"{len([s for s in spec_findings if s['kind'] == 'SPEC-DRIFT'])} drifted")
+        if repo_state:
+            print(f"repo copy: {repo_state}")
         for s in spec_findings:
             if s["kind"] == "SPEC-DRIFT":
                 print(f"SPEC-DRIFT  {s['cron_name']}: repo {s['repo_hash']} vs live {s['live_hash']}")

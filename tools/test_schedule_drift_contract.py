@@ -46,6 +46,7 @@ GROUND_TRUTH = ROOT / "tools" / "schedule-ground-truth.json"
 
 PASS = "PASS"
 FAIL = "FAIL"
+SKIP = "SKIP"
 
 # The reference time every fixture is written against: 2026-11-06 12:00 ET.
 NOW = 1793984400
@@ -99,14 +100,20 @@ def build_tasks(drop=(), rename=None):
             "response": {"tasks": tasks, "has_more": False}}
 
 
-def run_detector(tasks, runs_file=None, extra=()):
-    """Run the guard exactly the way cron #91 runs it."""
+def run_detector(tasks, runs_file=None, extra=(), spec_check=False):
+    """Run the guard exactly the way cron #91 runs it.
+
+    `spec_check=True` turns the skill-spec comparison ON (it is off by default
+    here because it costs one live fetch per routine).
+    """
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
                                      encoding="utf-8") as fh:
         json.dump(tasks, fh)
         tasks_path = fh.name
     cmd = [sys.executable, str(SD_PATH), "--tasks", tasks_path,
-           "--now", str(NOW), "--no-spec-check"]
+           "--now", str(NOW)]
+    if not spec_check:
+        cmd.append("--no-spec-check")
     if runs_file:
         cmd += ["--runs-file", str(runs_file)]
     cmd += list(extra)
@@ -341,6 +348,37 @@ def main():
         results.append((FAIL, "deploy_prompts.py schedules differ from the ground truth -- "
                               + "; ".join(stale_sched)))
 
+    # ==============================================================================
+    # 2. THE STALE REPO COPY -- a repo copy that lags main turns EVERY spec
+    #    comparison into a FALSE drift, so the guard must refuse to compare
+    #    against it rather than report the difference as a finding.
+    #    Measured 2026-11-15: a clone taken one minute after a push still landed
+    #    on the previous commit, and the guard reported 10 phantom SPEC-DRIFT
+    #    lines across six routines whose specs had not moved.
+    # ==============================================================================
+    stale_repo = Path(tempfile.mkdtemp(prefix="stale-repo-"))
+    subprocess.run(["git", "-C", str(stale_repo), "init", "-q"], capture_output=True)
+    (stale_repo / "cloud-prompts").mkdir(exist_ok=True)
+    (stale_repo / "cloud-prompts" / "x.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(stale_repo), "add", "."], capture_output=True)
+    subprocess.run(["git", "-C", str(stale_repo), "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-qm", "x"], capture_output=True)
+    code, out = run_detector(build_tasks(), None, extra=["--repo", str(stale_repo)],
+                             spec_check=True)
+    if "main's tip sha could not be read" in out:
+        results.append((SKIP, "the tip sha could not be read -- the stale-copy case "
+                               "cannot be exercised offline"))
+    elif "spec drift: NOT CHECKED" in out and "STALE" in out:
+        results.append((PASS, "a repo copy that cannot be pinned to main's tip is "
+                               "refused, not compared"))
+    else:
+        results.append((FAIL, "the guard compared the specs against a STALE repo copy -- "
+                              "every such comparison is a false drift"))
+    if "SPEC-DRIFT" not in out:
+        results.append((PASS, "a stale repo copy produces NO SPEC-DRIFT line"))
+    else:
+        results.append((FAIL, "a stale repo copy produced a phantom SPEC-DRIFT line"))
+
     # every routine must have a spec contract, and every contract's marker must
     # still be in the repo -- a contract that points at a missing marker is a
     # contract nobody can satisfy
@@ -376,12 +414,16 @@ def main():
     print("cron #91 schedule-drift guard — contract test")
     print("=" * 78)
     failures = 0
+    skipped = 0
     for status, name in results:
         print(f"  {status}  {name}")
         if status == FAIL:
             failures += 1
+        elif status == SKIP:
+            skipped += 1
     print("-" * 78)
-    print(f"  {len(results) - failures}/{len(results)} checks behaved correctly")
+    print(f"  {len(results) - failures - skipped}/{len(results)} checks behaved correctly"
+          + (f" ({skipped} skipped)" if skipped else ""))
     if failures:
         print(f"  RESULT: {failures} problem(s)")
         return 1
