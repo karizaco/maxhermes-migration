@@ -29,6 +29,37 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Unusual options flow — daily, ranked by RELATIVE volume
 
+## What changed on 2026-11-16, and why
+
+**The board's universe is now PUBLISHED, with the count of the names it leaves out.** The
+relative screen has always had a floor — the top 60 US names by cash volume plus the 8 routine
+names — but nothing in the artifact said so. Measured 2026-11-13: SBC Medical Group Holdings
+(~$549m market cap) could never appear on this board, because a $549m name is nowhere near the
+top 60 by cash volume, and the artifact said nothing about it. A reader could not tell "this
+name is too small to be on this board" from "this name was not here".
+
+So from 2026-11-16 the artifact carries the floor in **three** places — the header block, the
+`## Source health` table and caveat 8 — and `tools/check_options_flow_artifact.py` (clause **G**)
+proves all three are there and agree.
+
+**The count is measured, not estimated.** The TradingView `america` scanner answers a filtered
+query with `totalCount` — the number of rows the FILTER matches — on every response, including a
+`range`-limited one. The universe call the engine already makes therefore yields the population
+size for free: measured 2026-11-15, **5,542** US names (`type in (stock, dr)`, `exchange in
+(NASDAQ, NYSE, AMEX)`, `close > 1`), of which this board covers **59** (the top-60 window's
+symbols) plus the routine names — so **5,483** US names are outside the board.
+
+**No number changed and no prompt changed**, so this reaches the next fire with no `cron_update`
+and no byte-drift risk. `ENGINE_REV` deliberately stays 2 — the deployed prompt's fetch ladder
+demands that literal string, and a rev-3 engine would be rejected on every URL and silently
+demote the headline relative screen to the legacy 8-name fallback. The new capability is a
+SEPARATE marker (`FLOOR_DISCLOSURE_V1`), which the skill's own fetch ladder demands.
+
+**Artifacts published before 2026-11-16 are not failed for it.** The rule set is decided by the
+contract marker (`coverage_floor_contract: universe-floor-v1`), and an artifact that predates the
+contract is REPORTED, not failed: a contract change must not retroactively fail an artifact that
+was legal when it was written.
+
 ## What changed on 2026-11-12, and why
 
 **The column contract: the expiry date always gets its OWN column.** Set by the user after
@@ -162,12 +193,14 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/relvol_screen.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   # a 404 body is non-empty JSON, and an OLD copy silently lacks the new sections
-  # BOTH markers are required: RELVOL_SCREEN_V1 (the engine family) AND ENGINE_REV=2 (the rev
+  # ALL THREE markers are required: RELVOL_SCREEN_V1 (the engine family), ENGINE_REV=2 (the rev
   # that adds the universe-labelled front matter, the bias-tag self-check, the wide book and
-  # Pass A). The rev marker is what stops a pre-2026-11-06 copy from winning the ladder — the
-  # old copy carries RELVOL_SCREEN_V1 too, so one marker cannot tell them apart.
+  # Pass A) and FLOOR_DISCLOSURE_V1 (the coverage-floor disclosure). The rev marker is what stops
+  # a pre-2026-11-06 copy from winning the ladder — the old copy carries RELVOL_SCREEN_V1 too, so
+  # one marker cannot tell them apart. The floor marker is what stops a pre-2026-11-16 copy from
+  # winning it: that copy has the rev-2 markers and silently lacks the published floor.
   if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null \
-     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null; then
+     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null && grep -q 'FLOOR_DISCLOSURE_V1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -179,6 +212,12 @@ engine: re-fetch with the ladder above (the contents API is tried first and is a
 if it still will not serve rev 2, fall back to the legacy method below and say so in the header.
 **Do not publish an artifact from a pre-rev-2 engine and call it current** — it has no
 universe-labelled front matter and no bias-tag self-check.
+
+**If the copy you fetched carries the two rev markers but NOT `FLOOR_DISCLOSURE_V1`, you have a
+pre-2026-11-16 engine.** Re-fetch with the ladder above. If it still will not serve one, the
+artifact MUST carry the floor lines anyway — write them yourself, in the format below, and
+measure the count with the two scanner calls in *The coverage floor* below. **A floor that is not
+published is a defect; a degraded count that says it was not measured is honest.**
 
 **Run it with the FIRE's scheduled date**, not `date` at execution time:
 
@@ -291,7 +330,7 @@ the published series comparable, and it must not leak into the relative screen.
 
 ## Artifact sections (in this order)
 
-1. Header block: date, method, engine version, universe, counts, filters, composite formula, the three sources, the baseline session, the series-book bias tag, status.
+1. Header block: date, method, engine version, universe, counts, filters, composite formula, the three sources, the baseline session, the series-book bias tag, status, **and the coverage floor** (`coverage_floor_contract`, `coverage_floor`, `coverage_floor_scope`).
 2. **Relative-volume leaders — multi-day book (DTE ≥ 1)** — the headline.
 3. Relative-volume leaders — all expiries (0DTE included), with the 0DTE IV caveat.
 4. **Name level — options activity vs the name's own 10-session baseline**, plus the *quiet* names (the ones that look loud on absolute volume but are below their own history).
@@ -300,7 +339,7 @@ the published series comparable, and it must not leak into the relative screen.
 7. **Series book (legacy absolute method)** — bias tag, the three slices, the premium-dollar read, the top 10 strikes by V/OI.
 8. **Wide book** — the same legacy method over the relative screen's whole universe, next to the series book, so the two populations can be read against each other.
 9. **Pass A — the published watchlist** — its own ratios, its own universe line, or an explicit statement that it was omitted and why.
-10. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named.
+10. `## Source health` — per source: URL/query, status, result; every degraded or blocked source named; **and the coverage floor as a row of its own**.
 11. `## Caveats`.
 12. Audit line: `unusual-options-flow target=options-flow:<date> underlyings=<n> strikes_kept=<n> bias=<call|put|mixed> method=relative`.
 
@@ -412,11 +451,97 @@ bias_tag_thresholds: put/call < 0.85 -> CALL, > 1.20 -> PUT, else MIXED (the tag
 A ratio whose population is not named in the front matter is a defect, not a style issue.
 
 
+### The coverage floor — the board's universe, published
+
+**A floor that is not published reads as a missing company.** The board has always been bounded:
+the top 60 US names by cash volume plus the 8 routine names. A name outside that boundary is
+simply not on the board — but unless the artifact says so, its absence looks like a gap in the
+data. Measured 2026-11-13: a ~$549m name can never be on this board (it is nowhere near the top
+60 by cash volume) and nothing in the artifact said so.
+
+From 2026-11-16 the artifact carries the floor in three places, and the checker
+(`tools/check_options_flow_artifact.py`, clause **G**) proves all three are there and agree.
+
+**1. The header block** — one machine-readable line and one line of prose:
+
+```
+coverage_floor_contract: universe-floor-v1
+coverage_floor: n=60 routine_names=8 scanner_us=5542 covered_us=59 outside_screen=5483 source=TradingView america scanner (volume column, cash-volume sort desc)
+coverage_floor_scope: This board covers the top 60 US names by cash volume plus the 8 routine names (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN). Of the scanner's 5,542 US names, this board covers 59, so 5,483 US names are outside the board: a US name outside the top 60 by cash volume, and not one of the 8 routine names, is not covered by this board — a scope limit, not a missing company.
+```
+
+**2. `## Source health`** — the floor as a row of its own, in the same register as the other rows:
+
+```
+| Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` — `volume` column, cash-volume sort descending, top 60 + the 8 routine names | ok | The board covers the top 60 US names by cash volume plus the 8 routine names (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN). The scanner's US population was 5,542 names; this board covers 59, so 5,483 are outside it — a US name outside the top 60 by cash volume, and not one of the 8 routine names, is not covered by this board: a scope limit, not a missing company |
+```
+
+**3. Caveat 8** — the same limit, in the place a reader looks for limitations.
+
+**What each number means.**
+
+| Number | What it is | How it is measured |
+|---|---|---|
+| `n` | the window size — the top-N by cash volume | the `--universe` the engine was run with |
+| `routine_names` | how many routine names are added on top of the window | `len(PASS_B)` = 8 |
+| `scanner_us` | the scanner's US population | the universe response's `totalCount` |
+| `covered_us` | the population names this board covers | the top-N window's symbols (+ any routine name that is in the population) |
+| `outside_screen` | the population names the board does NOT cover | `scanner_us - covered_us` |
+
+The arithmetic is checked: `scanner_us - covered_us` MUST equal `outside_screen`, and the prose
+in `coverage_floor_scope` and in the source-health row MUST state the same two counts the machine
+line publishes.
+
+**`totalCount` is the measurement, and it is free.** The universe call the engine already makes
+answers with `totalCount` = the number of rows the FILTER matches — on every response, including
+a `range`-limited one. The field is `totalCount` (camelCase), NOT `total_count`. Read it with a
+small `range`: the count does not depend on the range.
+
+**If you are running a pre-floor engine and must write the lines yourself**, measure the two
+counts with these two calls (they are the same filter the engine uses):
+
+```bash
+python3 - <<'PYEOF'
+import json, subprocess
+def scan(payload):
+    p = subprocess.run(["curl", "-sL", "--max-time", "25", "-X", "POST",
+        "https://scanner.tradingview.com/america/scan",
+        "-H", "Content-Type: application/json",
+        "-H", "Origin: https://www.tradingview.com",
+        "-H", "User-Agent: Mozilla/5.0",
+        "-d", json.dumps(payload)], capture_output=True, text=True)
+    return json.loads(p.stdout)
+base = [{"left": "type", "operation": "in_range", "right": ["stock", "dr"]},
+        {"left": "exchange", "operation": "in_range", "right": ["NASDAQ", "NYSE", "AMEX"]},
+        {"left": "close", "operation": "greater", "right": 1}]
+total = scan({"filter": base, "columns": ["name"], "range": [0, 1]}).get("totalCount")
+pb = scan({"filter": [{"left": "name", "operation": "in_range",
+                        "right": ["IWM", "GLD", "TLT", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"]}],
+           "columns": ["name", "type", "exchange"], "range": [0, 20]})
+inpop = sorted({d["d"][0] for d in pb.get("data", [])
+                if len(d.get("d") or []) > 2 and d["d"][1] in ("stock", "dr")
+                and d["d"][2] in ("NASDAQ", "NYSE", "AMEX")})
+print("scanner_us =", total, "| routine names in the population =", inpop)
+PYEOF
+```
+
+`scanner_us` is the population. `covered_us` is the number of the board's own universe names that
+are in that population — every top-N window symbol is, by construction, and the routine names are
+only if they are `stock`/`dr` on NASDAQ/NYSE/AMEX (the ETFs are not). If you cannot measure it on
+this fire, publish `scanner_us=not_measured outside_screen=not_measured` and say in words that
+the count was NOT MEASURED — **never invent a number, and never omit the floor.**
+
+**The words matter.** The checker looks for `not covered by this board` and `scope limit` in both
+the scope line and the source-health row, for the N, for all 8 routine names, and for the scanner
+and its `volume` column. A floor that is only implied is not published.
+
+
 ## Hard rules
 - Read-only. Never suggest a trade or sizing.
 - **Never include mega-cap index ETFs or high-volume levered ETFs** (SPY, QQQ, SOXL, SOXS, SMH, TQQQ, SQQQ, UVXY, VXX). Their option chains are dominated by dealer-gamma and 0DTE market-maker hedging, which inflates V/OI ratios artificially and biases the daily put/call tag toward "PUT" on every red day for structural reasons. Surface single-name positioning instead. IWM/GLD/TLT are kept — their directional signal is more interpretable.
 - Never include naked single-stock levered ETFs (same as `us-stocks-in-play` exclusion).
 - **A relative screen over a fixed universe can only find anomalies inside that universe.** Say how many names were screened and how many had no listed options series.
+- **The floor is PUBLISHED, with its count.** The artifact says which universe the board covers (the top-N by cash volume plus the named routine names), where that comes from (the scanner's `volume` column), how many US names the floor leaves out, and what that means: a name outside the floor is a **scope limit, not a missing company**. The count's arithmetic must add up, and a count that was not measured says so.
 - The headline of this routine is the **relative** screen. The legacy book is continuity, not the headline — never lead the chat reply with the legacy bias tag.
 - **Every published ratio names its population.** The front matter carries one `*_universe:` line per book, and every ratio row names its universe. A put/call ratio without its universe is not interpretable, and the reply's **first line** names the population behind any ratio it leads with.
 - **A bias tag that contradicts its own ratio is never published.** The engine re-derives every published tag from its own rows and **aborts the write** (exit 3, no artifact, no push) on a contradiction. If you are running the engine by hand, `python3 relvol_screen.py --self-test` proves the guard bites before you trust it.

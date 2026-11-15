@@ -29,6 +29,16 @@ WHAT IT ASSERTS
     F. THE COLUMN CONTRACT (2026-11-12): the expiry date gets its OWN column. A contract table
        must have an `Expiry` column, no cell may pack side + strike + date, and a contract
        artifact must declare `column_contract: expiry-column-v1` in its front matter.
+    G. THE COVERAGE FLOOR (2026-11-16): the artifact must PUBLISH the floor that bounds its
+       universe - the top-N by cash volume plus the named routine names - name its source (the
+       scanner column), state the consequence in words (a name outside the floor is a SCOPE LIMIT,
+       not a missing company) and publish the count of the names the floor leaves out, with
+       arithmetic that adds up.
+
+The rule set is decided by the CONTRACT MARKER, not by the calendar: an artifact that declares
+`coverage_floor_contract: universe-floor-v1` is checked under clause G, and an artifact that
+predates it is REPORTED, not failed - a contract change must not retroactively fail an artifact
+that was legal when it was written.
 """
 
 import argparse
@@ -79,6 +89,23 @@ FM_RATIO_KEYS = ("bias", "series_book_bias", "series_book_economic_bias",
 UNIVERSE_MARKERS = ("universe", "pass-b", "pass b", "mega-cap", "megacap",
                      "watchlist", "relative screen", "relative-screen", "top-60", "top 60",
                      "8 names", "60 names")
+
+# --- G: the COVERAGE-FLOOR contract ---------------------------------------------
+# The marker decides whether clause G applies. An artifact that predates the contract and
+# declares no marker is REPORTED, not failed.
+FLOOR_CONTRACT_DATE = "2026-11-16"
+FLOOR_CONTRACT_ID = "universe-floor-v1"
+
+# The routine's 8 names. The floor must NAME them, so the checker holds the same list the
+# engine does (cloud-prompts/_shared/relvol_screen.py, PASS_B).
+ROUTINE_NAMES = ("IWM", "GLD", "TLT", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN")
+
+# The words that make the disclosure a disclosure.
+FLOOR_SCOPE_TOKENS = ("not covered by this board", "scope limit")
+FLOOR_SCANNER_RE = re.compile(r"scanner|tradingview", re.I)
+# The scanner COLUMN the floor is applied to. "cash-volume sort" is the SORT, not the column,
+# so the look-behind keeps it from passing as one.
+FLOOR_COLUMN_RE = re.compile(r"(?<!cash-)\bvolume\b", re.I)
 
 
 def tag_from_ratio(ratio):
@@ -251,6 +278,220 @@ def check_column_contract(text, strict, label):
     return fails
 
 
+# --------------------------------------------------------------------- G: the floor
+def parse_kv(value):
+    """'n=60 routine_names=8 source=TradingView ...' -> {key: raw value}.
+
+    A token WITHOUT an '=' continues the previous key's value, so a free-text source stays with
+    its key instead of being shredded into separate tokens.
+    """
+    out = {}
+    last = None
+    for part in (value or "").split():
+        if "=" in part:
+            k, v = part.split("=", 1)
+            k = k.strip()
+            if not k:
+                continue
+            out[k] = v
+            last = k
+        elif last is not None:
+            out[last] = (out[last] + " " + part).strip()
+    return out
+
+
+def mentions_int(text, n):
+    """Does `text` name this integer on its own (not inside 5,542 or 60.5)?"""
+    return bool(re.search(rf"(?<![\d.,]){int(n)}(?![\d,])", text or ""))
+
+
+def mentions_count(text, n):
+    """Does `text` name this count, with or without the thousands separator?"""
+    n = int(n)
+    for form in (f"{n:,}", str(n)):
+        if re.search(rf"(?<![\d.,]){re.escape(form)}(?![\d,])", text or ""):
+            return True
+    return False
+
+
+def check_coverage_floor(text, fm, strict, label):
+    """G. The COVERAGE FLOOR is published: the universe, its source, its consequence, its count.
+
+    A board with a floor that does not say so is a board where a name that is simply too small
+    to trade reads as a name that was not there. Measured 2026-11-13: a ~$549m name could never
+    appear on this board and neither artifact said so.
+    """
+    fails = 0
+    marker = (fm_get(fm, "coverage_floor_contract") or "").strip()
+    scope = fm_get(fm, "coverage_floor_scope") or ""
+    raw = fm_get(fm, "coverage_floor") or ""
+
+    if not strict:
+        msg = (f"{label}: the coverage floor is not declared (contract marker "
+               f"{marker or 'absent'}) - a board with a floor that does not say so reads a "
+               "missing name as a missing company")
+        print(f"  note  {msg} (pre-floor-contract artifact - reported, not enforced)")
+        return 0
+
+    if marker != FLOOR_CONTRACT_ID:
+        fails += bad(f"front matter must declare 'coverage_floor_contract: {FLOOR_CONTRACT_ID}' "
+                     f"(got {marker!r}) - the engine that produced this artifact may predate "
+                     "the coverage-floor contract")
+    else:
+        ok(f"front matter declares the coverage-floor contract ({FLOOR_CONTRACT_ID})")
+
+    if not raw:
+        fails += bad("front matter carries no `coverage_floor` - the floor, the N it uses and "
+                     "the count of the names it leaves out must be machine-readable")
+        return fails
+    kv = parse_kv(raw)
+    for key in ("n", "routine_names", "source"):
+        if key not in kv:
+            fails += bad(f"`coverage_floor` is missing {key!r} (got {raw!r})")
+
+    n = None
+    if "n" in kv:
+        try:
+            n = int(kv["n"])
+        except ValueError:
+            fails += bad(f"`coverage_floor` has a non-numeric n ({kv['n']!r})")
+        else:
+            # the N must agree with the universe line the artifact already publishes
+            uni_line = fm_get(fm, "relative_screen_universe") or ""
+            m = re.search(r"top (\d+) US names", uni_line)
+            if m and int(m.group(1)) != n:
+                fails += bad(f"`coverage_floor` says n={n} but `relative_screen_universe` says "
+                             f"top {m.group(1)} US names - the two must agree")
+            else:
+                ok(f"the floor names its N ({n}) and it agrees with the published universe")
+
+    if "routine_names" in kv:
+        try:
+            rn = int(kv["routine_names"])
+        except ValueError:
+            fails += bad(f"`coverage_floor` has a non-numeric routine_names "
+                         f"({kv['routine_names']!r})")
+        else:
+            if rn != len(ROUTINE_NAMES):
+                fails += bad(f"`coverage_floor` says routine_names={rn} but the routine has "
+                             f"{len(ROUTINE_NAMES)} names")
+            else:
+                ok(f"the floor names the {rn} routine names")
+
+    src = kv.get("source", "")
+    if not FLOOR_SCANNER_RE.search(src):
+        fails += bad(f"`coverage_floor` does not name the source of the floor (got {src!r})")
+    elif not FLOOR_COLUMN_RE.search(src):
+        fails += bad(f"`coverage_floor` does not name the scanner COLUMN the floor is applied "
+                     f"to (got {src!r})")
+    else:
+        ok("the floor names its source (the scanner and the volume column)")
+
+    # --- the count, with arithmetic that adds up ------------------------------
+    measured = {}
+    for key in ("scanner_us", "covered_us", "outside_screen"):
+        if key not in kv:
+            fails += bad(f"`coverage_floor` is missing {key!r} (got {raw!r})")
+            continue
+        try:
+            measured[key] = int(kv[key])
+        except ValueError:
+            measured[key] = None
+    if measured.get("scanner_us") is not None and measured.get("covered_us") is not None \
+            and measured.get("outside_screen") is not None:
+        if measured["scanner_us"] - measured["covered_us"] != measured["outside_screen"]:
+            fails += bad(f"`coverage_floor` does not add up - scanner_us="
+                         f"{measured['scanner_us']} - covered_us={measured['covered_us']} is "
+                         f"{measured['scanner_us'] - measured['covered_us']}, not "
+                         f"outside_screen={measured['outside_screen']}")
+        elif measured["outside_screen"] <= 0:
+            fails += bad(f"`coverage_floor` says outside_screen="
+                         f"{measured['outside_screen']} - the count of names the floor leaves "
+                         "out must be positive")
+        elif n is not None and measured["covered_us"] > n + len(ROUTINE_NAMES):
+            fails += bad(f"`coverage_floor` says covered_us={measured['covered_us']}, which is "
+                         f"more than the {n} + {len(ROUTINE_NAMES)} names the screen can hold")
+        else:
+            ok(f"the floor's count adds up ({measured['scanner_us']} US names, "
+               f"{measured['covered_us']} covered, {measured['outside_screen']} outside)")
+    elif "scanner_us" in kv and "outside_screen" in kv:
+        # the honest degraded path: the scanner did not return its population count
+        if "not measured" not in scope.lower():
+            fails += bad("`coverage_floor` publishes no measured count, so the scope line must "
+                         "say in words that the number of US names outside the screen was NOT "
+                         "MEASURED")
+        else:
+            ok("the floor publishes no count and says so in words (not measured)")
+
+    # --- the consequence, in words --------------------------------------------
+    if not scope:
+        fails += bad("front matter carries no `coverage_floor_scope` - the floor must say what "
+                     "it excludes, in words")
+    else:
+        scope_fails = 0
+        low = scope.lower()
+        for tok in FLOOR_SCOPE_TOKENS:
+            if tok not in low:
+                scope_fails += bad(f"the coverage-floor scope line does not say {tok!r} - a "
+                                   "reader must be able to tell a scope limit from a missing "
+                                   "company")
+        for tok in ROUTINE_NAMES:
+            if not re.search(rf"\b{re.escape(tok)}\b", scope):
+                scope_fails += bad(f"the coverage-floor scope line does not name the routine "
+                                   f"name {tok!r} - the floor is 'the top-N plus THESE names'")
+        if n is not None and not mentions_int(scope, n):
+            scope_fails += bad(f"the coverage-floor scope line does not name the N ({n}) the "
+                               "floor is applied with")
+        # the prose count and the machine count must be the same number
+        for key in ("scanner_us", "outside_screen"):
+            val = measured.get(key)
+            if val is not None and not mentions_count(scope, val):
+                scope_fails += bad(f"the coverage-floor scope line does not state the {key} "
+                                   f"count ({val:,}) that `coverage_floor` publishes - the prose "
+                                   "and the machine-readable line must be the same number")
+        if not scope_fails:
+            ok("the coverage-floor scope line states the consequence in words")
+        fails += scope_fails
+
+    # --- the floor as a row of the Source health table ------------------------
+    floor_rows = []
+    for section, header, rows in md_tables(text):
+        if not section.lower().startswith("source health"):
+            continue
+        for r in rows:
+            if r and re.search(r"floor|scope", r[0], re.I):
+                floor_rows.append(r)
+    if not floor_rows:
+        fails += bad("the `## Source health` table has no row for the coverage floor - the "
+                     "floor belongs next to the sources it rests on")
+    else:
+        row_fails = 0
+        cell = " | ".join(floor_rows[0])
+        low = cell.lower()
+        for tok in FLOOR_SCOPE_TOKENS:
+            if tok not in low:
+                row_fails += bad(f"the coverage-floor row of `## Source health` does not say "
+                                 f"{tok!r}")
+        if not FLOOR_SCANNER_RE.search(cell):
+            row_fails += bad("the coverage-floor row of `## Source health` does not name the "
+                             "source of the floor")
+        if not FLOOR_COLUMN_RE.search(cell):
+            row_fails += bad("the coverage-floor row of `## Source health` does not name the "
+                             "scanner column the floor is applied to")
+        if n is not None and not mentions_int(cell, n):
+            row_fails += bad(f"the coverage-floor row of `## Source health` does not name the "
+                             f"N ({n})")
+        for key in ("scanner_us", "outside_screen"):
+            val = measured.get(key)
+            if val is not None and not mentions_count(cell, val):
+                row_fails += bad(f"the coverage-floor row of `## Source health` does not state "
+                                 f"the {key} count ({val:,})")
+        if not row_fails:
+            ok("the `## Source health` table carries the coverage floor as its own row")
+        fails += row_fails
+    return fails
+
+
 def check_md(path):
     fails = 0
     print(f"--- {path}")
@@ -373,6 +614,23 @@ def check_md(path):
         print(f"  note  artifact date {date} predates the {COLUMN_CONTRACT_DATE} column contract — "
               f"the column checks are reported, not enforced")
     fails += check_column_contract(text, col_strict, path)
+
+    # ---- G. the coverage floor ----
+    floor_marker = (fm_get(fm, "coverage_floor_contract") or "").strip()
+    if floor_marker == FLOOR_CONTRACT_ID:
+        floor_strict = True
+        floor_why = "the artifact declares the coverage-floor contract"
+    elif bool(date) and date >= FLOOR_CONTRACT_DATE:
+        floor_strict = True
+        floor_why = (f"the artifact date {date} is on or after {FLOOR_CONTRACT_DATE} and it "
+                     "declares no coverage-floor marker")
+    else:
+        floor_strict = False
+        floor_why = (f"the artifact predates the {FLOOR_CONTRACT_DATE} coverage-floor contract "
+                     "and declares no marker")
+    if not floor_strict:
+        print(f"  note  {floor_why} - the coverage floor is reported, not enforced")
+    fails += check_coverage_floor(text, fm, floor_strict, path)
     return fails
 
 

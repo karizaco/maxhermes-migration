@@ -39,6 +39,17 @@ ENGINE_REV = 2
 # clause F) catches that one-fire deviation instead of a marker. Bumping the rev requires a PROMPT
 # redeploy in the same change — do them together or not at all.
 COLUMN_CONTRACT = "expiry-column-v1"
+# FLOOR_DISCLOSURE_V1 - the COVERAGE-FLOOR contract: the artifact must PUBLISH the floor that
+# bounds its universe (the top-N by cash volume plus the routine names), name its source (the
+# scanner's `volume` column), and say in words that a name outside it is out of scope rather
+# than missing. Added 2026-11-16, because on 2026-11-13 a ~$549m name could never appear on this
+# board and neither artifact said so: a $549m name is nowhere near the top 60 by cash volume.
+#
+# It is a SEPARATE marker from ENGINE_REV, on purpose: the deployed prompt's fetch ladder demands
+# `ENGINE_REV=2` literally, so the rev cannot be bumped without a prompt redeploy. This marker is
+# the extra token a fetch can demand to prove it has the floor-publishing copy.
+FLOOR_DISCLOSURE_V1 = 1
+FLOOR_CONTRACT = "universe-floor-v1"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
@@ -113,7 +124,14 @@ def curl_status(url, timeout=30):
 
 # ---------------------------------------------------------------- universe
 def build_universe(n_top):
-    """TradingView top-N by cash volume + the routine's Pass-B 8."""
+    """TradingView top-N by cash volume + the routine's Pass-B 8.
+
+    Returns (universe, floor_counts). `floor_counts` carries the COVERAGE-FLOOR measurement:
+    how many US names the scanner's population holds (its `totalCount` - the number of rows the
+    FILTER matches, which the response carries on every query), how many of them this board
+    covers, and therefore how many are OUTSIDE the screen. The measurement is free: it is in
+    the response the universe call already made.
+    """
     payload = {
         "filter": [
             {"left": "type", "operation": "in_range", "right": ["stock", "dr"]},
@@ -127,16 +145,24 @@ def build_universe(n_top):
         "range": [0, n_top - 1],
     }
     uni, tv_rows = {}, 0
+    scanner_total = None
+    excluded_in_window = 0
     try:
         raw = curl(TV_URL, headers=["Origin: https://www.tradingview.com", "Content-Type: application/json"],
                    data=json.dumps(payload), timeout=45)
         j = json.loads(raw)
+        # The population the top-N is drawn from. Measured 2026-11-15: the america scanner
+        # answers a filtered query with `totalCount` (camelCase) = the number of rows the filter
+        # matches, on every response including a range-limited one. It is NOT `total_count`.
+        tc = j.get("totalCount")
+        scanner_total = tc if isinstance(tc, int) and tc >= 0 else None
         for it in j.get("data", []):
             v = it.get("d") or it.get("v") or []
             if len(v) < 5:
                 continue
             sym = v[0]
             if sym in EXCLUDE:
+                excluded_in_window += 1
                 continue
             uni[sym] = dict(name=v[1], close=v[2], share_vol=v[3], mcap=v[4],
                             sector=v[5] if len(v) > 5 else None,
@@ -145,13 +171,18 @@ def build_universe(n_top):
     except Exception as e:
         errors.append(f"tradingview_universe:{type(e).__name__}")
         log(f"universe scan failed: {e}")
-    # the Pass-B ETFs are funds, so the stock scan above misses them - ask for them by name
+    # the Pass-B ETFs are funds, so the stock scan above misses them - ask for them by name.
+    # `type` is requested too: it is what says whether a routine name is inside the scanner's
+    # stock/dr population (AAPL is, IWM is not - it is an ETF), and therefore whether the
+    # population count below includes it.
+    passb_in_population = set()
     try:
         payload2 = {
             "filter": [{"left": "name", "operation": "in_range", "right": PASS_B}],
             "options": {"lang": "en"},
             "symbols": {"query": {"types": []}, "tickers": []},
-            "columns": ["name", "description", "close", "volume", "market_cap_basic", "sector", "exchange"],
+            "columns": ["name", "description", "close", "volume", "market_cap_basic", "sector",
+                        "exchange", "type"],
             "range": [0, 20],
         }
         raw2 = curl(TV_URL, headers=["Origin: https://www.tradingview.com",
@@ -162,6 +193,8 @@ def build_universe(n_top):
             if len(v) < 5:
                 continue
             sym = v[0]
+            if len(v) > 7 and v[7] in ("stock", "dr") and v[6] in ("NASDAQ", "NYSE", "AMEX"):
+                passb_in_population.add(sym)
             if sym in uni and uni[sym].get("share_vol") is None:
                 uni[sym].update(share_vol=v[3], close=v[2], mcap=v[4], name=v[1] or uni[sym]["name"])
     except Exception as e:
@@ -171,7 +204,26 @@ def build_universe(n_top):
         uni.setdefault(s, dict(name=NAMES.get(s, s), close=None, share_vol=None, mcap=None,
                                 sector=None, exchange=None, src="passB"))
     log(f"universe: {len(uni)} symbols ({tv_rows} from TV, {len(PASS_B)} pass-B)")
-    return uni
+
+    # --- the coverage floor, MEASURED ------------------------------------------
+    # covered = the population names this board covers: the top-N window's symbols (every one
+    # of them is a population name by construction) plus any routine name that is in the
+    # population but outside the window. The rest of the population is OUT OF SCOPE - and that
+    # is the number the artifact has to publish, or a name that is not on the board reads as a
+    # name that was not there.
+    tv_names = {s for s, u in uni.items() if u.get("src") == "tv_top_volume"}
+    covered_us = len(tv_names) + len(passb_in_population - tv_names)
+    floor_counts = {
+        "scanner_total": scanner_total,
+        "covered_us": covered_us,
+        "window_rows": n_top,
+        "kept_from_window": tv_rows,
+        "excluded_in_window": excluded_in_window,
+        "outside_screen": (scanner_total - covered_us) if scanner_total is not None else None,
+    }
+    log(f"coverage floor: population={scanner_total} covered={covered_us} "
+        f"outside={floor_counts['outside_screen']}")
+    return uni, floor_counts
 
 
 # ---------------------------------------------------------------- chains
@@ -466,7 +518,9 @@ def self_test():
             print(f"self-test FAILED: {label} — a wrong tag ({wrong}) was accepted", file=sys.stderr)
             return 1
     print(json.dumps({"self_test": "passed", "cases": [c[0] for c in cases],
-                      "engine_rev": ENGINE_REV, "marker": "RELVOL_SCREEN_V1"}, indent=1))
+                      "engine_rev": ENGINE_REV, "marker": "RELVOL_SCREEN_V1",
+                      "floor_disclosure": f"FLOOR_DISCLOSURE_V{FLOOR_DISCLOSURE_V1}",
+                      "floor_contract": FLOOR_CONTRACT}, indent=1))
     return 0
 
 
@@ -484,7 +538,7 @@ def main():
         return self_test()
 
     session = datetime.date.fromisoformat(args.date)
-    uni = build_universe(args.universe)
+    uni, floor_counts = build_universe(args.universe)
     if not uni:
         print(json.dumps({"ok": False, "errors": errors})); return 2
 
@@ -667,6 +721,32 @@ def main():
       f"NOT a put/call ratio")
     W(f"relative_screen_universe: top {args.universe} US names by cash volume (TradingView america scanner) "
       f"+ the {len(PASS_B)} routine names — {len(names)} underlyings with a chain, {len(uni)-len(names)} without")
+    # --- THE COVERAGE FLOOR, published -----------------------------------------
+    # A board with a floor that does not say so is a board where a missing name reads as a
+    # missing company. Measured 2026-11-13: a ~$549m name could never be on this board (it is
+    # nowhere near the top 60 by cash volume) and nothing in the artifact said so.
+    fc = floor_counts
+    if fc["outside_screen"] is None:
+        counts_line = (f"scanner_us=not_measured covered_us={fc['covered_us']} "
+                       f"outside_screen=not_measured")
+        scope_line = (f"This board covers the top {args.universe} US names by cash volume plus the "
+                      f"{len(PASS_B)} routine names ({', '.join(PASS_B)}). The scanner did not return "
+                      "its population count on this fire, so the number of US names outside the "
+                      "screen was NOT MEASURED — do not read a missing number as a small one.")
+    else:
+        counts_line = (f"scanner_us={fc['scanner_total']} covered_us={fc['covered_us']} "
+                       f"outside_screen={fc['outside_screen']}")
+        scope_line = (f"This board covers the top {args.universe} US names by cash volume plus the "
+                      f"{len(PASS_B)} routine names ({', '.join(PASS_B)}). Of the scanner's "
+                      f"{fc['scanner_total']:,} US names, this board covers {fc['covered_us']}, so "
+                      f"{fc['outside_screen']:,} US names are outside the board: a US name outside "
+                      f"the top {args.universe} by cash volume, and not one of the {len(PASS_B)} "
+                      "routine names, is not covered by this board — a scope limit, not a "
+                      "missing company.")
+    W(f"coverage_floor_contract: {FLOOR_CONTRACT}")
+    W(f"coverage_floor: n={args.universe} routine_names={len(PASS_B)} {counts_line} "
+      f"source=TradingView america scanner (volume column, cash-volume sort desc)")
+    W(f"coverage_floor_scope: {scope_line}")
     W(f"series_book_universe: the {len(PASS_B)} Pass-B mega-caps ({', '.join(PASS_B)}) — legacy absolute "
       f"method, continuity with the published put/call series since 2026-10-16")
     W(f"series_book_bias: {leg_stats['tag']} (put/call {leg_stats['ratio']:.2f}) — contract-count ratio on "
@@ -889,6 +969,20 @@ def main():
     W("| TradingView america scanner | `POST https://scanner.tradingview.com/america/scan` | "
       f"{'ok' if any(u['src']=='tv_top_volume' for u in uni.values()) else 'failed'} | universe + cash volume + "
       "market cap |")
+    if fc["outside_screen"] is None:
+        W(f"| Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` — `volume` column, "
+          f"cash-volume sort descending, top {args.universe} + the {len(PASS_B)} routine names | "
+          f"degraded | The board's universe is the top {args.universe} US names by cash volume plus the "
+          f"{len(PASS_B)} routine names ({', '.join(PASS_B)}); the scanner did not return its population "
+          f"count on this fire, so the number of US names outside the screen was NOT MEASURED |")
+    else:
+        W(f"| Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` — `volume` column, "
+          f"cash-volume sort descending, top {args.universe} + the {len(PASS_B)} routine names | ok | "
+          f"The board covers the top {args.universe} US names by cash volume plus the {len(PASS_B)} "
+          f"routine names ({', '.join(PASS_B)}). The scanner's US population was {fc['scanner_total']:,} "
+          f"names; this board covers {fc['covered_us']}, so {fc['outside_screen']:,} are outside it — a "
+          f"US name outside the top {args.universe} by cash volume, and not one of the {len(PASS_B)} "
+          f"routine names, is not covered by this board: a scope limit, not a missing company |")
     W("| Yahoo options chain (cross-check) | not fetched by the engine | skipped | the engine's contract layer is "
       "single-tape (Cboe); Yahoo remains the cross-check for a manual verification |")
     W(f"| Published watchlist (Pass A) | `refs/watchlist.yaml` in `karizaco/minimax-cloud-outputs` | "
@@ -920,8 +1014,15 @@ def main():
       "the multi-day table is the interpretable one.")
     W("7. **Deep-ITM rows are often closing trades, not bets** — a large theoretical value with V/OI near 1 "
       "and a big open interest is the signature.")
-    W("8. **The universe is the most-traded names, not the whole market** — a relative screen over a fixed "
-      "universe can only find anomalies inside it.")
+    if fc["outside_screen"] is None:
+        W("8. **The universe is the most-traded names, not the whole market** — a relative screen over a fixed "
+          "universe can only find anomalies inside it. How many US names that leaves outside the screen was "
+          "NOT MEASURED on this fire.")
+    else:
+        W(f"8. **The universe is the most-traded names, not the whole market** — a relative screen over a fixed "
+          f"universe can only find anomalies inside it: the top {args.universe} US names by cash volume plus "
+          f"the {len(PASS_B)} routine names, out of a population of {fc['scanner_total']:,} US names. The other "
+          f"{fc['outside_screen']:,} are a SCOPE LIMIT, not a missing company.")
     W("9. **Three populations, three named books.** The relative screen covers the "
       f"{len(names)}-name relative-screen universe, the series book the {len(PASS_B)} Pass-B mega-caps, and "
       "Pass A the published watchlist. Their ratios describe different populations and are not "
@@ -973,6 +1074,8 @@ def main():
 
     print(json.dumps({"ok": True, "out": args.out, "underlyings": len(names), "universe": len(uni),
                       "chains_failed": sorted(set(uni) - set(names)),
+                      "coverage_floor": {"contract": FLOOR_CONTRACT, "n": args.universe,
+                                         "routine_names": len(PASS_B), **floor_counts},
                       "no_listed_series": sorted(no_series),
                       "itm_premium_share": (round(itm_share, 4) if itm_share is not None else None),
                       "contracts_in_window": len(cont), "eligible": len(elig),

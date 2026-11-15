@@ -32,14 +32,36 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CK = ROOT / "tools" / "check_options_flow_artifact.py"
 
-DATE = "2026-11-12"
+DATE = "2026-11-16"
+
+# The COVERAGE FLOOR the artifact must publish (clause G). It is the floor that bounds the
+# board: the top-N by cash volume plus the 8 routine names. Without it a name that is simply
+# too small to trade reads as a name that was not there (measured 2026-11-13: a ~$549m name
+# could never be on this board and nothing in the artifact said so).
+FLOOR_MARKER = "coverage_floor_contract: universe-floor-v1\n"
+FLOOR_KEY = ("coverage_floor: n=60 routine_names=8 scanner_us=5542 covered_us=59 "
+             "outside_screen=5483 source=TradingView america scanner (volume column, "
+             "cash-volume sort desc)\n")
+FLOOR_SCOPE = ("coverage_floor_scope: This board covers the top 60 US names by cash volume plus "
+               "the 8 routine names (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN). Of the "
+               "scanner's 5,542 US names, this board covers 59, so 5,483 US names are outside the "
+               "board: a US name outside the top 60 by cash volume, and not one of the 8 routine "
+               "names, is not covered by this board - a scope limit, not a missing company.\n")
+FLOOR_ROW = ("| Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` - "
+             "`volume` column, cash-volume sort descending, top 60 + the 8 routine names | ok | "
+             "The board covers the top 60 US names by cash volume plus the 8 routine names "
+             "(IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN). The scanner's US population was "
+             "5,542 names; this board covers 59, so 5,483 are outside it - a US name outside the "
+             "top 60 by cash volume, and not one of the 8 routine names, is not covered by this "
+             "board: a scope limit, not a missing company |\n")
 
 
 # ---------------------------------------------------------------------------
 # a contract-shaped artifact
 # ---------------------------------------------------------------------------
 
-def artifact(column_contract=True, contrast="split", leader="split", row_width=True):
+def artifact(column_contract=True, contrast="split", leader="split", row_width=True,
+             floor=True):
     cc = ("column_contract: expiry-column-v1 — every contract table gives the expiry date its "
           "OWN column (ticker | side | strike | expiry); no cell packs side + strike + date\n") \
         if column_contract else ""
@@ -78,6 +100,9 @@ def artifact(column_contract=True, contrast="split", leader="split", row_width=T
             "|---|---|---|\n"
             "| 1 | NVDA P 175 | TE C 2.5 |\n")
 
+    floor_block = (FLOOR_MARKER + FLOOR_KEY + FLOOR_SCOPE) if floor else ""
+    floor_row = FLOOR_ROW if floor else ""
+
     return f"""# Unusual options flow by RELATIVE volume — {DATE} (Wednesday, US cash session close 16:00 ET)
 
 ```
@@ -87,7 +112,7 @@ method: RELATIVE volume screen (size-normalised) — HEADLINE; the legacy absolu
 engine: relvol_screen.py v1 rev2
 {cc}headline_metric: the relative-volume screen (own-history + peer ratio, size-normalised) — NOT a put/call ratio
 relative_screen_universe: top 60 US names by cash volume (TradingView america scanner) + the 8 routine names — 59 underlyings with a chain, 3 without
-series_book_universe: the 8 Pass-B mega-caps (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN)
+{floor_block}series_book_universe: the 8 Pass-B mega-caps (IWM, GLD, TLT, AAPL, MSFT, NVDA, GOOGL, AMZN)
 series_book_bias: CALL (put/call 0.54) — contract-count ratio on series_book_universe
 series_book_economic_bias: CALL (put/call 0.68) — theo >= $0.05 slice on series_book_universe
 series_book_premium_ratio: 0.70 — premium-dollar ratio on series_book_universe
@@ -150,7 +175,7 @@ bias_tag_thresholds: put/call < 0.85 -> CALL, > 1.2 -> PUT, else MIXED (the tag 
 | Source | URL / query | Status | Result |
 |---|---|---|---|
 | Cboe delayed-quote option chain | `https://cdn.cboe.com/api/global/delayed_quotes/options/{{SYM}}.json` | partial (59/62) | 107,804 contracts parsed |
-
+{floor_row}
 ## Caveats
 
 1. The own-history baseline is a 4-venue number and it lags the live session.
@@ -244,6 +269,9 @@ def main():
         legacy = artifact().replace(DATE, "2026-11-11").replace(
             "column_contract: expiry-column-v1 — every contract table gives the expiry date its "
             "OWN column (ticker | side | strike | expiry); no cell packs side + strike + date\n", "")
+        # and the coverage floor, which post-dates it
+        legacy = legacy.replace(FLOOR_MARKER, "").replace(FLOOR_KEY, "").replace(FLOOR_SCOPE, "")
+        legacy = legacy.replace(FLOOR_ROW, "")
         legacy = legacy.replace("| Rank | Abs ticker | Side | Strike | Expiry | Volume | Rel ticker | "
                                  "Side | Strike | Expiry | Peer ratio | Share of expiry |\n"
                                  "|---|---|---|---|---|---|---|---|---|---|---|---|\n"
@@ -261,6 +289,75 @@ def main():
             print("FAIL  a pre-2026-11-12 artifact was failed instead of reported")
         else:
             print("PASS  a pre-2026-11-12 artifact is reported, not failed")
+
+        # ---- 4. the coverage floor: a POST-contract artifact must publish it ------
+        floor_cases = [
+            ("the header block drops the `coverage_floor` key",
+             lambda: artifact().replace(FLOOR_KEY, "")),
+            ("the header block drops the `coverage_floor_scope` line",
+             lambda: artifact().replace(FLOOR_SCOPE, "")),
+            ("the scope line drops the consequence in words",
+             lambda: artifact().replace("is not covered by this board - a scope limit, not a "
+                                        "missing company", "is outside the board")),
+            ("the scope line drops a routine name",
+             lambda: artifact().replace("GOOGL, ", "")),
+            ("the scope line states a count the machine line does not",
+             lambda: artifact().replace("5,483 US names are outside", "5,999 US names are outside")),
+            ("the coverage-floor count does not add up",
+             lambda: artifact().replace("outside_screen=5483", "outside_screen=5000")),
+            ("the coverage floor names an N the universe line does not",
+             lambda: artifact().replace("coverage_floor: n=60", "coverage_floor: n=50")),
+            ("the coverage floor does not name the scanner column",
+             lambda: artifact().replace("(volume column, cash-volume sort desc)",
+                                        "(cash-volume sort desc)")),
+            ("the Source health table has no coverage-floor row",
+             lambda: artifact().replace(FLOOR_ROW, "")),
+            ("the Source-health floor row drops the consequence",
+             lambda: artifact().replace("is not covered by this board: a scope limit, not a "
+                                        "missing company", "is outside the board")),
+        ]
+        for label, fn in floor_cases:
+            text = fn()
+            if text == artifact():
+                failures.append(f"NOT CAUGHT (the mutation was a no-op): {label}")
+                print(f"FAIL  NOT CAUGHT (the mutation was a no-op): {label}")
+                continue
+            fp = write(tmp, "floor.md", text)
+            rc, out = run_checker(fp)
+            if rc == 0:
+                failures.append(f"NOT CAUGHT: {label}")
+                print(f"FAIL  NOT CAUGHT: {label}")
+            else:
+                print(f"PASS  caught: {label}")
+
+        # ---- 5. the grandfathering rule, both ways -------------------------------
+        # (a) a PRE-contract artifact with no floor is REPORTED, not failed - the rule that
+        #     keeps the fleet's auditors out of a false finding.
+        pre = artifact().replace(DATE, "2026-11-13")
+        pre = pre.replace(FLOOR_MARKER, "").replace(FLOOR_KEY, "").replace(FLOOR_SCOPE, "")
+        pre = pre.replace(FLOOR_ROW, "")
+        prep = write(tmp, "pre.md", pre)
+        rc, out = run_checker(prep)
+        if rc != 0:
+            failures.append("a PRE-contract artifact with no published floor must be reported "
+                            "as a note, not failed:\n" + out)
+            print("FAIL  a pre-contract artifact with no floor was failed instead of reported")
+        else:
+            print("PASS  a pre-contract artifact with no published floor is reported, not failed")
+
+        # (b) a POST-contract artifact with no floor MUST fail - the date is the backstop that
+        #     catches an artifact produced by a stale engine.
+        post = artifact()
+        post = post.replace(FLOOR_MARKER, "").replace(FLOOR_KEY, "").replace(FLOOR_SCOPE, "")
+        post = post.replace(FLOOR_ROW, "")
+        pp = write(tmp, "post.md", post)
+        rc, out = run_checker(pp)
+        if rc == 0:
+            failures.append("NOT CAUGHT: an artifact dated on or after the coverage-floor "
+                            "contract was accepted without a published floor")
+            print("FAIL  NOT CAUGHT: a post-contract artifact with no floor was accepted")
+        else:
+            print("PASS  caught: a post-contract artifact with no published floor")
 
     print()
     if failures:
