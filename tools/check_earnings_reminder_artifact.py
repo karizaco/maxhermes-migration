@@ -8,12 +8,17 @@ ARTIFACT FORMAT CONTRACT v3 (EARNINGS_REMINDER_V3) in
 implementation: the renderer is the producer, this is the verifier, and neither
 imports the other.
 
-The v3 rules (the coverage receipt and the already-reported tradeability column) apply to an
-artifact dated 2026-11-13 or later, or to one that declares `contract: EARNINGS_REMINDER_V3`.
-Artifacts published under v2 stay valid: a contract change must not retroactively fail an
-artifact that was legal when it was written.
+The rule set is decided by the CONTRACT MARKER, not by the calendar:
 
-Checks (each failure is named and the tool exits 1):
+  EARNINGS_REMINDER_V4 (or an artifact dated 2026-11-16 or later) -> the v4 rules
+  EARNINGS_REMINDER_V3                                         -> the v3 rules
+  an older artifact with no marker                             -> the v2 rules
+
+Artifacts published under an older contract stay valid: a contract change must not retroactively
+fail an artifact that was legal when it was written. The applied rule set is printed on every run,
+so a grandfathered artifact is visible as grandfathered and not as silently unchecked.
+
+Checks (each failure is named and the tool exits 1; EVERY check also reports on its PASS path):
 
   FRONTMATTER  the front-matter block exists and carries the required keys
   SECTIONS     the section skeleton is present and in order
@@ -33,6 +38,13 @@ Checks (each failure is named and the tool exits 1):
   ALREADY      (v3) every "Already reported" row carries a `us_tradeable` cell from the
                allowed vocabulary, and its ticker cell is the PRIMARY listing with the US
                line in parentheses (never an OTC headline)
+  TLDR         (v4) the `## TL;DR` section exists and opens with the coverage floor, in
+               words, with the floor and the band named and the consequence stated
+  FLOORKEY     (v4) the front matter carries a `coverage_floor` whose arithmetic adds up
+               (us_population = below_band + band + at_or_above_floor + no_cap) and whose
+               constants match the ones the band and the floor are applied with
+  FLOORSRC     (v4) the `## Source health` table carries the coverage floor as a row of
+               its own, naming the scanner column and the constant
 
 Usage:
     python3 tools/check_earnings_reminder_artifact.py earnings/2026-11-06-reminders.md
@@ -45,17 +57,53 @@ import os
 import re
 import sys
 
-CONTRACT = "EARNINGS_REMINDER_V3"
+CONTRACT = "EARNINGS_REMINDER_V4"
 
-# The v3 rules (coverage receipt + the already-reported tradeability column) apply to an
-# artifact dated on or after this day, or to any artifact that declares
-# `contract: EARNINGS_REMINDER_V3` in its front-matter. Artifacts published under v2 stay
-# valid - a contract change must not retroactively fail an artifact that was legal when it
-# was written.
+# The CONTRACT MARKER decides which rule set applies to a given artifact. v3 (the coverage
+# receipt + the already-reported tradeability column) is GRANDFATHERED: an artifact that declares
+# it was written under the v3 contract and is checked against the rules that were in force then.
+# A checker that fails a historical artifact for a rule that post-dates it is a false alarm, and
+# the fleet's auditors treat those as findings.
+CONTRACT_VERSION = "EARNINGS_REMINDER_V4"
+LEGACY_CONTRACT_VERSIONS = ("EARNINGS_REMINDER_V3",)
+
+# Backstops for artifacts that carry no marker at all: a v4 artifact is dated 2026-11-16 or
+# later, a v3 artifact 2026-11-13 or later, and anything older is v2.
+V4_FROM_DATE = "2026-11-16"
 V3_FROM_DATE = "2026-11-13"
+
+# Every check reports on its PASS path too - a check that only speaks on failure is not a gate.
+CHECK_CODES = [
+    ("FRONTMATTER", "the front-matter block is present and carries every required key"),
+    ("SECTIONS", "the section skeleton is present and in contract order"),
+    ("COLUMNS", "the US roster table carries every reaction-potential column"),
+    ("SCORES", "every published row carries a numeric reaction score"),
+    ("SORTED", "the US roster is sorted by reaction score, descending"),
+    ("SCOREFORMULA", "every reaction score equals 0.6*avg_abs_move + 0.4*implied_move"),
+    ("PASSB", "every non-US row carries its ticker, venue, peer and tradeability"),
+    ("NO-DUP", "no issuer is published in both the US roster and the non-US table"),
+    ("BAND", "the 'just below the line' table exists and every row is inside the band"),
+    ("BOUNDARY", "a roster row inside the floor by less than the margin carries `boundary_case`"),
+    ("COVERAGE", "(v3) the coverage receipt matches the published tables"),
+    ("ALREADY", "(v3) every already-reported row carries its tradeability and its primary ticker"),
+    ("TLDR", "(v4) the `## TL;DR` section opens with the coverage-floor disclosure"),
+    ("FLOORKEY", "(v4) the front matter carries a `coverage_floor` whose arithmetic adds up"),
+    ("FLOORSRC", "(v4) the `## Source health` table carries the coverage floor as its own row"),
+]
 
 COVERAGE_KEYS = ["calendar_rows", "s_and_p_500_hits", "bigcap_hits",
                  "us_roster_rows", "band_rows"]
+
+# The v4 coverage-floor key: the constants and the measured decomposition of the scanner's
+# US population.
+FLOOR_KEYS = ["floor_usd", "band_low_usd", "us_population", "below_band_us",
+              "band_us", "at_or_above_floor_us", "no_cap_us", "source"]
+
+# The words that make the disclosure a disclosure. A floor that is only implied is a floor that
+# reads as a missing company.
+SCOPE_TOKENS = ("out of scope", "not on this list")
+SCANNER_TOKENS = ("tradingview", "scanner")
+CAP_COLUMN_RE = re.compile(r"market[\s_-]?cap", re.I)
 
 REQUIRED_SECTIONS = [
     "Big S&P 500 today",
@@ -65,6 +113,9 @@ REQUIRED_SECTIONS = [
     "Source health",
     "Rules applied",
 ]
+
+# v4 puts the TL;DR first, before the three tables.
+V4_SECTIONS = ["TL;DR"] + REQUIRED_SECTIONS
 
 REQUIRED_FRONTMATTER = [
     "date", "cron", "fire_time_et", "snapshot_et", "status",
@@ -142,6 +193,77 @@ def parse_coverage(value):
     return out
 
 
+def parse_kv(value):
+    """'floor_usd=50000000000 band_low_usd=40000000000 ...' -> {key: raw value}.
+
+    A token WITHOUT an '=' continues the previous key's value, so a free-text source
+    ('source=TradingView america scanner (market_cap_basic, issuer-level USD)') stays with its
+    key instead of being shredded into separate tokens.
+    """
+    out = {}
+    last = None
+    for part in (value or "").split():
+        if "=" in part:
+            k, v = part.split("=", 1)
+            k = k.strip()
+            if not k:
+                continue
+            out[k] = v
+            last = k
+        elif last is not None:
+            out[last] = (out[last] + " " + part).strip()
+    return out
+
+
+def amount_regex(value):
+    """A regex that matches this money amount in any rendering a writer would use.
+
+    '$50B', '50B', '$50 billion', '50000000000' and '50,000,000,000' all name 50_000_000_000.
+    The leading look-behind stops '$150B' from matching '$50B'.
+    """
+    if not value:
+        return None
+    alts = []
+    for mult, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M")):
+        if value % mult == 0:
+            n = value / mult
+            alts.append(re.escape(f"{n:g}{suffix}"))
+            alts.append(re.escape(f"{n:,.0f}{suffix}"))
+            alts.append(rf"{n:g}\s*billion")
+    alts.append(re.escape(f"{value:,}"))
+    alts.append(re.escape(str(value)))
+    pat = "|".join(alts)
+    return re.compile(r"(?<![\d.,])(" + pat + r")", re.I)
+
+
+def mentions_amount(text, value):
+    """Does `text` name this money amount?"""
+    rx = amount_regex(value)
+    return bool(rx and rx.search(text or ""))
+
+
+def resolve_contract(fm, date):
+    """Which rule set applies to this artifact? The MARKER decides.
+
+    Returns (version, reason). `version` is 'v4', 'v3' or 'v2'.
+    """
+    declared = (fm.get("contract") or "").strip().upper()
+    if declared == CONTRACT_VERSION:
+        return "v4", f"the artifact declares the current contract marker ({CONTRACT_VERSION})"
+    if declared in LEGACY_CONTRACT_VERSIONS:
+        return "v3", (f"the artifact declares the LEGACY contract marker ({declared}) - it is "
+                      "checked against the rules that were in force when it was written")
+    if not declared and date:
+        if date >= V4_FROM_DATE:
+            return "v4", (f"the artifact is dated {date} (on or after {V4_FROM_DATE}) and "
+                          "declares no contract marker, so it is checked as v4")
+        if date >= V3_FROM_DATE:
+            return "v3", (f"the artifact is dated {date} (on or after {V3_FROM_DATE}) and "
+                          "declares no contract marker, so it is checked as v3")
+    return "v2", (f"the artifact predates the {V3_FROM_DATE} contract and declares no marker, "
+                  "so it is checked as v2")
+
+
 def split_row(line):
     line = line.strip()
     if line.startswith("|"):
@@ -207,12 +329,13 @@ def match_columns(header, patterns):
 
 def check(path):
     failures = []
+    notes = []          # (check code, text) - a check that had NOTHING to verify
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError as exc:
         print(f"CHECK: cannot read {path}: {exc}", file=sys.stderr)
-        return ["artifact unreadable"]
+        return ["artifact unreadable"], [], "v2", "the artifact could not be read"
 
     # ---------------------------------------------------------- FRONTMATTER
     fm = {}
@@ -236,12 +359,21 @@ def check(path):
 
     secs = sections(text)
 
+    # ------------------------------------------------- CONTRACT RESOLUTION
+    # The marker decides which rule set applies. A grandfathered artifact is REPORTED as
+    # grandfathered, never silently unchecked.
+    date = fm.get("date", "")
+    iso = re.match(r"^\d{4}-\d{2}-\d{2}$", date or "")
+    date = date if iso else ""
+    version, version_reason = resolve_contract(fm, date)
+    required_sections = V4_SECTIONS if version == "v4" else REQUIRED_SECTIONS
+
     # ------------------------------------------------------------- SECTIONS
-    for name in REQUIRED_SECTIONS:
+    for name in required_sections:
         if not find_section(secs, name)[0]:
             failures.append(f"SECTIONS: missing section `## {name}`")
     order = [n for n in secs]
-    for name in REQUIRED_SECTIONS:
+    for name in required_sections:
         sname, _ = find_section(secs, name)
         if sname and order.index(sname) != min(
                 (order.index(sname), order.index(sname)), default=0):
@@ -255,6 +387,15 @@ def check(path):
     if all(p >= 0 for p in positions) and positions != sorted(positions):
         failures.append("SECTIONS: the three tables are out of contract order "
                         f"(got {positions}, expected ascending)")
+    # v4 puts the TL;DR FIRST: the reader meets the scope limit before the tables.
+    if version == "v4":
+        tldr_name, _ = find_section(secs, "TL;DR")
+        if tldr_name and tldr_name in order:
+            first_table = next((order.index(n) for n in ("Big S&P 500 today",)
+                                if n in order), None)
+            if first_table is not None and order.index(tldr_name) > first_table:
+                failures.append("SECTIONS: the `## TL;DR` section must come BEFORE the tables "
+                                "- the scope limit is what the reader meets first")
 
     # --------------------------------------------------------- US ROSTER
     _, us_body = find_section(secs, "Big S&P 500 today")
@@ -264,6 +405,11 @@ def check(path):
     if not us_header:
         failures.append("COLUMNS: the US roster table has no header row")
         us_header, us_rows = [], []
+    if not us_rows:
+        notes.append(("SCORES", "the US roster is empty - there is no row to score"))
+        notes.append(("SORTED", "the US roster is empty - there is nothing to sort"))
+        notes.append(("SCOREFORMULA", "the US roster is empty - there is no score to re-derive"))
+        notes.append(("BOUNDARY", "the US roster is empty - there is no cap to test"))
     idx = match_columns(us_header, COLUMN_PATTERNS)
     for key in COLUMN_PATTERNS:
         if key not in idx:
@@ -316,6 +462,8 @@ def check(path):
     _, pb_body = find_section(secs, "Non-US primary listings")
     pb_header, pb_rows = parse_table(pb_body or [])
     pb_idx = match_columns(pb_header, PASSB_PATTERNS)
+    if not pb_rows:
+        notes.append(("PASSB", "the non-US table is empty - there is no row to check"))
     for key in PASSB_PATTERNS:
         if key not in pb_idx:
             failures.append(f"PASSB: the non-US table has no `{key}` column "
@@ -347,6 +495,9 @@ def check(path):
     band_header, band_rows = parse_table(band_body or [])
     band_idx = match_columns(band_header, {"ticker": COLUMN_PATTERNS["ticker"],
                                             "mkt_cap": COLUMN_PATTERNS["mkt_cap"]})
+    if not band_rows:
+        notes.append(("BAND", "the band table is empty - there is no row to check against the "
+                              "band"))
     if band_header and "mkt_cap" not in band_idx:
         failures.append("BAND: the 'just below the line' table has no market-cap column "
                         f"(header: {band_header})")
@@ -387,12 +538,7 @@ def check(path):
                                 f"${cap / 1e9:.1f}B, which is more than $0.5B from the floor")
 
     # ------------------------------------------------------ v3: COVERAGE + ALREADY
-    date = fm.get("date", "")
-    iso = re.match(r"^\d{4}-\d{2}-\d{2}$", date or "")
-    declared = fm.get("contract", "").strip().upper()
-    v3 = declared.endswith("V3") or bool(iso and date >= V3_FROM_DATE)
-
-    if v3:
+    if version in ("v3", "v4"):
         # ---- COVERAGE: the artifact states its own completeness basis, and it matches the tables
         cov_raw = fm.get("coverage_receipt", "")
         cov = parse_coverage(cov_raw)
@@ -418,6 +564,9 @@ def check(path):
         # ---- ALREADY: every printed row carries its US line's tradeability and its PRIMARY ticker
         _, ar_body = find_section(secs, "Already reported")
         ar_header, ar_rows = parse_table(ar_body or [])
+        if not ar_rows:
+            notes.append(("ALREADY", "the 'Already reported' table is empty - there is no row "
+                                     "to check"))
         if ar_rows:
             ar_idx = match_columns(ar_header, {
                 "ticker": COLUMN_PATTERNS["ticker"],
@@ -444,7 +593,154 @@ def check(path):
                         failures.append(f"ALREADY: row {i + 1} ({cell}) names no US line in "
                                         f"parentheses but its us_tradeable is {tv!r}")
 
-    return failures
+    # ------------------------------------------------- v4: THE PUBLISHED FLOOR
+    # A floor that is not published reads as a missing company. v4 requires the artifact to
+    # SAY that a floor exists, where it comes from, and how many names it removes - in the
+    # front matter, in the TL;DR and in the source-health table.
+    if version == "v4":
+        floor_usd = MCAP_FLOOR
+        band_low_v = BAND_LOW_DEFAULT
+        if "band_low_usd" in fm:
+            v = parse_money(fm["band_low_usd"])
+            if v:
+                band_low_v = v
+
+        # ---- TLDR: the floor, in words, where the reader meets it
+        tldr_name, tldr_body = find_section(secs, "TL;DR")
+        if not tldr_name:
+            failures.append("TLDR: the artifact has no `## TL;DR` section - under "
+                            f"{CONTRACT_VERSION} the coverage floor is stated in the first "
+                            "section of the file, before the tables")
+        else:
+            text = "\n".join(tldr_body or [])
+            low = text.lower()
+            for tok in SCOPE_TOKENS:
+                if tok not in low:
+                    failures.append(f"TLDR: the `## TL;DR` section does not say {tok!r} - a "
+                                    "reader must be able to tell a scope limit from a missing "
+                                    "company")
+            if not mentions_amount(text, floor_usd):
+                failures.append(f"TLDR: the `## TL;DR` section does not name the market-cap floor "
+                                f"(${floor_usd / 1e9:.0f}B) - the band that bounds the list must "
+                                "be stated")
+            if not mentions_amount(text, band_low_v):
+                failures.append(f"TLDR: the `## TL;DR` section does not name the band floor "
+                                f"(${band_low_v / 1e9:.0f}B) - the consequence ('a US reporter "
+                                f"below ${band_low_v / 1e9:.0f}B is out of scope') is stated "
+                                "against that number")
+            if not any(tok in low for tok in SCANNER_TOKENS):
+                failures.append("TLDR: the `## TL;DR` section does not name the source of the "
+                                "floor (the TradingView scanner) - the floor must be auditable")
+
+        # ---- FLOORKEY: the machine-readable floor, with its arithmetic
+        raw_floor = fm.get("coverage_floor", "")
+        if not raw_floor:
+            failures.append("FLOORKEY: the front matter carries no `coverage_floor` - under "
+                            f"{CONTRACT_VERSION} the floor, the band it bounds and the counts "
+                            "that bound the list are machine-readable")
+        else:
+            kv = parse_kv(raw_floor)
+            missing = [k for k in FLOOR_KEYS if k not in kv]
+            if missing:
+                failures.append(f"FLOORKEY: `coverage_floor` is missing {missing} (got "
+                                f"{raw_floor!r}; expected "
+                                f"'{' '.join(k + '=<n>' for k in FLOOR_KEYS)}')")
+            else:
+                nums = {k: parse_num(kv[k]) for k in FLOOR_KEYS if k != "source"}
+                bad_nums = [k for k, v in nums.items() if v is None]
+                if bad_nums:
+                    failures.append(f"FLOORKEY: `coverage_floor` has non-numeric values for "
+                                    f"{bad_nums} (got {raw_floor!r})")
+                else:
+                    if nums["floor_usd"] != floor_usd:
+                        failures.append(f"FLOORKEY: `coverage_floor` says floor_usd="
+                                        f"{nums['floor_usd']:.0f} but the market-cap floor is "
+                                        f"${floor_usd:.0f}")
+                    if nums["band_low_usd"] != band_low_v:
+                        failures.append(f"FLOORKEY: `coverage_floor` says band_low_usd="
+                                        f"{nums['band_low_usd']:.0f} but the band floor is "
+                                        f"${band_low_v:.0f}")
+                    if "band_low_usd" in fm:
+                        top = parse_money(fm["band_low_usd"])
+                        if top and top != nums["band_low_usd"]:
+                            failures.append(f"FLOORKEY: `coverage_floor` says band_low_usd="
+                                            f"{nums['band_low_usd']:.0f} but the front matter's "
+                                            f"`band_low_usd` says {top:.0f} - the two must agree")
+                    total = (nums["below_band_us"] + nums["band_us"]
+                             + nums["at_or_above_floor_us"] + nums["no_cap_us"])
+                    if total != nums["us_population"]:
+                        failures.append(f"FLOORKEY: `coverage_floor` does not add up - "
+                                        f"us_population={nums['us_population']:.0f} but "
+                                        f"below_band_us + band_us + at_or_above_floor_us + "
+                                        f"no_cap_us = {total:.0f}")
+                    if nums["below_band_us"] <= 0:
+                        failures.append("FLOORKEY: `coverage_floor` says below_band_us="
+                                        f"{nums['below_band_us']:.0f} - the count of names the "
+                                        "floor removed from scope must be positive")
+                    if nums["below_band_us"] >= nums["us_population"]:
+                        failures.append("FLOORKEY: `coverage_floor` says below_band_us="
+                                        f"{nums['below_band_us']:.0f} of us_population="
+                                        f"{nums['us_population']:.0f} - the whole population "
+                                        "cannot be below the band")
+                    if nums["band_us"] < len(band_rows):
+                        failures.append(f"FLOORKEY: `coverage_floor` says band_us="
+                                        f"{nums['band_us']:.0f} but the band table publishes "
+                                        f"{len(band_rows)} rows")
+                    if "coverage_receipt" in fm:
+                        cov_floor = parse_coverage(fm["coverage_receipt"])
+                        if "bigcap_hits" in cov_floor:
+                            if cov_floor["bigcap_hits"] > nums["at_or_above_floor_us"]:
+                                failures.append(f"FLOORKEY: the coverage receipt says "
+                                                f"bigcap_hits={cov_floor['bigcap_hits']} but "
+                                                "`coverage_floor` says only "
+                                                f"{nums['at_or_above_floor_us']:.0f} US names "
+                                                "are at or above the floor")
+                src = kv.get("source", "")
+                if not any(tok in src.lower() for tok in SCANNER_TOKENS):
+                    failures.append("FLOORKEY: `coverage_floor` does not name the source of the "
+                                    f"floor (got {src!r})")
+                if not CAP_COLUMN_RE.search(src):
+                    failures.append("FLOORKEY: `coverage_floor` does not name the scanner COLUMN "
+                                    f"the floor is applied to (got {src!r}) - the market-cap "
+                                    "column is what makes the floor auditable")
+
+        # ---- FLOORSRC: the floor as a row of the source-health table
+        _, sh_body = find_section(secs, "Source health")
+        sh_header, sh_rows = parse_table(sh_body or [])
+        floor_rows = []
+        for i, row in enumerate(sh_rows):
+            if row and re.search(r"floor|scope", row[0], re.I):
+                floor_rows.append((i, row))
+        if not floor_rows:
+            failures.append("FLOORSRC: the `## Source health` table has no row for the coverage "
+                            "floor - the floor is a scope limit and belongs next to the sources "
+                            "it rests on")
+        else:
+            i, row = floor_rows[0]
+            cell = " | ".join(row)
+            low = cell.lower()
+            for tok in SCOPE_TOKENS:
+                if tok not in low:
+                    failures.append(f"FLOORSRC: the coverage-floor row of `## Source health` "
+                                    f"does not say {tok!r} (row {i + 1}: {row[0]!r})")
+            if not any(tok in low for tok in SCANNER_TOKENS):
+                failures.append(f"FLOORSRC: the coverage-floor row of `## Source health` does "
+                                f"not name the source of the floor (row {i + 1}: {row[0]!r})")
+            if not CAP_COLUMN_RE.search(cell):
+                failures.append(f"FLOORSRC: the coverage-floor row of `## Source health` does "
+                                f"not name the scanner COLUMN the floor is applied to (row "
+                                f"{i + 1}: {row[0]!r}) - the market-cap column is what makes the "
+                                "floor auditable")
+            if not mentions_amount(cell, floor_usd):
+                failures.append(f"FLOORSRC: the coverage-floor row of `## Source health` does "
+                                f"not name the floor (${floor_usd / 1e9:.0f}B) - row {i + 1}: "
+                                f"{row[0]!r}")
+            if not mentions_amount(cell, band_low_v):
+                failures.append(f"FLOORSRC: the coverage-floor row of `## Source health` does "
+                                f"not name the band floor (${band_low_v / 1e9:.0f}B) - row "
+                                f"{i + 1}: {row[0]!r}")
+
+    return failures, notes, version, version_reason
 
 
 def main():
@@ -458,13 +754,34 @@ def main():
     if not os.path.exists(path):
         print(f"CHECK: artifact not found: {path}", file=sys.stderr)
         return 2
-    failures = check(path)
+    failures, notes, version, version_reason = check(path)
+    print(f"CHECK: {path}")
+    print(f"  rule set: {version} - {version_reason}")
+    # EVERY check reports on its PASS path too: a check that only speaks on failure is not a gate.
+    failed_codes = {f.split(":", 1)[0] for f in failures}
+    note_map = {}
+    for code, text in notes:
+        note_map.setdefault(code, text)
+    for code, desc in CHECK_CODES:
+        if code in failed_codes:
+            continue
+        if code in ("COVERAGE", "ALREADY") and version == "v2":
+            print(f"  note  {code} is not enforced on a v2 artifact (the rule post-dates it)")
+            continue
+        if code in ("TLDR", "FLOORKEY", "FLOORSRC") and version != "v4":
+            print(f"  note  {code} is not enforced on a {version} artifact "
+                  f"(the rule post-dates it)")
+            continue
+        if code in note_map:
+            print(f"  note  {code}: {note_map[code]}")
+            continue
+        print(f"  ok    {code}: {desc}")
     if failures:
         print(f"FAIL: {len(failures)} contract violation(s) in {path}")
         for f in failures:
             print(f"  - {f}")
         return 1
-    print(f"OK: {path} conforms to {CONTRACT}")
+    print(f"OK: {path} conforms to {CONTRACT} ({version} rules applied)")
     return 0
 
 

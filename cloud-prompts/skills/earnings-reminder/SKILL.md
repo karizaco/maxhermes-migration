@@ -368,6 +368,43 @@ publishable draft already on disk at 07:17 ET.
       `boundary_case` in its `Flag` cell (`-` otherwise). The reader can then see that the
       inclusion is marginal instead of having to compute it.
 
+    - **The FLOOR is published, with its arithmetic.** The band table shows what the floor excluded
+      NEAR the floor. It does not tell the reader that a floor exists, where it comes from, or how
+      many names it removes — so a name that is simply too small reads as a name that did not
+      report. Measured 2026-11-13: SBC Medical Group Holdings (~$549m) reported and was not on
+      the reminder, and nothing in the artifact said the reminder had a $40B band floor at all.
+      From 2026-11-16 every artifact therefore carries the floor in **three** places — the front
+      matter (`coverage_floor`), the `## TL;DR` (the FIRST section of the file) and one row of
+      `## Source health` — and `tools/check_earnings_reminder_artifact.py` proves the three agree.
+
+      **The measurement is one cheap scanner call per number, and it is not optional.** The
+      TradingView `america` scanner answers a filtered query with a `totalCount` field: it is the
+      number of rows the FILTER matches. The field is `totalCount` (camelCase) — **not**
+      `total_count`, which this skill used to record as absent — and it is present on every
+      response, including a `range`-limited one. Measured 2026-11-15 on the filter this routine
+      already uses (`type in (stock, dr)`, `exchange in (NASDAQ, NYSE, AMEX)`, `close > 1`):
+
+      | Add this filter to the US filter above | `totalCount` | What it counts |
+      |---|---|---|
+      | *(no cap filter)* | 5,542 | every US name the scanner sees |
+      | `market_cap_basic greater 0` | 5,438 | the ones that carry a market cap |
+      | `market_cap_basic less 40000000000` | 4,954 | the ones BELOW the $40B band floor |
+      | `market_cap_basic egreater 50000000000` | 417 | the ones at or above the $50B floor |
+
+      The four numbers decompose the population exactly:
+      **5,542 = 4,954 (below the band) + 67 (in the $40B-$50B band) + 417 (at or above the floor)
+      + 104 (no market cap at all)**. The 67 is the remainder, and the 104 are the names the
+      scanner carries with NO cap — they are counted with the below-band total because the scanner
+      reports no cap for them, and the artifact says so in words. Read `totalCount` with a SMALL
+      `range` (`[0, 1]`): the count does not depend on the range, and a wide range over a
+      5,542-row population is a payload nobody needs.
+
+      **The per-fire count of REPORTERS the band excluded is NOT published, and the artifact says
+      so.** Enumerating it would need a market-cap pull for every calendar row (the calendar
+      carried 103 rows on 2026-11-13, most of them US sub-$40B names), which does not fit the
+      06:45 ET discovery cutoff. Publish the population counts above and state in words that the
+      per-day reporter count below the band was not enumerated. Never estimate it.
+
 12. **Write the markdown file** with a front-matter header (`date`, `cron`, `fire_time_et`,
     `snapshot_et`, `source`, `primary_source`, `status`, `pending_count`, `already_reported_count`,
     `non_us_count`, `reaction_ranked`, `band_low_usd`) so downstream consumers can parse it without
@@ -386,6 +423,23 @@ publishable draft already on disk at 07:17 ET.
       members and 8 at or above the floor, and the roster published 4 — completeness that was
       re-derived by hand after the run, because the artifact only said "47 standing candidates
       checked".
+    From 2026-11-16 add two more keys:
+    - `contract: EARNINGS_REMINDER_V4` — the contract version this artifact was written to. It
+      REPLACES `EARNINGS_REMINDER_V3` from this date: v4 adds the published coverage floor and
+      nothing else. An artifact that still declares V3 was written under the older contract and is
+      checked under it.
+    - `coverage_floor: floor_usd=50000000000 band_low_usd=40000000000 us_population=<n>
+      below_band_us=<n> band_us=<n> at_or_above_floor_us=<n> no_cap_us=<n>
+      source=TradingView america scanner (market_cap_basic, issuer-level USD)` — the floor, the
+      band it bounds, the four measured population counts and the source they came from.
+      `floor_usd` and `band_low_usd` are the constants the floor and the band are applied with;
+      the counts are the measured decomposition of the scanner's US population (step 11), and they
+      must satisfy `us_population = below_band_us + band_us + at_or_above_floor_us + no_cap_us`.
+
+    **The `## TL;DR` section is the first section of the file** (it comes straight after the
+    `# Earnings - <date>` heading, before the tables) and it opens with the coverage-floor
+    disclosure. A reader who stops after one paragraph must still be able to tell a scope limit
+    from a missing company.
 13. **Append audit line** (local Mavis only — skip on Cloud):
    `earnings_reminder target=earnings:{date} watchlist_hits={n} bigcap_hits={n}`
 
@@ -498,9 +552,42 @@ close, so already public at 06:00 ET) and **Constellation Software** released it
 the TSX close on 6 November (16:00 ET, issuer press release) — both belong to the 6 November ET
 day. The local announcement date is never the ET date; convert it.
 
-## ARTIFACT FORMAT CONTRACT v3 (EARNINGS_REMINDER_V3)
+## ARTIFACT FORMAT CONTRACT v4 (EARNINGS_REMINDER_V4)
 
-The artifact is a SCREEN, not a list. Three tables, in this order, then the notes.
+**What v4 changes, and only this.** v4 adds exactly one thing to v3: **the coverage floor is
+PUBLISHED.** v3 already required the floor to be *applied* (the band table) and the receipt to be
+complete; what it did not require was for the artifact to SAY that a floor exists, where it comes
+from, and how many names it removes — so a name that is merely too small read as a name that did
+not report. v4 closes that gap. Everything else below is v3 and is still in force.
+
+The artifact is a SCREEN, not a list. A TL;DR, three tables, in this order, then the notes.
+
+0. **`## TL;DR`** — the FIRST section of the file, straight after the `# Earnings - <date>`
+   heading. It opens with the coverage-floor disclosure, in words, with the arithmetic:
+
+   ```
+   ## TL;DR
+
+   - **Coverage floor — a scope limit, not a missing company.** This reminder covers S&P 500
+     constituents plus US-listed reporters with a market cap of **$50B or more** (TradingView
+     scanner, `market_cap_basic`, issuer-level USD). The band just under the floor — **$40B to
+     $50B** — is published in the *Just below the line* table so the cliff is visible. **A US
+     reporter below $40B market cap is out of scope for this reminder: it is not on this list,
+     and its absence does not mean it did not report.** Of the scanner's **5,542** US names,
+     **4,954** are below the $40B band floor and therefore out of scope, **67** sit in the
+     $40B-$50B band, **417** are at or above the $50B floor, and **104** carry no market cap at
+     all.
+   ```
+
+   The counts are the ones measured on THIS fire (step 11) — they are not constants, and they
+   change with the market. The three facts that never change are the floor ($50B), the band
+   ($40B-$50B) and the consequence in words.
+
+   **The words matter — the checker looks for them.** Both the TL;DR and the source-health row
+   must contain the words **"out of scope"** and **"not on this list"**, must name the floor
+   ($50B) and the band ($40B), and must name the source of the floor (the TradingView scanner).
+   A floor that is only implied is not published: "the list is limited to larger names" is not a
+   scope limit, it is a rumour.
 
 1. **`## Big S&P 500 today`** — the US roster: S&P 500 constituents plus US-listed names above the
    market-cap floor. Columns, in this order:
@@ -535,6 +622,13 @@ The artifact is a SCREEN, not a list. Three tables, in this order, then the note
    the reader cannot tell which of them are tradeable in the session the brief is written for.
 5. **`## Notes`**, **`## Source health`**, **`## Rules applied`**.
 
+   **`## Source health` carries the floor as a row of its own**, in the same register as the other
+   rows (source · query · status · notes), so it is auditable next to the data sources it rests on:
+
+   ```
+   | Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` — `market_cap_basic` (issuer-level USD), constants `MCAP_FLOOR = $50B` and `band_low_usd = $40B` | ok | The roster is bounded by the market-cap band, not by who reported: S&P 500 constituents plus US-listed names at or above $50B, with the $40B-$50B band published below the floor. A US reporter below $40B market cap is out of scope — it is not on this list (a scope limit, not a missing company). US names below the band floor: 4,954 of 5,542 (67 in the band, 417 at or above the floor, 104 with no cap) |
+   ```
+
 **The three tables must not overlap.** A non-US issuer is published in ONE of them, never in two.
 The US roster keeps its own scope (every S&P 500 constituent, whatever its cap); the non-US table
 is a separate universe, not an extension of the roster.
@@ -544,12 +638,22 @@ The front-matter carries `date`, `cron`, `fire_time_et`, `snapshot_et`, `source`
 `reaction_ranked: true` and `band_low_usd`; add `reaction_degraded: <n>` when a reaction column
 could not be computed for exactly `n` rows. **From 2026-11-13 also carry `contract:
 EARNINGS_REMINDER_V3` and a `coverage_receipt`** (step 12) — the artifact states its own
-completeness basis and the checker proves the receipt matches the published tables.
+completeness basis and the checker proves the receipt matches the published tables. **From
+2026-11-16 also carry `contract: EARNINGS_REMINDER_V4` and `coverage_floor`** (step 12) — the
+artifact publishes the coverage floor that bounds its list.
 
-**Versioning.** Artifacts published before 2026-11-13 are checked under v2 and stay valid — a
-contract change must not retroactively fail an artifact that was legal when it was written. The
-checker applies the v3 rules (the coverage receipt, the already-reported tradeability column) to
-any artifact dated 2026-11-13 or later, or to any artifact that declares the contract key.
+**Versioning.** The contract marker decides which rule set applies to a given artifact.
+
+| Artifact | Rule set | Why |
+|---|---|---|
+| `contract: EARNINGS_REMINDER_V4`, or dated 2026-11-16 or later | **v4** | the floor must be published |
+| `contract: EARNINGS_REMINDER_V3` | **v3** | written under v3 — the coverage receipt and the tradeability column, no floor rule |
+| dated before 2026-11-13, no marker | **v2** | written under v2 — stay valid |
+
+Artifacts published before a contract change are checked under the rules that were in force when
+they were written: **a contract change must not retroactively fail an artifact that was legal
+when it was written.** The checker prints which rule set it applied, so a grandfathered artifact
+is visible as grandfathered and not as silently unchecked.
 
 **Verify the artifact before pushing.** The checker is a separate implementation of this contract:
 
@@ -561,14 +665,14 @@ python3 /workspace/tools/check_earnings_reminder_artifact.py /workspace/earnings
 
 It exits 1 and names every violation — a missing column, a roster that is not sorted by reaction
 score, a score that does not match its inputs, an empty `us_peer`, a name published in two
-tables, a band row that is not actually below the floor, a missing `boundary_case` flag. **Do not
-push an artifact the checker rejects.**
+tables, a band row that is not actually below the floor, a missing `boundary_case` flag, a missing
+`## TL;DR`, an unpublished coverage floor. **Do not push an artifact the checker rejects.**
 
 ## Sample output
 
 ```markdown
 ---
-date: 2026-11-06
+date: 2026-11-16
 cron: 19-earnings-reminder-daily
 fire_time_et: 06:00
 snapshot_et: 06:04
@@ -580,11 +684,23 @@ already_reported_count: 3
 non_us_count: 2
 reaction_ranked: true
 band_low_usd: 40000000000
-contract: EARNINGS_REMINDER_V3
+contract: EARNINGS_REMINDER_V4
 coverage_receipt: calendar_rows=147 s_and_p_500_hits=3 bigcap_hits=7 us_roster_rows=3 band_rows=2
+coverage_floor: floor_usd=50000000000 band_low_usd=40000000000 us_population=5542 below_band_us=4954 band_us=67 at_or_above_floor_us=417 no_cap_us=104 source=TradingView america scanner (market_cap_basic, issuer-level USD)
 ---
 
-# Earnings - Fri 2026-11-06
+# Earnings - Mon 2026-11-16
+
+## TL;DR
+
+- **Coverage floor — a scope limit, not a missing company.** This reminder covers S&P 500
+  constituents plus US-listed reporters with a market cap of **$50B or more** (TradingView
+  scanner, `market_cap_basic`, issuer-level USD). The band just under the floor — **$40B to $50B**
+  — is published in the *Just below the line* table so the cliff is visible. **A US reporter below
+  $40B market cap is out of scope for this reminder: it is not on this list, and its absence does
+  not mean it did not report.** Of the scanner's **5,542** US names, **4,954** are below the $40B
+  band floor and therefore out of scope, **67** sit in the $40B-$50B band, **417** are at or above
+  the $50B floor, and **104** carry no market cap at all.
 
 ## Big S&P 500 today
 
@@ -632,6 +748,7 @@ coverage_receipt: calendar_rows=147 s_and_p_500_hits=3 bigcap_hits=7 us_roster_r
 |---|---|---|---|
 | EarningsWhispers calendar | `https://www.earningswhispers.com/calendar/20261106` | ok | server-rendered |
 | Yahoo chart API | `query1.finance.yahoo.com/v8/finance/chart/<SYM>` | ok | daily bars for the reaction columns |
+| Coverage floor (scope limit) | `scanner.tradingview.com/america/scan` — `market_cap_basic` (issuer-level USD), constants `MCAP_FLOOR = $50B` and `band_low_usd = $40B` | ok | The roster is bounded by the market-cap band, not by who reported: S&P 500 constituents plus US-listed names at or above $50B, with the $40B-$50B band published below the floor. A US reporter below $40B market cap is out of scope — it is not on this list (a scope limit, not a missing company). US names below the band floor: 4,954 of 5,542 (67 in the band, 417 at or above the floor, 104 with no cap) |
 
 ## Rules applied
 
@@ -661,6 +778,11 @@ coverage_receipt: calendar_rows=147 s_and_p_500_hits=3 bigcap_hits=7 us_roster_r
   one is not repeated in the other.
 - **The market-cap floor is published with what it excludes.** The band table names the names the
   floor kept out, and a row inside the floor by less than $0.5B is flagged `boundary_case`.
+- **The floor itself is PUBLISHED — in the front matter, in the `## TL;DR` and in `## Source
+  health`.** A reader must be able to tell "this name is too small" from "this name did not
+  report". The three places say the same thing, the counts add up
+  (`us_population = below_band_us + band_us + at_or_above_floor_us + no_cap_us`), and a count that
+  was not measured is said to be unmeasured — never estimated.
 - **The band is US-listed, one row per issuer, one source.** Foreign ordinary lines belong to Pass
   B, non-common lines are filtered mechanically on the description, and the caps and the order come
   from the same scanner row. A broken per-symbol cap is published as an issuer-level cap with a
