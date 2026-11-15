@@ -724,6 +724,47 @@ def check_spec_drift(tasks, EXPECTED, contracts, repo_dir=None, timeout=30,
     return findings, checked
 
 
+def check_prompt_drift(tasks, repo_dir):
+    """Compare every DEPLOYED prompt with the repo's file for it.
+
+    The cron prompt runs this comparison inline, against whatever the repo clone
+    happened to hold. A clone that lags main makes a REAL drift disappear -- a
+    false "0 drift" -- which is the most expensive answer this routine can give,
+    because the whole point of the check is that a stale prompt still fires on
+    time and still produces plausible output.
+
+    Here the repo copy has already been pinned to main's tip (see
+    ensure_repo_at_tip), so this comparison is against the truth. It lives in the
+    detector because the detector is fetched at RUN time: a change to the
+    procedure lands on the next fire with no cron_update and no byte-drift risk.
+
+    Returns (findings, checked).
+    """
+    import hashlib
+    findings, checked = [], 0
+    for t in tasks:
+        name = urllib.parse.unquote(t.get("cron_name", ""))
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(repo_dir, "cloud-prompts", "cron-prompts", name)
+        if not os.path.exists(path):
+            path = os.path.join(repo_dir, "cloud-prompts", name)
+        if not os.path.exists(path):
+            continue
+        checked += 1
+        try:
+            with open(path, "rb") as fh:
+                local = fh.read()
+        except OSError:
+            continue
+        deployed = (t.get("prompt") or "").encode()
+        if hashlib.sha256(local).hexdigest() != hashlib.sha256(deployed).hexdigest():
+            findings.append({"kind": "PROMPT-DRIFT", "cron_name": name,
+                             "task_id": t.get("task_id"),
+                             "repo_bytes": len(local), "deployed_bytes": len(deployed)})
+    return findings, checked
+
+
 def check_session_modes(tasks, EXPECTED):
     """L1: live session.mode vs the ground truth."""
     findings = []
@@ -991,6 +1032,11 @@ def main():
     # --- skill-spec drift -------------------------------------------------------
     spec_findings, spec_checked = [], []
     spec_error = None
+    # --- prompt drift -----------------------------------------------------------
+    # The same tip-pinned repo copy is the reference side of this comparison, so
+    # it runs only when the copy could be pinned.
+    prompt_findings, prompt_checked = [], 0
+    prompt_error = None
     # Resolve the repo ONCE, OUTSIDE the spec-check block: resolving it inside left the
     # shared-script lint with no repo under --no-spec-check, i.e. a gate that only runs
     # on one path is not a gate.
@@ -1023,6 +1069,13 @@ def main():
                     timeout=args.spec_timeout)
             except Exception as exc:                 # noqa: BLE001
                 spec_error = f"{type(exc).__name__}: {exc}"
+            if not spec_error:
+                try:
+                    prompt_findings, prompt_checked = check_prompt_drift(tasks, repo_dir)
+                except Exception as exc:             # noqa: BLE001
+                    prompt_error = f"{type(exc).__name__}: {exc}"
+            else:
+                prompt_error = spec_error
 
     report = {"drift": drift, "unknown_routines": unknown, "missing_routines": missing,
               "roster": roster,
@@ -1032,6 +1085,8 @@ def main():
               "conversation_reuse_historical": hist_reuse,
               "conversation_checked": conv_checked,
               "spec_findings": spec_findings,
+              "prompt_drift_findings": prompt_findings,
+              "prompt_checked": prompt_checked,
               "spec_checked": len(spec_checked),
               "spec_error": spec_error,
               "run_chunk_files": run_files,
@@ -1112,6 +1167,16 @@ def main():
                   f"{len([s for s in spec_findings if s['kind'] == 'SPEC-DRIFT'])} drifted")
         if repo_state:
             print(f"repo copy: {repo_state}")
+        if args.no_spec_check:
+            print("prompt drift: NOT CHECKED (--no-spec-check)")
+        elif prompt_error:
+            print(f"prompt drift: NOT CHECKED -- {prompt_error}")
+        else:
+            print(f"prompt drift (tip-verified): {len(prompt_findings)} of "
+                  f"{prompt_checked} deployed prompts differ from the repo")
+        for p in prompt_findings:
+            print(f"PROMPT-DRIFT  {p['cron_name']}: repo {p['repo_bytes']}B vs "
+                  f"deployed {p['deployed_bytes']}B (task_id {p['task_id']})")
         for s in spec_findings:
             if s["kind"] == "SPEC-DRIFT":
                 print(f"SPEC-DRIFT  {s['cron_name']}: repo {s['repo_hash']} vs live {s['live_hash']}")
@@ -1126,7 +1191,8 @@ def main():
               f"missing={len(missing)} session_mode={len(mode_findings)} "
               f"conv_reuse_live={len(live_reuse)} conv_reuse_historical={len(hist_reuse)} "
               f"roster={roster['live']}/{roster['expected']} "
-              f"spec_findings={len(spec_findings)} routines_with_runs={len(conv_checked)}")
+              f"spec_findings={len(spec_findings)} prompt_drift={len(prompt_findings)} "
+              f"routines_with_runs={len(conv_checked)}")
 
         # A REPLY BLOCK, so the lines the reply must carry are not left to the
         # agent's initiative. Copy them verbatim.
@@ -1149,6 +1215,14 @@ def main():
                 print(f"SPEC-PATH-MISMATCH {s['cron_name']}: {s['reason']}")
         if spec_error:
             print(f"spec drift: NOT CHECKED -- {spec_error}")
+        for p in prompt_findings:
+            print(f"PROMPT-DRIFT {p['cron_name']}: repo {p['repo_bytes']}B vs "
+                  f"deployed {p['deployed_bytes']}B")
+        if prompt_error:
+            print(f"prompt drift: NOT CHECKED -- {prompt_error}")
+        elif not args.no_spec_check:
+            print(f"prompt drift: {len(prompt_findings)} of {prompt_checked} deployed "
+                  f"prompts differ from the repo (tip-verified)")
         for r in live_reuse:
             print(f"CONV-REUSE LIVE {r['cron_name']}: conversation {r['session_id']} was used by "
                   f"{len(r['reused_in_runs'])} runs (task_id {r['task_id']})")

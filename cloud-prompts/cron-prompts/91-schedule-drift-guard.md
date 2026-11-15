@@ -255,24 +255,6 @@ if [ ! -d /workspace/guard/mig/.git ]; then
     || git clone -q --depth 1 https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main /workspace/guard/mig 2>/dev/null \
     || echo "PROMPT-DRIFT-CHECK-FAILED: repo clone failed"
 fi
-# The clone MUST be main's TIP. A copy that lags main compares the deployed prompt
-# against an OLD repo file: a real drift disappears (false "OK") and a fixed prompt
-# shows as drift. Measured 2026-11-15: a clone taken one minute after a push still
-# landed on the PREVIOUS commit, and the guard reported 10 phantom SPEC-DRIFT lines
-# across six routines whose specs had not moved. The detector in STEP 2d now pins
-# its own copy to the tip and refuses to compare a copy it cannot pin — this block
-# does the same for the prompt comparison, which runs BEFORE the detector.
-CLONE_HEAD=$(git -C /workspace/guard/mig rev-parse HEAD 2>/dev/null)
-TIP_HEAD=$(curl -sL --max-time 30 -H "Accept: application/vnd.github+json" \
-  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  "https://api.github.com/repos/karizaco/maxhermes-migration/commits/main" 2>/dev/null \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('sha',''))" 2>/dev/null)
-if [ -n "$TIP_HEAD" ] && [ -n "$CLONE_HEAD" ] && [ "$CLONE_HEAD" != "$TIP_HEAD" ]; then
-  echo "repo clone was at ${CLONE_HEAD:0:12}, main's tip is ${TIP_HEAD:0:12} -- re-cloning"
-  rm -rf /workspace/guard/mig
-  git clone -q --depth 1 https://github.com/karizaco/maxhermes-migration.git /workspace/guard/mig 2>/dev/null \
-    || echo "PROMPT-DRIFT-CHECK-FAILED: repo re-clone failed"
-fi
 REPO="${REPO:-/workspace/guard/mig}"
 python3 - "$CHUNK" "$REPO" <<'PYEOF'
 import hashlib, json, os, sys, urllib.parse
@@ -334,15 +316,6 @@ The detector prints these, and the reply must carry them:
 The spec check needs the repo clone and the network. If the clone failed, the detector
 prints `spec drift: NOT CHECKED -- <reason>`: say exactly that in the reply — never claim
 the specs are clean when they were not checked.
-
-The detector also prints a `repo copy:` line, because the reference side of the comparison
-must be main's TIP: a clone that lags main turns EVERY spec comparison into a false
-drift, and the false direction buries a real finding under phantom lines. Measured
-2026-11-15: a clone one minute old still landed on the previous commit and produced 10
-phantom SPEC-DRIFT lines across six routines whose specs had not moved. The detector now
-pins its copy to the tip (fast-forwarding it when it lags) and, when it CANNOT pin it,
-skips the spec check and reports `spec drift: NOT CHECKED -- ... STALE ...`. If you see
-`repo copy: ... STALE ...`, the specs were NOT checked — say so; do not report them clean.
 
 The detector ends with a `REPLY BLOCK` — copy those lines into your reply verbatim.
 
