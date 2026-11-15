@@ -48,16 +48,18 @@ def _load(path, name):
 
 ck = _load(CK_PATH, "ck")
 
-CONTRACT = "in-play-artifact-v2"
-# The legacy marker is still honoured: a board written before 2026-11-13 is checked
+CONTRACT = "in-play-artifact-v3"
+# The legacy markers are still honoured: a board written before 2026-11-15 is checked
 # against the rules in force when it was written (grandfathered), so a historical
-# artifact is never failed for a rule that post-dates it.
+# artifact is never failed for a rule that post-dates it. v2 is the version the
+# 2026-11-13 board carried - it has no `Gap leaders` section and must still pass.
 CONTRACT_V1 = "in-play-artifact-v1"
+CONTRACT_V2 = "in-play-artifact-v2"
 
 # The number of checks the checker MUST report for a conforming OPEN artifact.
 # Every check reports on its PASS path — a silent pass is indistinguishable
 # from a check that never ran (see the delta-source check, fixed 2026-11-06).
-OPEN_CHECK_COUNT = 40
+OPEN_CHECK_COUNT = 43
 PRECLOSE_CHECK_COUNT = 29
 
 
@@ -154,7 +156,22 @@ the newest file in the directory, which is the pre-close board).
 
 ---
 
-## TECH_WATCH — strong turnover, no same-session company catalyst (1 name; the top 1 by turnover is published)
+---
+
+## Gap leaders — the gap-ranked view of the names the turnover table hides (3 names; the 3 biggest gaps are published)
+
+**TECH_WATCH is ranked by turnover, so a name that traded on size but printed a small dollar
+footprint can be invisible on the board.** This table is ranked by the OPENING GAP instead.
+
+| Ticker | Tier | Open (gap %) | 09:50 ET | pace | $ vol to 09:50 | Gap verdict | Why it is in play |
+|---|---|---|---|---|---|---|---|
+| **STU** | TECH_WATCH | +18.91% | +23.22% | 14.53 | 2m | held | Q3 print and an 8-K on a minority investment |
+| **VWX** | Tier B | +12.00% | -1.10% | 2.37 | 75m | faded | no same-session catalyst located |
+| **PQR** | Tier C | +8.00% | +9.00% | 1.77 | 59m | held | merger spread widening |
+
+---
+
+## TECH_WATCH — strong turnover, no same-session company catalyst (2 names; the top 1 by turnover is published)
 
 | Ticker | 09:50 chg | Gap | $ vol to 09:50 | pace | 20-min verdict | Catalyst |
 |---|---|---|---|---|---|---|
@@ -162,7 +179,7 @@ the newest file in the directory, which is the pre-close board).
 
 ---
 
-## Tier B — liquidity + move, no same-session catalyst (1 name; the top 1 by absolute move (5% and above) is published)
+## Tier B — liquidity + move, no same-session catalyst (2 names; the top 1 by absolute move (5% and above) is published)
 
 | Ticker | 09:50 chg | Gap | $ vol to 09:50 | pace | 20-min verdict | Catalyst |
 |---|---|---|---|---|---|---|
@@ -233,6 +250,19 @@ def render_csv():
          1.7743, f"pace = (session vol to 09:50 / trailing-10 full-session avg) / {ck.PACE_CONSTANT}",
          58800000.0, 806387935966.31, "held", 9.40, "merger spread widening", "T",
          "yahoo_chart_5m_0950ET", "no", "merger spread widening"],
+        # STU is the measured 2026-11-13 case: a big gap on a SMALL dollar footprint.
+        # It is in the CSV, it is NOT in the turnover-ranked TECH_WATCH table, and the
+        # Gap leaders table is what publishes it.
+        ["STU", "Sigma Ltd", "TECH_WATCH", 6.58, 23.22, 18.91, 18.91, 350048, 0.8616, 192745.06,
+         14.5301, f"pace = (session vol to 09:50 / trailing-10 full-session avg) / {ck.PACE_CONSTANT}",
+         2303320.20, 654106599.62, "held", 23.22, "Q3 print and an 8-K on a minority investment", "material",
+         "yahoo_chart_5m_0950ET", "yes", "Q3 print and an 8-K on a minority investment"],
+        # VWX gapped +12% and gave it back: its MOVE is under 5%, so the move-ranked
+        # Tier B rule never takes it, and the turnover table never will.
+        ["VWX", "Vex Inc", "B", 9.40, -1.10, 12.00, 12.00, 8000000, 0.8912, 27053867.85,
+         2.3655, f"pace = (session vol to 09:50 / trailing-10 full-session avg) / {ck.PACE_CONSTANT}",
+         75200000.0, 806387935966.31, "faded", -1.10, "no same-session catalyst located", "B",
+         "yahoo_chart_5m_0950ET", "no", "no same-session catalyst located"],
     ]
     return header, rows
 
@@ -612,7 +642,7 @@ def mut_raw_pace(md, csv_text):
 
 
 def mut_no_tier_count(md, csv_text):
-    res = mutate(md, csv_text, r"\(1 name; the top 1 by turnover is published\)", "")
+    res = mutate(md, csv_text, r"\(2 names; the top 1 by turnover is published\)", "")
     if res is None:
         return None
     m_md, m_csv = res
@@ -620,7 +650,7 @@ def mut_no_tier_count(md, csv_text):
 
 
 def mut_stale_contract_marker(md, csv_text):
-    res = mutate(md, csv_text, r"in-play-artifact-v2", "in-play-artifact-v0")
+    res = mutate(md, csv_text, r"in-play-artifact-v3", "in-play-artifact-v0")
     if res is None:
         return None
     m_md, m_csv = res
@@ -699,12 +729,12 @@ def mut_tier_b_sub_five(md, csv_text):
 def mut_tier_b_count_wrong(md, csv_text):
     """The Tier B heading states a count the CSV does not carry."""
     res = mutate(md, csv_text,
-                 r"\(1 name; the top 1 by absolute move \(5% and above\) is published\)",
-                 "(2 names; the top 1 by absolute move (5% and above) is published)")
+                 r"\(2 names; the top 1 by absolute move \(5% and above\) is published\)",
+                 "(3 names; the top 1 by absolute move (5% and above) is published)")
     if res is None:
         return None
     m_md, m_csv = res
-    return m_md, m_csv, lambda a, b: "2 names" in a
+    return m_md, m_csv, lambda a, b: "3 names" in a
 
 
 def mut_tier_b_extra_row(md, csv_text):
@@ -726,6 +756,59 @@ def mut_tier_b_wrong_selection(md, csv_text):
     m_md, m_csv = res
     return m_md, m_csv, lambda a, b: "**JKL**" in a
 
+
+
+def mut_gap_leaders_section_missing(md, csv_text):
+    """The whole Gap leaders section is gone - the section check and the order check
+    must both bite."""
+    res = mutate(md, csv_text, r"## Gap leaders.*?(?=## TECH_WATCH)", "")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "## Gap leaders" not in a
+
+
+def mut_gap_leaders_wrong_selection(md, csv_text):
+    """The table publishes a name that is not the rule's selection (JKL's gap is +1%)."""
+    res = mutate(md, csv_text,
+                 r"\| \*\*STU\*\* \| TECH_WATCH \| \+18\.91%[^\n]*\n",
+                 "| **JKL** | TECH_WATCH | +1.00% | +2.00% | 2.66 | 199m | held | no catalyst |\n")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "**JKL** | TECH_WATCH | +1.00%" in a
+
+
+def mut_gap_leaders_missing_row(md, csv_text):
+    """A qualifying name (VWX, +12% gap) is dropped from the table."""
+    res = mutate(md, csv_text,
+                 r"\| \*\*VWX\*\* \| Tier B \| \+12\.00%[^\n]*\n", "")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "**VWX**" not in a
+
+
+def mut_gap_leaders_count_wrong(md, csv_text):
+    """The heading states a count the CSV does not carry."""
+    res = mutate(md, csv_text,
+                 r"\(3 names; the 3 biggest gaps are published\)",
+                 "(4 names; the 3 biggest gaps are published)")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "4 names" in a
+
+
+def mut_gap_leaders_empty_reason(md, csv_text):
+    """A published row carries no reason - a row with no catalyst still owes one."""
+    res = mutate(md, csv_text,
+                 r"\| \*\*STU\*\* \| TECH_WATCH \| \+18\.91% \| \+23\.22% \| 14\.53 \| 2m \| held \| [^\n]*\|",
+                 "| **STU** | TECH_WATCH | +18.91% | +23.22% | 14.53 | 2m | held |  |")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "14.53 | 2m | held |  |" in a
 
 MUTATIONS = [
     ("the open board has no 'What to watch at the open' block", mut_no_watch_block),
@@ -753,6 +836,14 @@ MUTATIONS = [
     ("the Tier B table carries more rows than the cap", mut_tier_b_extra_row),
     ("the Tier B table publishes a name that is not the rule's selection",
      mut_tier_b_wrong_selection),
+    ("the open board has no 'Gap leaders' table", mut_gap_leaders_section_missing),
+    ("the Gap leaders table publishes a name that is not the rule's selection",
+     mut_gap_leaders_wrong_selection),
+    ("the Gap leaders table drops a qualifying name", mut_gap_leaders_missing_row),
+    ("the Gap leaders heading states a count the CSV does not carry",
+     mut_gap_leaders_count_wrong),
+    ("a published Gap leaders row carries an empty reason",
+     mut_gap_leaders_empty_reason),
 ]
 
 
@@ -807,6 +898,28 @@ def main():
               "rules in force when it was written")
     else:
         print(f"{FAIL} a LEGACY (v1) artifact is REJECTED — the grandfather path is broken:")
+        print(out)
+        return 1
+
+    # --- 1aa2. a LEGACY (v2) artifact must still be accepted ------------------
+    # v2 is what the 2026-11-13 board carried: it has NO `Gap leaders` section. A
+    # v3 rule must not be applied to it, or the auditors see a false alarm on a
+    # published board.
+    legacy2_md = re.sub(r"## Gap leaders.*?(?=## TECH_WATCH)", "", md_text, flags=re.S)
+    legacy2_md = legacy2_md.replace(CONTRACT, CONTRACT_V2)
+    if "## Gap leaders" in legacy2_md or CONTRACT_V2 not in legacy2_md:
+        print(f"{FAIL} the v2 legacy fixture is not what it claims to be")
+        return 1
+    l2path = os.path.join(tmpdir, "legacy2.md")
+    l2csv = os.path.join(tmpdir, "legacy2.csv")
+    open(l2path, "w", encoding="utf-8").write(legacy2_md)
+    open(l2csv, "w", encoding="utf-8").write(legacy_csv)
+    rc, out = run_checker(l2path, l2csv)
+    if rc == 0:
+        print(f"{PASS} a LEGACY (v2) artifact is still accepted - it is checked against the "
+              "rules in force when it was written")
+    else:
+        print(f"{FAIL} a LEGACY (v2) artifact is REJECTED - the grandfather path is broken:")
         print(out)
         return 1
 

@@ -29,15 +29,22 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "in-play-artifact-v2"
-# v1 boards (published before 2026-11-13) are GRANDFATHERED: they are checked against
-# the rules that were in force when they were written. A checker that fails a historical
-# board for a rule that post-dates it is a false alarm, and the fleet's auditors treat
-# those as findings — so the marker decides which rule set applies.
-LEGACY_CONTRACT_VERSIONS = ("in-play-artifact-v1",)
+CONTRACT_VERSION = "in-play-artifact-v3"
+# v1 and v2 boards are GRANDFATHERED: they are checked against the rules that were in
+# force when they were written. A checker that fails a historical board for a rule that
+# post-dates it is a false alarm, and the fleet's auditors treat those as findings — so
+# the marker decides which rule set applies.
+LEGACY_CONTRACT_VERSIONS = ("in-play-artifact-v1", "in-play-artifact-v2")
 # The Tier B publication rule that v2 introduces.
 TIER_B_MAX_ROWS = 10
 TIER_B_MIN_MOVE_PCT = 5.0
+# The OPEN slot's `Gap leaders` table (contract v3): the gap-ranked view of the names
+# the TURNOVER-ranked TECH_WATCH table hides. Measured 2026-11-13: SBC Medical Group
+# was +23.22% at 09:50 on a $2.3m turnover — a pace of 14.5 — and appeared in NO
+# published table, because the 30th published TECH_WATCH row had $25.1m. It closed
+# +37.64%. The same routine's 15:50 board published it in Tier A, six hours later.
+GAP_LEADERS_MAX_ROWS = 15
+GAP_LEADERS_MIN_GAP_PCT = 5.0
 
 # The two slots are different screens with different floors and different volume
 # measures. The slot selects the floors, the pace/RVol label, the delta source and
@@ -341,15 +348,26 @@ def check_md(path, slot, csv_rows=None):
                                    if ln.startswith("## ")), len(lines))])
 
     # which contract the board was built against (the marker decides the rule set)
-    contract_v2 = False
+    contract_v2 = False          # the Tier B publication rule applies (v2 and v3)
+    contract_current = False     # the rules in force today (v3)
     for ln in raw.split("\n")[:40]:
         if "contract:" in ln.lower():
             mm = re.search(r"contract:\s*[*_`\s]*(in-play-artifact-v\d+)", ln, re.I)
-            contract_v2 = bool(mm and mm.group(1) == CONTRACT_VERSION)
+            got = mm.group(1) if mm else None
+            contract_v2 = bool(got in ("in-play-artifact-v2", CONTRACT_VERSION))
+            contract_current = bool(got == CONTRACT_VERSION)
             break
 
     # --- 1. the required sections, in order -----------------------------------
     groups = OPEN_SECTION_GROUPS if slot == "open" else PRECLOSE_SECTION_GROUPS
+    if slot == "open" and contract_current:
+        # The v3 open board carries ONE more section — `Gap leaders`, between the gap
+        # annex and the bulk tiers. An older board is checked against the SHAPE it was
+        # written to, so a historical v1/v2 board (which has no such section) still
+        # passes its own order check. The order check is NOT contract-blind: adding
+        # the group unconditionally would fail every board published before 2026-11-15.
+        groups = list(groups)
+        groups.insert(groups.index(["gapann"]) + 1, ["gapleaders"])
     missing, group_positions = [], []
     for group in groups:
         hits = [find_section(secs, k) for k in group]
@@ -395,7 +413,6 @@ def check_md(path, slot, csv_rows=None):
             bad(f"the artifact carries contract '{got if got else '?'}', expected "
                 f"'{CONTRACT_VERSION}' — it was produced by an older copy of the spec. "
                 "Re-read the skill spec and rebuild it.")
-
     # --- 3. the pace band must be published WITH the pace numbers --------------
     # The pace measure belongs to the OPEN slot only. The pre-close board's measure
     # is RVol, and the band is a property of the opening-share regime, not of RVol.
@@ -722,6 +739,83 @@ def check_md(path, slot, csv_rows=None):
                     bad(f"the Tier B table does not match the rule's selection — the rule is "
                         f"the {expected} names with |move| >= {TIER_B_MIN_MOVE_PCT}% biggest "
                         f"first (max {TIER_B_MAX_ROWS}), the table publishes {published}")
+
+        # --- 7d. the OPEN slot's GAP LEADERS table (contract v3) ---------------
+        # TECH_WATCH is ranked by TURNOVER, so a name that traded on size but printed
+        # a small dollar footprint is invisible on the board (measured 2026-11-13:
+        # SBC Medical Group, +23.22% on $2.3m, in no published table; it closed
+        # +37.64%). The gap-ranked view is the rule that closes the hole.
+        if slot == "open" and contract_current:
+            hit = find_section(secs, "gapleaders")
+            if not hit:
+                bad("the open board has NO 'Gap leaders' table - TECH_WATCH is ranked by "
+                    "TURNOVER, so a name that traded on size but printed a small dollar "
+                    "footprint is invisible (measured 2026-11-13: SBC Medical Group was "
+                    "+23.22% on $2.3m and appeared in no published table, and closed +37.64%). "
+                    "The gap-ranked view is the rule.")
+            else:
+                stated = count_in_heading(hit[0])
+                tb = strip_fences(lines[hit[1][0] + 1:hit[1][1]])
+                tables = md_tables(tb)
+                published = []
+                headers = []
+                prows = []
+                if tables:
+                    headers, prows = tables[0]
+                    for r in prows:
+                        for v in r.values():
+                            mm = re.match(r"\*\*([A-Z0-9.\-]{1,10})\*\*", str(v).strip())
+                            if mm:
+                                published.append(mm.group(1))
+                                break
+                # the rule's selection, computed from the candidates CSV
+                leaders = []
+                for r in csv_rows:
+                    t = str(r.get("tier") or "").strip().upper()
+                    if t in ("A", "SOFT_A"):
+                        continue
+                    gpv = num(r.get("gap_pct"))
+                    if gpv is not None and abs(gpv) >= GAP_LEADERS_MIN_GAP_PCT:
+                        leaders.append((abs(gpv), str(r.get("ticker"))))
+                leaders.sort(key=lambda x: -x[0])
+                total_leaders = len(leaders)
+                expected = [t for _, t in leaders][:GAP_LEADERS_MAX_ROWS]
+                if published == expected:
+                    ok(f"the Gap leaders table publishes exactly the rule's selection "
+                       f"({len(expected)} names: |open gap| >= {GAP_LEADERS_MIN_GAP_PCT}%, "
+                       "biggest gap first, Tier A and Soft-A excluded)")
+                else:
+                    bad(f"the Gap leaders table does not match the rule's selection - the rule "
+                       f"is the {expected} names with |open gap| >= {GAP_LEADERS_MIN_GAP_PCT}% "
+                       f"that are not already in Tier A or Soft-A (biggest gap first, max "
+                       f"{GAP_LEADERS_MAX_ROWS}), the table publishes {published}")
+                if stated is None:
+                    bad("the 'Gap leaders' heading states no count - a capped table whose full "
+                        "count is missing makes the gap-ranked coverage invisible")
+                elif stated == total_leaders:
+                    ok(f"the 'Gap leaders' heading states {stated} names, matching the CSV")
+                else:
+                    bad(f"the 'Gap leaders' heading states {stated} names but the candidates "
+                        f"CSV carries {total_leaders} gap-leader names - the table and the "
+                        "dataset must describe the same set")
+                hnorm = [norm(h) for h in headers]
+                ridx = None
+                for i, h in enumerate(hnorm):
+                    if any(fr in h for fr in ("why", "reason", "catalyst")):
+                        ridx = i
+                        break
+                if ridx is None:
+                    bad("the Gap leaders table has no 'why' / 'reason' / 'catalyst' column - a "
+                        "row with no sourced catalyst still owes the reader the reason")
+                else:
+                    blank = [r for r in prows
+                             if not str(r.get(headers[ridx]) or "").strip()]
+                    if blank:
+                        bad(f"{len(blank)} published Gap leaders row(s) carry an empty reason - "
+                            "a row with no catalyst still owes the reader the reason")
+                    else:
+                        ok(f"every published Gap leaders row carries a reason "
+                           f"({len(prows)} rows)")
 
     # --- 8. no halt COUNT anywhere ---------------------------------------------
     hits = []

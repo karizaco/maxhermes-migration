@@ -512,17 +512,20 @@ checker before you push, and fix the artifact if it fails.
 Both boards carry a marker line near the top:
 
 ```
-- **Contract:** `in-play-artifact-v2` · slot `open` · fire 2026-11-06 09:50 ET
+- **Contract:** `in-play-artifact-v3` · slot `open` · fire 2026-11-16 09:50 ET
 ```
 
 The marker tells the checker (and the next run) which contract the artifact was built
 against. A missing or stale marker means an older copy of this spec produced it — re-read
 the skill and rebuild.
 
-**`in-play-artifact-v2` (2026-11-13) adds the Tier B publication rule and the
-count-match rule below.** A board published under `in-play-artifact-v1` is GRANDFATHERED:
-the checker applies the rules that were in force when it was written, so a historical board
-is never failed for a rule that post-dates it. New boards carry v2.
+**`in-play-artifact-v3` (2026-11-15) adds the OPEN slot's `Gap leaders` table — the
+gap-ranked view of the names the turnover-ranked TECH_WATCH table hides — and the ntrt gap
+brief as a catalyst source. `in-play-artifact-v2` (2026-11-13) added the Tier B publication
+rule and the count-match rule below.** A board published under `in-play-artifact-v1` or
+`in-play-artifact-v2` is GRANDFATHERED: the checker applies the rules that were in force when
+it was written, so a historical board is never failed for a rule that post-dates it. New
+boards carry v3.
 
 #### Section order
 
@@ -533,7 +536,7 @@ matched by their normalized heading, so the exact wording is yours.
 
 `The headline` → `What changed since the … open digest` → `Market context` →
 `Overnight → open` → **`What to watch at the open`** → `Tier A` → `Soft-A` →
-`Gap annex` → `TECH_WATCH` → `Tier B` → `Tier C` → `Source health` →
+`Gap annex` → **`Gap leaders`** → `TECH_WATCH` → `Tier B` → `Tier C` → `Source health` →
 `Method and caveats` → `Files`
 
 **Pre-close slot (`{date}.md`):**
@@ -578,6 +581,56 @@ Two rules make the order matter:
   The 5% floor is the routine's own trigger line ("|chg%| ≥ 5% large/liquid"), and the
   selection is pace-independent, so it does not move with the pace measure's known bias.
   **The same rule applies to the pre-close slot's Tier B.**
+
+#### The open slot's `Gap leaders` table (contract v3) — the gap-ranked view
+
+**TECH_WATCH is ranked by TURNOVER, so a name that traded on size but printed a small dollar
+footprint is invisible on the board.** Measured 2026-11-13: **SBC Medical Group** was
+**+23.22%** at 09:50 on a **$2.3m** turnover — a pace of 14.5 — and it appeared in NO
+published table, because the 30th published TECH_WATCH row carried $25.1m. It closed
+**+37.64%**. The same routine's 15:50 board published it in Tier A with its 8-K, six hours
+later. **A board that is sharp at 15:50 and blind at 09:50 is a board that misses the trade.**
+
+The open board therefore carries a **second, gap-ranked table**:
+
+| Rule | Detail |
+|---|---|
+| **WHO** | the published names whose **opening gap** is **≥ 5% in absolute value** and whose tier is **not Tier A** and **not Soft-A** — those two tiers are already published above, with their catalyst |
+| **RANK** | by the absolute opening gap, biggest first |
+| **CAP** | **15 rows** |
+| **COLUMNS** | Ticker · Tier · Open (gap %) · 09:50 ET · pace · $ vol to 09:50 · Gap verdict · **Why it is in play** |
+| **HEADING** | states the **full** count of gap-leader names ("N names; the 15 biggest gaps are published") |
+| **CSV** | keeps every name, as always |
+
+- **It is a VIEW, not a fourth tier.** A Tier B or Tier C name may appear in both its tier
+  table and here, because the two tables answer different questions: the tier table says
+  *what moved*, the gap-leaders table says *what opened*. The tier column makes the overlap
+  explicit rather than hiding it.
+- **A name with no sourced catalyst is published here too**, carrying the honest default
+  reason ("no same-session company catalyst located"). The table is about VISIBILITY, and the
+  absence of a catalyst is itself information the reader must see — a big gap with no
+  explainable news is a very different fact from a big gap with a print behind it.
+- **The pre-close slot does not carry this table.** Its settled screen has a full-session
+  dollar-volume floor (~$2-5m, four to ten times the open slot's) and its Tier B is already
+  MOVE-ranked under contract v2, so the same hole is far smaller there. The open slot is
+  where the tradeable window is, and it is where the hole was measured.
+
+#### The open slot reads the ntrt gap brief — a catalyst source that is 50 minutes old
+
+**Cron #25 (`ntrt-gap-brief-daily`, 09:00 ET) publishes `ntrt/{date}.md` in the outputs repo:**
+the market-wide pre-market gap list **with a researched reason on each row**. It fires
+**50 minutes before the open board**, and on 2026-11-13 it was the **only** pre-open routine
+that sourced SBC's catalyst (its Q3 print and the NeuroBrain 8-K): the pre-open tape (#92)
+carried the same name with `why: null`, and the #08 gapper wrote "no catalyst confirmed in
+this run" — the reason was findable, and only one routine went looking for it.
+
+**The open slot MUST read `ntrt/{date}.md`** (fetch it from the outputs repo the same way it
+fetches the prior digest) and take the **last cell of that row** — the reason — for any
+published name it appears in, when the board's own research did not find one. Attribute it
+("ntrt gap brief, 09:00 ET") so the reader knows which routine found it, and name the brief
+in `## Source health`. **A name the brief explains and the board does not is published with
+the brief's reason** — two routines, one fleet, one reader; the reader should never have to
+know which one did the work.
 
 #### The "what changed" section is a table
 
@@ -682,11 +735,13 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_in_play_artifact.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && grep -q 'in-play-artifact-v2' "$C.tmp" 2>/dev/null; then
+  if [ -s "$C.tmp" ] && grep -q 'in-play-artifact-v3' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
+[ -s "$C" ] || { echo "check_in_play_artifact.py: UNAVAILABLE — no copy carrying the v3 marker"; \
+                  echo "do NOT run a stale checker; fix the artifact and push nothing"; exit 1; }
 python3 "$C" --md /workspace/us-stocks-in-play/$ARTIFACT_NAME \
               --csv /workspace/us-stocks-in-play/$CSV_NAME \
               --slot "$SLOT"
@@ -942,6 +997,12 @@ venue + $ vol gate.
 
 ### Pass 3 — Catalysts / halts
 
+- **The ntrt gap brief FIRST (the open slot only):** `ntrt/{date}.md` from the outputs repo —
+  cron #25's 09:00 ET pre-market gap list with a researched reason on every row. It is
+  50 minutes old when the open board is written and it is the cheapest catalyst source in the
+  fleet. Take the last cell of the row for any name the board publishes, whenever the board's
+  own research did not find a reason, and attribute it ("ntrt gap brief, 09:00 ET"). See
+  "The open slot reads the ntrt gap brief" above.
 - SEC EDGAR 8-K Atom (descriptive User-Agent): items 1.01, 2.01, 5.02, 7.01, 8.01
 - Halts: the TradingView scanner's `halted` column (the NASDAQ Trade Halt RSS returns an empty
   HTML shell every time) — strip warrants
