@@ -837,3 +837,61 @@ rather than rewritten on a late correction.
 close, re-applies the trigger and the floors afterwards, and publishes both counts (measured on the
 2026-11-12 session: **524 re-based, 11 dropped**). G2 fails the run if a published name's prior
 close is more than 0.5% from Yahoo's own daily bar.
+
+---
+
+## 2026-11-15 — the open board was BLIND to the day's biggest gainer for six hours, and the reason was a RANKING KEY (contract v3)
+
+**The measurement.** On 2026-11-13, **SBC Medical Group Holdings (SBC)** was **+23.22%** at 09:50 on
+a **$2.3m** session turnover — a pace of **14.53**, a gap of **+18.91%** — and it appeared in **NO
+published table** on the open board. It closed **+37.64%** ($7.35, 1,680,274 shares). The 15:50
+board of the SAME routine published it in Tier A with its 8-K (the NeuroBrain Dynamics minority
+investment and the Q3 print), six hours later, because by the close it had cleared the pre-close
+slot's full-session dollar-volume floor.
+
+**Why it was invisible.** The open board's TECH_WATCH table is capped at 30 rows and ranked by
+**turnover**. The 30th published row carried **$25.1m** of session turnover to 09:50; SBC carried
+**$2.3m**. A name that traded on size but printed a small dollar footprint is ranked out of the
+one table that would have carried it, and the board publishes no other view of it. The board's
+other tables did not cover it either: Tier A needs a **sourced catalyst** and SBC's 8-K was not
+sourced in the open slot's own research; Tier B is selected by **move ≥ 5%** and SBC's move cleared
+that bar but its tier was TECH_WATCH (pace ≥ 1.0); the gap annex's sub-tables are also ranked by
+turnover.
+
+**The scale of the hole, measured on the same session.** Applying the new rule to the published
+2026-11-13 candidates CSV: **48 of the 374 published names had an opening gap of 5% or more** and
+were not in Tier A or Soft-A — and the Friday board published **none** of them as a gap-ranked
+view. The top of the new selection: MOD +33.88%, SHIM +32.48% (a $1.0m turnover name), MRLN
++28.63%, SLSN +28.57%, **SBC +18.91%**, RZLT +17.83%, DGXX +16.52%, AMPG +16.17%, NEOV +15.44%,
+STIM +15.38%, ACCV +13.96%, VIR +13.71%, HAWK +13.50%, PAL +13.07%, RLMD +12.98%.
+
+**Two of those rows are the more interesting finding.** **DGXX** gapped +16.52% and was +2.94% at
+09:50; **NEOV** gapped +15.44% and was -0.35%; **RLMD** gapped +12.98% and was -2.16%. Their move
+is inside the noise band, so the MOVE-ranked tables never take them — the GAP was the entire
+event. A board that only ranks by move cannot see them, and neither can one that only ranks by
+turnover.
+
+**The fix (contract v3).** The open board carries a second, gap-ranked view — the `Gap leaders`
+section, between the gap annex and TECH_WATCH: the published names with **|open gap| ≥ 5%** that
+are **not already in Tier A or Soft-A**, biggest gap first, max 15 rows, the FULL count in the
+heading, every published row carrying its reason (a name with no sourced catalyst is published
+with the honest default reason — the absence of a catalyst is itself information). It is a **view,
+not a fourth tier**: a Tier B or Tier C name may appear in both, because the tier table answers
+*what moved* and the gap table answers *what opened*, and the tier column makes the overlap
+explicit.
+
+**The second half of the fix: the catalyst was findable and only one routine looked.** On
+2026-11-13 cron **#25** (`ntrt-gap-brief-daily`, 09:00 ET) published SBC's reason — "Q3 revenue
+$58.6M (+35%) vs $48.9M est, adj EPS $0.15 vs $0.12; also a minority investment in NeuroBrain
+Dynamics" — fifty minutes before the open board was written. The pre-open tape (#92) carried the
+same name with `why: null`, and the #08 gapper wrote **"no catalyst confirmed in this run"**. The
+open slot now reads `ntrt/{date}.md` and takes the reason from it when its own research did not
+find one, attributed to the brief.
+
+**The regression proof.** The checker's section-ORDER check is **contract-aware**: the new group
+is added only for v3 boards, because adding it unconditionally would fail every board published
+before 2026-11-15 (a false alarm on the historical boards, which the fleet's auditors read as
+findings). Verified: every published board from 2026-10-26 to 2026-11-13, both slots, is accepted
+and rejected **exactly** as the v2 checker accepted and rejected it; the fault-injection test
+catches 27 of 27 breaches; and Friday's real board, rebuilt as v3 with the gap-leaders table,
+passes 43/43 with SBC in the published selection.
