@@ -39,8 +39,8 @@ top 60 by cash volume, and the artifact said nothing about it. A reader could no
 name is too small to be on this board" from "this name was not here".
 
 So from 2026-11-16 the artifact carries the floor in **three** places — the header block, the
-`## Source health` table and caveat 8 — and `tools/check_options_flow_artifact.py` (clause **G**)
-proves all three are there and agree.
+`## Source health` table and caveat 8 — and `tools/check_options_flow_artifact.py` (clause **G**) proves the first two are
+there and agree — **caveat 8 is stated by the routine and is not machine-checked**.
 
 **The count is measured, not estimated.** The TradingView `america` scanner answers a filtered
 query with `totalCount` — the number of rows the FILTER matches — on every response, including a
@@ -460,7 +460,9 @@ data. Measured 2026-11-13: a ~$549m name can never be on this board (it is nowhe
 60 by cash volume) and nothing in the artifact said so.
 
 From 2026-11-16 the artifact carries the floor in three places, and the checker
-(`tools/check_options_flow_artifact.py`, clause **G**) proves all three are there and agree.
+(`tools/check_options_flow_artifact.py`, clause **G**) proves the header block and the
+`## Source health` row are there and agree — **caveat 8 is stated by the routine and is NOT
+machine-checked**, so do not read the clause as a guarantee about it.
 
 **1. The header block** — one machine-readable line and one line of prose:
 

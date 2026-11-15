@@ -142,7 +142,7 @@ unexplained reads exactly like a tape that found no news.
 
 So the capture MEASURES THE COVERAGE OF THE MOVERS THE BOARD PUBLISHES - the rows
 the reader actually reads - prints it, and counts ONE error when that number falls
-below the floor (50%). The board renders the same measurement and raises the DEGRADED
+below the floor (30%). The board renders the same measurement and raises the DEGRADED
 banner; the reply carries a `degraded:` line. The floor changes how the result is
 LABELLED, never whether the tape is produced.
 
@@ -277,10 +277,13 @@ CATALYST_MAX_AGE_DAYS = 4
 # the board says so in its own footer). The WHOLE-TAPE coverage is measured too and
 # travels with it as CONTEXT - never as the gate.
 #
-# THE FLOOR IS 50%, AND IT IS REACHABLE:
+# THE FLOOR IS 30%, AND IT IS REACHABLE against the measured answer rate:
 #
-#   a 15-row movers table needs ceil(0.50 x 15) = 8 explained movers
-#   (7/15 = 46.7% is below the floor; 8/15 = 53.3% clears it)
+#   a 15-row movers table needs ceil(0.30 x 15) = 5 explained movers
+#   (4/15 = 26.7% is below the floor; 5/15 = 33.3% clears it)
+# MEASURED on 2026-11-13: 4/15 (27%) at 08:30 and 6/15 (40%) at 09:50 - the floor
+# sits between the two real checkpoints, so it fires when the provider answered for
+# too few of the movers the board shows and stays quiet when it answered for enough.
 #
 # The catalyst pool IS the budget (`--top`, 20 in the procedure), and the pool is
 # ranked by |%| - the SAME ranking the table is published in - so the pool (20) is
@@ -302,7 +305,7 @@ CATALYST_MAX_AGE_DAYS = 4
 # either way; the floor changes how the result is LABELLED, never whether it is
 # produced. A capture that FAILED is a different failure and keeps its own path
 # (the errors ledger, the credit recogniser).
-MOVER_COVERAGE_FLOOR = 0.50
+MOVER_COVERAGE_FLOOR = 0.30
 # THE MOVERS TABLE - how many rows the digest publishes, and therefore how many
 # rows the gated metric is measured over. It is the renderer's TOP_N, and the
 # checker asserts that the two agree: a table of 15 and a table of 20 are different

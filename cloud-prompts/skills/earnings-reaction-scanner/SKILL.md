@@ -451,15 +451,33 @@ well as its failure path).
 - **Two scans** (up and down), because a scanner filter is AND-ed and one call cannot express "|move| ≥ 5%":
   - Up: `POST https://scanner.tradingview.com/america/scan`, filters `[{left: type, operation: equal, right: stock}, {left: exchange, operation: in_range, right: [NASDAQ, NYSE, AMEX, NYSEArca, ARCA, PCX, BATS, IEX]}, {left: market_cap_basic, operation: egreater, right: 200000000}, {left: close, operation: egreater, right: 2}, {left: premarket_change, operation: egreater, right: 5}, {left: premarket_volume, operation: egreater, right: 10000}]`, `sort={sortBy: premarket_change, sortOrder: desc}`, range 0–200.
   - Down: the same filters with `{left: premarket_change, operation: less, right: -5}` and `sortOrder: asc`.
-- **Floors and why each one is there**: market cap **> $200M** (the mid-cap floor — the miss was a $549m name and a $3.9bn name, both below Pass A's $20bn); close **> $2** (the pre-market print of a sub-$2 name is a penny-stock move, not an earnings reaction); pre-market volume **≥ 10,000 shares** (a gap with no size behind it is not a gap anyone can trade); |pre-market move| **≥ 5%** (the PRE_GAP tag fires at 2%, so 5% is the bar at which a pre-market gap is the day's story rather than noise).
+- **Floors and why each one is there**: market cap **> $200M** (the mid-cap floor — the miss was a $549m name and a $3.9bn name, both below Pass A's $20bn); close **> $2** (the pre-market print of a sub-$2 name is a penny-stock move, not an earnings reaction); pre-market volume **more than 10,000 shares** (the filter is `egreater`, i.e. strictly greater — the prose must not say "≥", because a name with exactly 10,000 shares does NOT qualify); |pre-market move| **at least 5%** (`egreater 5` is strictly greater than 5.00%) (the PRE_GAP tag fires at 2%, so 5% is the bar at which a pre-market gap is the day's story rather than noise).
 - **NO session-volume filter on this pass.** At the 08:00 ET fire the regular session has not opened, so `volume` is 0 for every candidate and a session-volume floor would empty the pass. The pre-market volume floor is a different measure from the `volume > 10000` floor the other passes carry.
 - **THE COLUMNS ARE MEASURED, NOT ASSUMED** (probed live on the `america` market, US stocks, 2026-11-15):
   - `premarket_change` — available as **both a column and a filter**. `premarket_change >= 5` returns 136 US names, so the filter is real and not silently ignored (a filter on an unknown field returns HTTP 200 with **zero** rows, so the count is the proof). Measured values: LFTO `+26.510%`, SBC `+18.071%` on the 2026-11-13 snapshot.
-  - `premarket_volume` — available as **both a column and a filter** (`>= 10000` returns 601 US names). Measured: LFTO `210,468`, SBC `43,956`.
+  - `premarket_volume` — available as **both a column and a filter** (`egreater 10000` returns 601 US names). Measured: LFTO `210,468`, SBC `43,956`.
   - `gap` — exists as a column and a filter, but it is the **REGULAR SESSION OPEN gap**, not the pre-market move: on the same snapshot LFTO's `gap` is `+27.098%` = (open 23.78 − prior close 18.71) / 18.71, while its `premarket_change` is `+26.510%` = (pre-market 23.67 − 18.71) / 18.71. At the 08:00 ET fire the session has not opened, so `gap` is not knowable yet. **Pass B2 uses `premarket_change`.**
   - `premarket_change_abs` exists but does **not** mean "the absolute pre-market move" (LFTO reads `4.96` against a `premarket_change` of `26.51`) — it is not used.
 - Cron #08's pre-market gapper filters the **same two fields on the same scanner** (`cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py`: `premarket_change` / `premarket_volume`), which is why the field names above are the house ones.
 - **The rows obey the one-table rule**: a Pass B2 name that is already a Pass A or Pass B row keeps that row, and the Pass B2 hit is recorded as a **dedupe**, not as a second row. The pass publishes its coverage in source health — `pass_b2: candidates=<n> deduped_against_pass_a_b=<n> published=<n>` — so the reader can see how much the pass actually added.
+
+**The pipeline you run MUST carry Pass B2 — and the coverage line is keyed to the DATE**
+
+**The pipeline that renders the artifact is fetched by the prompt, and a STALE copy can win that
+fetch.** Measured 2026-11-04: `raw.githubusercontent` served a blob more than 17 minutes stale, and
+the CDN copies cache `main` independently of each other. The pre-Pass-B2 pipeline carries
+`SCRIPT_VERSION = "2026-11-15.1"` and `REACTION_ARTIFACT_V2` — **both markers the prompt's own
+`valid()` accepts** — and has no `pass_b2` in it at all.
+
+**So: after fetching the pipeline, check it.** It must carry `SCRIPT_VERSION >= 2026-11-15.2` and
+the string `pass_b2`. If it does not, **re-fetch it** (the contents API first — it is authoritative
+and is not CDN-cached — then raw, then jsDelivr) and check again. If no copy carries the pass,
+**say so and publish nothing**: a board with no `pass_b2:` coverage line is a board that missed
+the day's pre-market gappers, silently, which is the exact failure this pass exists to prevent.
+
+**The checker's gate is keyed to the DATE (2026-11-16), not to the version the artifact reports
+about itself.** A stale pipeline reports the old version of itself, so a version-keyed assertion
+would simply not run. The date is the one thing a producer cannot back-date.
 
 **Pass C — EU/UK intraday movers (live session, especially for earnings reactions)**
 - At 08:00 ET, EU exchanges are mid-session (started 03:00 ET). For these names, `change_percent` reflects today's intraday move vs previous close — i.e., overnight earnings reactions have already settled into the price.

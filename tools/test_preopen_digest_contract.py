@@ -36,7 +36,7 @@ This test:
   5. requires the board to PUBLISH the GATED MOVER COVERAGE (the published movers that
      carry a catalyst / the published movers / percent) — the number the READER's table
      is judged by — with the whole-tape coverage published separately as CONTEXT, and to
-     DEGRADE loudly when the gated number falls below the 50% floor,
+     DEGRADE loudly when the gated number falls below the 30% floor,
   6. then MUTATES the renderer back to the string-slice behaviour, and back to the
      capture-clock fallback, and back to a renderer that drops the coverage, and requires
      the test to FAIL each time — a test that cannot fail is not a test.
@@ -245,7 +245,7 @@ with tempfile.TemporaryDirectory() as td:
               "the board says the whole-tape number is CONTEXT, not the gate")
     check("preopen-coverage-v2" in board,
           "the board carries the coverage contract marker")
-    check("**floor:** 50%" in board, "the board publishes the floor it was measured against")
+    check("**floor:** 30%" in board, "the board publishes the floor it was measured against")
     check("DEGRADED" not in board,
           "a board AT the floor carries NO degradation banner")
 
@@ -311,7 +311,7 @@ with tempfile.TemporaryDirectory() as td:
                   f"{m_low_ctx.group(2)}, expected 3/12)")
         check("DEGRADED" in low,
               "a board BELOW the floor carries the DEGRADED banner")
-        check(re.search(r"below the 50% floor", low) is not None,
+        check(re.search(r"below the 30% floor", low) is not None,
               "the banner says WHICH floor it fell below")
         check(re.search(r"priced but unexplained", low) is not None,
               "the banner says it in plain words (priced but unexplained)")

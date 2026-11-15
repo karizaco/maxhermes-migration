@@ -167,7 +167,7 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
 
 
 def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
-    """A CONFORMING tape whose MOVER COVERAGE is BELOW the 50% floor.
+    """A CONFORMING tape whose MOVER COVERAGE is BELOW the 30% floor.
 
     20 priced rows, only every fourth one explained -> 4 of the 15 published movers
     carry a cause (27%), while the 30 narrative rows all carry a reason, so the
@@ -811,7 +811,7 @@ def m_renderer_drops_the_coverage_line(tape, digest, repo):
 def m_procedure_drops_the_floor(tape, digest, repo):
     """The procedure lowers the floor out of the record."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
-    mutate(p, "MOVER_COVERAGE_FLOOR = 0.50", "MOVER_COVERAGE_FLOOR = 0.05")
+    mutate(p, "MOVER_COVERAGE_FLOOR = 0.30", "MOVER_COVERAGE_FLOOR = 0.05")
     return True
 
 

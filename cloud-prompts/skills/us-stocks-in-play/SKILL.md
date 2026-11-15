@@ -607,9 +607,9 @@ The open board therefore carries a **second, gap-ranked table**:
 | Rule | Detail |
 |---|---|
 | **WHO** | the published names whose **opening gap** is **≥ 5% in absolute value** and whose tier is **not Tier A** and **not Soft-A** — those two tiers are already published above, with their catalyst |
-| **RANK** | by the absolute opening gap, biggest first |
+| **RANK** | by the absolute opening gap, biggest first; **ties broken by the ticker, alphabetically** (two names can carry the same gap to the last decimal — measured 2026-11-10: NWGL and XGN both at 15.4929 — and without a stated tie-break the selection is the CSV's row order, which the reader cannot reproduce) |
 | **CAP** | **15 rows** |
-| **COLUMNS** | Ticker · Tier · Open (gap %) · 09:50 ET · pace · $ vol to 09:50 · Gap verdict · **Why it is in play** |
+| **COLUMNS** | Ticker · Tier · Open (gap %) · 09:50 ET · pace · $ vol to 09:50 · Gap verdict · **Why it is in play**. The ticker is the **first cell** of the row (the checker reads the first cell; emphasis is optional and is the house style everywhere else on the board) |
 | **HEADING** | states the **full** count of gap-leader names ("N names; the 15 biggest gaps are published") |
 | **CSV** | keeps every name, as always |
 
@@ -644,6 +644,12 @@ published name it appears in, when the board's own research did not find one. At
 in `## Source health`. **A name the brief explains and the board does not is published with
 the brief's reason** — two routines, one fleet, one reader; the reader should never have to
 know which one did the work.
+
+**The `## Source health` section MUST name the ntrt brief** — as the source it read
+("ntrt gap brief, 09:00 ET") or, if the file was not there, as the fact that it was not
+("ntrt gap brief: not published for {date}"). **The checker asserts it** (contract v3): a
+board that silently skipped the brief would still pass every other check, and the reader
+would never know the reason was sitting in another routine's file.
 
 #### The "what changed" section is a table
 

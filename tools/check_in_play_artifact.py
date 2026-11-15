@@ -72,6 +72,10 @@ REQUIRED_CSV_COLS = {
         ("tier",),
         ("close_0950", "close"),
         ("chg_pct_0950", "chg_pct"),
+        # `gap_pct` is REQUIRED, not optional: the open board's `Gap leaders`
+        # table is selected by the opening gap, so a CSV without it makes the
+        # selection vacuous - the table could be empty and still "match".
+        ("gap_pct",),
         ("session_vol_to_0950", "session_vol"),
         ("avg_vol_10d",),
         ("pace",),
@@ -333,6 +337,31 @@ def count_in_heading(name):
         return int(m.group(1).replace(",", ""))
     return None
 
+
+
+TICKER_CELL_RE = re.compile(r"^[A-Z0-9.\-]{1,10}$")
+
+
+def row_ticker(values):
+    """The ticker of a published row.
+
+    The house style bolds the ticker, but the CONTRACT does not require it: a
+    routine that publishes `| SBC | ... |` must not fail on the emphasis. So
+    the FIRST cell wins when it is a bare ticker, and the first BOLDED cell is
+    the fallback. (The old extractor took the first bold match anywhere in the
+    row, so a bolded `$2m` in the dollar-volume column could be read as a
+    ticker.)
+    """
+    cells = [str(v or "").strip() for v in values]
+    if cells:
+        first = cells[0].strip("*").strip()
+        if TICKER_CELL_RE.match(first):
+            return first
+    for v in cells:
+        m = re.match(r"\*\*([A-Z0-9.\-]{1,10})\*\*", str(v).strip())
+        if m:
+            return m.group(1)
+    return None
 
 def check_md(path, slot, csv_rows=None):
     print(f"[markdown] {path}  (slot={slot})")
@@ -763,11 +792,9 @@ def check_md(path, slot, csv_rows=None):
                 if tables:
                     headers, prows = tables[0]
                     for r in prows:
-                        for v in r.values():
-                            mm = re.match(r"\*\*([A-Z0-9.\-]{1,10})\*\*", str(v).strip())
-                            if mm:
-                                published.append(mm.group(1))
-                                break
+                        tick = row_ticker(list(r.values()))
+                        if tick:
+                            published.append(tick)
                 # the rule's selection, computed from the candidates CSV
                 leaders = []
                 for r in csv_rows:
@@ -777,7 +804,12 @@ def check_md(path, slot, csv_rows=None):
                     gpv = num(r.get("gap_pct"))
                     if gpv is not None and abs(gpv) >= GAP_LEADERS_MIN_GAP_PCT:
                         leaders.append((abs(gpv), str(r.get("ticker"))))
-                leaders.sort(key=lambda x: -x[0])
+                # The tie-break is the TICKER, alphabetically. Two names can carry
+                # the same gap to the last decimal (measured 2026-11-10: NWGL and
+                # XGN both at 15.4929), and without a stated tie-break the
+                # selection is the CSV's row order, which the spec cannot tell a
+                # routine to reproduce.
+                leaders.sort(key=lambda x: (-x[0], x[1]))
                 total_leaders = len(leaders)
                 expected = [t for _, t in leaders][:GAP_LEADERS_MAX_ROWS]
                 if published == expected:
@@ -816,6 +848,28 @@ def check_md(path, slot, csv_rows=None):
                     else:
                         ok(f"every published Gap leaders row carries a reason "
                            f"({len(prows)} rows)")
+
+    # --- 7e. the open slot READ the ntrt gap brief, and says so ---------------
+    # The brief (cron #25, 09:00 ET) is the fleet's cheapest catalyst source and
+    # the only pre-open routine that sourced SBC's catalyst on 2026-11-13. The
+    # requirement is "read it, and name it" - a board that silently skipped it
+    # would still pass every other check, and the reader would never know the
+    # reason was sitting in another routine's file.
+    if slot == "open" and contract_current:
+        hit = find_section(secs, "sourcehealth")
+        if not hit:
+            bad("the open board has NO Source health section - the catalogued "
+                "reasoning must be published, and the ntrt gap brief must be "
+                "named there")
+        else:
+            sh = "\n".join(lines[hit[1][0]:hit[1][1]])
+            if re.search(r"ntrt", sh, re.I):
+                ok("the open board's Source health names the ntrt gap brief (cron "
+                   "#25) - the open slot reads it for catalysts")
+            else:
+                bad("the open board's Source health does NOT name the ntrt gap "
+                    "brief (cron #25) - the open slot must read it for catalysts "
+                    "and say so, or say that it was unavailable")
 
     # --- 8. no halt COUNT anywhere ---------------------------------------------
     hits = []

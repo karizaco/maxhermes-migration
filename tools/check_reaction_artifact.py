@@ -692,8 +692,17 @@ def check(path, reply_text=None):
     # The gate applies from the pipeline version that added the pass, and NOT
     # to the 12:15 ET settlement artifact: that artifact publishes the EU/UK
     # rows only and carries its own `Method:` line.
+    # The gate applies from the DATE the pass went live, NOT from the pipeline
+    # version the artifact reports about itself. A stale pipeline reports the
+    # old version, so a version-gated assertion silently does not run - which is
+    # exactly the failure this pass exists to prevent (the 2026-11-13 board
+    # shipped a stale pipeline and the coverage line never appeared). The DATE
+    # is the one thing a producer cannot back-date, so it is the backstop. The
+    # version test is kept for an artifact dated earlier that was produced by a
+    # new pipeline anyway.
     gap_pass_contract = ((not is_settlement)
-                         and _version_ge(pipeline_version, "2026-11-15.2"))
+                         and (scan_d >= "2026-11-16"
+                              or _version_ge(pipeline_version, "2026-11-15.2")))
     if gap_pass_contract:
         cov = pass_b2_coverage(text)
         if cov is None:

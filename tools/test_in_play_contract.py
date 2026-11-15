@@ -59,7 +59,7 @@ CONTRACT_V2 = "in-play-artifact-v2"
 # The number of checks the checker MUST report for a conforming OPEN artifact.
 # Every check reports on its PASS path — a silent pass is indistinguishable
 # from a check that never ran (see the delta-source check, fixed 2026-11-06).
-OPEN_CHECK_COUNT = 43
+OPEN_CHECK_COUNT = 44
 PRECLOSE_CHECK_COUNT = 29
 
 
@@ -200,6 +200,7 @@ footprint can be invisible on the board.** This table is ranked by the OPENING G
 | Source | Status | Notes |
 |---|---|---|
 | TradingView scanner | ok | `halted` is null on every row → **the halt state is not measurable this session** |
+| ntrt gap brief (cron #25, 09:00 ET) | ok | `ntrt/2026-11-06.md` — the market-wide pre-market gap list with a researched reason per row; the open slot reads it for catalysts |
 
 ---
 
@@ -758,6 +759,39 @@ def mut_tier_b_wrong_selection(md, csv_text):
 
 
 
+def mut_csv_drops_gap_pct(md, csv_text):
+    """The candidates CSV loses `gap_pct` - the column the Gap leaders selection is
+    computed from. Without the requirement the selection goes VACUOUS: an empty
+    table would "match" an empty rule."""
+    def _fn(header, body):
+        if "gap_pct" not in header:
+            return header, body
+        i = header.index("gap_pct")
+        new_header = [h for j, h in enumerate(header) if j != i]
+        new_body = []
+        for r in body:
+            rr = list(r)
+            rr[i] = ""
+            new_body.append([v for j, v in enumerate(rr) if j != i])
+        return new_header, new_body
+    out = mutate_csv(csv_text, _fn)
+    if out is None:
+        return None
+    # the header's FIELDS (not the raw line: `open_gap_pct` contains the substring)
+    return md, out, lambda a, b: "gap_pct" not in b.split("\n")[0].split(",")
+
+
+def mut_no_ntrt_source_named(md, csv_text):
+    """The Source health section does not name the ntrt gap brief - the open slot must
+    say it read it (or that it was unavailable)."""
+    res = mutate(md, csv_text,
+                 r"\| ntrt gap brief \(cron #25, 09:00 ET\) \| ok \|[^\n]*\n", "")
+    if res is None:
+        return None
+    m_md, m_csv = res
+    return m_md, m_csv, lambda a, b: "ntrt gap brief" not in a
+
+
 def mut_gap_leaders_section_missing(md, csv_text):
     """The whole Gap leaders section is gone - the section check and the order check
     must both bite."""
@@ -837,6 +871,10 @@ MUTATIONS = [
     ("the Tier B table publishes a name that is not the rule's selection",
      mut_tier_b_wrong_selection),
     ("the open board has no 'Gap leaders' table", mut_gap_leaders_section_missing),
+    ("the open board's Source health does not name the ntrt gap brief",
+     mut_no_ntrt_source_named),
+    ("the candidates CSV drops the gap_pct column the Gap leaders rule needs",
+     mut_csv_drops_gap_pct),
     ("the Gap leaders table publishes a name that is not the rule's selection",
      mut_gap_leaders_wrong_selection),
     ("the Gap leaders table drops a qualifying name", mut_gap_leaders_missing_row),
