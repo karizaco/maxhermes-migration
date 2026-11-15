@@ -379,6 +379,27 @@ def main():
     else:
         results.append((FAIL, "a stale repo copy produced a phantom SPEC-DRIFT line"))
 
+    # the PROMPT drift check must compare the deployed prompt with the repo's
+    # file, byte-exactly -- and it must fire on a difference and stay quiet on a
+    # match. It is the check that catches a routine still running a prompt the
+    # repo has moved past.
+    tmp_repo = Path(tempfile.mkdtemp(prefix="prompt-repo-"))
+    (tmp_repo / "cloud-prompts" / "cron-prompts").mkdir(parents=True)
+    (tmp_repo / "cloud-prompts" / "cron-prompts" / "01-weekly-mcp-health-check.md").write_text(
+        "DEPLOYED", encoding="utf-8")
+    same = [{"cron_name": "01-weekly-mcp-health-check.md", "prompt": "DEPLOYED"}]
+    diff = [{"cron_name": "01-weekly-mcp-health-check.md", "prompt": "DIFFERENT"}]
+    f_same, c_same = sd.check_prompt_drift(same, str(tmp_repo))
+    f_diff, c_diff = sd.check_prompt_drift(diff, str(tmp_repo))
+    if not f_same and c_same == 1:
+        results.append((PASS, "a deployed prompt that matches the repo is NOT reported as drift"))
+    else:
+        results.append((FAIL, "a matching deployed prompt was reported as drift"))
+    if len(f_diff) == 1 and f_diff[0]["kind"] == "PROMPT-DRIFT" and c_diff == 1:
+        results.append((PASS, "a deployed prompt that differs from the repo IS reported as drift"))
+    else:
+        results.append((FAIL, "a differing deployed prompt was NOT reported as drift"))
+
     # every routine must have a spec contract, and every contract's marker must
     # still be in the repo -- a contract that points at a missing marker is a
     # contract nobody can satisfy
