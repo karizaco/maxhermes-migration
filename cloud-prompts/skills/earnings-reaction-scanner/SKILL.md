@@ -3,12 +3,14 @@ name: Earnings reaction scanner
 description: >-
   Pre-market scan of overnight and after-hours price action across the S&P 500
   top-200 (by market cap) plus the prior session's biggest movers in the full
-  US universe, plus EU/UK intraday movers (live session at 08:00 ET), plus
-  Australia (ASX) prior-session movers (closed ~6h before scan). Surfaces
-  pre-market gaps, AMC reactions, EU intraday reactions, ASX reactions, and
-  catalysts. Uses TradingView screen_stocks + stock_screener +
-  stock_extended_hours + combined_analysis + financekit earnings_calendar +
-  stocktwits. Runs weekdays 08:00 ET, after the pre-market brief.
+  US universe, plus the pre-market gap leaders of the full US universe (a name
+  that gapped today after being flat yesterday), plus EU/UK intraday movers
+  (live session at 08:00 ET), plus Australia (ASX) prior-session movers
+  (closed ~6h before scan). Surfaces pre-market gaps, AMC reactions, EU
+  intraday reactions, ASX reactions, and catalysts. Uses TradingView
+  screen_stocks + stock_screener + stock_extended_hours + combined_analysis +
+  financekit earnings_calendar + stocktwits. Runs weekdays 08:00 ET, after the
+  pre-market brief.
 ---
 
 ## Scheduled-run conversation title (FIRST ACTION)
@@ -32,7 +34,7 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Earnings reaction scanner
 
-Surfaces the price action that the pre-market brief missed: every name in the S&P 500 top-200 with a meaningful pre-market or post-market move, the prior session's biggest movers across the full US universe, **EU/UK intraday movers during their live session** (started 03:00 ET, mid-session at scan time), and **Australia (ASX) prior-session movers** (ASX closed ~02:00 ET, 6h before scan). Four-pass design replaces the original watchlist-only Pass A and hardcoded 13-name Pass B.
+Surfaces the price action that the pre-market brief missed: every name in the S&P 500 top-200 with a meaningful pre-market or post-market move, the prior session's biggest movers across the full US universe, the **US pre-market gap leaders of the full US universe** (a name that gaps today after being flat yesterday), **EU/UK intraday movers during their live session** (started 03:00 ET, mid-session at scan time), and **Australia (ASX) prior-session movers** (ASX closed ~02:00 ET, 6h before scan). Six-pass design replaces the original watchlist-only Pass A and hardcoded 13-name Pass B.
 
 ## ARTIFACT FORMAT CONTRACT v2 — `REACTION_ARTIFACT_V2` (authoritative)
 
@@ -341,7 +343,7 @@ implied.
 
 ### The APAC/Gulf section
 
-A fifth pass covers the markets that close BEFORE the 08:00 ET fire, so their
+Pass E covers the markets that close BEFORE the 08:00 ET fire, so their
 rows are settled and need no live-session caveat: **India, Thailand,
 Indonesia, China, Singapore, New Zealand, Saudi Arabia**. The UAE is **not**
 included — its session closes at 08:00–09:00 ET, i.e. live at the fire.
@@ -407,11 +409,18 @@ trusted.
 
 `tools/check_reaction_artifact.py` in `karizaco/maxhermes-migration` verifies a
 rendered artifact against this contract: the skeleton, the required columns on
-every published row, the reference-close floor, the one-table rule, and the
-`errors:` ↔ `degraded_sources:` agreement. `tools/test_reaction_contract.py`
-is its regression test (the ET window on a winter AND a summer date, the base
-close against the exact bar fixtures that broke 2026-11-03 and 2026-11-04, and
-a fault-injection pass that proves the checker bites).
+every published row, the reference-close floor, the one-table rule, the
+`errors:` ↔ `degraded_sources:` agreement, and — **from pipeline
+2026-11-15.2** — the **Pass B2 coverage**: the artifact must publish
+`pass_b2: candidates=<n> deduped_against_pass_a_b=<n> published=<n>` in source
+health and its `Method:` line must name the six passes. A pass that is not
+published is a pass that did not happen, so the gate is version-gated: an
+artifact published before Pass B2 existed is not judged retroactively.
+`tools/test_reaction_contract.py` is its regression test (the ET window on a
+winter AND a summer date, the base close against the exact bar fixtures that
+broke 2026-11-03 and 2026-11-04, and a fault-injection pass that proves the
+checker bites — including the Pass B2 gate, whose PASS path is asserted as
+well as its failure path).
 
 ## When
 - Cron: `0 8 * * 1-5` America/New_York (weekdays, 08:00 ET — 23 min after pre-market brief, ~90 min before US open; ~5h into the EU session; ~6h after ASX close)
@@ -436,6 +445,22 @@ a fault-injection pass that proves the checker bites).
 - Then `extended_hours` on each unique candidate to extract post-market vs regular close.
 - Captures non-S&P-500 names that moved big in the prior session — the broadest "what moved" net for US.
 
+**Pass B2 — US pre-market gap scan ("gapped today, flat yesterday")**
+- The gap this pass closes is **measured, not hypothetical**. On Friday 2026-11-13 the US universe was Pass A (the top-250 US names above $20bn) plus Pass B (the PRIOR session's movers: |change| ≥ 3%, market cap > $1bn, close > $5). A name that was **flat in the prior session** and is **not a $20bn mega-cap** falls through both. That dropped two of the day's biggest same-session earnings movers: **LFTO** (Liftoff Mobile, ~$3.9bn, +25% pre-market on a Q3 beat, closed **+30.63%**) and **SBC** (SBC Medical Group, ~$549m, +9.6% pre-market on a Q3 print and an 8-K, closed **+37.64%**) — from the routine that exists to catch same-session earnings reactions.
+- Pass B2 scans the **PRE-MARKET tape of the full US universe** instead of the prior session's regular-hours tape, so "gapped today, flat yesterday" is a hit rather than a hole.
+- **Two scans** (up and down), because a scanner filter is AND-ed and one call cannot express "|move| ≥ 5%":
+  - Up: `POST https://scanner.tradingview.com/america/scan`, filters `[{left: type, operation: equal, right: stock}, {left: exchange, operation: in_range, right: [NASDAQ, NYSE, AMEX, NYSEArca, ARCA, PCX, BATS, IEX]}, {left: market_cap_basic, operation: egreater, right: 200000000}, {left: close, operation: egreater, right: 2}, {left: premarket_change, operation: egreater, right: 5}, {left: premarket_volume, operation: egreater, right: 10000}]`, `sort={sortBy: premarket_change, sortOrder: desc}`, range 0–200.
+  - Down: the same filters with `{left: premarket_change, operation: less, right: -5}` and `sortOrder: asc`.
+- **Floors and why each one is there**: market cap **> $200M** (the mid-cap floor — the miss was a $549m name and a $3.9bn name, both below Pass A's $20bn); close **> $2** (the pre-market print of a sub-$2 name is a penny-stock move, not an earnings reaction); pre-market volume **≥ 10,000 shares** (a gap with no size behind it is not a gap anyone can trade); |pre-market move| **≥ 5%** (the PRE_GAP tag fires at 2%, so 5% is the bar at which a pre-market gap is the day's story rather than noise).
+- **NO session-volume filter on this pass.** At the 08:00 ET fire the regular session has not opened, so `volume` is 0 for every candidate and a session-volume floor would empty the pass. The pre-market volume floor is a different measure from the `volume > 10000` floor the other passes carry.
+- **THE COLUMNS ARE MEASURED, NOT ASSUMED** (probed live on the `america` market, US stocks, 2026-11-15):
+  - `premarket_change` — available as **both a column and a filter**. `premarket_change >= 5` returns 136 US names, so the filter is real and not silently ignored (a filter on an unknown field returns HTTP 200 with **zero** rows, so the count is the proof). Measured values: LFTO `+26.510%`, SBC `+18.071%` on the 2026-11-13 snapshot.
+  - `premarket_volume` — available as **both a column and a filter** (`>= 10000` returns 601 US names). Measured: LFTO `210,468`, SBC `43,956`.
+  - `gap` — exists as a column and a filter, but it is the **REGULAR SESSION OPEN gap**, not the pre-market move: on the same snapshot LFTO's `gap` is `+27.098%` = (open 23.78 − prior close 18.71) / 18.71, while its `premarket_change` is `+26.510%` = (pre-market 23.67 − 18.71) / 18.71. At the 08:00 ET fire the session has not opened, so `gap` is not knowable yet. **Pass B2 uses `premarket_change`.**
+  - `premarket_change_abs` exists but does **not** mean "the absolute pre-market move" (LFTO reads `4.96` against a `premarket_change` of `26.51`) — it is not used.
+- Cron #08's pre-market gapper filters the **same two fields on the same scanner** (`cloud-prompts/skills/stock-screener-suite/scripts/premarket_pull.py`: `premarket_change` / `premarket_volume`), which is why the field names above are the house ones.
+- **The rows obey the one-table rule**: a Pass B2 name that is already a Pass A or Pass B row keeps that row, and the Pass B2 hit is recorded as a **dedupe**, not as a second row. The pass publishes its coverage in source health — `pass_b2: candidates=<n> deduped_against_pass_a_b=<n> published=<n>` — so the reader can see how much the pass actually added.
+
 **Pass C — EU/UK intraday movers (live session, especially for earnings reactions)**
 - At 08:00 ET, EU exchanges are mid-session (started 03:00 ET). For these names, `change_percent` reflects today's intraday move vs previous close — i.e., overnight earnings reactions have already settled into the price.
 - EU/UK market list (17 markets): `uk, germany, france, italy, spain, netherlands, belgium, austria, portugal, ireland, finland, denmark, greece, sweden, norway, switzerland, poland`.
@@ -455,6 +480,12 @@ a fault-injection pass that proves the checker bites).
 - Note: ASX market_cap floor dropped to $500M (vs $1B for EU/US) because the ASX 100–200 has fewer mega-caps than US/EU. ASX close floor dropped to $1 (vs $5) because ASX has many $2-5 names that US/EU would exclude — these are real, liquid ASX listings, not penny stocks.
 - Per-ticker catalyst (capped): `mcp__tradingview-advanced__combined_analysis(symbol, exchange='ASX', timeframe=1D)` — same TA + news sentiment + headlines pattern as EU.
 - Currency: AUD local + USD-equivalent from `market_snapshot`.
+
+**Pass E — APAC/Gulf prior-session movers (closed before the scan)**
+- India, Thailand, Indonesia, China, Singapore, New Zealand, Saudi Arabia. The UAE is **not** included — its session closes at 08:00–09:00 ET, i.e. live at the fire.
+- The full filter, the screener slugs and the venue-driven Yahoo suffixes are in "The APAC/Gulf section" above.
+
+**The six passes, in scan order:** A (US mega-caps) → B (US prior-session movers) → **B2 (US pre-market gap scan)** → C (EU/UK intraday) → D (ASX) → E (APAC/Gulf). The artifact's `Method:` line names all six, and source health publishes each pass's coverage.
 
 ## Pre-filter: Primary listing exchange whitelist (mandatory)
 
@@ -530,7 +561,7 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 
 ## Steps
 
-1. **Pull universes.** Six parallel screener calls (Pass A, Pass B up/down, Pass C up/down, Pass D up/down).
+1. **Pull universes.** Eight parallel screener calls (Pass A, Pass B up/down, Pass B2 up/down, Pass C up/down, Pass D up/down).
 
 2. **Apply primary-listing exchange whitelist** — for each screener output:
    - Drop any row where `exchange` is in the drop list (OTC/PINK/LS/LSX/LSIN/CHIX, depending on whether a primary venue is present for the same name).
@@ -613,7 +644,7 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 - Always show both pre- and post-market % for US when both present.
 - EU threshold (2.5%) > US pre-market threshold (2%) — live session is noisier than extended hours.
 - **Always apply the primary-listing exchange whitelist before downstream calls.** Without it, the brief is dominated by retail mirrors and OTC duplicates.
-- **Published-row caps: EU 30, AU 25.** The US tables are NOT capped at 60: the reference-close cross-check is cheap (one Yahoo daily-chart call per row) and it must cover **every** row that reaches a table — a stale-reference row can hide anywhere, so a top-N subset would leave unvalidated rows published. The US ceiling is therefore the screener passes themselves (Pass A top-250 by market cap, Pass B top-200 each way). **The cap that matters is the CATALYST budget: 16 lookups per run, allocated by the evidence gap (the US slice covers the fresh earnings events, the EU/AU/APAC floors are never squeezed, and the leftover goes to the region with the most unexplained rows).**
+- **Published-row caps: EU 30, AU 25.** The US tables are NOT capped at 60: the reference-close cross-check is cheap (one Yahoo daily-chart call per row) and it must cover **every** row that reaches a table — a stale-reference row can hide anywhere, so a top-N subset would leave unvalidated rows published. The US ceiling is therefore the screener passes themselves (Pass A top-250 by market cap, Pass B top-200 each way, Pass B2 top-200 each way). **The cap that matters is the CATALYST budget: 16 lookups per run, allocated by the evidence gap (the US slice covers the fresh earnings events, the EU/AU/APAC floors are never squeezed, and the leftover goes to the region with the most unexplained rows).**
 - **Every published row is validated**, including the US QUIET one-liners — that is why they carry the reference-close columns too.
 - Catalyst calls: **up to 16/run**, allocated by the evidence gap — read the split from `earnings/<date>-catalyst-targets.json`.
 - **Coverage gap detector** — for each screener call, if `total_count < 5` AND the market should be open (per the holiday table below), log `_warn=empty_screener_<market>` to source health. This catches the `south_korea` → 0 bug class without changing the screener params. Same logic also serves as the holiday detector — closed markets return 0 or near-0 rows.
@@ -657,6 +688,7 @@ For now, document the cross-region case in source health: `cross_region_dupes_kn
 - Structured EU/AU earnings calendar — TradingView's `earnings_release_next_date` screener field is a known untested path; documented above.
 
 ## Change history
+- **v6 — 2026-11-15.** **Pass B2 — the US pre-market gap scan ("gapped today, flat yesterday")**, added after a measured miss. (1) On Friday 2026-11-13 the US universe was Pass A (the top-250 US names above $20bn) plus Pass B (the PRIOR session's movers: |change| ≥ 3%, market cap > $1bn, close > $5), so a name that was FLAT in the prior session and is not a $20bn mega-cap fell through both: **LFTO** (Liftoff Mobile, ~$3.9bn, +25% pre-market, closed **+30.63%**) and **SBC** (SBC Medical Group, ~$549m, +9.6% pre-market, closed **+37.64%**) were both missed by the routine that exists to catch same-session earnings reactions. Pass B2 scans the **pre-market tape of the full US universe** instead of the prior session's regular-hours tape. (2) The filter, on the same `america` scanner and the same two fields cron #08's gapper uses: US venues, `market_cap_basic > $200M`, `close > $2`, `|premarket_change| >= 5%`, `premarket_volume >= 10,000` shares; two scans (up and down) because a scanner filter is AND-ed; **no session-volume floor**, because at the 08:00 ET fire the regular session has not opened and `volume` is 0 for every candidate. (3) **The columns were measured, not assumed**: on 2026-11-15 `premarket_change` and `premarket_volume` are available as BOTH a column and a filter on the `america` market for US stocks (`premarket_change >= 5` returns 136 names, `premarket_volume >= 10000` returns 601 — a filter on an unknown field returns 200 with ZERO rows, so the counts are the proof). The `gap` column also exists, but it is the **REGULAR SESSION OPEN gap**, not the pre-market move (measured: LFTO's `gap` is +27.098% = (open 23.78 − prior close 18.71) / 18.71, while its `premarket_change` is +26.510% = (pre-market 23.67 − 18.71) / 18.71) and the session has not opened at 08:00 ET, so **`premarket_change` is the column used**; `premarket_change_abs` does NOT mean "absolute pre-market move" (LFTO reads 4.96 against a `premarket_change` of 26.51) and is not used. (4) The rows obey the one-table rule — a Pass B2 name that is already a Pass A or Pass B row keeps that row and the hit is recorded as a **dedupe** — and the pass publishes its coverage (`pass_b2: candidates= deduped_against_pass_a_b= published=`), so the artifact's `Method:` line names **six** passes. Measured on the 2026-11-13 data: **28 candidates (22 up, 6 down), 7 deduped against Pass A/B, 21 published — with LFTO and SBC both among the 21.** (5) The artifact **format** did not change, so the capability marker `REACTION_ARTIFACT_V2` does NOT change; only the coverage grew. (6) The checker (`tools/check_reaction_artifact.py`) now ASSERTS the new coverage rather than describing it, version-gated from pipeline 2026-11-15.2 so an artifact published before Pass B2 existed is not judged retroactively; `tools/test_reaction_contract.py` proves the gate bites on both the PASS and the FAILURE path.
 - **v5 — 2026-11-15.** The **bulk earnings calendar** becomes the source of record for the US earnings date and the ranking key for the catalyst budget. (1) `Last earnings` now comes from Nasdaq's public earnings calendar (scan date + 7 prior days, one call each); the screener's `earnings_release_date` is the fallback and every disagreement is published as `earnings_field_stale_rows` + `earnings_field_stale_detail`. Measured 2026-11-12: NBIS published `2026-08-12 (92d ago)` although it had reported PRE-OPEN that morning — a FALSE-verdict trap, not a missing one, and the replay also caught ANAB and FLO. (2) The catalyst budget is **allocated by the evidence gap** and capped at 16: the US slice covers the `fresh` rows (the reports dated on the scan date) plus the next freshest, the EU/AU/APAC floors are never squeezed, and the leftover goes to the region with the most unexplained rows; the split is published in the catalog file header, in source health and in the targets JSON, never pinned in a prompt. (3) The instrument form comes from the SECURITY, not the issuer's country: `(ADR)` only when the scanner's `type` is `dr` (or the description names a depositary), so NBIS/AEM/TSEM/NVMI/FN/IREN/DPC are no longer mislabelled ADRs (16 rows on 2026-11-12), and a foreign row's US line reads `US line (VENUE:TICKER)` unless it really is a depositary form. (4) A calendar-covered row that was NOT researched keeps an event line (`Q3 2026 results, report date today (Nasdaq earnings calendar; no headline lookup), consensus EPS ($0.61)`) and carries NO verdict.
 - **v4 — 2026-11-05.** The **ARTIFACT FORMAT CONTRACT v2** (`REACTION_ARTIFACT_V2`) above. Four fixes: (1) the pre-market checker's Eastern-time handling — the ET window is now 04:00-09:30 ET resolved with `zoneinfo` on a WINTER and a SUMMER date, the base close is the IMMEDIATELY prior session, and the pipeline is fetched only when it carries the capability marker, so a stale CDN blob cannot run the old procedure; (2) the reference close is resolved FIRST from one authoritative source and is a hard gate — every published row carries `Ref close` / `Ref source` / `Ref asof`, and a row whose base is older than the previous session is dropped and counted in `rows_dropped_stale_ref`; (3) a new `## Actionable read` section with the `Move vs avg daily` and `US tradeable` columns and one not-yet-fully-priced hypothesis per region; (4) the one-table rule — the separate `## Catalysts` section is gone and the catalyst rides in the row. `degraded_sources` counts each degraded source separately and the reply's `errors:` must match it. Checker `tools/check_reaction_artifact.py`, regression test `tools/test_reaction_contract.py`.
 - **v3.3 — 2026-09-23.** Added **coverage gap detector** — `total_count < 5` triggers `_warn=empty_screener_<market>`. Catches the `south_korea` → 0 bug class. Also serves as holiday detector. Added **Holiday / market-status detection** section documenting common holidays per region (US, UK/EU, AU) with the screener-as-signal pattern. Documented **cross-region dedupe** limitation (companies like ASML on AMS + NASDAQ appear in separate sections; v4 plan to dedupe via ISIN from yahoo-finance `get_company_info`).

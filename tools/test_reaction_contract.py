@@ -411,6 +411,114 @@ MONDAY_REPLY = CONFORMING_REPLY.replace("earnings/2026-11-05-reactions.md",
                                          "earnings/2026-11-09-reactions.md")
 
 
+# ---------------------------------------------- D. the Pass B2 (pre-market gap)
+# The US pre-market gap scan landed in pipeline 2026-11-15.2. From that version
+# the artifact MUST publish the pass's coverage in source health and name six
+# passes in its `Method:` line - a pass that is not published is a pass that
+# did not happen.
+#
+# The fixture is built from the conforming artifact so the ONLY differences are
+# the ones the new gate is about: the `Method:` line, the pipeline version, and
+# the Pass B2 coverage line (plus the calendar-contract lines that the 2026-11-15.1
+# gate already required at this version).
+CONFORMING_B2_ARTIFACT = (CONFORMING_ARTIFACT
+    .replace("- Run type: `scheduled_scan`",
+             "- Run type: `scheduled_scan`\n"
+             "- Method: 6 passes (US top-200 mcap, US prior-session movers, US pre-market gaps,\n"
+             "  EU/UK movers, ASX movers, APAC/Gulf movers). Volume floor 10,000 on every session-volume\n"
+             "  pass; Pass B2 floors PRE-market volume at 10,000 shares; `country` filter for\n"
+             "  primary listings; exchange drop-list applied.")
+    .replace("- pipeline_version: 2026-11-05.1",
+             "- pipeline_version: 2026-11-15.2\n"
+             "- earnings_field_stale_rows: 0\n"
+             "- earnings_tiers: fresh=1 near=0\n"
+             "- catalyst_budget: 5 US + 3 EU + 2 AU + 3 APAC/Gulf = 13 lookups per run\n"
+             "- pass_b2 (US pre-market gap scan - \"gapped today, flat yesterday\"): "
+             "candidates=28 deduped_against_pass_a_b=3 published=25 (up=22 down=6)"))
+
+# The exact text of the Pass B2 coverage line, so a fault-injection mutation
+# can remove it and be proved to be a NO-OP check.
+B2_COVERAGE_LINE = (
+    "- pass_b2 (US pre-market gap scan - \"gapped today, flat yesterday\"): "
+    "candidates=28 deduped_against_pass_a_b=3 published=25 (up=22 down=6)")
+
+
+def test_pass_b2_gate():
+    """The Pass B2 coverage must be published - and the gate must bite.
+
+    The PASS path first: a conforming artifact that publishes the pass's
+    coverage must be ACCEPTED, and the checker must SAY SO. A gate that only
+    speaks on its failure path cannot be told apart from a gate that was never
+    reached.
+    """
+    rc, out = run_checker(CONFORMING_B2_ARTIFACT, CONFORMING_REPLY)
+    if rc != 0:
+        bad("D-passb2-pass",
+            f"the checker rejected an artifact that publishes the Pass B2 coverage "
+            f"(exit {rc}):\n{out}")
+    else:
+        ok("D the checker accepts an artifact that publishes the Pass B2 coverage")
+    if "Pass B2 coverage" not in out:
+        bad("D-passb2-report",
+            "the checker's success message does not report the Pass B2 coverage it "
+            "checked - a gate that only speaks on its failure path is not a gate")
+    else:
+        ok("D the checker reports the Pass B2 coverage on its PASS path")
+
+    # The FAILURE path: every mutation must make the checker FAIL, and each
+    # mutation must actually change the text.
+    cases = [
+        ("C-passb2-coverage-missing",
+         lambda t: t.replace("\n" + B2_COVERAGE_LINE, ""),
+         "the Pass B2 coverage line was removed from source health"),
+        ("C-passb2-method-five-passes",
+         lambda t: t.replace("- Method: 6 passes (US top-200 mcap, US prior-session "
+                             "movers, US pre-market gaps,",
+                             "- Method: 5 passes (US top-200 mcap, US prior-session "
+                             "movers,"),
+         "the `Method:` line still named five passes"),
+        ("C-passb2-method-without-gap-pass",
+         lambda t: t.replace("US prior-session movers, US pre-market gaps,",
+                             "US prior-session movers, US quiet names,"),
+         "the `Method:` line named six passes but not the pre-market gap scan"),
+        ("C-passb2-inconsistent-counts",
+         lambda t: t.replace("candidates=28 deduped_against_pass_a_b=3 published=25",
+                             "candidates=28 deduped_against_pass_a_b=3 published=30"),
+         "the pass published more rows than it had new candidates"),
+        ("C-passb2-dedup-over-candidates",
+         lambda t: t.replace("candidates=28 deduped_against_pass_a_b=3 published=25",
+                             "candidates=2 deduped_against_pass_a_b=30 published=0"),
+         "the pass reported more dedupes than candidates"),
+    ]
+    tmpdir = tempfile.mkdtemp()
+    try:
+        for name, mutate, desc in cases:
+            text = mutate(CONFORMING_B2_ARTIFACT)
+            if text == CONFORMING_B2_ARTIFACT:
+                bad(name, f"the mutation is a NO-OP ({desc}) - it would report a false "
+                          f"'NOT CAUGHT'")
+                continue
+            rc, out = run_checker(text, CONFORMING_REPLY, tmpdir=tmpdir)
+            if rc == 0:
+                bad(name, f"the checker ACCEPTED a broken artifact ({desc})")
+            else:
+                ok(f"{name} the checker rejects: {desc}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # The OLD artifact must still pass: the gate is version-gated, so it is a
+    # regression gate for the NEW pipeline and not a retroactive verdict on an
+    # artifact published before the pass existed.
+    rc, out = run_checker(CONFORMING_ARTIFACT, CONFORMING_REPLY)
+    if rc != 0:
+        bad("D-passb2-old-artifact",
+            f"the checker rejected an artifact published BEFORE the Pass B2 existed "
+            f"(exit {rc}):\n{out}")
+    else:
+        ok("D the checker still accepts a pre-Pass-B2 artifact (the gate is "
+           "version-gated)")
+
+
 def test_monday_au_floor():
     """The AU floor must be the label the pipeline can actually emit."""
     import importlib.util
@@ -664,6 +772,9 @@ def main():
     print("B3. the settlement artifact and the new gates")
     test_checker_accepts_settlement()
     test_settlement_and_verdict_gates()
+
+    print("D. the Pass B2 (US pre-market gap scan) coverage gate")
+    test_pass_b2_gate()
 
     print("C. fault injection — the checker must bite")
     test_checker_bites()

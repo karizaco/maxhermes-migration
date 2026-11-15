@@ -19,6 +19,10 @@ Checks (each one exits 1 with a named failure):
   DEGRADED   the reply's `errors:` count equals the number of degraded sources
              listed in the artifact's source health
   COUNTS     rows_dropped_stale_ref is present and non-negative
+  PASSB2     the US pre-market gap scan (Pass B2) publishes its coverage -
+             how many names it met, how many were deduped against Pass A/B and
+             how many it published - and the front matter's `Method:` line
+             names the six passes
 
 Usage:
     python3 tools/check_reaction_artifact.py earnings/2026-11-05-reactions.md
@@ -337,6 +341,40 @@ def scan_date_of(text):
     return m.group(1) if m else None
 
 
+def front_matter(text):
+    """The artifact's front matter: everything before the first '## ' heading."""
+    i = text.find("\n## ")
+    return text[:i] if i > 0 else text
+
+
+# The Pass B2 (US pre-market gap scan) coverage line, as the pipeline publishes
+# it in source health:
+#   - pass_b2 (US pre-market gap scan - "gapped today, flat yesterday"):
+#     candidates=<n> deduped_against_pass_a_b=<n> published=<n> (up=<n> down=<n>)
+PASS_B2_RE = re.compile(
+    r"pass_b2[^:\n]*:\s*candidates=(\d+)\s+deduped_against_pass_a_b=(\d+)\s+published=(\d+)")
+
+
+def pass_b2_coverage(text):
+    """The Pass B2 coverage an artifact publishes, or None when it publishes none.
+
+    Returns {"candidates": n, "deduped": n, "published": n}.
+    """
+    sh = "\n".join(parse_sections(text).get("Source health", []))
+    m = PASS_B2_RE.search(sh)
+    if not m:
+        return None
+    return {"candidates": int(m.group(1)), "deduped": int(m.group(2)),
+            "published": int(m.group(3))}
+
+
+def pipeline_version_of(text):
+    """The pipeline_version the artifact's source health publishes, or ''."""
+    sh = "\n".join(parse_sections(text).get("Source health", []))
+    m = re.search(r"pipeline_version:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]+)?)", sh)
+    return m.group(1) if m else ""
+
+
 def parse_sections(text):
     """{section title: [lines]} for every '## ' heading."""
     sections, cur = {}, None
@@ -639,6 +677,50 @@ def check(path, reply_text=None):
     elif not re.search(r"earnings_tiers:\s*fresh=\d+\s+near=\d+", sh):
         failures.append("TIERS: `earnings_tiers` must publish fresh=<n> near=<n>")
 
+    # ---- PASSB2 - the US pre-market gap scan's published coverage ---------
+    #
+    # WHY THIS IS A GATE. The US universe used to be Pass A (the mega-caps)
+    # plus Pass B (the PRIOR session's movers), so a name that was FLAT
+    # yesterday and is not a $20bn mega-cap fell through both. Measured on
+    # 2026-11-13: that missed LFTO (closed +30.63%) and SBC (closed +37.64%),
+    # two of the day's biggest same-session earnings movers. Pass B2 - the US
+    # pre-market gap scan - was added for it, and a pass that is not PUBLISHED
+    # is a pass that did not happen. The artifact must therefore state how many
+    # names the pass met, how many were already covered by Pass A/B (a dedupe,
+    # not a second row - the one-table rule), and how many it published.
+    #
+    # The gate applies from the pipeline version that added the pass, and NOT
+    # to the 12:15 ET settlement artifact: that artifact publishes the EU/UK
+    # rows only and carries its own `Method:` line.
+    gap_pass_contract = ((not is_settlement)
+                         and _version_ge(pipeline_version, "2026-11-15.2"))
+    if gap_pass_contract:
+        cov = pass_b2_coverage(text)
+        if cov is None:
+            failures.append(
+                "PASSB2: the source health section does not publish the Pass B2 (US "
+                "pre-market gap scan) coverage - the pass that catches a name that "
+                "gapped today after being flat yesterday must state how many names "
+                "it met, how many were deduped against Pass A/B, and how many it "
+                "published")
+        else:
+            if cov["deduped"] > cov["candidates"]:
+                failures.append(f"PASSB2: {cov['deduped']} names are deduped against "
+                                f"Pass A/B but the pass only met {cov['candidates']} "
+                                f"candidates")
+            if cov["published"] > cov["candidates"] - cov["deduped"]:
+                failures.append(f"PASSB2: {cov['published']} rows published but only "
+                                f"{cov['candidates'] - cov['deduped']} candidates were "
+                                f"new (the rest were deduped against Pass A/B)")
+        fm = front_matter(text)
+        if not re.search(r"^- Method: 6 passes\b", fm, re.M):
+            failures.append("PASSES: the front matter's `Method:` line does not name "
+                            "the six passes - the US pre-market gap scan (Pass B2) "
+                            "is one of them")
+        if not re.search(r"pre-market gap", fm, re.I):
+            failures.append("PASSES: the front matter's `Method:` line does not name "
+                            "the US pre-market gap scan (Pass B2)")
+
     # ---- the audit line must name the drops ---------------------------
     if "rows_dropped_stale_ref" not in "\n".join(sections.get("Audit line", [])):
         failures.append("COUNTS: the audit line does not carry rows_dropped_stale_ref")
@@ -674,7 +756,20 @@ def main():
         for f in failures:
             print(f"  - {f}")
         return 1
-    print(f"OK: {path} conforms to {CONTRACT}")
+    # The PASS PATH REPORTS TOO. A gate that only speaks when it fails cannot
+    # be told apart from a gate that was never reached, so the success message
+    # names what was checked - the six passes and, when the artifact is new
+    # enough to carry it, the Pass B2 coverage that was published.
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    cov = pass_b2_coverage(text)
+    if cov and _version_ge(pipeline_version_of(text), "2026-11-15.2"):
+        print(f"OK: {path} conforms to {CONTRACT} — 6 passes; Pass B2 coverage: "
+              f"candidates={cov['candidates']} "
+              f"deduped_against_pass_a_b={cov['deduped']} "
+              f"published={cov['published']}")
+    else:
+        print(f"OK: {path} conforms to {CONTRACT}")
     return 0
 
 
