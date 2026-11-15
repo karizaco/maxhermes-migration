@@ -59,6 +59,17 @@ before researching anything.**
    (#23, 22:30 ET) owns those. The open board's job is to hand the watch list forward into the
    live tape, not to duplicate the brief. Name the pre-close board file this annex was read from.
 
+6. **The `open` slot also reads cron #25's gap brief for CATALYSTS** (added 2026-11-15).
+   `ntrt/{date}.md` is published by cron #25 at 09:00 ET — fifty minutes before the open board
+   is written — and carries a researched reason on every row of the market-wide pre-market gap
+   list. Fetch it from the outputs repo the same way the prior digest is fetched (a shallow
+   clone's `git show origin/main:ntrt/<date>.md`, or the contents API), and take the **last cell
+   of the row** — the reason — for any name the board publishes whose own research did not find
+   one. Attribute it ("ntrt gap brief, 09:00 ET") and name it in `## Source health`. See "The
+   open slot reads the ntrt gap brief" under the artifact contract for why this exists and what
+   it measured. **If the brief is not there, say so in Source health and carry on** — the board
+   does not depend on it; it depends on not going without a reason when the reason exists.
+
 ## TradingView-advanced MCP rate-limit
 
 When calling `mcp__tradingview-advanced__run_screener` / `get_symbol_data` / `get_news` / `get_symbol_data_batch`, follow pipeline §2b:
