@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-13.2
+CAPTURE_SCRIPT_VERSION: 2026-11-13.3
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -131,6 +131,21 @@ So every catalyst is now DATED (call 5) and dated catalysts are AGE-CHECKED:
 Both rules are checked by tools/check_preopen_checkpoint.py, and the ARWR case
 itself is a fault-injection case in tools/test_preopen_checkpoint_contract.py.
 
+THE CATALYST COVERAGE FLOOR - THE TAPE HAS TO SAY HOW MUCH OF IT IT EXPLAINED
+---------------------------------------------------------------------------
+The tape priced the movers and explained almost none of them, and nothing said so.
+Measured on Friday 2026-11-13: the 08:30 checkpoint wrote 164 records and only 16
+carried a catalyst (9.8%); the 09:50 checkpoint wrote 218 records and only 20 carried
+one (9.2%). LFTO (+25.07% on a Q3 beat) and SBC (+9.6% on a Q3 print and an 8-K) sat
+on the tape with `why: null`, `conf: "low"` and `news_date: null`. A tape that is 90%
+unexplained reads exactly like a tape that found no news.
+
+So the capture MEASURES it - (records with a non-null `why`) / (total records) - prints
+the number with the counts that make it auditable, and counts ONE error when the
+number falls below COVERAGE_FLOOR (40%). The board renders the same measurement and
+raises the DEGRADED banner; the reply carries a `degraded:` line. The floor changes
+how the result is LABELLED, never whether the tape is produced.
+
 xAI / Grok is OPTIONAL. The xAI chat API no longer serves live search
 (`search_parameters` returns HTTP 410 "Live search is deprecated"), and the
 Agent Tools API that replaces it is not enabled on most keys. Pipeworx does the
@@ -232,6 +247,38 @@ BAND_PCT = 2.5
 # day was 2026-09-30, so a four-day window rejects the claim; the honest tape row is
 # the price with no catalyst.
 CATALYST_MAX_AGE_DAYS = 4
+
+# ---------------------------------------------------------------------------
+# THE CATALYST COVERAGE FLOOR - HOW MUCH OF THIS TAPE DID WE ACTUALLY EXPLAIN?
+# ---------------------------------------------------------------------------
+# The tape's whole job is WHO / WHAT / WHEN for every name materially moving
+# pre-market. Measured on Friday 2026-11-13 it did NOT do that job: the 08:30
+# checkpoint wrote 164 records and only 16 carried a catalyst (9.8%), and the
+# 09:50 checkpoint wrote 218 records and only 20 carried one (9.2%). LFTO
+# (+25.07% on a Q3 beat) and SBC (+9.6% on a Q3 print and an 8-K) both sat on
+# the tape with `cat: "other"`, `why: null`, `conf: "low"` and `news_date: null`
+# - and NOTHING in the artifact or in the reply said so. A tape that is 90%
+# unexplained reads exactly like a tape that found no news, which is a SILENT
+# failure.
+#
+# So the capture MEASURES the coverage (records with a non-null `why` over the
+# total records), PRINTS it, and counts a degradation as ONE error when it falls
+# below the floor. The floor is 40%: the Friday evidence (9.8% and 9.2%) sits
+# far below it, and a floor at 10% would have been cleared by accident on a day
+# when the tape explained one name in ten.
+#
+# THE FLOOR NEVER SUPPRESSES THE CHECKPOINT. The tape and the board are written
+# either way; the floor changes how the result is LABELLED, never whether it is
+# produced. A capture that FAILED is a different failure and keeps its own path
+# (the errors ledger, the credit recogniser).
+#
+# Read the arithmetic before reading the verdict: the catalyst pool IS the budget
+# (`--top`, default 20 here), so a 164-row tape can carry at most ~20 grounded
+# catalysts plus whatever the trending snapshot explained. Clearing 40% on a
+# 164-row tape needs 66 explained rows - i.e. the POOL has to grow, and the
+# provider's spend is metered (200 credits per article call). The floor does not
+# pretend otherwise: it names the gap, and the reply names the budget.
+CATALYST_COVERAGE_FLOOR = 0.40
 
 # ---------------------------------------------------------------------------
 # THE CATALYST PIPELINE - ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
@@ -1252,6 +1299,35 @@ def build(date_str, checkpoint, top_n=8):
             empty_dropped.append(tk)
             continue
         rows.append(rec)
+    # ------------------------------------------------------------------
+    # THE CATALYST COVERAGE MEASUREMENT.
+    #
+    # coverage = (records with a non-null `why`) / (total records)
+    #
+    # This is the number the board publishes and the reply carries, and it is
+    # measured HERE, on the rows the capture actually wrote - not estimated.
+    # The breakdown says WHY the uncovered rows have no catalyst: a row with a
+    # price and no cause is PRICE-ONLY (the grounded catalyst call did not
+    # explain it), and a row with neither is NARRATIVE-ONLY (the trending
+    # snapshot carried no reason for it).
+    # ------------------------------------------------------------------
+    total = len(rows)
+    named = sum(1 for r in rows if r.get("why"))
+    coverage = (named / total) if total else 0.0
+    price_only = sum(1 for r in rows if not r.get("why") and r.get("pct") is not None)
+    narrative_only = sum(1 for r in rows if not r.get("why") and r.get("pct") is None)
+    below_floor = bool(total) and coverage < CATALYST_COVERAGE_FLOOR
+    errors = [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
+                          band_error, pm_error) if e]
+    errors += sorted({c.get("error") for c in cats.values() if c.get("error")})
+    if below_floor:
+        # A COVERAGE DEGRADATION IS ONE ERROR. The tape was written, but most of it
+        # is priced and UNEXPLAINED, and the run must say so: a quiet tape with a
+        # loud error beats a loud-looking tape with a silent one. It is counted in
+        # the capture's OWN ledger, so the reply's `errors:` number is measured
+        # rather than remembered - and never counted twice.
+        errors.append(f"catalyst_coverage_below_floor: {named}/{total} "
+                      f"({coverage * 100:.0f}%) < floor {CATALYST_COVERAGE_FLOOR * 100:.0f}%")
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
             "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
@@ -1285,9 +1361,15 @@ def build(date_str, checkpoint, top_n=8):
             "catalyst_article": sum(1 for c in cats.values() if c.get("origin") == "article"),
             "catalyst_router": sum(1 for c in cats.values() if c.get("origin") == "router"),
             "sign_conflicts": sum(1 for r in rows if r.get("sign_conflict")),
-            "errors": [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
-                                   band_error, pm_error) if e]
-                      + sorted({c.get("error") for c in cats.values() if c.get("error")})}
+            # THE COVERAGE, and the counts that make it auditable.
+            "catalyst_coverage": round(coverage, 4),
+            "catalyst_named": named,
+            "catalyst_unexplained": total - named,
+            "catalyst_price_only": price_only,
+            "catalyst_narrative_only": narrative_only,
+            "catalyst_coverage_floor": CATALYST_COVERAGE_FLOOR,
+            "catalyst_coverage_below_floor": below_floor,
+            "errors": errors}
 
 
 def main():
@@ -1337,7 +1419,11 @@ def main():
               f"movers={res['mover_count']}, "
               f"trending={res['trending_count']}, as_of={res.get('as_of')}, "
               f"premarket_priced={res.get('premarket_priced')}, "
-              f"premarket_unprinted={res.get('premarket_unprinted')}")
+              f"premarket_unprinted={res.get('premarket_unprinted')}, "
+              f"catalyst_coverage={res.get('catalyst_named')}/{len(res['rows'])} "
+              f"({float(res.get('catalyst_coverage') or 0) * 100:.0f}%, "
+              f"floor {float(res.get('catalyst_coverage_floor') or 0) * 100:.0f}%), "
+              f"coverage_degraded={'yes' if res.get('catalyst_coverage_below_floor') else 'no'}")
         print(body)
         return 0
 
@@ -1373,6 +1459,15 @@ def main():
           f"sign_conflicts={res.get('sign_conflicts')}, "
           f"empty_dropped={len(res.get('empty_dropped') or [])}, "
           f"provider_errors={len(res.get('provider_errors') or [])}, "
+          # THE COVERAGE LINE. The reply carries these numbers, so they are MEASURED
+          # here and printed - the agent never recomputes them by eye.
+          f"catalyst_coverage={res.get('catalyst_named')}/{len(res['rows'])} "
+          f"({float(res.get('catalyst_coverage') or 0) * 100:.0f}%, "
+          f"floor {float(res.get('catalyst_coverage_floor') or 0) * 100:.0f}%, "
+          f"unexplained={res.get('catalyst_unexplained')} "
+          f"[price-only={res.get('catalyst_price_only')}, "
+          f"narrative-only={res.get('catalyst_narrative_only')}], "
+          f"coverage_degraded={'yes' if res.get('catalyst_coverage_below_floor') else 'no'}, "
           f"errors={len(res.get('errors') or [])})")
     return 0
 

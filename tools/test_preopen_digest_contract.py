@@ -33,9 +33,11 @@ This test:
      em-dash — never the capture clock,
   4. requires the render to be REPRODUCIBLE from the tape (the board never disagrees
      with the data cron #17 reads),
-  5. then MUTATES the renderer back to the string-slice behaviour, and back to the
-     capture-clock fallback, and requires the test to FAIL each time — a test that
-     cannot fail is not a test.
+  5. requires the board to PUBLISH the CATALYST COVERAGE (named rows / total rows / percent)
+     and to DEGRADE loudly when it falls below the 40% floor,
+  6. then MUTATES the renderer back to the string-slice behaviour, and back to the
+     capture-clock fallback, and back to a renderer that drops the coverage, and requires
+     the test to FAIL each time — a test that cannot fail is not a test.
 
 USAGE
     python3 tools/test_preopen_digest_contract.py
@@ -44,6 +46,8 @@ Exit codes: 0 = all good; 1 = the renderer mis-renders a time, or the guard cann
 
 import importlib.util
 import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -206,6 +210,127 @@ with tempfile.TemporaryDirectory() as td:
                   "renderer — the guard bites")
             check("09:57:44" in b2,
                   "the mutated renderer reproduces the capture-clock defect verbatim")
+
+    # 5. The CATALYST COVERAGE FLOOR: the board measures it, publishes it, and
+    #    DEGRADES loudly when it is below the floor.
+    #
+    #    Measured on Friday 2026-11-13 the 08:30 tape carried 164 records and only
+    #    16 of them carried a catalyst (9.8%), and the 09:50 tape carried 218 and 20
+    #    (9.2%) — the movers were priced, almost none of them explained, and nothing
+    #    said so. A board that measures its coverage and stays quiet is the same
+    #    failure with a number attached.
+    print("\n5. the board publishes the catalyst coverage")
+    m_cov = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", board)
+    check(m_cov is not None, "the board publishes the catalyst coverage line")
+    if m_cov is not None:
+        named = sum(1 for r in ROWS if r.get("why"))
+        check(m_cov.group(1) == str(named) and m_cov.group(2) == str(len(ROWS)),
+              f"the coverage line's arithmetic matches the tape "
+              f"(got {m_cov.group(1)}/{m_cov.group(2)}, expected {named}/{len(ROWS)})")
+        check(m_cov.group(3) == "100",
+              f"the coverage percentage is published (got {m_cov.group(3)}%)")
+    check("preopen-coverage-v1" in board,
+          "the board carries the coverage contract marker")
+    check("**floor:** 40%" in board, "the board publishes the floor it was measured against")
+    check("DEGRADED" not in board,
+          "a board AT the floor carries NO degradation banner")
+
+    # A board BELOW the floor: 10 priced rows, 1 explained, 2 narrative rows that do
+    # carry a reason -> 3 of 12 records named (25%), well under the 40% floor.
+    LOW_ROWS = []
+    for i in range(10):
+        pct = round(20.0 - i * 1.5, 2) if i % 2 == 0 else round(-(20.0 - i * 1.5), 2)
+        LOW_ROWS.append({
+            "ts": "2026-11-13T08:47:31-05:00", "src": "pipeworx" if i == 0 else "scanner",
+            "ticker": f"L{i:02d}", "name": f"Low {i} Inc", "pct": pct, "price": 10.0 + i,
+            "cat": "earnings" if i == 0 else "other",
+            "why": "reported Q3 results, beat and raised" if i == 0 else None,
+            "ref": "https://example.test/x" if i == 0 else None,
+            "conf": "high" if i == 0 else "low",
+            "trending_ts": None, "trending_score": None, "volume": 1234567,
+            "exchange": "NASDAQ",
+            "news_date": "2026-11-13T11:30:00Z" if i == 0 else None,
+            "news_url": "https://news.example.test/l0" if i == 0 else None,
+            "pm_notional": 1234567.0, "sign_conflict": False,
+        })
+    for i in range(2):
+        LOW_ROWS.append({
+            "ts": "2026-11-13T08:47:31-05:00", "src": "stocktwits", "ticker": f"N{i:02d}",
+            "name": f"Narrative {i} Inc", "pct": None, "price": None, "cat": "other",
+            "why": f"retail chatter about a catalyst ({i})", "ref": None, "conf": "low",
+            "trending_ts": "2026-11-13T08:17:43-05:00", "trending_score": 5.2,
+            "volume": None, "exchange": None, "news_date": None, "news_url": None,
+            "pm_notional": None, "sign_conflict": False,
+        })
+    with tempfile.TemporaryDirectory() as td3:
+        t3 = Path(td3) / "2026-11-13-0830.jsonl"
+        o3 = Path(td3) / "2026-11-13-0830.md"
+        with t3.open("w", encoding="utf-8") as fh:
+            for r in LOW_ROWS:
+                fh.write(json.dumps(r) + "\n")
+        subprocess.run(
+            [sys.executable, str(DG_PATH), "--tape", str(t3), "--out", str(o3),
+             "--date", "2026-11-13", "--slot", "0830"],
+            capture_output=True, text=True)
+        low = o3.read_text(encoding="utf-8")
+
+        print("\n6. a board BELOW the floor says so, in the file a reader opens")
+        m_low = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", low)
+        check(m_low is not None, "the low-coverage board publishes its coverage")
+        if m_low is not None:
+            check(m_low.group(1) == "3" and m_low.group(2) == "12",
+                  f"the low-coverage arithmetic is right (got {m_low.group(1)}/"
+                  f"{m_low.group(2)}, expected 3/12)")
+            check(m_low.group(3) == "25", f"the low-coverage percentage is right "
+                                          f"(got {m_low.group(3)}%)")
+        check("DEGRADED" in low,
+              "a board BELOW the floor carries the DEGRADED banner")
+        check(re.search(r"below the 40% floor", low) is not None,
+              "the banner says WHICH floor it fell below")
+        check(re.search(r"priced but unexplained", low) is not None,
+              "the banner says it in plain words (priced but unexplained)")
+        check(re.search(r"grounded catalyst call", low) is not None,
+              "the banner NAMES THE CAUSE")
+        check("price-only" in low, "the banner names the PRICE-ONLY rows")
+        price_only_line = next((ln for ln in low.splitlines()
+                                if "Price-only names" in ln), "")
+        check(bool(price_only_line), "the board LISTS the price-only names")
+        if price_only_line:
+            missing = [r["ticker"] for r in LOW_ROWS
+                       if not r.get("why") and r.get("pct") is not None
+                       and r["ticker"] not in price_only_line]
+            check(not missing,
+                  f"every price-only name is in the list (missing {missing[:5]})")
+        check("**BELOW FLOOR**" in low,
+              "the coverage line states the floor verdict")
+
+        # 7. The guards must bite: a renderer that stops publishing the coverage,
+        #    and one that stops DEGRADING.
+        print("\n7. the coverage guards bite (fault injection)")
+        for label, old, new, guard in (
+            ("the renderer stops publishing the coverage line",
+             "**catalyst coverage:**", "**catalyst pct:**",
+             lambda b: "**catalyst coverage:**" not in b),
+            ("the renderer stops degrading a below-floor board",
+             "**DEGRADED — catalyst coverage", "**NOTE — catalyst coverage",
+             lambda b: "DEGRADED" not in b),
+        ):
+            src = DG_PATH.read_text(encoding="utf-8")
+            if old not in src:
+                check(False, f"the mutation target for '{label}' is missing")
+                continue
+            mpath = Path(td3) / "mutated_cov.py"
+            mpath.write_text(src.replace(old, new), encoding="utf-8")
+            mt = Path(td3) / "mutated_tape.jsonl"
+            mo = Path(td3) / "mutated_out.md"
+            shutil.copyfile(t3, mt)
+            subprocess.run(
+                [sys.executable, str(mpath), "--tape", str(mt), "--out", str(mo),
+                 "--date", "2026-11-13", "--slot", "0830"],
+                capture_output=True, text=True)
+            mb = mo.read_text(encoding="utf-8")
+            check(guard(mb),
+                  f"the guard is VIOLATED by {label} — the guard bites")
 
 print()
 if FAILURES:

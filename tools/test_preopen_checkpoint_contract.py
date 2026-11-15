@@ -81,9 +81,18 @@ def make_repo(dst, src=REPO):
     return dst
 
 
-def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="0830"):
+def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="0830",
+                     grounded_mod=3):
     """A real tape + board, rendered by the REAL digest renderer from a synthetic
-    snapshot that has the same shape the capture script writes."""
+    snapshot that has the same shape the capture script writes.
+
+    `grounded_mod` decides how many of the priced rows carry a catalyst (every
+    `grounded_mod`-th one), so the fixture can be built either side of the
+    CATALYST COVERAGE FLOOR: the default is 7 of 20 priced rows plus 30 narrative
+    rows that all carry a reason -> 37 of 50 records named (74%), comfortably ABOVE
+    the 40% floor; `grounded_mod=20` with 60 priced rows gives 33 of 90 (37%),
+    BELOW it.
+    """
     feed = os.path.join(tmp, "preopen-feed")
     os.makedirs(feed, exist_ok=True)
     tape = os.path.join(feed, f"{date}-{slot}.jsonl")
@@ -91,7 +100,7 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
     rows = []
     for i in range(n_priced):
         pct = round(40.0 - i * 1.7, 2) if i % 2 == 0 else round(-(40.0 - i * 1.7), 2)
-        grounded = (i % 3 == 0)
+        grounded = (i % grounded_mod == 0)
         rows.append({
             "ts": "2026-11-09T08:47:31-05:00",
             "src": "pipeworx" if grounded else "scanner",
@@ -144,6 +153,18 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
     subprocess.run([sys.executable, DIGEST, "--tape", tape, "--out", digest,
                     "--date", date, "--slot", slot], capture_output=True, text=True, check=True)
     return tape, digest
+
+
+def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
+    """A CONFORMING tape whose catalyst coverage is BELOW the 40% floor.
+
+    60 priced rows, only 3 of them explained, plus 30 narrative rows that carry a
+    reason -> 33 of 90 records named (37%). The board must render the coverage and
+    raise the DEGRADED banner; the checker must accept it, because a degraded run
+    that SAYS it degraded is a correct artifact.
+    """
+    return build_conforming(tmp, n_priced=60, n_narrative=30, date=date, slot=slot,
+                            grounded_mod=20)
 
 
 def mutate(path, old, new, replace_all=False):
@@ -608,9 +629,122 @@ def m_published_date_not_age_checked(tape, digest, repo):
     return True
 
 
+def m_capture_stops_counting_the_degradation(tape, digest, repo):
+    """The capture stops counting a coverage degradation as an error.
+
+    The floor is a DEGRADATION, and a degradation the run does not count is a
+    footnote. Measured 2026-11-13: the tape explained 16 of 164 records and the
+    checkpoint reported nothing about it.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p,
+           'errors.append(f"catalyst_coverage_below_floor: {named}/{total} "\n'
+           '                      f"({coverage * 100:.0f}%) < floor '
+           '{CATALYST_COVERAGE_FLOOR * 100:.0f}%")',
+           'pass  # the coverage degradation is no longer counted as an error')
+    return True
+
+
+def m_no_coverage_line(tape, digest, repo):
+    """The board stops publishing the catalyst coverage.
+
+    A board that quietly stops publishing its coverage is exactly the silent
+    failure the rule exists to stop: the tape priced the movers, explained almost
+    none of them, and said nothing.
+    """
+    s = open(digest, encoding="utf-8").read()
+    lines = s.splitlines(True)
+    hit = [i for i, l in enumerate(lines) if "**catalyst coverage:**" in l]
+    if not hit:
+        raise AssertionError("the fixture board carries no coverage line to remove")
+    del lines[hit[0]]
+    out = "".join(lines)
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_wrong_coverage_arithmetic(tape, digest, repo):
+    """The board publishes a coverage the tape cannot support.
+
+    The percentage is not decoration: it is (named rows / total rows), and a board
+    whose numerator does not match its own tape is a measurement that cannot be
+    audited.
+    """
+    s = open(digest, encoding="utf-8").read()
+    m = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", s)
+    if not m:
+        raise AssertionError("the fixture board carries no coverage line")
+    named, total, pct = m.group(1), m.group(2), m.group(3)
+    out = (s[:m.start()] + f"**catalyst coverage:** {int(named) + 7}/{total} ({pct}%)"
+           + s[m.end():])
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_no_degradation_banner(tape, digest, repo):
+    """A below-floor board with the DEGRADED banner removed.
+
+    The degradation has to be visible in the .md a reader OPENS, not only in the
+    reply. A board that measures the coverage and stays quiet about it is the
+    2026-11-13 failure with a number attached.
+    """
+    s = open(digest, encoding="utf-8").read()
+    lines = s.splitlines(True)
+    # the banner is the quoted block above the table (the "> " lines)
+    hit = [i for i, l in enumerate(lines) if l.startswith("> ")]
+    if not hit:
+        raise AssertionError("the fixture board carries no degradation banner")
+    for i in reversed(hit):
+        del lines[i]
+    out = "".join(lines)
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_degraded_banner_on_a_healthy_board(tape, digest, repo):
+    """A board AT the floor that carries a degradation banner.
+
+    The banner has to mean something: a board at or above the floor that cries
+    wolf trains the reader to ignore the word.
+    """
+    s = open(digest, encoding="utf-8").read()
+    lines = s.splitlines(True)
+    idx = next((i for i, l in enumerate(lines) if l.startswith("# Pre-open")), None)
+    if idx is None:
+        raise AssertionError("the fixture board has no title line")
+    lines.insert(idx + 1, "> ⚠ **DEGRADED — catalyst coverage is below the floor.**\n")
+    out = "".join(lines)
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_renderer_drops_the_coverage_line(tape, digest, repo):
+    """The renderer stops publishing the catalyst coverage."""
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py")
+    mutate(p, "**catalyst coverage:**", "**catalyst pct:**")
+    return True
+
+
+def m_procedure_drops_the_floor(tape, digest, repo):
+    """The procedure lowers the floor out of the record."""
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
+    mutate(p, "CATALYST_COVERAGE_FLOOR = 0.40", "CATALYST_COVERAGE_FLOOR = 0.05")
+    return True
+
+
 CASES = [
-    # (name, expect_pass, mutator)
+    # (name, expect_pass, mutator, fixture_builder)
     ("a conforming tape + board passes the checker", True, None),
+    ("a conforming tape BELOW the coverage floor passes the checker (it says it degraded)",
+     True, None, build_low_coverage),
     ("a doubled tape (one row per ticker) is caught", False, m_double_ticker),
     ("a gainers-only tape (no decliners) is caught", False, m_gainers_only),
     ("a retired src=grok label is caught", False, m_src_grok),
@@ -658,6 +792,21 @@ CASES = [
      m_script_assigns_high),
     ("a capture script that cannot tell a credit failure from 'no news' is caught", False,
      m_credit_failure_ignored),
+    # THE CATALYST COVERAGE FLOOR.
+    ("a board that stops publishing the catalyst coverage is caught", False,
+     m_no_coverage_line),
+    ("a board whose coverage arithmetic does not match its tape is caught", False,
+     m_wrong_coverage_arithmetic),
+    ("a below-floor board with the DEGRADED banner removed is caught", False,
+     m_no_degradation_banner, build_low_coverage),
+    ("a board at the floor that carries a DEGRADED banner is caught", False,
+     m_degraded_banner_on_a_healthy_board),
+    ("a renderer that stops publishing the coverage line is caught", False,
+     m_renderer_drops_the_coverage_line),
+    ("a procedure that drops the coverage floor is caught", False,
+     m_procedure_drops_the_floor),
+    ("a capture that stops counting a coverage degradation as an error is caught", False,
+     m_capture_stops_counting_the_degradation),
 ]
 
 
@@ -688,11 +837,13 @@ def run_skip_cases():
 
 def main():
     print("conforming artifacts MUST pass:")
-    for name, expect_pass, mutator in CASES:
+    for case in CASES:
+        name, expect_pass, mutator = case[0], case[1], case[2]
+        builder = case[3] if len(case) > 3 else build_conforming
         tmp = tempfile.mkdtemp(prefix="preopen-contract-")
         try:
             repo = make_repo(os.path.join(tmp, "repo"))
-            tape, digest = build_conforming(tmp)
+            tape, digest = builder(tmp)
             if mutator:
                 if not mutator(tape, digest, repo):
                     raise AssertionError(f"mutation not applied for {name}")

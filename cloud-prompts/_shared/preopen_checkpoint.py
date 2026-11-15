@@ -6,6 +6,17 @@ and the fail-closed trail.
 PREOPEN_CHECKPOINT_V1
 # CHECKPOINT_SCRIPT_VERSION: 2026-11-06.1
 
+SUPERSEDED — DO NOT WIRE THIS INTO THE CHECKPOINT
+--------------------------------------------------
+This is the 2026-11-06 script, from the GROK era: it merges a Grok reply and a
+TradingView snapshot, and its `digest` mode renders a board with no CATALYST
+COVERAGE on it. Nothing fetches it and nothing calls it: the checkpoint runs
+`preopen_capture.py` (the tape) and `preopen_digest.py` (the board), both fetched
+at run time by `cloud-prompts/_shared/preopen-capture.md`. Its board would publish
+the movers and NOT publish how many of them were explained — the silent failure the
+coverage floor (40%) now exists to stop — so it is kept only as the archive of the
+merge rules the capture script replaced.
+
 WHY THIS EXISTS
 ---------------
 The catalyst tape (preopen-feed/{date}-{slot}.jsonl) is consumed by cron #17 at 15:50 ET.

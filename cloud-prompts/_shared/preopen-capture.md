@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-13.2
+PROCEDURE_VERSION: 2026-11-13.3
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -48,12 +48,13 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   fi
-  # 2026-11-11.2 is the version that prices the tape from the CURRENT session's
-  # pre-market print AND age-checks the PUBLISHED catalyst date, not only the
-  # provider's newest article. 2026-11-11.1 dated the tape from the previous
-  # session's closes, and it published a matched article's stamp without checking
-  # that stamp was inside the window - both are defects this version fixes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-13.2' "$S.tmp" 2>/dev/null; then
+  # 2026-11-13.3 is the version that MEASURES the catalyst coverage of its own tape
+  # and reports it - the 2026-11-13 run priced the movers and explained 16 of 164
+  # (and 20 of 218) of them, and said nothing about it.
+  # 2026-11-11.2 dated the tape from the previous session's closes, and it published
+  # a matched article's stamp without checking that stamp was inside the window - both
+  # are defects this version fixes.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-13.3' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -71,7 +72,11 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$D.tmp" "$U" 2>/dev/null
   fi
-  if grep -q 'PREOPEN_DIGEST_V1' "$D.tmp" 2>/dev/null; then
+  # PREOPEN_DIGEST_V2 is the version that renders the CATALYST COVERAGE line and the
+  # DEGRADED banner. A V1 renderer would pass a V1 grep and publish a board with no
+  # coverage on it - the silent failure this version exists to stop - so the ladder
+  # demands V2.
+  if grep -q 'PREOPEN_DIGEST_V2' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
@@ -116,9 +121,10 @@ python3 "$D" --tape /workspace/preopen-feed/${DATE}-${CP}.jsonl \
 
 Every successful checkpoint writes **TWO files**: the tape (`.jsonl`) and the digest (`.md`).
 The digest is rendered FROM the tape, never by hand, so the board can never disagree with the
-data cron #17 reads at 15:50. It carries the record count, the provenance split, the top 15
-movers by |%| with their catalyst, their `conf` token and when the news broke, and the halt
-state — `not measurable`, because the `halted` column is null on every row (never `0`).
+data cron #17 reads at 15:50. It carries the record count, the provenance split, the
+**catalyst coverage** (see THE CATALYST COVERAGE FLOOR below), the top 15 movers by |%| with
+their catalyst, their `conf` token and when the news broke, and the halt state —
+`not measurable`, because the `halted` column is null on every row (never `0`).
 
 ### 4. Push
 
@@ -345,10 +351,159 @@ The tape's `src` field is the row's PROVENANCE, not a vendor: `scanner` = the mo
 this row its price; `pipeworx` = the grounded router gave this row its catalyst; `stocktwits` =
 a narrative row with no ground truth.
 
+## THE CATALYST COVERAGE FLOOR — A TAPE THAT EXPLAINS ALMOST NOTHING MUST SAY SO
+
+The tape's whole job is **WHO / WHAT / WHEN** for every name materially moving pre-market. On
+Friday 2026-11-13 it priced the movers and explained almost none of them, and **not one word
+of the artifact or of the reply said so**:
+
+| Checkpoint | Records | With a catalyst | Coverage |
+|---|---|---|---|
+| 2026-11-13 08:30 | 164 | 16 | **16/164 (9.8%)** |
+| 2026-11-13 09:50 | 218 | 20 | **20/218 (9.2%)** |
+
+LFTO (+25.07% on a Q3 beat) and SBC (+9.6% on a Q3 print and an 8-K) sat on the 08:30 tape
+with `cat: "other"`, `why: null`, `conf: "low"` and `news_date: null` — two names that needed
+an explanation most, carrying none.
+
+**A tape that is 90% unexplained reads exactly like a tape that found no news**, and that is a
+SILENT failure. The fleet's own rule is that a degraded run must say it degraded; this run
+did not, because nothing measured it.
+
+### THE MEASUREMENT
+
+```
+catalyst_coverage = (records with a non-null `why`) / (total records)
+```
+
+computed **per checkpoint, on the rows the tape actually holds**. The COUNTS travel with the
+percentage, so the number is auditable rather than asserted:
+
+- `named` — records with a non-null `why` (a grounded catalyst, an article, or a chatter reason);
+- `unexplained` — records with no cause at all;
+- `price-only` — unexplained records that still carry a price: **a mover the tape priced and
+  did not explain**;
+- `narrative-only` — unexplained records with no price either.
+
+**The cause of an uncovered row is in its PROVENANCE.** A `src: scanner` row with a null `why`
+means the grounded catalyst call did not explain that row — it carries the movers-scan /
+pre-market-band price and nothing else. A `src: stocktwits` row with a null `why` means the
+row came from the trending snapshot alone, which carried no reason either.
+
+### THE FLOOR: 40%
+
+`CATALYST_COVERAGE_FLOOR = 0.40` — the share of the tape that must carry a cause for the tape
+to be doing its job.
+
+**Why 40% and not 10%:** on the Friday evidence (9.8% and 9.2%) a floor of 40% flags BOTH
+checkpoints, and a floor set at 10% would have been cleared by accident on a day when the tape
+explained one name in ten. **Why 40% and not 80%:** the tape is WIDE (the band held 458 names
+on 2026-11-13 and the tape carries 130–220 rows) while the catalyst budget is BOUNDED (the
+provider's spend is metered — 200 credits per article call), so a floor above ~40% is
+arithmetically unreachable with any budget the fleet can pay for. A gate that can never be
+cleared is not a gate.
+
+**Read the arithmetic before the verdict.** The pool of names put in contention for a cause IS
+the budget (`--top 20`, step 2), so on a 164-row tape at most ~20 rows can carry a grounded
+catalyst, plus whatever the trending snapshot explained. Clearing 40% on a 164-row tape needs
+**66 explained rows**: the floor is not met by today's budget, and that is exactly what it is
+FOR — it names the gap instead of hiding it. Widening the pool is a spend decision for the
+fleet (the wallet is finite, and an exhausted account is its own failure); the floor's job is
+to make the gap LOUD.
+
+### WHAT THE FLOOR DOES — AND WHAT IT NEVER DOES
+
+**THE FLOOR NEVER SUPPRESSES THE CHECKPOINT.** The tape and the board are written either way.
+The floor changes how the result is **LABELLED**, never whether it is produced. A capture that
+FAILED is a different failure and keeps its own path (the errors ledger, the credit
+recogniser, the skip marker).
+
+When the coverage falls below the floor:
+
+1. **the board says so, in the file a reader opens** — a `DEGRADED` banner above the table, in
+   plain words (*the movers are priced but unexplained*), naming the CAUSE (the grounded
+   catalyst call did not explain those rows; the rest came from the trending snapshot alone)
+   and listing the **price-only names**;
+2. **the reply says so** — a `degraded:` line naming it;
+3. **the checkpoint's `errors:` count goes up by ONE** for it. The capture already counts the
+   degradation in its OWN ledger (`errors=`), so the reply's number is measured, never
+   remembered — and the degradation is never counted twice.
+
+### THE LABELS (exact)
+
+In the board's header block, next to the record count and the provenance split — the marker on
+its own line (the house pattern, cron #17's `**Contract:**`), the measurement on the next:
+
+```
+- **Coverage contract:** `preopen-coverage-v1`
+- **catalyst coverage:** 16/164 (10%) · **floor:** 40% · **unexplained:** 148 records (138 price-only · 10 narrative-only) · **BELOW FLOOR**
+```
+
+and, only when the coverage is below the floor, the banner above the table:
+
+```
+> ⚠ **DEGRADED — catalyst coverage 10% is below the 40% floor.** The movers are priced but unexplained: the catalyst budget did not cover this tape. **148 of 164 records carry no cause at all**, and **138 of those are price-only** — read those names as MOVERS, not as explained moves.
+> **Cause:** the grounded catalyst call did not explain them — 138 rows carry the pre-market scan price only (the movers scan / the pre-market band) and 10 rows come from the trending snapshot alone, which carried no reason either. The tape is complete; the EXPLANATION is not.
+```
+
+The price-only names are listed in the header too, so a reader can look up the tickers the tape
+priced and did not explain:
+
+```
+- **Price-only names (a price, no catalyst captured):** 138 of 164 records — ZBAO, OGEN, MRLN, …
+```
+
+In the reply, one line, ALWAYS:
+
+```
+catalyst coverage: 16/164 (10%) · floor 40% · BELOW FLOOR
+```
+
+and, only when the coverage is below the floor, one more line:
+
+```
+degraded: catalyst coverage 10% is below the 40% floor — 148 of 164 records carry no cause (138 price-only); the movers are priced but unexplained
+```
+
+At or above the floor the line reads `catalyst coverage: 98/164 (60%) · floor 40% · OK`, there
+is NO `degraded:` line, and the error count does not move.
+
+### THE FLOOR DOES NOT RETRO-FIRE
+
+A digest published before this rule existed is not failed for it. The board carries a **coverage
+contract marker** (`preopen-coverage-v1`), and a board that carries NO marker and predates the
+floor's effective date — **2026-11-16**, the first checkpoint under the floor — is
+**GRANDFATHERED**: it is checked against the rules in force when it was written. A board dated
+on or after the effective date MUST carry the marker and the coverage line — otherwise the
+checker fails it, because a board that quietly stopped publishing its coverage is exactly the
+silent failure this rule exists to stop.
+
 ## REPLY
 
-Under 6 lines: the checkpoint, the number of records written, how many movers carry a catalyst,
-one line for push status, one line for `errors: <n>`.
+Under 6 lines: the checkpoint, the number of records written, the **catalyst coverage** line,
+one line for push status, one line for `errors: <n>`. **SEVEN lines when the coverage is below
+the floor** — the `degraded:` line is not optional, and the floor is not a footnote.
+
+**THE COVERAGE LINE REPLACES THE OLD "how many movers carry a catalyst" LINE.** It carries the
+same count and the arithmetic around it, so it is the same line with the measurement attached:
+
+- `catalyst coverage: 16/164 (10%) · floor 40% · BELOW FLOOR` — the `16` is the number of
+  records with a non-null `why`, the `164` is the number of records, and the floor is 40%.
+- `catalyst coverage: 98/164 (60%) · floor 40% · OK` — at or above the floor.
+
+**Read the coverage from the BOARD, not from the capture's stdout.** The board is rendered
+FROM the tape, so it is the same measurement over the same rows; the capture's stdout carries
+the same numbers plus the budget (`pool=`), which is what you need to name the CAUSE.
+
+**When the coverage is below the floor, the reply says so in plain words and the error count
+goes up by ONE.** The capture already counted the degradation in its own ledger (`errors=`), so
+the number in the reply is the capture's `errors=` plus any stall error — never plus a second
+copy of the degradation:
+
+- `degraded: catalyst coverage 10% is below the 40% floor — 148 of 164 records carry no cause (138 price-only); the movers are priced but unexplained`
+- Name the budget too when the capture printed it: `pool=20` on a 164-record tape is the
+  reason the budget did not reach the movers. A degradation with no cause named is half a
+  finding.
 
 **The push line carries the DELIVERY LATENCY, and a platform stall counts in `errors:`.** The
 platform's run record measures the DISPATCH of the prompt to the agent (~1 s), not the work: on

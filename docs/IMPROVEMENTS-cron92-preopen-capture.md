@@ -572,3 +572,151 @@ rule now covers every provenance; plus the empty-row rule, the sign-conflict dem
 notional field, the article-first order, the worker pool, the credit recogniser and the
 `"conf": "high"` prohibition) and `tools/test_preopen_checkpoint_contract.py` grew from 30 to
 **41 fault-injection cases, all OBSERVED catching their breach**.
+
+---
+
+## 2026-11-13 — the tape priced the movers and explained almost none of them, and said nothing
+
+### The defect
+
+Friday 2026-11-13, cron #92 (`preopen-catalyst-capture`, checkpoints at 08:30 and 09:50 ET).
+The tape's whole job is **WHO / WHAT / WHEN** for every name materially moving pre-market.
+On that day it did the first and skipped the second and third:
+
+| Checkpoint | Records | With a catalyst | Coverage |
+|---|---|---|---|
+| 2026-11-13 08:30 | 164 | 16 | **16/164 (9.8%)** |
+| 2026-11-13 09:50 | 218 | 20 | **20/218 (9.2%)** |
+
+155 of the 08:30 records carried `cat: "other"`. The two names that needed an explanation
+most — **LFTO (+25.07% on a Q3 beat)** and **SBC (+9.6% on a Q3 print and an 8-K)** — sat on
+the tape with `cat: "other"`, `why: null`, `conf: "low"` and `news_date: null`.
+
+**And nothing said so.** The board carried a record count, a provenance split and a measured
+cost, and no measurement of the thing the tape exists to produce. The reply carried the record
+count and `errors: 0`. **A tape that is 90% unexplained reads exactly like a tape that found
+no news** — and the fleet's own rule is that a degraded run must say it degraded. This run
+was silently degraded.
+
+### Why it survived: nothing MEASURED it
+
+The 2026-11-13 rewrite made the capture much better at what it measures — the article-first
+pipeline, the parallel calls, the dated catalysts, the sign probe — and every one of those
+rules is enforced by the checker. **What was never measured was the tape's own hit rate.**
+The board published `Named catalysts: 16 of 164 records` as a *statistic*, in a line about
+catalyst classes, with nothing that said "this tape is 90% unexplained". A number in a
+statistic is not a threshold: nobody reads `16 of 164` as a failure without being told that
+it is one.
+
+### The fix — a MONITORED coverage floor
+
+**1. THE MEASUREMENT.** `catalyst_coverage = (records with a non-null `why`) / (total
+records)`, computed per checkpoint, on the rows the tape actually holds. The COUNTS travel
+with the percentage so the number is auditable rather than asserted: `named`, `unexplained`,
+`price-only` (unexplained but priced — a mover the tape priced and did not explain) and
+`narrative-only`. The **cause** of an uncovered row is in its provenance: a `src: scanner`
+row with a null `why` means the grounded catalyst call did not explain it; a
+`src: stocktwits` row with a null `why` means the trending snapshot carried no reason
+either.
+
+**2. THE FLOOR: 40%.** `CATALYST_COVERAGE_FLOOR = 0.40`. Why 40 and not 10: on the Friday
+evidence (9.8% and 9.2%) a 40% floor flags BOTH checkpoints, and a floor at 10% would have
+been cleared by accident on a day when the tape explained one name in ten. Why 40 and not 80:
+the tape is WIDE (the band held 458 names on 2026-11-13; the tape carries 130–220 rows) while
+the catalyst budget is BOUNDED (the provider's spend is metered — 200 credits per article
+call), so a floor above ~40% is arithmetically unreachable with any budget the fleet can pay
+for. **A gate that can never be cleared is not a gate.**
+
+**Read the arithmetic before the verdict.** The pool of names in contention for a cause IS the
+budget (`--top 20`), so on a 164-row tape at most ~20 rows can carry a grounded catalyst, plus
+whatever the trending snapshot explained. Clearing 40% on a 164-row tape needs **66 explained
+rows**: the floor is not met by today's budget, and that is exactly what it is FOR — it names
+the gap instead of hiding it. Widening the pool is a spend decision for the fleet (the wallet
+is finite, and an exhausted account is its own failure); the floor's job is to make the gap
+LOUD.
+
+**3. THE LABELS.** The board's header block carries the measurement next to the record count
+and the provenance split:
+
+```
+- **Coverage contract:** `preopen-coverage-v1`
+- **catalyst coverage:** 16/164 (10%) · **floor:** 40% · **unexplained:** 148 records (138 price-only · 10 narrative-only) · **BELOW FLOOR**
+```
+
+and below the floor, above the table, a banner in plain words — *the movers are priced but
+unexplained* — naming the cause and listing the price-only names. The reply carries
+`catalyst coverage: 16/164 (10%) · floor 40% · BELOW FLOOR` and, when the coverage is below
+the floor, a `degraded:` line; the checkpoint's `errors:` count goes up by ONE for it, counted
+in the CAPTURE's own ledger so the reply's number is measured and never counted twice.
+
+**4. THE FLOOR NEVER SUPPRESSES THE CHECKPOINT.** The tape and the board are written either
+way; the floor changes how the result is LABELLED, never whether it is produced. A capture
+that FAILED is a different failure and keeps its own path (the errors ledger, the credit
+recogniser, the skip marker).
+
+### The grandfather — a pre-fix board is not failed for a rule that post-dates it
+
+The Friday boards (2026-11-13-0830.md, -0950.md) predate the rule and carry no coverage
+contract marker. Failing a historical artifact for a rule that post-dates it is a false alarm,
+and the fleet's auditors treat those as findings — so the marker decides which rule set
+applies, exactly as cron #17's `in-play-artifact-v1` / `v2` marker does:
+
+- a board carrying the CURRENT marker (`preopen-coverage-v1`) is checked against the floor in
+  full;
+- a board carrying NO marker and published **before 2026-11-16** (the first checkpoint under
+  the floor) is **GRANDFATHERED** — checked against the rules in force when it was written;
+- a board carrying NO marker and published on or after 2026-11-16 is NOT grandfathered: it was
+  written under the rule, so it must publish its coverage.
+
+The date boundary is what stops the grandfather from becoming a hole: a renderer that quietly
+stopped publishing its coverage is exactly the silent failure the rule exists to stop.
+
+**Verified against the real Friday artifacts (2026-11-13).** The checker reports the coverage
+rule as **not applicable** to both boards (grandfathered), and they still fail **four**
+pre-existing checks — `no undated catalyst is published as high/medium confidence`,
+`no row is published with neither a number nor a cause`, `every row carries a sign_conflict
+verdict` and `every row carries the pre-market dollar notional behind its print`. Those four
+post-date the Friday capture too (that tape has no `pm_notional` and no `sign_conflict` field
+at all) and are **deliberately NOT grandfathered**: they are real defects of that day's
+capture, not a missing label. Grandfathering them is a separate decision and was not taken
+here.
+
+### The gates
+
+`tools/check_preopen_checkpoint.py` grew from 113 to **142 checks** (the floor and the
+arithmetic in the procedure, the capture's measurement and error ledger, the renderer's
+contract marker / floor / coverage line / banner, and the dynamic coverage checks: the line is
+present, the numerator, denominator and percentage match the tape, the uncovered count matches,
+the floor verdict matches the arithmetic, a below-floor board carries the DEGRADED banner and
+names the cause and the price-only names, and a board at or above the floor carries NO banner).
+
+`tools/test_preopen_checkpoint_contract.py` grew from 41 to **49 fault-injection cases, all
+OBSERVED catching their breach**, including: a board that stops publishing the coverage line,
+a board whose coverage arithmetic does not match its tape, a below-floor board with the
+DEGRADED banner removed, a board at the floor that carries a DEGRADED banner, a renderer that
+stops publishing the coverage line, a procedure that drops the floor, and a capture that stops
+counting a coverage degradation as an error. `tools/test_preopen_digest_contract.py` gained
+the coverage assertions (published line, arithmetic, marker, floor, the banner on a
+below-floor board, the price-only list) and two more fault injections (a renderer that stops
+publishing the coverage, one that stops degrading).
+
+### The rule this exposes
+
+*A measurement with no threshold is a statistic, not a gate.* The capture was excellent at
+measuring what it measured — the dates, the directions, the costs — and silent about the one
+number that says whether the tape did its job. The fleet already knew this in another place
+(the halt state: never publish `0`, publish `not measurable`); the same rule says that a
+tape's OWN hit rate cannot be left unmeasured, and a measurement that can be bad cannot be
+left un-thresholded.
+
+### Do-not list
+
+- Do NOT let the floor suppress the checkpoint. The tape and the board are written either way.
+- Do NOT publish a coverage number without the counts behind it — a percentage nobody can
+  audit is a claim.
+- Do NOT publish `0` or "no news" for an unexplained tape. `16/164 (10%)` under the floor is
+  the honest reading, and it is a DEGRADATION.
+- Do NOT count the coverage degradation twice: the capture counts it in `errors=` and the
+  reply adds a stall error if there is one, nothing more.
+- Do NOT use the grandfather to hide a board that stopped publishing its coverage. The marker
+  and the date boundary are the two halves of that rule.
