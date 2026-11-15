@@ -94,15 +94,54 @@ Every published row of every table (including the QUIET one-liners) carries:
 | `Ref close` | the close the move is measured against |
 | `Ref source` | where that close came from (`yahoo_chart_daily`) |
 | `Ref asof` | the DATE of that close |
-| `US tradeable` | `US-listed` / `US-listed (ADR)` / `ADR (VENUE:TICKER)` / `none` |
+| `US tradeable` | `US-listed` / `US-listed (ADR)` / `US line (VENUE:TICKER)` / `ADR (VENUE:TICKER)` / `none` |
+| `Last earnings` | the date of the name's LAST report — **the bulk earnings calendar is the source of record** (the section below); the screener's field is the fallback |
 | `Move vs avg daily` | the reaction ÷ the name's own mean absolute daily move over its last 20 completed sessions (`n/a` when it cannot be derived) |
 | `Settle` | `live` or `settled` — **on every foreign row** (EU/UK, AU, APAC/Gulf) |
 
 `Move vs avg daily` is the point of the actionable layer: a −27% move in a name
 that averages ±3% is a different event from a −8% move in a name that averages
 ±7%. `US tradeable` is what makes a foreign row actionable: a Euronext or
-Swedish ticker a US reader cannot buy is `none`, and an ADR carries its US
+Swedish ticker a US reader cannot buy is `none`, and a US line carries its US
 ticker.
+
+**THE INSTRUMENT FORM COMES FROM THE SECURITY, NEVER FROM THE ISSUER'S
+COUNTRY.** `(ADR)` is published only when the security itself says it is a
+depositary form — the scanner's `type` column (`dr`), or a description naming
+a depositary. The old rule ("country ≠ United States ⇒ ADR") called 16 of the
+115 US rows on 2026-11-12 ADRs, and most of them were not: NBIS (Nebius
+Group N.V.) lists its Class A **ordinary shares** directly on Nasdaq, as do AEM,
+TSEM, NVMI, FN, IREN and DPC. A security with no evidence either way is
+published as `US-listed`, never as an ADR.
+
+### The bulk earnings calendar — the source of record for the earnings date
+
+**One call to Nasdaq's public earnings calendar answers "did this name report,
+and when" for the WHOLE US market.** It is fetched once per run — the scan date
+and the 7 prior calendar days — and it is the source of record for the
+published `Last earnings` date.
+
+**Why it replaces the screener's field.** TradingView's
+`earnings_release_date` is refreshed per company and ASYNCHRONOUSLY. At the
+08:03 ET scan on 2026-11-12, NBIS — which had reported PRE-OPEN that morning —
+still carried `2026-08-12`, the previous quarter. A verdict built on that field
+is not a missing verdict but a **false** one: the old test ("did
+`earnings_release_date` land within 7 days of today?") would have marked NBIS
+`N` — not earnings-driven — on the very morning it reported.
+
+**Every disagreement is published, never silently corrected**:
+`earnings_field_stale_rows: <n>` in source health, with the rows listed in
+`earnings_field_stale_detail`.
+
+**The calendar's `time` field is NOT usable** for the pre-open / after-close
+split (measured 2026-11-12: 444 of 448 rows read `time-not-supplied`), so
+freshness comes from the REPORT DATE and the artifact's own `AMC`/`PRE_GAP`
+tag.
+
+**It reaches the US markets only.** EarningsWhispers answers
+(`?d=YYYY-MM-DD`, no block) but carries no ASX / STO / XETR names, so the
+foreign rows still use the screener's field and still carry its lag — a known
+gap, not a silent one.
 
 ### `Settle` — the row says whether its move is finished
 
@@ -180,16 +219,25 @@ counted as one.
 
 A degraded source is a source that did not answer: a rate-limited or failing
 Yahoo endpoint, a reference close that could not be resolved, a scanner call
-that failed, the US-line index that could not be built. A market returning few
-rows is **not** a degraded source (it is a coverage note), and a row dropped by
-the reference-close gate is **not** a degraded source either — it is counted in
-`rows_dropped_stale_ref`.
+that failed, the US-line index that could not be built, the earnings calendar
+that did not answer. A market returning few rows is **not** a degraded source
+(it is a coverage note), and a row dropped by the reference-close gate is
+**not** a degraded source either — it is counted in `rows_dropped_stale_ref`.
+
+Source health also publishes the catalyst machinery, so a reader can see how
+the catalyst cells were allocated: `catalyst_budget:` (the split and the cap),
+`earnings_calendar:` (the calls, the errors and the symbols), `earnings_tiers:`
+(`fresh=` the reports dated on the scan date, `near=` the previous session),
+and `earnings_field_stale_rows:` with its detail line.
 
 ### The audit line
 
 `earnings-reaction target=earnings-reactions:<date> candidates=<n>
 amc_reactions=<n> pre_gaps=<n> eu_reactions=<n> asx_reactions=<n>
-catalyst_lookups=<n> bod=<n> rows_dropped_stale_ref=<n> degraded_sources=<n>`
+catalyst_lookups=<n> bod=<n> earnings_calendar_rows=<n>
+earnings_tiers_fresh=<n> earnings_tiers_near=<n>
+earnings_field_stale_rows=<n> rows_dropped_stale_ref=<n>
+degraded_sources=<n>`
 
 ### The catalyst catalog file
 
@@ -215,19 +263,57 @@ of that run's researched EU rows.
 **`no fresh catalyst found` IS a verdict** — it means the lookup ran and found
 nothing earnings-related, so `N` is correct there.
 
-**The lookup targets are chosen by the pipeline, and they are chosen from the
-NEXT-report date.** The screener's `earnings_release_date` (the LAST report)
-lags badly — on 2026-11-05 it read 2025-02-13 for a name that reported the
-previous day, and 2026-08-06 for a name that reported that morning — so
-"last earnings within 7 days" is **not** a usable earnings test on a foreign
-row. `earnings_release_next_date` (the NEXT scheduled report) is the reliable
-half of the field, so for EU/UK, AU and APAC/Gulf the pipeline aims the
-lookups at the names **due to report soonest** (within 14 days), breaking ties
-by the size of the move.
+**The lookup targets are chosen by the pipeline, and they are chosen BY THE
+EVIDENCE GAP — not by the size of the move alone.**
 
-**Budget: 5 US + 3 EU + 2 AU + 3 APAC/Gulf = 13 lookups per run.** The US
-lookups keep their own rule (the first 3 `AMC_REACTION` rows, then the biggest
-`PRE_GAP` rows).
+**The US rows are tiered by the bulk earnings calendar:**
+
+| Tier | Meaning | Rank |
+|---|---|---|
+| `fresh` | the report is dated on the SCAN DATE — hours old, and the only thing that can explain today's pre-market gap | 1st |
+| `near` | the report is dated on the PREVIOUS session — the reaction may already be in yesterday's close | 2nd |
+| `none` | no report inside the window | 3rd |
+
+Within a tier the order is by the size of the move, and an `AMC_REACTION` row
+is always first.
+
+**Why freshness ranks above size.** On 2026-11-12 the biggest movers were ALL
+earnings names, so ranking by `|gap|` could not tell them apart — and it left
+NBIS, which had reported THAT MORNING, outside the budget while a name whose
+report was a day old took a slot. A report that is hours old has had minutes to
+be priced; a report from yesterday has had a whole session.
+
+**The foreign rows are chosen from the NEXT-report date.** The screener's
+`earnings_release_date` (the LAST report) lags badly — on 2026-11-05 it read
+2025-02-13 for a name that reported the previous day, and 2026-08-06 for a
+name that reported that morning — so "last earnings within 7 days" is **not**
+a usable earnings test on a foreign row. `earnings_release_next_date` (the
+NEXT scheduled report) is the reliable half of the field, so for EU/UK, AU and
+APAC/Gulf the pipeline aims the lookups at the names **due to report soonest**
+(within 14 days), breaking ties by the size of the move.
+
+**The budget is allocated by the evidence gap and capped at 16 lookups per
+run** (from 5 US + 3 EU + 2 AU + 3 APAC/Gulf before allocation):
+
+* the **US slice** covers every `fresh` row plus the next freshest ones, up to
+  the ceiling;
+* the **EU / AU / APAC floors are never squeezed** — no bulk calendar reaches
+  those markets, so a search is the only way to know;
+* whatever the US slice does not need goes to the region with the most
+  unexplained rows.
+
+The pipeline writes the resulting split into the catalog file's header, into
+source health (`catalyst_budget:`) and into the targets JSON (`budget`,
+`budget_total`, `budget_cap`) — **the agent reads the split from those files,
+never from a number in a prompt.** The cap exists because of the clock, not the
+coverage: one search is ~30–40 s, and 16 of them keep the 08:00 ET fire inside
+~20 minutes.
+
+**A row the calendar covers but that is NOT researched keeps a calendar event
+line and carries NO verdict.** The cell reads, for example, `Q3 2026 results,
+report date today (Nasdaq earnings calendar; no headline lookup), consensus EPS
+($0.61)` — the FACT, with its source, and no invented headline. The verdict
+follows the research, never the other way round.
 
 The agent writes `catalog/catalysts/<date>.md` — one markdown table,
 `| Ticker | Region | Catalyst | Earnings-driven |`. The pipeline **merges each
@@ -238,8 +324,10 @@ is missing says so honestly: `pending catalyst lookup` (it is inside the
 per-run budget) or `no catalyst lookup (outside the per-run budget)`.
 **Never fabricate a catalyst** — `no fresh catalyst found` is a valid cell.
 
-The per-run budget is 5 US + 3 EU + 2 AU + 3 APAC/Gulf = 13 lookups, and the
-ticker list is `earnings/<date>-catalyst-targets.json`.
+The per-run budget is **allocated, not fixed** — read the split from
+`earnings/<date>-catalyst-targets.json` (`budget`, `budget_total`,
+`budget_cap`), which is where the pipeline publishes it. The ticker list is in
+the same file.
 
 ### The per-market cap
 
@@ -525,9 +613,9 @@ Major ASX names with off-cycle quarterly reports (CSL, CBA, BHP, RIO, NAB) repor
 - Always show both pre- and post-market % for US when both present.
 - EU threshold (2.5%) > US pre-market threshold (2%) — live session is noisier than extended hours.
 - **Always apply the primary-listing exchange whitelist before downstream calls.** Without it, the brief is dominated by retail mirrors and OTC duplicates.
-- **Published-row caps: EU 30, AU 25.** The US tables are NOT capped at 60: the reference-close cross-check is cheap (one Yahoo daily-chart call per row) and it must cover **every** row that reaches a table — a stale-reference row can hide anywhere, so a top-N subset would leave unvalidated rows published. The US ceiling is therefore the screener passes themselves (Pass A top-250 by market cap, Pass B top-200 each way). **The cap that matters is the CATALYST budget: 10 lookups (5 US + 3 EU + 2 AU).**
+- **Published-row caps: EU 30, AU 25.** The US tables are NOT capped at 60: the reference-close cross-check is cheap (one Yahoo daily-chart call per row) and it must cover **every** row that reaches a table — a stale-reference row can hide anywhere, so a top-N subset would leave unvalidated rows published. The US ceiling is therefore the screener passes themselves (Pass A top-250 by market cap, Pass B top-200 each way). **The cap that matters is the CATALYST budget: 16 lookups per run, allocated by the evidence gap (the US slice covers the fresh earnings events, the EU/AU/APAC floors are never squeezed, and the leftover goes to the region with the most unexplained rows).**
 - **Every published row is validated**, including the US QUIET one-liners — that is why they carry the reference-close columns too.
-- Catalyst calls: **5 US + 3 EU + 2 AU = 10/run**.
+- Catalyst calls: **up to 16/run**, allocated by the evidence gap — read the split from `earnings/<date>-catalyst-targets.json`.
 - **Coverage gap detector** — for each screener call, if `total_count < 5` AND the market should be open (per the holiday table below), log `_warn=empty_screener_<market>` to source health. This catches the `south_korea` → 0 bug class without changing the screener params. Same logic also serves as the holiday detector — closed markets return 0 or near-0 rows.
 - Do NOT scan all 500 S&P 500 names — top-200 is the upper bound.
 - Do NOT expand the EU/ASX list without verifying screener coverage first.
@@ -569,6 +657,7 @@ For now, document the cross-region case in source health: `cross_region_dupes_kn
 - Structured EU/AU earnings calendar — TradingView's `earnings_release_next_date` screener field is a known untested path; documented above.
 
 ## Change history
+- **v5 — 2026-11-15.** The **bulk earnings calendar** becomes the source of record for the US earnings date and the ranking key for the catalyst budget. (1) `Last earnings` now comes from Nasdaq's public earnings calendar (scan date + 7 prior days, one call each); the screener's `earnings_release_date` is the fallback and every disagreement is published as `earnings_field_stale_rows` + `earnings_field_stale_detail`. Measured 2026-11-12: NBIS published `2026-08-12 (92d ago)` although it had reported PRE-OPEN that morning — a FALSE-verdict trap, not a missing one, and the replay also caught ANAB and FLO. (2) The catalyst budget is **allocated by the evidence gap** and capped at 16: the US slice covers the `fresh` rows (the reports dated on the scan date) plus the next freshest, the EU/AU/APAC floors are never squeezed, and the leftover goes to the region with the most unexplained rows; the split is published in the catalog file header, in source health and in the targets JSON, never pinned in a prompt. (3) The instrument form comes from the SECURITY, not the issuer's country: `(ADR)` only when the scanner's `type` is `dr` (or the description names a depositary), so NBIS/AEM/TSEM/NVMI/FN/IREN/DPC are no longer mislabelled ADRs (16 rows on 2026-11-12), and a foreign row's US line reads `US line (VENUE:TICKER)` unless it really is a depositary form. (4) A calendar-covered row that was NOT researched keeps an event line (`Q3 2026 results, report date today (Nasdaq earnings calendar; no headline lookup), consensus EPS ($0.61)`) and carries NO verdict.
 - **v4 — 2026-11-05.** The **ARTIFACT FORMAT CONTRACT v2** (`REACTION_ARTIFACT_V2`) above. Four fixes: (1) the pre-market checker's Eastern-time handling — the ET window is now 04:00-09:30 ET resolved with `zoneinfo` on a WINTER and a SUMMER date, the base close is the IMMEDIATELY prior session, and the pipeline is fetched only when it carries the capability marker, so a stale CDN blob cannot run the old procedure; (2) the reference close is resolved FIRST from one authoritative source and is a hard gate — every published row carries `Ref close` / `Ref source` / `Ref asof`, and a row whose base is older than the previous session is dropped and counted in `rows_dropped_stale_ref`; (3) a new `## Actionable read` section with the `Move vs avg daily` and `US tradeable` columns and one not-yet-fully-priced hypothesis per region; (4) the one-table rule — the separate `## Catalysts` section is gone and the catalyst rides in the row. `degraded_sources` counts each degraded source separately and the reply's `errors:` must match it. Checker `tools/check_reaction_artifact.py`, regression test `tools/test_reaction_contract.py`.
 - **v3.3 — 2026-09-23.** Added **coverage gap detector** — `total_count < 5` triggers `_warn=empty_screener_<market>`. Catches the `south_korea` → 0 bug class. Also serves as holiday detector. Added **Holiday / market-status detection** section documenting common holidays per region (US, UK/EU, AU) with the screener-as-signal pattern. Documented **cross-region dedupe** limitation (companies like ASML on AMS + NASDAQ appear in separate sections; v4 plan to dedupe via ISIN from yahoo-finance `get_company_info`).
 - **v3.2 — 2026-09-23.** Added Pass D (Australia/ASX). 1 market (australia), threshold 2.5%, market_cap floor $500M (lower than EU/US because ASX has fewer mega-caps), close floor $1 (lower because ASX has many $2-5 real listings). ASX exchange added to priority table at #19. Catalyst budget 2 calls for AU (cap by |change %|). Earnings cycle note for ASX (Feb interim + Aug full-year reporting seasons). Out-of-scope: TSX (Pass E candidate) and NZX.

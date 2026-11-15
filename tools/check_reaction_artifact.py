@@ -74,7 +74,11 @@ SETTLE_VALUES = {"live", "settled"}
 # lookup not performed", a false verdict on 10% of that run's researched rows.
 NO_RESEARCH_MARKERS = ("no catalyst lookup", "pending catalyst lookup",
                        "not performed", "outside the per-run budget",
-                       "lookup not performed", "no lookup performed")
+                       "lookup not performed", "no lookup performed",
+                       # the bulk calendar's event line states the FACT (a report
+                       # is dated on this day) and says plainly that no headline
+                       # was looked up - so it carries NO verdict either.
+                       "no headline lookup")
 
 # Rows per market in the EU/UK and APAC/Gulf tables. Without the cap the EU
 # table was 28% Sweden over nine runs while Belgium and Greece never appeared.
@@ -306,6 +310,25 @@ def row_ref_floor(session_asof, venue, market=None):
         except Exception:
             return None
     return prev
+
+
+def _version_ge(v, floor):
+    """True when version v is >= floor.
+
+    The pipeline's version is a DATE plus a patch number - '2026-11-15.1' -
+    so a plain dotted-numeric compare is wrong here: it would read '2026' as
+    the whole version and let an old artifact through the new contract.
+    """
+    def parse(x):
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:\.(\d+))?$", (x or "").strip())
+        if not m:
+            return None
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                int(m.group(4) or 0))
+    a, b = parse(v), parse(floor)
+    if a is None or b is None:
+        return False
+    return a >= b
 
 
 def scan_date_of(text):
@@ -558,6 +581,63 @@ def check(path, reply_text=None):
         cm = re.search(r"rows_dropped_stale_ref:\s*(\d+)", sh)
         if not cm:
             failures.append("COUNTS: `rows_dropped_stale_ref` is not a number")
+
+    # ---- the new contract applies from its own pipeline version ---------
+    # A contract's first covered day is the day the CONTRACT landed. The
+    # 2026-11-12 artifact was produced by pipeline 2026-11-11.2, which had
+    # neither the bulk calendar nor the allocated budget, so these checks do
+    # not apply to it - they are a regression gate for the NEW pipeline, not a
+    # retroactive verdict on an old artifact.
+    pvm = re.search(r"pipeline_version:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]+)?)", sh)
+    pipeline_version = pvm.group(1) if pvm else ""
+    calendar_contract = _version_ge(pipeline_version, "2026-11-15.1")
+
+    # ---- CALENDAR - the earnings calendar's published state ---------------
+    # The bulk earnings calendar is the source of record for the US earnings
+    # date, and every disagreement with the screener's field is PUBLISHED. A
+    # calendar that silently disagrees publishes a wrong date with no trace.
+    if not calendar_contract:
+        pass
+    elif "earnings_field_stale_rows" not in sh:
+        failures.append("CALENDAR: the source health section does not publish "
+                        "`earnings_field_stale_rows` - the earnings date has no "
+                        "published provenance")
+    else:
+        sm = re.search(r"earnings_field_stale_rows:\s*(\d+)", sh)
+        if not sm:
+            failures.append("CALENDAR: `earnings_field_stale_rows` is not a number")
+        elif int(sm.group(1)) > 0 and "earnings_field_stale_detail" not in sh:
+            failures.append("CALENDAR: earnings_field_stale_rows is "
+                            f"{sm.group(1)} but no detail line is published")
+
+    # ---- BUDGET - the catalyst budget is ALLOCATED and published ----------
+    bm = (re.search(r"catalyst_budget:\s*(\d+)\s+US\s*\+\s*(\d+)\s+EU\s*\+\s*"
+                    r"(\d+)\s+AU\s*\+\s*(\d+)\s+APAC/Gulf\s*=\s*(\d+)\s+lookups",
+                    sh) if calendar_contract else None)
+    if not calendar_contract:
+        pass
+    elif not bm:
+        failures.append("BUDGET: the source health section does not publish the "
+                        "catalyst budget split (`N US + N EU + N AU + N APAC/Gulf "
+                        "= N lookups per run`)")
+    else:
+        us_n, eu_n, au_n, ap_n, tot = (int(x) for x in bm.groups())
+        if us_n + eu_n + au_n + ap_n != tot:
+            failures.append("BUDGET: the catalyst_budget split sums to "
+                            f"{us_n + eu_n + au_n + ap_n} but publishes {tot}")
+        if tot > 16:
+            failures.append(f"BUDGET: the catalyst budget publishes {tot} lookups, "
+                            "over the skill's cap of 16")
+
+    # ---- TIERS - the earnings event tiers are published -------------------
+    if not calendar_contract:
+        pass
+    elif "earnings_tiers" not in sh:
+        failures.append("TIERS: the source health section does not publish "
+                        "`earnings_tiers` - the ranking key for the catalyst "
+                        "budget is invisible")
+    elif not re.search(r"earnings_tiers:\s*fresh=\d+\s+near=\d+", sh):
+        failures.append("TIERS: `earnings_tiers` must publish fresh=<n> near=<n>")
 
     # ---- the audit line must name the drops ---------------------------
     if "rows_dropped_stale_ref" not in "\n".join(sections.get("Audit line", [])):
