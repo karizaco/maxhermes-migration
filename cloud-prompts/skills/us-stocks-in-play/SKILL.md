@@ -613,7 +613,9 @@ The open board therefore carries a **second, gap-ranked table**:
 - **The pre-close slot does not carry this table.** Its settled screen has a full-session
   dollar-volume floor (~$2-5m, four to ten times the open slot's) and its Tier B is already
   MOVE-ranked under contract v2, so the same hole is far smaller there. The open slot is
-  where the tradeable window is, and it is where the hole was measured.
+  where the tradeable window is, and it is where the hole was measured. **The pre-close board
+  carries the same v3 marker but NOT this table** — the rule is an open-slot rule, and the
+  checker enforces it only for `--slot open`.
 
 #### The open slot reads the ntrt gap brief — a catalyst source that is 50 minutes old
 
