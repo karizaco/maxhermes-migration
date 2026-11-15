@@ -235,7 +235,7 @@
       "19-earnings-reminder-daily.md": {
         "spec_path": "cloud-prompts/skills/earnings-reminder/SKILL.md",
         "bundle": "cloud-prompts/skills/earnings-reminder",
-        "marker": "EARNINGS_REMINDER_V3"
+        "marker": "EARNINGS_REMINDER_V4"
       },
       "22-weekly-market-recap-preview.md": {
         "spec_path": "cloud-prompts/skills/agentic-weekly-brief/SKILL.md",
