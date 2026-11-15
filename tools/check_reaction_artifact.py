@@ -103,6 +103,7 @@ COLUMN_PATTERNS = {
     "session_asof": r"^session asof$|^session_asof$|^session \(.*\)$",
     "catalyst": r"^catalyst$|^catalyst \(.*\)$",
     "earn": r"^earn$|^earn \(.*\)$|^earnings-driven$|^earnings driven$",
+    "last_earnings": r"^last earnings$|^last_earnings$|^last earnings \(.*\)$",
 }
 
 # The NYSE holidays: the US reference close is the one that must never be
@@ -629,6 +630,41 @@ def check(path, reply_text=None):
     pvm = re.search(r"pipeline_version:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]+)?)", sh)
     pipeline_version = pvm.group(1) if pvm else ""
     calendar_contract = _version_ge(pipeline_version, "2026-11-15.1")
+    datechain_contract = _version_ge(pipeline_version, "2026-11-15.4")
+
+    # ---- DATESPLIT - the prose date and the date column must agree ----
+    # The catalyst cell names the report date ("... (reported 2026-11-12):")
+    # and the row's `Last earnings` column publishes the date the move was
+    # measured against. When they disagree, the row carries a headline that
+    # says one thing and a date that says another - which is exactly what the
+    # 2026-11-12 artifact did for a same-morning reporter (MEKO, NORBT, FG).
+    for title, ti, header, cells, ri in published:
+        cat_idx = column_index(header, "catalyst")
+        er_idx = column_index(header, "last_earnings")
+        if cat_idx is None or er_idx is None:
+            continue
+        cat = cells[cat_idx].strip() if cat_idx < len(cells) else ""
+        er = cells[er_idx].strip() if er_idx < len(cells) else ""
+        m = re.search(r"reported\s+(\d{4}-\d{2}-\d{2})", cat, re.I)
+        if not m:
+            continue
+        m2 = re.match(r"^(\d{4}-\d{2}-\d{2})", er)
+        if not m2:
+            failures.append(
+                f"DATESPLIT: {title} row {ri} - the catalyst cell names a report date "
+                f"({m.group(1)}) but the Last earnings cell carries no date ({er!r})")
+        elif m2.group(1) != m.group(1):
+            failures.append(
+                f"DATESPLIT: {title} row {ri} - the catalyst cell says reported "
+                f"{m.group(1)} but Last earnings says {m2.group(1)}")
+
+    # ---- CENSUS - where the published earnings dates came from -----------
+    if datechain_contract and "earnings_dates:" not in sh:
+        failures.append("CENSUS: the source health section does not publish the "
+                        "`earnings_dates:` census (catalog / calendar / asx / "
+                        "screener) - the reader cannot see how much of the table "
+                        "rests on the lagging screener field")
+
 
     # ---- CALENDAR - the earnings calendar's published state ---------------
     # The bulk earnings calendar is the source of record for the US earnings

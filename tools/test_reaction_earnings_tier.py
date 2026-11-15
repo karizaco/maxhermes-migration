@@ -192,6 +192,45 @@ def main():
     check(CALENDAR_HITS["NBIS"][0] == "2026-11-12",
           "the calendar says NBIS reported on the scan date")
 
+    # --- the ASX announcements feed: the AU source of record -------------
+    check("fetch_asx_announcements" in src and
+          "prevBusDayAnns.do" in src,
+          "the pipeline fetches the ASX announcements feed")
+    check("is_asx_earnings_headline" in src,
+          "the pipeline classifies ASX results announcements")
+    asx_lib = extract(src, "is_asx_earnings_headline")
+    # the classifier reads two module-level regex tuples - exec them too
+    _c0 = src.index("ASX_REPORT_INCLUDE = (")
+    _c1 = src.index("def fetch_asx_announcements", _c0)
+    exec(src[_c0:_c1], asx_lib)
+    asx = asx_lib["is_asx_earnings_headline"]
+    # The measured ASX feed (2026-11-13): 51 rows were meeting/AGM results and
+    # exactly 3 were real earnings reports.
+    check(asx("DPM Reports Q3 2026 Financial Results") is True,
+          "a Q3 financial-results announcement IS a report")
+    check(asx("Q3 Result Presentation") is True,
+          "a Q3 results presentation IS a report")
+    check(asx("First Quarter Results Presentation") is True,
+          "a first-quarter results presentation IS a report")
+    check(asx("Results of Meeting") is False,
+          "a meeting result is NOT a report")
+    check(asx("Results of Annual General Meeting") is False,
+          "an AGM result is NOT a report")
+    check(asx("2026 AGM Results") is False,
+          "an AGM result is NOT a report")
+    check(asx("Assay results from maiden RC Drilling Program") is False,
+          "an assay result is NOT a report")
+    check(asx("Entitlement Offer Results") is False,
+          "an offer result is NOT a report")
+
+    # --- the published earnings date: ONE chain, researched first ---------
+    check("earnings_date_for" in src and "catalog_entry" in src,
+          "the pipeline publishes the earnings date through one chain")
+    check('"rdate": rdate' in src,
+          "the catalog carries the researched report date")
+    check("ASX_ANN" in src and '"asx"' in src,
+          "the chain includes the ASX feed as a source")
+
     # --- the ADR test, executed from the shipped source ------------------
     lib2 = extract(src, "is_adr_security")
     am = re.search(r"^ADR_TEXT_MARKERS = .*?\)\s*$", src, re.S | re.M)

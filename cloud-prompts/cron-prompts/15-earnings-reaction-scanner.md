@@ -295,13 +295,21 @@ morning). For EU/AU names apply the skill's keyword test (earnings / results / Q
 misses / reports / guidance; plus interim, half-year, full-year, dividend, ASIC, iron ore,
 lithium, gold for AU).
 
+**Read TWO things from each page you open: the headline AND the report date.** The catalog table has a
+`Report date` column (`YYYY-MM-DD`) — fill it when the research found an earnings event, and put the
+SAME date in the headline as `(reported YYYY-MM-DD)`. The release you already opened carries its own
+date, so it costs nothing, and it is the only source that is right for a name that reported this
+morning — the screener's own field lags (on 2026-11-12 it read 2026-08-12 for a name that had reported
+that day). The pipeline publishes that date as the row's `Last earnings`, and the checker fails an
+artifact where the two disagree.
+
 **Then write the catalyst table to `/workspace/catalog/catalysts/<date>.md`** (mkdir -p first)
 and re-run the pipeline, which **merges each row into that ticker's row in the artifact**. The
 artifact has NO separate `## Catalysts` section — the catalyst is the last column of its row, so
 a name can never appear twice in the markdown. Doing it this way means a re-run never wipes your
 work. You may also edit the table in place instead, but then do not re-run the pipeline afterwards.
 
-The file's format is one markdown table — `| Ticker | Region | Catalyst | Earnings-driven |` —
+The file's format is one markdown table — `| Ticker | Region | Catalyst | Earnings-driven | Report date |` —
 with the tickers from `/workspace/earnings/<date>-catalyst-targets.json`.
 The pipeline writes a starter skeleton if the file is missing; fill it in and re-run.
 

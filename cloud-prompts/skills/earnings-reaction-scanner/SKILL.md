@@ -140,10 +140,43 @@ split (measured 2026-11-12: 444 of 448 rows read `time-not-supplied`), so
 freshness comes from the REPORT DATE and the artifact's own `AMC`/`PRE_GAP`
 tag.
 
-**It reaches the US markets only.** EarningsWhispers answers
+### The published `Last earnings` — ONE chain, in this order
+
+1. the **researched** date from the catalyst catalog (the issuer's own
+   release, read while fetching the headline);
+2. the **bulk calendar** (US);
+3. the **ASX announcements feed** (AU);
+4. the **screener's field** — the fallback, and the one that lags.
+
+Source health publishes the census (`earnings_dates: catalog <n>, calendar
+<n>, asx <n>, screener <n>`), so a reader can see how much of the table rests
+on the lagging source on any given day.
+
+**The bulk calendar reaches the US markets only.** EarningsWhispers answers
 (`?d=YYYY-MM-DD`, no block) but carries no ASX / STO / XETR names, so the
 foreign rows still use the screener's field and still carry its lag — a known
 gap, not a silent one.
+
+### The ASX announcements feed — the AU answer to the stale earnings date
+
+**One call to the ASX announcements feed returns every announcement the
+exchange published for its last completed session, each with its date — and
+the announcement date IS the report date.** The screener's field had a 78-day
+median age on the ASX rows of the 2026-11-12 artifact; this feed closes that
+gap for AU at the cost of one HTTP call.
+
+The feed also tells the pipeline WHICH ASX names REPORTED in that session, so
+an AU row whose results landed overnight is the freshest event on that market
+— the same role the bulk calendar plays for the US, and the same rule: a fresh
+event outranks a name that is merely due to report soonest.
+
+**The classifier is POSITIVE and the noise is EXCLUDED.** One ASX day carried
+37 headlines with "results" in them, and 51 rows were meeting/AGM results
+("Results of Meeting", "2026 AGM Results"), plus an assay result and an
+entitlement-offer result. Matching "results" loosely dates every AGM as a
+report. The shipped classifier matches the REPORT FORMS (Appendix 4E/4D/4F,
+`Q3 … results`, `First Quarter Results Presentation`, `financial results`)
+and excludes meetings, AGMs, offers, assays and remuneration reports.
 
 ### `Settle` — the row says whether its move is finished
 
@@ -253,6 +286,20 @@ re-run never wipes the research.
 | `Region` | `US` / `EU` / `AU` / `APAC/Gulf` |
 | `Catalyst` | the sourced headline, or `no fresh catalyst found` |
 | `Earnings-driven` | `Y`, `N`, or **empty** |
+| `Report date` | `YYYY-MM-DD` — the date of the report, **when the research found an earnings event**; empty otherwise |
+
+**THE REPORT DATE IS THE SECOND THING THE LOOKUP READS.** The lookup already
+opens the issuer's own release to get the headline — the release carries its
+own date, so the date costs NOTHING extra, and it is the only source that is
+right for a same-morning reporter. Put it in the `Report date` column, and
+put the SAME date in the catalyst cell in the canonical form
+`<quarter> <FY> results (reported YYYY-MM-DD): <what happened>`. The pipeline
+publishes the `Report date` as the row's `Last earnings`, and the checker
+compares the two — so a headline that says "reported 2026-11-12" beside a
+`Last earnings` of 2026-08-12 FAILS the contract.
+
+**A researched report date BEATS every other source** for that row: it is
+first-hand, and it is the date the market actually reacted to.
 
 **The verdict follows the RESEARCH.** Fill `Y`/`N` ONLY for a ticker you
 actually researched, and fill `N` only when the research found a cause that is
