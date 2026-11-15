@@ -275,13 +275,25 @@ What the pipeline does, and why (read this before changing any of it):
 
 ## STEP 4 — CATALYSTS (the one step the pipeline cannot do)
 
-The skill caps catalysts at 5 US + 3 EU + 2 AU = 10 per run. Read
-`/workspace/earnings/<date>-catalyst-targets.json` for the ticker list, then use `web_search` to
-find the headline for each (cap 10 searches; 1-2 per ticker). For US names, the earnings-driven
-test is: did `earnings_release_date` land within 7 days of today? If yes, mark `Y` and use the
-earnings headline as the catalyst. If not, mark `N` and find a non-earnings catalyst. For EU/AU
-names apply the skill's keyword test (earnings / results / Q1-Q4 / beats / misses / reports /
-guidance; plus interim, half-year, full-year, dividend, ASIC, iron ore, lithium, gold for AU).
+The catalyst budget is **allocated per run, not fixed**: read the split, the cap and the
+ticker list from `/workspace/earnings/<date>-catalyst-targets.json` (`budget`, `budget_total`,
+`budget_cap`). It never exceeds 16 lookups and it is allocated by the evidence gap - the US slice
+covers the rows whose earnings event can still explain today's move (the pipeline dates them from
+Nasdaq's public earnings calendar), the EU/AU/APAC floors are never squeezed because no bulk
+calendar reaches those markets, and whatever the US slice does not need goes to the region with the
+most unexplained rows. Use `web_search` to find the headline for each target (one search per
+ticker; a second only when the first returns nothing usable).
+
+**The pipeline has already covered some rows.** A US row whose report is dated on the scan date or
+the previous session is tiered by the pipeline; a row it covers but that is NOT in your target file
+keeps its calendar event line and carries **no verdict** - leave it alone. For the names you DO
+research: if the row's published `Last earnings` date lands within 7 days of today, mark `Y` and
+use the earnings headline as the catalyst; if not, mark `N` and find a non-earnings catalyst. **The
+published date is the source of record** - the pipeline corrects it from the bulk calendar, because
+the screener's own field lags (on 2026-11-12 it read 2026-08-12 for a name that had reported that
+morning). For EU/AU names apply the skill's keyword test (earnings / results / Q1-Q4 / beats /
+misses / reports / guidance; plus interim, half-year, full-year, dividend, ASIC, iron ore,
+lithium, gold for AU).
 
 **Then write the catalyst table to `/workspace/catalog/catalysts/<date>.md`** (mkdir -p first)
 and re-run the pipeline, which **merges each row into that ticker's row in the artifact**. The
@@ -290,7 +302,7 @@ a name can never appear twice in the markdown. Doing it this way means a re-run 
 work. You may also edit the table in place instead, but then do not re-run the pipeline afterwards.
 
 The file's format is one markdown table — `| Ticker | Region | Catalyst | Earnings-driven |` —
-with the tickers from `/workspace/earnings/<date>-catalyst-targets.json` (5 US + 3 EU + 2 AU).
+with the tickers from `/workspace/earnings/<date>-catalyst-targets.json`.
 The pipeline writes a starter skeleton if the file is missing; fill it in and re-run.
 
 **Never fabricate a headline.** If a search returns nothing usable, write "no fresh catalyst found".
