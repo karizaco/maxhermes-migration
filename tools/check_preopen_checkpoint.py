@@ -53,20 +53,35 @@ TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "groun
 # because a gate that reads a different window than the one that wrote the tape
 # checks nothing.
 CATALYST_MAX_AGE_DAYS = 4
-# THE CATALYST COVERAGE FLOOR - the share of the tape that must carry a cause for the
-# tape to be doing its job. Measured on Friday 2026-11-13 the 08:30 checkpoint wrote
-# 164 records and only 16 carried a catalyst (9.8%), and the 09:50 checkpoint wrote
-# 218 records and only 20 carried one (9.2%) - the tape priced the movers and
-# explained almost none of them, and NOTHING said so. A tape that is 90% unexplained
-# reads exactly like a tape that found no news.
+# The capture script the procedure must demand. The version moves when the capture's
+# MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
+# different number than the board.
+CAPTURE_VERSION = "2026-11-15.1"
+# THE MOVER COVERAGE FLOOR - the share of the MOVERS THE BOARD PUBLISHES that must
+# carry a cause for the board to be doing its job.
 #
-# 40% flags both Friday checkpoints, and a floor of 10% would have been cleared by
-# accident on a day when the tape explained one name in ten. The floor changes how a
-# result is LABELLED; it never decides whether the tape is produced.
-COVERAGE_FLOOR = 0.40
-# The marker a board rendered under the floor carries. A board with NO marker was
-# written before the rule existed (see COVERAGE_RULE_EFFECTIVE).
-COVERAGE_CONTRACT = "preopen-coverage-v1"
+# The metric is READER-FACING on purpose. The reader does not read 164 tape records;
+# the reader reads the digest's top-movers table - the 15 rows the board publishes,
+# the rows the trader acts on. Measured on Friday 2026-11-13 under this metric: 4 of
+# the 15 published movers carried a catalyst at 08:30 (27%) and 6 of 15 at 09:50
+# (40%) - both below the floor.
+#
+# The floor is 50%, and it is REACHABLE: a 15-row movers table needs 8 explained
+# movers (7/15 = 46.7% is below it; 8/15 = 53.3% clears it), and the catalyst pool
+# (--top 20) is ranked by |%| in the same order the table is published, so a budget
+# spent on the published movers can explain 8 of 15.
+#
+# The WHOLE-TAPE coverage is still published, as CONTEXT. It is NOT the gate: on a
+# 164-row tape a 40% floor needed 66 explained rows and could never be cleared, which
+# made every checkpoint DEGRADED forever - a ratchet, not a gate.
+MOVER_COVERAGE_FLOOR = 0.50
+# How many movers the board publishes. The gated metric's denominator is the number
+# of MOVERS among them, and a table of 15 and a table of 20 are different
+# denominators.
+MOVERS_TABLE_N = 15
+# The marker a board rendered under the mover-coverage floor carries. A board with NO
+# marker was written before the rule existed (see COVERAGE_RULE_EFFECTIVE).
+COVERAGE_CONTRACT = "preopen-coverage-v2"
 # The first checkpoint under the floor. A board published before this date and
 # carrying no coverage marker is GRANDFATHERED against the rule: a historical
 # artifact is never failed for a rule that post-dates it. The same shape as cron
@@ -178,17 +193,28 @@ def check_procedure(path):
           "the digest fetch demands the PREOPEN_DIGEST_V2 capability marker (the V2 "
           "renderer publishes the coverage line; a V1 copy would publish a board "
           "without one)")
+    check(re.search(r"PREOPEN_MOVER_COVERAGE_V1", t) is not None,
+          "the digest fetch ALSO demands the PREOPEN_MOVER_COVERAGE_V1 marker - the "
+          "metric changed, so a stale V2 renderer (the old whole-tape floor) must not "
+          "win the ladder")
 
-    # 9. THE CATALYST COVERAGE FLOOR. The procedure is where the floor, the
+    # 9. THE MOVER COVERAGE FLOOR. The procedure is where the metric, the floor, the
     # arithmetic, the labels and the reply lines are SPECIFIED - the prompt is
     # byte-pinned, so this file is the only place the rule can live.
-    check(re.search(r"CATALYST_COVERAGE_FLOOR\s*=\s*0\.4[0-9]*\b", t) is not None,
-          "the procedure states the COVERAGE FLOOR (40%)")
-    check(re.search(r"catalyst_coverage\s*=\s*\(records with a non-null `why`\)\s*/\s*"
-                    r"\(total records\)", t) is not None,
-          "the procedure states the coverage arithmetic (named `why` rows over total rows)")
+    check(re.search(r"MOVER_COVERAGE_FLOOR\s*=\s*0\.5[0-9]*\b", t) is not None,
+          "the procedure states the MOVER COVERAGE FLOOR (50%)")
+    check(re.search(r"mover_coverage\s*=\s*\(published movers carrying a catalyst\)\s*/\s*"
+                    r"\(published movers\)", t) is not None,
+          "the procedure states the gated metric (explained published movers over "
+          "published movers) - NOT the whole tape")
+    check(re.search(r"8 explained movers|8 of 15|ceil\(0\.50 x 15\)", t) is not None,
+          "the procedure states the REACHABILITY arithmetic (8 explained movers clear "
+          "a 15-row table)")
+    check("4/15" in t and "6/15" in t,
+          "the procedure quotes the measured 2026-11-13 reader-facing evidence "
+          "(4/15 at 08:30 and 6/15 at 09:50)")
     check("16/164" in t and "20/218" in t,
-          "the procedure quotes the measured 2026-11-13 evidence (16/164 and 20/218)")
+          "the procedure quotes the whole-tape context (16/164 and 20/218)")
     check(re.search(r"degraded:", t) is not None,
           "the procedure's reply carries a `degraded:` line")
     check(re.search(r"NEVER SUPPRESSES THE CHECKPOINT", t, re.I) is not None,
@@ -197,13 +223,15 @@ def check_procedure(path):
           "the procedure states that a pre-fix board is grandfathered against the floor")
     check(re.search(r"preopen-coverage-v\d+", t) is not None,
           "the procedure names the coverage contract marker")
+    check(re.search(r"context", t, re.I) is not None,
+          "the procedure states that the whole-tape coverage is CONTEXT, not the gate")
 
     # 8. the procedure demands the DATED capture script and states the gate. Without
     # these the procedure could keep asking for the 2026-11-09 script, which publishes
     # a ten-month-old press release as this morning's cause.
-    check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*2026-11-13", t) is not None,
-          "the procedure demands the 2026-11-13 capture script (the one that takes its "
-          "candidates from TODAY's pre-market band)")
+    check(re.search(rf"CAPTURE_SCRIPT_VERSION:\s*{re.escape(CAPTURE_VERSION)}", t) is not None,
+          f"the procedure demands the {CAPTURE_VERSION} capture script (the one that "
+          f"measures the MOVER coverage and publishes it)")
     # THE CANDIDATE SOURCE. The tape used to be built from Yahoo's `top_movers`, which
     # is a screener over the LAST COMPLETED session - so before the open it named
     # YESTERDAY's movers. Measured 2026-11-10: the 08:30 tape carried 49 rows and
@@ -231,6 +259,8 @@ def check_script(path):
         return
     check(re.search(r"CAPTURE_SCRIPT_VERSION:\s*\d{4}-\d{2}-\d{2}", t) is not None,
           "carries the CAPTURE_SCRIPT_VERSION marker")
+    check(re.search(rf"CAPTURE_SCRIPT_VERSION:\s*{re.escape(CAPTURE_VERSION)}", t) is not None,
+          f"the capture script IS the {CAPTURE_VERSION} one the procedure demands")
     check('call_top_movers(category="losers")' in t,
           "the capture scans the losers half (a gainers-only scan misses the worst movers)")
     check("-abs(" in t,
@@ -345,20 +375,37 @@ def check_script(path):
           "the capture reports the provider failures in its own ledger")
 
     # ------------------------------------------------------------------
-    # THE CATALYST COVERAGE FLOOR, IN THE CAPTURE.
+    # THE MOVER COVERAGE FLOOR, IN THE CAPTURE.
     #
     # The capture is where the number is MEASURED: the board renders it from the
     # tape, so a capture that does not measure it publishes a board with no
     # coverage on it. The floor constant must match the checker's, or the two
-    # sides disagree about what "degraded" means.
+    # sides disagree about what "degraded" means - and so must the width of the
+    # movers table, because that is the metric's denominator.
     # ------------------------------------------------------------------
-    m_cov = re.search(r"CATALYST_COVERAGE_FLOOR\s*=\s*([0-9.]+)", t)
-    check(m_cov is not None and abs(float(m_cov.group(1)) - COVERAGE_FLOOR) < 1e-9,
-          f"the capture's coverage floor matches the checker's ({COVERAGE_FLOOR})")
+    m_cov = re.search(r"MOVER_COVERAGE_FLOOR\s*=\s*([0-9.]+)", t)
+    check(m_cov is not None and abs(float(m_cov.group(1)) - MOVER_COVERAGE_FLOOR) < 1e-9,
+          f"the capture's mover-coverage floor matches the checker's "
+          f"({MOVER_COVERAGE_FLOOR})")
+    m_tbl = re.search(r"MOVERS_TABLE_N\s*=\s*(\d+)", t)
+    check(m_tbl is not None and int(m_tbl.group(1)) == MOVERS_TABLE_N,
+          f"the capture's movers table matches the checker's ({MOVERS_TABLE_N} rows) - "
+          f"a different width is a different denominator")
+    check(re.search(r"mover_coverage", t) is not None,
+          "the capture MEASURES the mover coverage")
+    check(re.search(r"def published_movers", t) is not None,
+          "the capture publishes the SAME movers table the digest renders")
+    # THE DEGRADATION IS COUNTED EXACTLY ONCE. It is counted in the capture's own
+    # ledger, so the reply's `errors:` number is measured rather than remembered -
+    # and a ledger that counts it twice reports a failure the run did not have.
+    cov_appends = [ln for ln in t.splitlines()
+                   if "errors.append" in ln and "mover_coverage_below_floor" in ln]
+    check(len(cov_appends) == 1,
+          f"the capture counts the coverage degradation EXACTLY ONCE (one append site, "
+          f"got {len(cov_appends)})")
     check(re.search(r"catalyst_coverage", t) is not None,
-          "the capture MEASURES the catalyst coverage")
-    check(re.search(r"errors\.append\(\s*f?[\"']catalyst_coverage_below_floor:", t) is not None,
-          "the capture counts a coverage degradation in its OWN error ledger (one error)")
+          "the capture still measures the WHOLE-TAPE coverage - it is published as "
+          "CONTEXT")
     check(re.search(r"catalyst_price_only", t) is not None,
           "the capture breaks the uncovered rows down by provenance (price-only vs "
           "narrative-only)")
@@ -371,9 +418,14 @@ def check_digest_script(path):
         bad(f"{path} is missing or empty")
         return
     check("PREOPEN_DIGEST_V2" in t, "carries the PREOPEN_DIGEST_V2 marker")
+    check("PREOPEN_MOVER_COVERAGE_V1" in t,
+          "carries the PREOPEN_MOVER_COVERAGE_V1 marker (this renderer's metric)")
     check("DIGEST_COLUMNS" in t and "Ticker" in t,
           "the board's columns are fixed in code")
     check("TOP_N = 15" in t, "the board lists the top 15 movers")
+    check(f"TOP_N = {MOVERS_TABLE_N}" in t,
+          f"the board's table width matches the checker's ({MOVERS_TABLE_N} rows) - "
+          f"the gated metric's denominator is that width")
     check("scanner" in t and "stocktwits" in t and "pipeworx" in t,
           "the board reports the row PROVENANCE split (scanner / stocktwits / pipeworx)")
     check("not measurable" in norm(t),
@@ -387,17 +439,23 @@ def check_digest_script(path):
           "the board's break-time column takes the NEWS date first, and only then the "
           "trending stamp")
     # ------------------------------------------------------------------
-    # THE CATALYST COVERAGE, IN THE RENDERER. The board is where the reader finds
-    # out how much of the tape was explained, so the line and the banner have to be
-    # rendered HERE and not left to the agent's prose.
+    # THE MOVER COVERAGE, IN THE RENDERER. The board is where the reader finds
+    # out how much of the TABLE was explained, so the line and the banner have to
+    # be rendered HERE and not left to the agent's prose.
     # ------------------------------------------------------------------
     check(re.search(r"COVERAGE_CONTRACT\s*=\s*[\"']preopen-coverage-v\d+[\"']", t) is not None,
           "the renderer stamps the coverage contract marker on the board")
-    m_cf = re.search(r"COVERAGE_FLOOR\s*=\s*([0-9.]+)", t)
-    check(m_cf is not None and abs(float(m_cf.group(1)) - COVERAGE_FLOOR) < 1e-9,
-          f"the renderer's coverage floor matches the checker's ({COVERAGE_FLOOR})")
-    check(re.search(r"\*\*catalyst coverage:\*\*", t) is not None,
-          "the renderer publishes the catalyst coverage line in the header")
+    m_cf = re.search(r"MOVER_COVERAGE_FLOOR\s*=\s*([0-9.]+)", t)
+    check(m_cf is not None and abs(float(m_cf.group(1)) - MOVER_COVERAGE_FLOOR) < 1e-9,
+          f"the renderer's mover-coverage floor matches the checker's "
+          f"({MOVER_COVERAGE_FLOOR})")
+    check(re.search(r"\*\*mover coverage:\*\*", t) is not None,
+          "the renderer publishes the GATED mover-coverage line in the header")
+    check(re.search(r"\*\*catalyst coverage \(whole tape\):\*\*", t) is not None,
+          "the renderer publishes the whole-tape coverage as CONTEXT, separately from "
+          "the gated number")
+    check(re.search(r"def published_movers", t) is not None,
+          "the renderer measures the coverage of the MOVERS it publishes")
     check(re.search(r"DEGRADED", t) is not None,
           "the renderer raises the DEGRADED banner when the coverage is below the floor")
 
@@ -488,31 +546,33 @@ def _digest_date(digest_path):
 
 
 def coverage_rule_applies(digest_text, digest_path):
-    """Does THE CATALYST COVERAGE FLOOR apply to this board?
+    """Does THE MOVER COVERAGE FLOOR apply to this board?
 
     THE GRANDFATHER. A board that carries the CURRENT coverage marker is checked
-    against the floor in full. A board that carries a LEGACY marker, or NO marker
-    at all and PREDATES the floor's effective date, is checked against the rules
-    in force when it was written: a historical artifact is never failed for a rule
-    that post-dates it. The same shape as cron #17's `in-play-artifact-v1` marker.
+    against the floor in full. A board that carries NO marker and PREDATES the
+    floor's effective date is checked against the rules in force when it was
+    written: a historical artifact is never failed for a rule that post-dates it.
+    The same shape as cron #17's `in-play-artifact-v1` marker.
 
-    A board with no marker that is dated ON OR AFTER the effective date is NOT
-    grandfathered - it was written under the rule, so it must carry the line. That
-    is what stops a renderer that quietly stopped publishing its coverage from
-    escaping the gate.
+    A board that carries a LEGACY marker (the previous metric's marker) and was
+    published ON OR AFTER the effective date is NOT grandfathered: it was written
+    under a coverage rule, so it must publish the CURRENT metric. Grandfathering it
+    would let a renderer that quietly went back to the old metric escape the gate -
+    which is exactly the silent failure the rule exists to stop.
     """
     m = re.search(r"preopen-coverage-v\d+", digest_text)
     marker = m.group(0) if m else None
     if marker == COVERAGE_CONTRACT:
         return True, f"the board carries the CURRENT coverage marker ({marker})"
-    if marker is not None:
-        return False, (f"the board carries the LEGACY coverage marker ({marker}) - it "
-                       "is checked against the rules in force when it was written")
     d = _digest_date(digest_path)
     if d is not None and d < datetime.date.fromisoformat(COVERAGE_RULE_EFFECTIVE):
-        return False, (f"the board carries NO coverage marker and was published on {d}, "
-                       f"before the floor took effect ({COVERAGE_RULE_EFFECTIVE}) - it "
-                       "is grandfathered against the rule")
+        return False, (f"the board carries {('the LEGACY marker ' + marker) if marker else 'NO coverage marker'} "
+                       f"and was published on {d}, before the floor took effect "
+                       f"({COVERAGE_RULE_EFFECTIVE}) - it is grandfathered against the rule")
+    if marker is not None:
+        return True, (f"the board carries the LEGACY coverage marker ({marker}) and was "
+                      f"published on {d}, on or after the floor's effective date "
+                      f"({COVERAGE_RULE_EFFECTIVE}) - it must publish the CURRENT metric")
     return True, ("the board carries NO coverage marker, so the floor applies to it "
                   "(a board written under the rule must publish its coverage)")
 
@@ -759,58 +819,84 @@ def check_digest(tape_path, digest_path, slot):
           f"no row falls back to the capture clock for its break time ({cap_fallback[:3]})")
 
     # ------------------------------------------------------------------
-    # THE CATALYST COVERAGE FLOOR.
+    # THE MOVER COVERAGE FLOOR.
     #
-    # The tape's whole job is WHO / WHAT / WHEN for every name materially moving
-    # pre-market. Measured on Friday 2026-11-13 the 08:30 tape carried 164 records
-    # and only 16 of them carried a catalyst (9.8%), and the 09:50 tape carried 218
-    # and 20 (9.2%) - the movers were priced and almost none of them explained, and
-    # nothing said so. A tape that is 90% unexplained reads exactly like a tape that
-    # found no news.
+    # The GATED number is the coverage of the MOVERS THE BOARD PUBLISHES - and it
+    # is read off the board's OWN table, cross-referenced with the tape for the
+    # cause. It is NOT the whole tape's coverage: a percentage over 164 rows says
+    # how wide the band was, not how much of the board the reader is looking at was
+    # explained.
     #
-    # So the board has to PUBLISH the coverage, the arithmetic has to match the tape,
-    # and a board below the floor has to carry the degradation in the file a reader
-    # opens. A board at or above the floor must NOT carry one.
+    # So the board has to PUBLISH the gated number, the arithmetic has to match the
+    # published table, and a board below the floor has to carry the degradation in
+    # the file a reader opens. A board at or above the floor must NOT carry one.
     # ------------------------------------------------------------------
     named = sum(1 for r in rows if r.get("why"))
     total = len(rows)
     cov_pct = (100.0 * named / total) if total else 0.0
-    price_only = [r for r in rows if not r.get("why") and r.get("pct") is not None]
-    below = bool(total) and (named / total) < COVERAGE_FLOOR
+    # THE PUBLISHED MOVERS - the rows of the board's table that carry a price.
+    pub_rows = []
+    for cells in body:
+        if len(cells) < 2:
+            continue
+        rec = by_ticker.get(cells[0].strip())
+        if rec is None or rec.get("pct") is None:
+            continue              # a row with no price is not a mover
+        pub_rows.append(rec)
+    mv_total = len(pub_rows)
+    mv_named = sum(1 for r in pub_rows if r.get("why"))
+    mv_pct = (100.0 * mv_named / mv_total) if mv_total else None
+    below = (mv_total == 0) or (mv_named / mv_total < MOVER_COVERAGE_FLOOR)
     applies, why = coverage_rule_applies(t, digest_path)
     if not applies:
         ok(f"the coverage floor does not apply to this board - {why}")
     else:
-        m_cov = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", t,
-                           re.I)
-        if check(m_cov is not None,
-                 "the board publishes the CATALYST COVERAGE line (named rows / total "
-                 "rows / percent) - a board that quietly stopped publishing its "
-                 "coverage is the silent failure this rule exists to stop"):
-            got_named, got_total, got_pct = (int(m_cov.group(1)), int(m_cov.group(2)),
-                                              int(m_cov.group(3)))
-            check(got_total == total,
-                  f"the coverage line's denominator is the tape's record count "
-                  f"({got_total} vs {total})")
-            check(got_named == named,
-                  f"the coverage line's numerator is the tape's named-record count "
-                  f"({got_named} vs {named})")
-            check(got_pct == int(round(cov_pct)),
-                  f"the coverage percentage matches the arithmetic "
-                  f"({got_pct}% vs {int(round(cov_pct))}%)")
+        # THE GATED LINE. Its numerator and denominator are the PUBLISHED MOVERS.
+        m_mv = re.search(r"\*\*mover coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", t,
+                         re.I)
+        m_na = re.search(r"\*\*mover coverage:\*\*\s*n/a", t, re.I)
+        if mv_total == 0:
+            check(m_na is not None,
+                  "the board publishes 'mover coverage: n/a' when it published no movers "
+                  "table - a checkpoint that cannot show an explained mover cannot claim "
+                  "coverage")
+        elif check(m_mv is not None,
+                   "the board publishes the MOVER COVERAGE line (explained movers / "
+                   "published movers / percent) - a board that quietly stopped publishing "
+                   "its coverage is the silent failure this rule exists to stop"):
+            got_named, got_total, got_pct = (int(m_mv.group(1)), int(m_mv.group(2)),
+                                              int(m_mv.group(3)))
+            check(got_total == mv_total,
+                  f"the gated line's denominator is the PUBLISHED MOVERS the table "
+                  f"carries ({got_total} vs {mv_total}) - not the whole tape")
+            check(got_named == mv_named,
+                  f"the gated line's numerator is the published movers that carry a "
+                  f"catalyst ({got_named} vs {mv_named})")
+            check(got_pct == int(round(mv_pct)),
+                  f"the gated percentage matches the arithmetic "
+                  f"({got_pct}% vs {int(round(mv_pct))}%)")
+        # THE WHOLE-TAPE COVERAGE IS CONTEXT, and it must be published SEPARATELY.
+        # A board that published only the context line would be gating on the wrong
+        # number - so the context line is checked against the tape's own numbers.
+        m_ctx = re.search(r"\*\*catalyst coverage \(whole tape\):\*\*\s*(\d+)\s*/\s*"
+                          r"(\d+)\s*\((\d+)%\)", t, re.I)
+        if check(m_ctx is not None,
+                 "the board publishes the WHOLE-TAPE coverage as context, separately "
+                 "from the gated number"):
+            check(int(m_ctx.group(1)) == named and int(m_ctx.group(2)) == total,
+                  f"the whole-tape context line matches the tape ({m_ctx.group(1)}/"
+                  f"{m_ctx.group(2)} vs {named}/{total})")
+            check(int(m_ctx.group(3)) == int(round(cov_pct)),
+                  f"the whole-tape context percentage matches its own arithmetic "
+                  f"({m_ctx.group(3)}% vs {int(round(cov_pct))}%)")
         m_fl = re.search(r"\*\*floor:\*\*\s*(\d+)%", t)
-        check(m_fl is not None and int(m_fl.group(1)) == int(round(COVERAGE_FLOOR * 100)),
+        check(m_fl is not None and int(m_fl.group(1)) == int(round(MOVER_COVERAGE_FLOOR * 100)),
               f"the board publishes the floor it was measured against "
-              f"({int(round(COVERAGE_FLOOR * 100))}%)")
-        # The COUNTS travel with the percentage, so the number is auditable.
-        m_un = re.search(r"\*\*unexplained:\*\*\s*(\d+)\s+records", t)
-        check(m_un is not None and int(m_un.group(1)) == (total - named),
-              f"the board publishes the uncovered count "
-              f"({int(m_un.group(1)) if m_un else '?'} vs {total - named})")
+              f"({int(round(MOVER_COVERAGE_FLOOR * 100))}%)")
         degraded = "DEGRADED" in t
         m_st = re.search(r"\*\*(BELOW FLOOR|AT OR ABOVE THE FLOOR)\*\*", t)
         if check(m_st is not None,
-                 "the board states whether its coverage is below the floor"):
+                 "the board states whether its mover coverage is below the floor"):
             stated_below = (m_st.group(1).upper() == "BELOW FLOOR")
             check(stated_below == below,
                   f"the board's floor verdict matches the arithmetic "
@@ -818,41 +904,48 @@ def check_digest(tape_path, digest_path, slot):
                   f"computed {'BELOW FLOOR' if below else 'AT OR ABOVE THE FLOOR'})")
         if below:
             check(degraded,
-                  f"the board's coverage ({cov_pct:.0f}%) is BELOW the floor "
-                  f"({COVERAGE_FLOOR * 100:.0f}%) - it carries the DEGRADED banner")
+                  f"the board's mover coverage ({'n/a' if mv_pct is None else f'{mv_pct:.0f}%'}) "
+                  f"is BELOW the floor ({MOVER_COVERAGE_FLOOR * 100:.0f}%) - it carries the "
+                  f"DEGRADED banner")
             check(re.search(r"below the \d+% floor", t, re.I) is not None,
                   "the degradation says WHICH floor it fell below")
-            check("price-only" in norm(t),
-                  "the degradation names the PRICE-ONLY rows (priced, no cause)")
-            check(re.search(r"grounded catalyst call", t, re.I) is not None,
-                  "the degradation NAMES THE CAUSE (the grounded catalyst call did not "
-                  "explain those rows)")
-            # WHICH names are price-only. A degradation that says "some of them" is not
-            # a finding: every price-only row on the board has to be named.
-            pline = ""
-            for ln in t.splitlines():
-                if "Price-only names" in ln:
-                    pline = ln
-                    break
-            if check(bool(pline),
-                     "the degradation LISTS the price-only names"):
-                by_ticker = {r.get("ticker"): r for r in rows}
-                missing = []
-                for cells in body:
-                    if len(cells) < 2:
-                        continue
-                    rec = by_ticker.get(cells[0].strip())
-                    if rec is None or rec.get("why") or rec.get("pct") is None:
-                        continue          # not a price-only row
-                    if cells[0].strip() not in pline:
-                        missing.append(cells[0].strip())
-                check(not missing,
-                      f"every price-only row on the board is named in the price-only "
-                      f"list ({missing[:5]})")
+            if mv_total == 0:
+                check(re.search(r"no movers table", t, re.I) is not None,
+                      "the degradation says WHY the metric is undefined (the digest "
+                      "published no movers table)")
+            else:
+                check(re.search(r"grounded catalyst call", t, re.I) is not None,
+                      "the degradation NAMES THE CAUSE (the grounded catalyst call did "
+                      "not explain those rows)")
+            # WHICH names are unexplained. A degradation that says "some of them" is not
+            # a finding: every unexplained mover on the board has to be named. When the
+            # board published no movers at all there is nothing to name, and the
+            # degradation's cause is the empty table itself.
+            if mv_total == 0:
+                ok("the board published no movers, so there is no unexplained mover to "
+                   "name - the degradation names the empty table instead")
+            else:
+                pline = ""
+                for ln in t.splitlines():
+                    if "Unexplained movers in the published table" in ln:
+                        pline = ln
+                        break
+                if check(bool(pline),
+                         "the degradation LISTS the unexplained movers it publishes"):
+                    missing = []
+                    for rec in pub_rows:
+                        if rec.get("why"):
+                            continue
+                        tick = str(rec.get("ticker") or "")
+                        if tick not in pline:
+                            missing.append(tick)
+                    check(not missing,
+                          f"every unexplained published mover is named in the list "
+                          f"({missing[:5]})")
         else:
             check(not degraded,
-                  f"the board's coverage ({cov_pct:.0f}%) is at or above the floor "
-                  f"({COVERAGE_FLOOR * 100:.0f}%) - it carries NO degradation banner")
+                  f"the board's mover coverage ({mv_pct:.0f}%) is at or above the floor "
+                  f"({MOVER_COVERAGE_FLOOR * 100:.0f}%) - it carries NO degradation banner")
 
 
 def check_skipped(marker_path, slot):

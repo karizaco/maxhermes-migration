@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-13.3
+CAPTURE_SCRIPT_VERSION: 2026-11-15.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -131,8 +131,8 @@ So every catalyst is now DATED (call 5) and dated catalysts are AGE-CHECKED:
 Both rules are checked by tools/check_preopen_checkpoint.py, and the ARWR case
 itself is a fault-injection case in tools/test_preopen_checkpoint_contract.py.
 
-THE CATALYST COVERAGE FLOOR - THE TAPE HAS TO SAY HOW MUCH OF IT IT EXPLAINED
----------------------------------------------------------------------------
+THE MOVER COVERAGE FLOOR - THE BOARD HAS TO SAY HOW MUCH OF WHAT IT PUBLISHES IT EXPLAINED
+---------------------------------------------------------------------------------
 The tape priced the movers and explained almost none of them, and nothing said so.
 Measured on Friday 2026-11-13: the 08:30 checkpoint wrote 164 records and only 16
 carried a catalyst (9.8%); the 09:50 checkpoint wrote 218 records and only 20 carried
@@ -140,11 +140,15 @@ one (9.2%). LFTO (+25.07% on a Q3 beat) and SBC (+9.6% on a Q3 print and an 8-K)
 on the tape with `why: null`, `conf: "low"` and `news_date: null`. A tape that is 90%
 unexplained reads exactly like a tape that found no news.
 
-So the capture MEASURES it - (records with a non-null `why`) / (total records) - prints
-the number with the counts that make it auditable, and counts ONE error when the
-number falls below COVERAGE_FLOOR (40%). The board renders the same measurement and
-raises the DEGRADED banner; the reply carries a `degraded:` line. The floor changes
-how the result is LABELLED, never whether the tape is produced.
+So the capture MEASURES THE COVERAGE OF THE MOVERS THE BOARD PUBLISHES - the rows
+the reader actually reads - prints it, and counts ONE error when that number falls
+below the floor (50%). The board renders the same measurement and raises the DEGRADED
+banner; the reply carries a `degraded:` line. The floor changes how the result is
+LABELLED, never whether the tape is produced.
+
+The WHOLE-TAPE coverage is still measured and published, as CONTEXT: it says how much
+of a 130-220 row band was explained, which is a fact about the BAND's width, not about
+the board on the desk. It is NOT the gated number.
 
 xAI / Grok is OPTIONAL. The xAI chat API no longer serves live search
 (`search_parameters` returns HTTP 410 "Live search is deprecated"), and the
@@ -249,36 +253,62 @@ BAND_PCT = 2.5
 CATALYST_MAX_AGE_DAYS = 4
 
 # ---------------------------------------------------------------------------
-# THE CATALYST COVERAGE FLOOR - HOW MUCH OF THIS TAPE DID WE ACTUALLY EXPLAIN?
+# THE MOVER COVERAGE FLOOR - HOW MUCH OF WHAT THE READER READS DID WE EXPLAIN?
 # ---------------------------------------------------------------------------
 # The tape's whole job is WHO / WHAT / WHEN for every name materially moving
-# pre-market. Measured on Friday 2026-11-13 it did NOT do that job: the 08:30
-# checkpoint wrote 164 records and only 16 carried a catalyst (9.8%), and the
-# 09:50 checkpoint wrote 218 records and only 20 carried one (9.2%). LFTO
-# (+25.07% on a Q3 beat) and SBC (+9.6% on a Q3 print and an 8-K) both sat on
-# the tape with `cat: "other"`, `why: null`, `conf: "low"` and `news_date: null`
-# - and NOTHING in the artifact or in the reply said so. A tape that is 90%
-# unexplained reads exactly like a tape that found no news, which is a SILENT
-# failure.
+# pre-market, and the READER does not read 164 tape records. The reader reads the
+# board's top-movers table - the 15 rows the digest publishes, the rows the trader
+# acts on before the open.
 #
-# So the capture MEASURES the coverage (records with a non-null `why` over the
-# total records), PRINTS it, and counts a degradation as ONE error when it falls
-# below the floor. The floor is 40%: the Friday evidence (9.8% and 9.2%) sits
-# far below it, and a floor at 10% would have been cleared by accident on a day
-# when the tape explained one name in ten.
+# Measured on Friday 2026-11-13 it did NOT do that job: the 08:30 checkpoint wrote
+# 164 records and only 16 carried a catalyst (9.8%), and the 09:50 checkpoint wrote
+# 218 records and only 20 carried one (9.2%). LFTO (+25.07% on a Q3 beat) and SBC
+# (+9.6% on a Q3 print and an 8-K) both sat on the tape with `cat: "other"`,
+# `why: null`, `conf: "low"` and `news_date: null` - and NOTHING in the artifact or
+# in the reply said so. A tape that is 90% unexplained reads exactly like a tape
+# that found no news, which is a SILENT failure.
+#
+# So the capture MEASURES THE COVERAGE OF THE MOVERS IT PUBLISHES:
+#
+#   mover_coverage = (published movers carrying a catalyst) / (published movers)
+#
+# where the published movers are the rows of the digest's top-movers table that
+# carry a pre-market price (a row with no price is a catalyst without a move, and
+# the board says so in its own footer). The WHOLE-TAPE coverage is measured too and
+# travels with it as CONTEXT - never as the gate.
+#
+# THE FLOOR IS 50%, AND IT IS REACHABLE:
+#
+#   a 15-row movers table needs ceil(0.50 x 15) = 8 explained movers
+#   (7/15 = 46.7% is below the floor; 8/15 = 53.3% clears it)
+#
+# The catalyst pool IS the budget (`--top`, 20 in the procedure), and the pool is
+# ranked by |%| - the SAME ranking the table is published in - so the pool (20) is
+# WIDER than the table (15). A run whose budget lands on the movers the board
+# publishes can explain up to 15 of them, and 8 of 15 clears the floor with room to
+# spare. A gate that can never be cleared is not a gate: it is a ratchet, and a
+# ratchet that fires on every checkpoint trains the reader to ignore the label.
+#
+# Read the arithmetic before the verdict. On Friday 2026-11-13 the pool WAS spent on
+# the movers the board publishes - the pool is the top 20 by |%| and the table is the
+# top 15 - and only 4 of the 15 (08:30) and 6 of the 15 (09:50) came back with a
+# cause, because the provider held no in-window article for the rest and the router
+# refused them. So Friday's failure is a PROVIDER-ANSWER failure, not a budget
+# failure, and the board now says which: "4 of the 15 movers on this board carry a
+# cause". Widening the catalyst pool is a SPEND decision for the fleet (every
+# article call is metered - 200 credits, measured 2026-11-13) and it was NOT taken.
 #
 # THE FLOOR NEVER SUPPRESSES THE CHECKPOINT. The tape and the board are written
 # either way; the floor changes how the result is LABELLED, never whether it is
 # produced. A capture that FAILED is a different failure and keeps its own path
 # (the errors ledger, the credit recogniser).
-#
-# Read the arithmetic before reading the verdict: the catalyst pool IS the budget
-# (`--top`, default 20 here), so a 164-row tape can carry at most ~20 grounded
-# catalysts plus whatever the trending snapshot explained. Clearing 40% on a
-# 164-row tape needs 66 explained rows - i.e. the POOL has to grow, and the
-# provider's spend is metered (200 credits per article call). The floor does not
-# pretend otherwise: it names the gap, and the reply names the budget.
-CATALYST_COVERAGE_FLOOR = 0.40
+MOVER_COVERAGE_FLOOR = 0.50
+# THE MOVERS TABLE - how many rows the digest publishes, and therefore how many
+# rows the gated metric is measured over. It is the renderer's TOP_N, and the
+# checker asserts that the two agree: a table of 15 and a table of 20 are different
+# denominators, and a floor measured against one and published against the other is
+# arithmetic that cannot be checked.
+MOVERS_TABLE_N = 15
 
 # ---------------------------------------------------------------------------
 # THE CATALYST PIPELINE - ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
@@ -1077,6 +1107,31 @@ def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
     return out
 
 
+def published_movers(rows, top_n=MOVERS_TABLE_N):
+    """THE MOVERS THE BOARD PUBLISHES - the rows the reader actually reads.
+
+    The digest publishes its top `top_n` rows by |%| (the renderer's TOP_N, 15),
+    and this returns the MOVERS among them: the ones that carry a pre-market
+    price. A row with no price is a catalyst without a move - the board sorts it
+    last by design and says so in its own footer - so it is not a mover and it is
+    not in the denominator of the gated metric.
+
+    THE ORDERING IS THE DIGEST'S ORDERING. Both the capture's catalyst pool and
+    the digest's table are ranked by |%| descending (ties broken by ticker), so
+    the pool the budget is spent on and the table the reader reads are the same
+    names in the same order - which is what makes the floor REACHABLE: a budget
+    spent on the published movers explains rows the reader can see.
+    """
+    def key(r):
+        try:
+            p = abs(float(r.get("pct")))
+        except Exception:
+            p = -1.0
+        return (-p, str(r.get("ticker", "")))
+    top = sorted(rows, key=key)[:top_n]
+    return [r for r in top if r.get("pct") is not None]
+
+
 def build(date_str, checkpoint, top_n=8):
     tr = call_trending()
     tm = call_top_movers()
@@ -1300,12 +1355,16 @@ def build(date_str, checkpoint, top_n=8):
             continue
         rows.append(rec)
     # ------------------------------------------------------------------
-    # THE CATALYST COVERAGE MEASUREMENT.
+    # THE MOVER COVERAGE MEASUREMENT - the GATED number.
     #
-    # coverage = (records with a non-null `why`) / (total records)
+    #   mover_coverage = (published movers carrying a catalyst) / (published movers)
     #
-    # This is the number the board publishes and the reply carries, and it is
-    # measured HERE, on the rows the capture actually wrote - not estimated.
+    # Measured HERE, on the rows the capture actually wrote, over the SAME set the
+    # digest publishes (see published_movers): the movers on the board the reader
+    # reads. The whole-tape coverage is measured too and travels with it as
+    # CONTEXT - a percentage over 164 rows says how wide the band was, not how
+    # much of the board was explained.
+    #
     # The breakdown says WHY the uncovered rows have no catalyst: a row with a
     # price and no cause is PRICE-ONLY (the grounded catalyst call did not
     # explain it), and a row with neither is NARRATIVE-ONLY (the trending
@@ -1316,18 +1375,30 @@ def build(date_str, checkpoint, top_n=8):
     coverage = (named / total) if total else 0.0
     price_only = sum(1 for r in rows if not r.get("why") and r.get("pct") is not None)
     narrative_only = sum(1 for r in rows if not r.get("why") and r.get("pct") is None)
-    below_floor = bool(total) and coverage < CATALYST_COVERAGE_FLOOR
+    # NOT `movers`: that name is the MOVERS SCAN's dictionary further up, and
+    # `mover_count` in the run's report is the number of names THAT scan added.
+    pub_movers = published_movers(rows)
+    mv_total = len(pub_movers)
+    mv_named = sum(1 for r in pub_movers if r.get("why"))
+    mover_coverage = (mv_named / mv_total) if mv_total else None
+    # NO MOVERS TABLE MEANS NO COVERAGE CLAIM. A checkpoint that cannot show an
+    # explained mover cannot claim coverage, so an empty table is DEGRADED, not
+    # "fine because there was nothing to explain".
+    below_floor = (mover_coverage is None) or (mover_coverage < MOVER_COVERAGE_FLOOR)
+    cov_detail = (f"{mv_named}/{mv_total} ({mover_coverage * 100:.0f}%) < floor "
+                  f"{MOVER_COVERAGE_FLOOR * 100:.0f}%" if mover_coverage is not None
+                  else "n/a — the digest published no movers table")
     errors = [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
                           band_error, pm_error) if e]
     errors += sorted({c.get("error") for c in cats.values() if c.get("error")})
     if below_floor:
-        # A COVERAGE DEGRADATION IS ONE ERROR. The tape was written, but most of it
-        # is priced and UNEXPLAINED, and the run must say so: a quiet tape with a
-        # loud error beats a loud-looking tape with a silent one. It is counted in
-        # the capture's OWN ledger, so the reply's `errors:` number is measured
-        # rather than remembered - and never counted twice.
-        errors.append(f"catalyst_coverage_below_floor: {named}/{total} "
-                      f"({coverage * 100:.0f}%) < floor {CATALYST_COVERAGE_FLOOR * 100:.0f}%")
+        # A MOVER-COVERAGE DEGRADATION IS ONE ERROR. The tape was written, but the
+        # movers the board publishes are priced and UNEXPLAINED, and the run must
+        # say so: a quiet tape with a loud error beats a loud-looking tape with a
+        # silent one. It is counted in the capture's OWN ledger, so the reply's
+        # `errors:` number is measured rather than remembered - and never counted
+        # twice.
+        errors.append(f"mover_coverage_below_floor: {cov_detail}")
     return {"rows": rows, "as_of": tm.get("as_of"),
             "trending_count": len(trending), "mover_count": len(movers),
             "gainers": len(tm.get("movers") or {}), "losers": len(tm_dn.get("movers") or {}),
@@ -1361,14 +1432,22 @@ def build(date_str, checkpoint, top_n=8):
             "catalyst_article": sum(1 for c in cats.values() if c.get("origin") == "article"),
             "catalyst_router": sum(1 for c in cats.values() if c.get("origin") == "router"),
             "sign_conflicts": sum(1 for r in rows if r.get("sign_conflict")),
-            # THE COVERAGE, and the counts that make it auditable.
+            # THE GATED MEASUREMENT, and the counts that make it auditable.
+            "mover_coverage": (round(mover_coverage, 4)
+                               if mover_coverage is not None else None),
+            "mover_coverage_named": mv_named,
+            "mover_coverage_total": mv_total,
+            "mover_coverage_floor": MOVER_COVERAGE_FLOOR,
+            "mover_coverage_below_floor": below_floor,
+            "mover_coverage_detail": cov_detail,
+            # THE WHOLE-TAPE COVERAGE - CONTEXT ONLY. It is published, because it is
+            # a fact about the band, but it is NOT the gated number: the gate is on
+            # the movers the board publishes.
             "catalyst_coverage": round(coverage, 4),
             "catalyst_named": named,
             "catalyst_unexplained": total - named,
             "catalyst_price_only": price_only,
             "catalyst_narrative_only": narrative_only,
-            "catalyst_coverage_floor": CATALYST_COVERAGE_FLOOR,
-            "catalyst_coverage_below_floor": below_floor,
             "errors": errors}
 
 
@@ -1414,16 +1493,25 @@ def main():
     lines = [json.dumps(r, ensure_ascii=False) for r in res["rows"]]
     body = "\n".join(lines) + ("\n" if lines else "")
 
+    # THE GATED NUMBER, as the reply will carry it. An UNDEFINED metric (the board
+    # published no movers table) prints as `n/a`, never as `0/0` - a percentage of
+    # nothing is not a measurement, and `0/0` reads like a real one.
+    _mc = res.get("mover_coverage")
+    mv_str = (f"{res.get('mover_coverage_named')}/{res.get('mover_coverage_total')} "
+              f"({_mc * 100:.0f}%)" if _mc is not None
+              else "n/a - the digest published no movers table")
+    mv_floor = float(res.get("mover_coverage_floor") or 0) * 100
+
     if args.dry_run:
         print(f"# dry run — {len(res['rows'])} rows, band={res.get('band_total')}, "
               f"movers={res['mover_count']}, "
               f"trending={res['trending_count']}, as_of={res.get('as_of')}, "
               f"premarket_priced={res.get('premarket_priced')}, "
               f"premarket_unprinted={res.get('premarket_unprinted')}, "
+              f"mover_coverage={mv_str}, floor {mv_floor:.0f}%, "
+              f"mover_coverage_degraded={'yes' if res.get('mover_coverage_below_floor') else 'no'}, "
               f"catalyst_coverage={res.get('catalyst_named')}/{len(res['rows'])} "
-              f"({float(res.get('catalyst_coverage') or 0) * 100:.0f}%, "
-              f"floor {float(res.get('catalyst_coverage_floor') or 0) * 100:.0f}%), "
-              f"coverage_degraded={'yes' if res.get('catalyst_coverage_below_floor') else 'no'}")
+              f"({float(res.get('catalyst_coverage') or 0) * 100:.0f}%)")
         print(body)
         return 0
 
@@ -1459,15 +1547,17 @@ def main():
           f"sign_conflicts={res.get('sign_conflicts')}, "
           f"empty_dropped={len(res.get('empty_dropped') or [])}, "
           f"provider_errors={len(res.get('provider_errors') or [])}, "
-          # THE COVERAGE LINE. The reply carries these numbers, so they are MEASURED
-          # here and printed - the agent never recomputes them by eye.
+          # THE MOVER COVERAGE LINE - the GATED number. The reply carries these
+          # numbers, so they are MEASURED here and printed - the agent never
+          # recomputes them by eye.
+          f"mover_coverage={mv_str}, floor {mv_floor:.0f}%, "
+          f"mover_coverage_degraded={'yes' if res.get('mover_coverage_below_floor') else 'no'}, "
+          # THE WHOLE-TAPE COVERAGE - CONTEXT ONLY, never the gate.
           f"catalyst_coverage={res.get('catalyst_named')}/{len(res['rows'])} "
           f"({float(res.get('catalyst_coverage') or 0) * 100:.0f}%, "
-          f"floor {float(res.get('catalyst_coverage_floor') or 0) * 100:.0f}%, "
           f"unexplained={res.get('catalyst_unexplained')} "
           f"[price-only={res.get('catalyst_price_only')}, "
-          f"narrative-only={res.get('catalyst_narrative_only')}], "
-          f"coverage_degraded={'yes' if res.get('catalyst_coverage_below_floor') else 'no'}, "
+          f"narrative-only={res.get('catalyst_narrative_only')}]), "
           f"errors={len(res.get('errors') or [])})")
     return 0
 

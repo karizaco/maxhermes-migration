@@ -82,16 +82,27 @@ def make_repo(dst, src=REPO):
 
 
 def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="0830",
-                     grounded_mod=3):
+                     grounded_mod=2):
     """A real tape + board, rendered by the REAL digest renderer from a synthetic
     snapshot that has the same shape the capture script writes.
 
     `grounded_mod` decides how many of the priced rows carry a catalyst (every
-    `grounded_mod`-th one), so the fixture can be built either side of the
-    CATALYST COVERAGE FLOOR: the default is 7 of 20 priced rows plus 30 narrative
-    rows that all carry a reason -> 37 of 50 records named (74%), comfortably ABOVE
-    the 40% floor; `grounded_mod=20` with 60 priced rows gives 33 of 90 (37%),
-    BELOW it.
+    `grounded_mod`-th one), so the fixture can be built either side of the MOVER
+    COVERAGE FLOOR.
+
+    THE ARITHMETIC IS THE POINT. The board publishes the top 15 rows by |%|, and
+    with 20 priced rows those are the 15 biggest movers - so the gated metric is
+    (the grounded rows among the first 15) / 15:
+
+      * `grounded_mod=2` (the default) -> i = 0,2,4,6,8,10,12,14 -> 8 of 15 ->
+        53% -> AT OR ABOVE THE 50% FLOOR, and the board carries NO banner;
+      * `grounded_mod=4` -> i = 0,4,8,12 -> 4 of 15 -> 27% -> BELOW THE FLOOR.
+
+    And the WHOLE-TAPE coverage of the default fixture is (8 + 30) / 50 = 76% - well
+    above any floor. That is deliberate: the gate is on the MOVERS THE BOARD
+    PUBLISHES, so a tape whose band looks well covered and whose published movers
+    are mostly unexplained must still be DEGRADED. The context line alone must
+    never satisfy the gate.
     """
     feed = os.path.join(tmp, "preopen-feed")
     os.makedirs(feed, exist_ok=True)
@@ -156,15 +167,17 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
 
 
 def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
-    """A CONFORMING tape whose catalyst coverage is BELOW the 40% floor.
+    """A CONFORMING tape whose MOVER COVERAGE is BELOW the 50% floor.
 
-    60 priced rows, only 3 of them explained, plus 30 narrative rows that carry a
-    reason -> 33 of 90 records named (37%). The board must render the coverage and
-    raise the DEGRADED banner; the checker must accept it, because a degraded run
-    that SAYS it degraded is a correct artifact.
+    20 priced rows, only every fourth one explained -> 4 of the 15 published movers
+    carry a cause (27%), while the 30 narrative rows all carry a reason, so the
+    WHOLE-TAPE coverage is 38/50 (76%) - comfortably above the floor it is not
+    measured against. The board must render the mover coverage and raise the
+    DEGRADED banner; the checker must accept it, because a degraded run that SAYS
+    it degraded is a correct artifact.
     """
-    return build_conforming(tmp, n_priced=60, n_narrative=30, date=date, slot=slot,
-                            grounded_mod=20)
+    return build_conforming(tmp, n_priced=20, n_narrative=30, date=date, slot=slot,
+                            grounded_mod=4)
 
 
 def mutate(path, old, new, replace_all=False):
@@ -630,23 +643,37 @@ def m_published_date_not_age_checked(tape, digest, repo):
 
 
 def m_capture_stops_counting_the_degradation(tape, digest, repo):
-    """The capture stops counting a coverage degradation as an error.
+    """The capture stops counting a mover-coverage degradation as an error.
 
     The floor is a DEGRADATION, and a degradation the run does not count is a
-    footnote. Measured 2026-11-13: the tape explained 16 of 164 records and the
-    checkpoint reported nothing about it.
+    footnote. Measured 2026-11-13: the board explained 4 of the 15 movers it
+    published and the checkpoint reported nothing about it.
     """
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
     mutate(p,
-           'errors.append(f"catalyst_coverage_below_floor: {named}/{total} "\n'
-           '                      f"({coverage * 100:.0f}%) < floor '
-           '{CATALYST_COVERAGE_FLOOR * 100:.0f}%")',
+           'errors.append(f"mover_coverage_below_floor: {cov_detail}")',
            'pass  # the coverage degradation is no longer counted as an error')
     return True
 
 
+def m_capture_counts_the_degradation_twice(tape, digest, repo):
+    """The capture counts the SAME degradation TWICE.
+
+    The degradation is counted in the capture's own ledger, so the reply's
+    `errors:` number is measured rather than remembered. A ledger that counts it
+    twice reports a failure the run did not have - and the number a reader reads is
+    the number that has to be right.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p,
+           'errors.append(f"mover_coverage_below_floor: {cov_detail}")',
+           'errors.append(f"mover_coverage_below_floor: {cov_detail}")\n'
+           '        errors.append(f"mover_coverage_below_floor: {cov_detail}")')
+    return True
+
+
 def m_no_coverage_line(tape, digest, repo):
-    """The board stops publishing the catalyst coverage.
+    """The board stops publishing the GATED mover coverage.
 
     A board that quietly stops publishing its coverage is exactly the silent
     failure the rule exists to stop: the tape priced the movers, explained almost
@@ -654,9 +681,9 @@ def m_no_coverage_line(tape, digest, repo):
     """
     s = open(digest, encoding="utf-8").read()
     lines = s.splitlines(True)
-    hit = [i for i, l in enumerate(lines) if "**catalyst coverage:**" in l]
+    hit = [i for i, l in enumerate(lines) if "**mover coverage:**" in l]
     if not hit:
-        raise AssertionError("the fixture board carries no coverage line to remove")
+        raise AssertionError("the fixture board carries no mover-coverage line to remove")
     del lines[hit[0]]
     out = "".join(lines)
     if out == s:
@@ -665,19 +692,64 @@ def m_no_coverage_line(tape, digest, repo):
     return True
 
 
-def m_wrong_coverage_arithmetic(tape, digest, repo):
-    """The board publishes a coverage the tape cannot support.
+def m_context_line_alone(tape, digest, repo):
+    """The board publishes the WHOLE-TAPE context line and NOTHING else.
 
-    The percentage is not decoration: it is (named rows / total rows), and a board
-    whose numerator does not match its own tape is a measurement that cannot be
-    audited.
+    The context line is not the gate. A board that dropped the gated number and
+    kept the context number has stopped measuring what the reader reads, and the
+    checker must catch it - otherwise the gate is satisfied by a statistic about
+    the band's width.
     """
     s = open(digest, encoding="utf-8").read()
-    m = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", s)
+    lines = s.splitlines(True)
+    hit = [i for i, l in enumerate(lines) if "**mover coverage:**" in l]
+    if not hit:
+        raise AssertionError("the fixture board carries no mover-coverage line to remove")
+    del lines[hit[0]]
+    out = "".join(lines)
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_whole_tape_numbers_in_the_gated_line(tape, digest, repo):
+    """The gated line publishes the WHOLE TAPE's numbers instead of the table's.
+
+    The metric is the coverage of the MOVERS THE BOARD PUBLISHES. A board that
+    publishes the whole tape's numbers in the gated line is measuring the wrong
+    thing - the denominator is the published table, and a reader who checks the
+    arithmetic finds a number about a different set of rows.
+    """
+    s = open(digest, encoding="utf-8").read()
+    m = re.search(r"\*\*mover coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", s)
     if not m:
-        raise AssertionError("the fixture board carries no coverage line")
+        raise AssertionError("the fixture board carries no mover-coverage line")
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    whole_named = sum(1 for r in rows if r.get("why"))
+    whole_total = len(rows)
+    whole_pct = int(round(100.0 * whole_named / whole_total))
+    out = (s[:m.start()] + f"**mover coverage:** {whole_named}/{whole_total} ({whole_pct}%)"
+           + s[m.end():])
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_wrong_coverage_arithmetic(tape, digest, repo):
+    """The board publishes a mover coverage the published table cannot support.
+
+    The percentage is not decoration: it is (explained published movers / published
+    movers), and a board whose numerator does not match its own table is a
+    measurement that cannot be audited.
+    """
+    s = open(digest, encoding="utf-8").read()
+    m = re.search(r"\*\*mover coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", s)
+    if not m:
+        raise AssertionError("the fixture board carries no mover-coverage line")
     named, total, pct = m.group(1), m.group(2), m.group(3)
-    out = (s[:m.start()] + f"**catalyst coverage:** {int(named) + 7}/{total} ({pct}%)"
+    out = (s[:m.start()] + f"**mover coverage:** {int(named) + 7}/{total} ({pct}%)"
            + s[m.end():])
     if out == s:
         raise AssertionError("the mutation did not change the board")
@@ -729,22 +801,25 @@ def m_degraded_banner_on_a_healthy_board(tape, digest, repo):
 def m_renderer_drops_the_coverage_line(tape, digest, repo):
     """The renderer stops publishing the catalyst coverage."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py")
-    mutate(p, "**catalyst coverage:**", "**catalyst pct:**")
+    # EVERY occurrence: the renderer prints the gated line in two branches (the
+    # normal one and the no-movers-table one), and a mutation that only hit the
+    # first would leave the second publishing the line - a false PASS.
+    mutate(p, "**mover coverage:**", "**mover pct:**", replace_all=True)
     return True
 
 
 def m_procedure_drops_the_floor(tape, digest, repo):
     """The procedure lowers the floor out of the record."""
     p = os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md")
-    mutate(p, "CATALYST_COVERAGE_FLOOR = 0.40", "CATALYST_COVERAGE_FLOOR = 0.05")
+    mutate(p, "MOVER_COVERAGE_FLOOR = 0.50", "MOVER_COVERAGE_FLOOR = 0.05")
     return True
 
 
 CASES = [
     # (name, expect_pass, mutator, fixture_builder)
     ("a conforming tape + board passes the checker", True, None),
-    ("a conforming tape BELOW the coverage floor passes the checker (it says it degraded)",
-     True, None, build_low_coverage),
+    ("a conforming tape BELOW the mover-coverage floor passes the checker (it says it "
+     "degraded)", True, None, build_low_coverage),
     ("a doubled tape (one row per ticker) is caught", False, m_double_ticker),
     ("a gainers-only tape (no decliners) is caught", False, m_gainers_only),
     ("a retired src=grok label is caught", False, m_src_grok),
@@ -792,11 +867,15 @@ CASES = [
      m_script_assigns_high),
     ("a capture script that cannot tell a credit failure from 'no news' is caught", False,
      m_credit_failure_ignored),
-    # THE CATALYST COVERAGE FLOOR.
-    ("a board that stops publishing the catalyst coverage is caught", False,
+    # THE MOVER COVERAGE FLOOR - the GATED metric.
+    ("a board that stops publishing the gated mover coverage is caught", False,
      m_no_coverage_line),
-    ("a board whose coverage arithmetic does not match its tape is caught", False,
-     m_wrong_coverage_arithmetic),
+    ("a board that publishes ONLY the whole-tape context line is caught", False,
+     m_context_line_alone, build_low_coverage),
+    ("a gated line that publishes the WHOLE TAPE's numbers is caught", False,
+     m_whole_tape_numbers_in_the_gated_line),
+    ("a board whose mover-coverage arithmetic does not match its published table is caught",
+     False, m_wrong_coverage_arithmetic),
     ("a below-floor board with the DEGRADED banner removed is caught", False,
      m_no_degradation_banner, build_low_coverage),
     ("a board at the floor that carries a DEGRADED banner is caught", False,
@@ -807,6 +886,8 @@ CASES = [
      m_procedure_drops_the_floor),
     ("a capture that stops counting a coverage degradation as an error is caught", False,
      m_capture_stops_counting_the_degradation),
+    ("a capture that counts the coverage degradation TWICE is caught", False,
+     m_capture_counts_the_degradation_twice),
 ]
 
 

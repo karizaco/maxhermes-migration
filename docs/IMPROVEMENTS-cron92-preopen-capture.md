@@ -577,6 +577,15 @@ notional field, the article-first order, the worker pool, the credit recogniser 
 
 ## 2026-11-13 — the tape priced the movers and explained almost none of them, and said nothing
 
+> **SUPERSEDED on 2026-11-15 — read the 2026-11-15 section first.** The finding below is
+> right; the repair it shipped was not. The floor it introduced gated the **whole tape**
+> at 40%, which on a 164-row tape needed **66 explained rows** from a **20-name** budget:
+> a floor that could never be cleared, so every checkpoint would have been DEGRADED,
+> forever. The metric was also measuring the wrong set of rows — the reader reads the
+> board's movers table, not the tape. The floor now gates the **coverage of the movers
+> the board publishes** at **50%**, which 8 of 15 clears. The evidence below (16/164,
+> 20/218) is still the evidence; it is the CONTEXT now, not the gate.
+
 ### The defect
 
 Friday 2026-11-13, cron #92 (`preopen-catalyst-capture`, checkpoints at 08:30 and 09:50 ET).
@@ -720,3 +729,186 @@ left un-thresholded.
   reply adds a stall error if there is one, nothing more.
 - Do NOT use the grandfather to hide a board that stopped publishing its coverage. The marker
   and the date boundary are the two halves of that rule.
+
+---
+
+## 2026-11-15 — the floor was a RATCHET, not a gate: it now measures what the READER reads
+
+### The defect in the defect
+
+The 2026-11-13 finding was right — the tape priced the movers, explained almost none of
+them, and said nothing. The **repair it shipped could not have worked**, and the commit
+message said so itself:
+
+> "Read the arithmetic before reading the verdict: the catalyst pool IS the budget
+> (`--top`, default 20 here), so a 164-row tape can carry at most ~20 grounded catalysts
+> plus whatever the trending snapshot explained. Clearing 40% on a 164-row tape needs 66
+> explained rows — i.e. the POOL has to grow, and the provider's spend is metered."
+
+A floor that needs **66 explained rows** from a **20-name** budget **cannot be cleared**.
+From 2026-11-16 on, **every** checkpoint would have carried the DEGRADED banner, every
+reply would have carried a `degraded:` line, and every `errors:` count would have been
+≥ 1. A label that is always on is a label nobody reads — alarm fatigue, and the reader
+is trained to skip exactly the word that was supposed to make them look.
+
+And the metric was measuring the **wrong set of rows**. The reader does not read 164 tape
+records. The reader reads the **board's top-movers table** — the 15 rows the digest
+publishes, the rows the trader acts on before the open. A percentage over the whole
+130–220 row band says how wide the band was, not how much of the board in front of the
+reader was explained.
+
+### THE NEW METRIC — the coverage of the reader's table
+
+```
+mover_coverage = (published movers carrying a catalyst) / (published movers)
+```
+
+The **published movers** are the rows of the digest's top-movers table (the 15 rows,
+ranked by |%|) that carry a pre-market price. A row with no price is a catalyst without
+a move — the board sorts it last by design and says so in its own footer — so it is not
+a mover and it is not in the denominator.
+
+**The whole-tape coverage stays published, as CONTEXT, and it is NOT the gate.** It is a
+fact about the band, and the board labels it as such:
+
+```
+- **Coverage contract:** `preopen-coverage-v2`
+- **mover coverage:** 4/15 (27%) · **floor:** 50% · **BELOW FLOOR** · published movers: 15 (8 up / 7 down)
+- **catalyst coverage (whole tape):** 16/164 (10%) · **unexplained:** 148 records (138 price-only · 10 narrative-only) · CONTEXT ONLY — not the gated number
+```
+
+**IF THE BOARD PUBLISHES NO MOVERS TABLE, THE METRIC IS UNDEFINED** and the checkpoint
+is DEGRADED (`mover coverage: n/a — the digest published no movers table`): a checkpoint
+that cannot show an explained mover cannot claim coverage.
+
+### THE FLOOR: 50% OF THE PUBLISHED MOVERS
+
+`MOVER_COVERAGE_FLOOR = 0.50`, and the arithmetic is published so that its reachability
+is obvious and checkable:
+
+```
+a 15-row movers table needs ceil(0.50 x 15) = 8 explained movers
+  7/15 = 46.7%  -> BELOW the floor
+  8/15 = 53.3%  -> CLEARS the floor
+```
+
+**Why it is reachable.** The catalyst pool **is** the budget (`--top 20`) and the pool is
+ranked by |%| — the *same* ranking the table is published in — so the pool (20) is **wider
+than the table (15)**. A run whose budget lands on the movers the board publishes can
+explain up to 15 of them, and **8 of 15 clears the floor with room to spare**. A gate that
+can never be cleared is not a gate; it is a ratchet.
+
+### THE FRIDAY EVIDENCE, RE-DERIVED UNDER THE NEW METRIC
+
+Both 2026-11-13 checkpoints, re-rendered from the real tapes
+(`karizaco/minimax-cloud-outputs@main`, `preopen-feed/2026-11-13-{0830,0950}.jsonl`) with
+the new renderer:
+
+| Checkpoint | Records | Whole tape (CONTEXT) | **Published movers explained (GATED)** | Verdict |
+|---|---|---|---|---|
+| 2026-11-13 08:30 | 164 | 16/164 (10%) | **4/15 (27%)** | **BELOW FLOOR — fires** |
+| 2026-11-13 09:50 | 218 | 20/218 (9%) | **6/15 (40%)** | **BELOW FLOOR — fires** |
+
+The 08:30 board's banner, verbatim from the re-render:
+
+```
+> ⚠ **DEGRADED — mover coverage 27% is below the 50% floor.** The movers on this board are
+> priced but unexplained: the catalyst budget did not reach them. **11 of the 15 published
+> movers carry no cause at all** — read those names as MOVERS, not as explained moves.
+> **Cause:** the grounded catalyst call did not explain them — 11 of the 15 movers this
+> board publishes carry the pre-market scan price only (the movers scan / the pre-market
+> band). The tape is complete; the EXPLANATION is not.
+```
+
+The unexplained movers are named on the board, so the reader can look them up:
+`- **Unexplained movers in the published table (a price, no catalyst captured):** 11 of 15
+published movers — ZBAO, OGEN, MRLN, NPCE, FCUV, OPTT, SLSN, RIME, SHFS, XXII, LFTO`.
+
+**The honest reading of Friday.** The budget was **already** spent on the movers the
+board publishes — the pool is the top 20 by |%| and the table is the top 15 — and still
+only 4 of 15 (08:30) and 6 of 15 (09:50) came back with a cause, because the provider
+held no in-window article for the rest and the router refused them. So Friday's failure
+is a **provider-answer** failure, not a budget failure, and the board now says exactly
+that: "4 of the 15 movers on this board carry a cause".
+
+**The caveat that stays.** The whole-tape coverage is still **low** — 10% and 9% — and
+the tape still explains only a small share of a 164–218 row band. The reader-facing
+metric is the honest one to GATE, and it is also the one that says the least about the
+band. **Widening the catalyst pool is a SPEND decision** (every article call is a metered
+provider call — 200 credits, measured 2026-11-13) and it **was not taken**. The floor's
+job is to make the gap loud, not to spend the wallet.
+
+### THE FLOOR IS REACHABLE — PROVED, NOT ASSERTED
+
+`tools/test_preopen_capture_coverage.py` drives the **real** `build()` / `main()` with the
+provider calls stubbed, and the **real** renderer:
+
+* **The healthy case** — 25 movers on the tape, the 10 biggest explained. The board
+  publishes the top 15, so the gated metric is **10/15 = 67%**: it **CLEARS** the floor.
+  The capture prints `mover_coverage=10/15 (67%, floor 50%), mover_coverage_degraded=no
+  … errors=0`, the board carries **no banner**, and the whole-tape coverage in the SAME
+  run is **10/25 = 40% — below the floor**. That is the proof that the gate is the
+  reader's table and not the band: a run that would have been DEGRADED under the old
+  metric is clean under the new one.
+* **The degraded case** — Friday's shape (4 of 15 explained, 27%): the metric is below the
+  floor, the capture counts the degradation **exactly once** in its own ledger, and the
+  board carries the DEGRADED banner with the unexplained movers named.
+* **The no-movers case** — a tape with nothing priced in it: the metric is **undefined**,
+  the checkpoint is degraded, and the board says `mover coverage: n/a`.
+
+### WHAT DID NOT CHANGE
+
+* the banner, the `degraded:` reply line, and the `errors:` +1 counted once in the
+  capture's own ledger;
+* the marker and the 2026-11-16 date boundary (the grandfather), and the version-gated
+  fetch ladder;
+* the whole-tape coverage — still measured, still published, still broken down into
+  price-only / narrative-only; it is now CONTEXT;
+* the tape's JSONL schema (10 contract keys + 7 extras) — no key was added, removed or
+  renamed;
+* **no cron prompt was touched.** The procedure is fetched at run time, so the next fire
+  picks this up with no `cron_update` and no byte-drift risk.
+
+### THE MARKERS MOVED, BECAUSE THE METRIC MOVED
+
+* the capture script: `CAPTURE_SCRIPT_VERSION: 2026-11-15.1` (the procedure's ladder
+  demands it, so a stale copy cannot win the fetch);
+* the renderer: it still carries `PREOPEN_DIGEST_V2`, and it now ALSO carries
+  **`PREOPEN_MOVER_COVERAGE_V1`**, which the ladder demands too — a stale V2 renderer
+  publishes the old whole-tape floor, and it must not win the ladder;
+* the board's coverage contract: `preopen-coverage-v1` → **`preopen-coverage-v2`**. A
+  board carrying the v1 marker and published on or after 2026-11-16 is **not**
+  grandfathered: it must publish the current metric.
+
+### THE GATES
+
+* `tools/check_preopen_checkpoint.py` — **92 → 104 static checks, 129 → 155 with a full
+  artifact set.** The gated line's numerator and denominator are read from the **board's
+  own published table** and cross-referenced with the tape; the whole-tape context line is
+  checked against the tape's own numbers; the verdict, the banner and the
+  unexplained-movers list are checked; the capture's and the renderer's floor constants
+  and the table width are asserted to agree; and the capture's error ledger is checked to
+  contain the coverage degradation **exactly once**.
+* `tools/test_preopen_checkpoint_contract.py` — **49 → 52 fault-injection cases.** The
+  fixture was rebuilt around the new arithmetic (8 of 15 healthy, 4 of 15 degraded, with
+  the whole tape at 76% in the degraded fixture, so the context line alone can never
+  satisfy the gate), and the new cases are: a board that publishes **only** the whole-tape
+  context line, a gated line that publishes the **whole tape's** numbers, and a capture
+  that counts the degradation **twice**. Each was observed to bite, and each was checked
+  to fail for the RIGHT reason (not incidentally).
+* `tools/test_preopen_digest_contract.py` — the coverage assertions now read the gated
+  line off the **published movers** and the context line off the tape, with two more
+  fault injections.
+* `tools/test_preopen_capture_coverage.py` — **new**: the reachability proof, driving the
+  real capture with stubbed providers.
+
+### Do-not list
+
+- Do NOT gate on the whole tape. The band is 130–220 rows and the budget is 20; a floor
+  over the band is a ratchet.
+- Do NOT publish a gated number whose denominator is not the table the reader reads.
+- Do NOT raise the floor above what the pool can reach: the table is 15 rows and the pool
+  is 20, so **8 of 15** is the reachable target and 50% is the floor that matches it.
+- Do NOT let the floor suppress the checkpoint, and do NOT count the degradation twice.
+- Do NOT widen the catalyst pool to make the number look better. That is a SPEND
+  decision for the fleet, and it has not been taken.

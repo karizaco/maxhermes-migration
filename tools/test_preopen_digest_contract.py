@@ -33,8 +33,10 @@ This test:
      em-dash — never the capture clock,
   4. requires the render to be REPRODUCIBLE from the tape (the board never disagrees
      with the data cron #17 reads),
-  5. requires the board to PUBLISH the CATALYST COVERAGE (named rows / total rows / percent)
-     and to DEGRADE loudly when it falls below the 40% floor,
+  5. requires the board to PUBLISH the GATED MOVER COVERAGE (the published movers that
+     carry a catalyst / the published movers / percent) — the number the READER's table
+     is judged by — with the whole-tape coverage published separately as CONTEXT, and to
+     DEGRADE loudly when the gated number falls below the 50% floor,
   6. then MUTATES the renderer back to the string-slice behaviour, and back to the
      capture-clock fallback, and back to a renderer that drops the coverage, and requires
      the test to FAIL each time — a test that cannot fail is not a test.
@@ -211,27 +213,39 @@ with tempfile.TemporaryDirectory() as td:
             check("09:57:44" in b2,
                   "the mutated renderer reproduces the capture-clock defect verbatim")
 
-    # 5. The CATALYST COVERAGE FLOOR: the board measures it, publishes it, and
-    #    DEGRADES loudly when it is below the floor.
+    # 5. The MOVER COVERAGE FLOOR: the board measures the coverage of the MOVERS IT
+    #    PUBLISHES, publishes it, and DEGRADES loudly when it is below the floor.
     #
-    #    Measured on Friday 2026-11-13 the 08:30 tape carried 164 records and only
-    #    16 of them carried a catalyst (9.8%), and the 09:50 tape carried 218 and 20
-    #    (9.2%) — the movers were priced, almost none of them explained, and nothing
-    #    said so. A board that measures its coverage and stays quiet is the same
-    #    failure with a number attached.
-    print("\n5. the board publishes the catalyst coverage")
-    m_cov = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", board)
-    check(m_cov is not None, "the board publishes the catalyst coverage line")
-    if m_cov is not None:
-        named = sum(1 for r in ROWS if r.get("why"))
-        check(m_cov.group(1) == str(named) and m_cov.group(2) == str(len(ROWS)),
-              f"the coverage line's arithmetic matches the tape "
-              f"(got {m_cov.group(1)}/{m_cov.group(2)}, expected {named}/{len(ROWS)})")
-        check(m_cov.group(3) == "100",
-              f"the coverage percentage is published (got {m_cov.group(3)}%)")
-    check("preopen-coverage-v1" in board,
+    #    The reader does not read 164 tape records; the reader reads the table on the
+    #    board. Measured on Friday 2026-11-13 under this metric: 4 of the 15 published
+    #    movers carried a catalyst at 08:30 (27%) and 6 of 15 at 09:50 (40%) — both
+    #    below the floor. A board that measures its coverage and stays quiet is the
+    #    same failure with a number attached.
+    print("\n5. the board publishes the GATED mover coverage")
+    m_mv = re.search(r"\*\*mover coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", board)
+    check(m_mv is not None, "the board publishes the gated mover-coverage line")
+    if m_mv is not None:
+        pub = [r for r in ROWS if r.get("pct") is not None]
+        named = sum(1 for r in pub if r.get("why"))
+        check(m_mv.group(1) == str(named) and m_mv.group(2) == str(len(pub)),
+              f"the gated line's arithmetic is read from the PUBLISHED MOVERS "
+              f"(got {m_mv.group(1)}/{m_mv.group(2)}, expected {named}/{len(pub)})")
+        check(m_mv.group(3) == "100",
+              f"the gated percentage is published (got {m_mv.group(3)}%)")
+    # THE WHOLE-TAPE COVERAGE IS CONTEXT, and it is published separately.
+    m_ctx = re.search(r"\*\*catalyst coverage \(whole tape\):\*\*\s*(\d+)\s*/\s*"
+                       r"(\d+)\s*\((\d+)%\)", board)
+    check(m_ctx is not None, "the board publishes the whole-tape coverage as CONTEXT")
+    if m_ctx is not None:
+        whole_named = sum(1 for r in ROWS if r.get("why"))
+        check(m_ctx.group(1) == str(whole_named) and m_ctx.group(2) == str(len(ROWS)),
+              f"the whole-tape context line's arithmetic matches the tape "
+              f"(got {m_ctx.group(1)}/{m_ctx.group(2)}, expected {whole_named}/{len(ROWS)})")
+        check("CONTEXT ONLY" in board,
+              "the board says the whole-tape number is CONTEXT, not the gate")
+    check("preopen-coverage-v2" in board,
           "the board carries the coverage contract marker")
-    check("**floor:** 40%" in board, "the board publishes the floor it was measured against")
+    check("**floor:** 50%" in board, "the board publishes the floor it was measured against")
     check("DEGRADED" not in board,
           "a board AT the floor carries NO degradation banner")
 
@@ -275,32 +289,45 @@ with tempfile.TemporaryDirectory() as td:
         low = o3.read_text(encoding="utf-8")
 
         print("\n6. a board BELOW the floor says so, in the file a reader opens")
-        m_low = re.search(r"\*\*catalyst coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", low)
-        check(m_low is not None, "the low-coverage board publishes its coverage")
+        # 10 published movers, 1 explained -> 1/10 = 10%, and the 2 narrative rows
+        # (which are not movers) are NOT in the denominator.
+        m_low = re.search(r"\*\*mover coverage:\*\*\s*(\d+)\s*/\s*(\d+)\s*\((\d+)%\)", low)
+        check(m_low is not None, "the low-coverage board publishes its gated coverage")
         if m_low is not None:
-            check(m_low.group(1) == "3" and m_low.group(2) == "12",
+            check(m_low.group(1) == "1" and m_low.group(2) == "10",
                   f"the low-coverage arithmetic is right (got {m_low.group(1)}/"
-                  f"{m_low.group(2)}, expected 3/12)")
-            check(m_low.group(3) == "25", f"the low-coverage percentage is right "
+                  f"{m_low.group(2)}, expected 1/10)")
+            check(m_low.group(3) == "10", f"the low-coverage percentage is right "
                                           f"(got {m_low.group(3)}%)")
+        # The WHOLE-TAPE context is still published - 3 of 12 records named - and it
+        # is NOT the gate: 25% of the tape and 10% of the published movers.
+        m_low_ctx = re.search(r"\*\*catalyst coverage \(whole tape\):\*\*\s*(\d+)\s*/\s*"
+                              r"(\d+)\s*\((\d+)%\)", low)
+        check(m_low_ctx is not None,
+              "the low-coverage board still publishes the whole-tape coverage as CONTEXT")
+        if m_low_ctx is not None:
+            check(m_low_ctx.group(1) == "3" and m_low_ctx.group(2) == "12",
+                  f"the whole-tape context arithmetic is right (got {m_low_ctx.group(1)}/"
+                  f"{m_low_ctx.group(2)}, expected 3/12)")
         check("DEGRADED" in low,
               "a board BELOW the floor carries the DEGRADED banner")
-        check(re.search(r"below the 40% floor", low) is not None,
+        check(re.search(r"below the 50% floor", low) is not None,
               "the banner says WHICH floor it fell below")
         check(re.search(r"priced but unexplained", low) is not None,
               "the banner says it in plain words (priced but unexplained)")
         check(re.search(r"grounded catalyst call", low) is not None,
               "the banner NAMES THE CAUSE")
-        check("price-only" in low, "the banner names the PRICE-ONLY rows")
-        price_only_line = next((ln for ln in low.splitlines()
-                                if "Price-only names" in ln), "")
-        check(bool(price_only_line), "the board LISTS the price-only names")
-        if price_only_line:
+        check("Unexplained movers in the published table" in low,
+              "the banner names the UNEXPLAINED MOVERS it publishes")
+        unexplained_line = next((ln for ln in low.splitlines()
+                                 if "Unexplained movers in the published table" in ln), "")
+        check(bool(unexplained_line), "the board LISTS the unexplained published movers")
+        if unexplained_line:
             missing = [r["ticker"] for r in LOW_ROWS
                        if not r.get("why") and r.get("pct") is not None
-                       and r["ticker"] not in price_only_line]
+                       and r["ticker"] not in unexplained_line]
             check(not missing,
-                  f"every price-only name is in the list (missing {missing[:5]})")
+                  f"every unexplained published mover is in the list (missing {missing[:5]})")
         check("**BELOW FLOOR**" in low,
               "the coverage line states the floor verdict")
 
@@ -309,10 +336,10 @@ with tempfile.TemporaryDirectory() as td:
         print("\n7. the coverage guards bite (fault injection)")
         for label, old, new, guard in (
             ("the renderer stops publishing the coverage line",
-             "**catalyst coverage:**", "**catalyst pct:**",
-             lambda b: "**catalyst coverage:**" not in b),
+             "**mover coverage:**", "**mover pct:**",
+             lambda b: "**mover coverage:**" not in b),
             ("the renderer stops degrading a below-floor board",
-             "**DEGRADED — catalyst coverage", "**NOTE — catalyst coverage",
+             "**DEGRADED — mover coverage", "**NOTE — mover coverage",
              lambda b: "DEGRADED" not in b),
         ):
             src = DG_PATH.read_text(encoding="utf-8")
