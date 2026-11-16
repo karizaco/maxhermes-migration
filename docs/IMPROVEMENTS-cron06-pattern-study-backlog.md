@@ -317,3 +317,82 @@ pulled; it is a fact about that instant, not about the week.
 * **The contract version stays `cron06-refresh-v2`.** The cross-check adds a section and a
   JSON block but changes no existing field, vocabulary or file set. A defect fix and an
   additive block are not a new contract.
+
+---
+
+## 6. The cross-check, run over the WHOLE universe: 52 of 133 names fail the gate
+
+Section 5 cross-checked twelve names against Nasdaq's table and attributed the divergences to
+the float denominator. **That attribution was wrong**, and a wider measurement corrected it.
+
+### 6.1 The source that covers NYSE names
+
+Nasdaq's short-interest table returns `"data": null` with the message *"Short interest is
+only supported for Nasdaq Listed stocks"* for every NYSE name — six of the twelve names
+cross-checked in section 5 (VG, WOLF, NMAX, BROS, UAA, RH) came back empty with an HTTP 200,
+which is exactly the "check the BODY, not the status" trap. `stockanalysis.com` covers both
+listings and publishes the exact shares, the short % of float, the prior month's figure and
+the short ratio:
+
+    https://stockanalysis.com/stocks/<ticker>/statistics/
+    data:[{id:"shortInterest",...,hover:"48,857,305"},{id:"shortPriorMonth",...,hover:"42,142,465"},
+          {id:"shortShares",...,hover:"1.941%"},{id:"shortFloat",...,hover:"9.366%"},
+          {id:"shortRatio",...,hover:"3.420"}]
+
+Parse the `hover` values, not the rounded `value`. Where both sources exist they agree
+(MMED: 9,813,734 on both), so the two are not independent of each other in the number — they
+are independent of shibui, which is what the cross-check needs.
+
+### 6.2 Every published name, cross-checked
+
+All 134 names of the 2026-11-14 screen against stockanalysis.com:
+
+| | count |
+|---|---|
+| AGREE (share ratio 0.67–1.50, median 1.11) | 106 |
+| DIVERGE | 27 |
+| published >20% of float where the source says <=20% | **52** |
+
+**The float is NOT the problem.** In every one of the 27 divergent rows the two floats agree
+to 4-5 significant figures (VG 521,644,373 vs 521,645,366; MMED 281,265,526 vs 281,276,412).
+The disputed side is the SHORT POSITION. Three cases in the artifact that now carry a
+different number:
+
+| Name | published | independent | SI ratio | reading |
+|---|---|---|---|---|
+| MMED | 72.6% (204,198,772 sh) | **3.49%** (9,813,734 sh) | 20.8× | the position is ~20× smaller than published |
+| VG | 83.8% (437,137,985 sh) | **9.37%** (48,857,305 sh) | 8.95× | the position is ~9× smaller than published |
+| WOLF | 51.7% (16,444,084 sh) | **90.42%** (28,999,815 sh) | 0.57× | shibui UNDER-states the position by 1.8x |
+
+The error runs in BOTH directions: 25 of the 27 divergent names read HIGH in shibui and 2 read
+LOW (WOLF 0.57x, RARE 0.66x). In every one of the 27 the two floats agree (float ratio
+0.70–1.01), so the disputed side is the SHORT POSITION, not the float. **A divergence is not
+a verdict on who is right** — the artifact now publishes both floats and both percentages so
+the reader can attribute it.
+
+### 6.3 What this does to the artifact's own claims
+
+* The #1 line of the artifact — "VG 83.8% of float, squeeze candidate" — is **~9× too high**.
+  VG's true figure is ~9.4% of float: not a squeeze candidate at all.
+* MMED, published as a squeeze candidate and as a "recent IPO with >20% short float", is
+  **3.49%** of float.
+* Of the four squeeze candidates, two survive (LCID 60.4% vs 63.7%, WOLF 51.7% vs 90.4%) and
+  two do not (VG, MMED). NMAX (63.5% published) is 16.15%.
+* The REAL top of the book by the independent source is WOLF 90.42%, LCID 63.70%, ONDS
+  44.84%, CRK 41.78%, TNGX 39.70% — a different ranking from the artifact's.
+
+### 6.4 What changed in the repo
+
+* **The cross-check source is stockanalysis.com** (both listings), with Nasdaq's table kept as
+  a second source for Nasdaq-listed names. The SKILL §8b.3 step now says: cross-check EVERY
+  name the screen publishes, because the membership is at stake, not just the top of a table.
+* **The engine publishes the source's own percentage next to shibui's**, the percentage gap in
+  percentage points, BOTH floats, the short-interest share counts, the ratio, the days to
+  cover and the verdict — and a summary line naming how many cross-checked names the
+  independent source contradicts ABOVE the 20% gate.
+* **C16** now also recomputes the percentage gap and locates the Verdict column by HEADER
+  NAME (a fixed index broke the moment a column was added — the same class of defect as the
+  ticker/symbol key). The fault-injection test is 18 mutations, each caught by its own clause.
+* **Section 5's attribution is superseded.** The float was right; the short position was the
+  disputed side. The text is left in place as the record of what was measured then and what
+  the wider measurement showed.

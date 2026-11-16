@@ -2508,23 +2508,35 @@ markdown. A hand-typed price is a defect, not a style choice.
    cap) in ONE query, plus the IPO names' liquidity — **and every remaining name in the
    short-float universe**, so that no published row carries a `NO_QUOTE` verdict that only
    means "this run did not measure it". `NO_QUOTE` must mean NO VOLUME HISTORY.
-5. **Cross-check the short interest against an INDEPENDENT source** (Nasdaq's settlement-dated
-   short-interest table). shibui's `short_percent_float` is a fraction of a float definition
-   nobody else shares, so the PERCENTAGE cannot be compared with another source directly —
-   the short interest in SHARES can:
-   ```bash
-   curl -s --max-time 20 -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36" \
-     -H "Accept: application/json" -H "Referer: https://www.nasdaq.com/" \
-     "https://api.nasdaq.com/api/quote/<SYMBOL>/short-interest?assetclass=stocks"
-   ```
-   → `data.shortInterestTable.rows[0]` = `{settlementDate, interest, avgDailyShareVolume,
-   daysToCover}`. **The endpoint is `api/quote/...`; the `api/company/...` path returns 404**
-   (measured 2026-11-16). Fetch it for the top 40 short-float names plus every intersection
-   name (~0.4 s apart) and pass the rows to the engine as `--si-crosscheck-json`:
-   `[{"ticker": "VG", "interest_shares": 12345678, "settlement_date": "10/30/2026",
-   "days_to_cover": 3.1}]`. The engine computes the ratio and the verdict. If the fetch
-   fails, pass `[]` and the artifact publishes `status: no_rows`; if you never fetch it the
-   artifact publishes `status: not_supplied`. **Never omit the section silently.**
+5. **Cross-check the short interest against an INDEPENDENT source — EVERY name the screen
+   publishes, not just the top of the table.** shibui's `short_percent_float` is a fraction of
+   a float definition nobody else shares, and measured 2026-11-16 it disagreed with an
+   independent source on **27 of the 134 published names** (12 of them by 2x or more) — so the
+   cross-check is about the screen's MEMBERSHIP, not a footnote on a table.
+
+   **Primary source:** `https://stockanalysis.com/stocks/<ticker>/statistics/` — it publishes
+   `Short Interest` (exact shares), `Short % of Float`, `Short % of Shares Out`,
+   `Short Previous Month` and `Short Ratio (days to cover)`, and it covers **NYSE names too**.
+   The values sit in the page's embedded payload:
+   `data:[{id:"shortInterest",...,hover:"48,857,305"},{id:"shortFloat",...,hover:"9.366%"},...]`
+   — parse the **`hover`** values (the exact ones), not the rounded `value`.
+
+   **Second source:** `https://api.nasdaq.com/api/quote/<SYMBOL>/short-interest?assetclass=stocks`
+   → `data.shortInterestTable.rows[0]`. It agrees with the primary source on the numbers
+   (MMED 9,813,734 on both) but **returns `"data": null` for every NYSE name** ("Short interest
+   is only supported for Nasdaq Listed stocks"). An HTTP 200 with a null body is NOT a figure.
+
+   **Budget:** one statistics page per published name (~130 pages, ~125 KB each, ~2-3 min with
+   a short pause between calls). Fetch them with a small concurrency (4-6 threads) — the
+   pages are independent and the site rate-limits a burst.
+
+   Pass the rows to the engine as `--si-crosscheck-json`:
+   `[{"ticker":"VG","interest_shares":48857305,"short_pct_float":9.366,"days_to_cover":3.42,
+   "source":"stockanalysis.com"}]`. The engine owns the ratio, the percentage gap and the
+   verdict, and publishes the cross-checked percentage next to shibui's. A name you could not
+   fetch is omitted ("not attempted", not "no data"); if the whole fetch fails, pass `[]` and
+   the artifact publishes `status: no_rows`. **Never omit the section silently.**
+
 6. Fetch the prior ledger (`pattern-study/peoplewish-1000pct-backlog.md`) and the most
    recent PRIOR state snapshot (`pattern-study/cron06-state/short-float-*.json` with a
    fire_date earlier than this one) from the outputs repo. Both are needed: the ledger
@@ -2582,12 +2594,24 @@ checker rejects it.
   vendor correction, not a market event. A published short-float number is a fact about the
   moment it was pulled, so the artifact must carry its own cross-check against an
   independent source rather than let the reader assume the number is stable.
-* **A short-interest PERCENTAGE cannot be cross-checked; only the SHARES can.** shibui's
-  `shares_float` is close to shares OUTSTANDING for a recent IPO or a dual-class name, while
-  short interest is measured against the FREE float — so a "wrong" percentage is often a
-  wrong DENOMINATOR. Measured 2026-11-16 against Nasdaq: 9 of 12 cross-checked names agree
-  within ±25% on the implied share count, while MMED (9.9×), QMCO (4.5×) and CHTR (2.7×)
-  diverge — and in all three shibui's `shares_float` is 87–100% of shares outstanding.
+* **A short-interest PERCENTAGE cannot be cross-checked; only the SHARES can — and the two
+  FLOAT columns say which source is wrong.** Measured 2026-11-16 against stockanalysis.com for
+  all 134 published names: 106 agree within ±50% (median ratio 1.11), 27 diverge, and in
+  EVERY diverging case the two FLOATS agree to 4-5 significant figures (VG 521,644,373 vs
+  521,645,366) — so the disputed side is the SHORT POSITION, not the float. Two concrete
+  cases, in opposite directions: **VG** published 83.8% of float (437.1M shares implied)
+  where the independent source says **9.37%** (48.86M shares) — an 8.95x overstatement, and
+  **52 of 133 names published >20% where the independent source says <=20%**, so the screen's
+  membership is itself noisy. But the error runs BOTH ways: **WOLF** published 51.7%
+  (16.4M shares) where the source says **90.42%** (29.0M shares) — shibui UNDER-states that
+  position by 1.8x, with the floats agreeing (0.99). **Read both columns before calling a
+  name wrong: 25 of the 27 divergent names read HIGH in shibui, 2 read LOW.**
+* **The short-float universe is not a settled fact between runs.** `ownership_stats` is a
+  LIVE SNAPSHOT with no date column: measured 2026-11-16, two days after the 2026-11-14 fire,
+  **20 of the 134 published names had moved** and MMED went 72.6% -> 34.4% with an UNCHANGED
+  share count (281,265,526) — a 38pp vendor correction, not a market event. A published
+  short-float number is a fact about the moment it was pulled, so the artifact must carry its
+  own cross-check rather than let the reader assume the number is stable.
 * **The backlog is a discovery ledger, not a quote sheet.** The carried-forward rows stay
   FROZEN at their first-tagging values, with their `First Tagged` date. The live re-score
   carries this week's tags. Freezing the TAGS too would hide the coil -> breakout

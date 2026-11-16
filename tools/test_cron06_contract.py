@@ -127,10 +127,14 @@ MASTER_CSV = "symbol,stylists\nAAAA,jeff_sun\nCCCC,stockbee\n"
 
 # an INDEPENDENT short-interest source (shares), for the cross-check
 SI_XCHECK = [
-    {"ticker": "AAAA", "interest_shares": 100_000_000, "settlement_date": "2026-10-30", "days_to_cover": 3},
-    {"ticker": "CCCC", "interest_shares": 12_000_000, "settlement_date": "2026-10-30", "days_to_cover": 4},
-    {"ticker": "DDDD", "interest_shares": 1_000_000, "settlement_date": "2026-10-30", "days_to_cover": 2},
-    {"ticker": "EEEE", "interest_shares": 300_000, "settlement_date": "2026-10-30", "days_to_cover": 6},
+    {"ticker": "AAAA", "interest_shares": 100_000_000, "short_pct_float": 30.0,
+     "settlement_date": "2026-10-30", "days_to_cover": 3, "source": "independent"},
+    {"ticker": "CCCC", "interest_shares": 12_000_000, "short_pct_float": 60.0,
+     "settlement_date": "2026-10-30", "days_to_cover": 4, "source": "independent"},
+    {"ticker": "DDDD", "interest_shares": 1_000_000, "short_pct_float": 20.0,
+     "settlement_date": "2026-10-30", "days_to_cover": 2, "source": "independent"},
+    {"ticker": "EEEE", "interest_shares": 300_000, "short_pct_float": 30.0,
+     "settlement_date": "2026-10-30", "days_to_cover": 6, "source": "independent"},
 ]
 
 
@@ -316,6 +320,13 @@ def main():
             lambda: edit_md("weekly-high-short-float.md",
                             lambda t: t.replace("## Short-interest cross-check",
                                                 "## Cross-check removed", 1)))
+
+        def bad_gap(j):
+            for r in j["short_interest_crosscheck"]["rows"]:
+                if r["ticker"] == "CCCC":
+                    r["pct_gap_pp"] = 99.9
+        mut("C16 a cross-check percentage gap is not the recomputed one", "C16",
+            lambda: edit_json(bad_gap))
 
         def bad_verdict(j):
             for r in j["short_interest_crosscheck"]["rows"]:

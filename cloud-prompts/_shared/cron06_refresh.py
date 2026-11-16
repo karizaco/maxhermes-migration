@@ -149,6 +149,7 @@ def si_crosscheck(sf_rows, nasdaq_rows):
         fl = r.get("shares_float")
         shibui_si = round((sp / 100.0) * fl) if (sp is not None and fl) else None
         nsi = n.get("interest_shares") if n else None
+        npct = n.get("short_pct_float") if n else None
         ratio = round(shibui_si / nsi, 2) if (shibui_si and nsi) else None
         if not n or nsi is None or shibui_si is None:
             verdict = "NO_DATA"
@@ -156,13 +157,21 @@ def si_crosscheck(sf_rows, nasdaq_rows):
             verdict = "AGREE"
         else:
             verdict = "DIVERGES"
+        # the source's own float, derived from its figures — so the reader can see
+        # WHICH side disagrees: a different float moves the PERCENTAGE, a different
+        # short-interest share count moves the POSITION.
+        src_float = round(nsi / (npct / 100.0)) if (nsi and npct) else None
         out.append({
             "ticker": t,
             "shibui_short_pct_float": sp,
             "shibui_float_shares": fl,
             "shibui_si_shares": shibui_si,
-            "nasdaq_si_shares": nsi,
+            "source": (n or {}).get("source"),
+            "source_short_pct_float": npct,
+            "source_si_shares": nsi,
+            "source_float_shares": src_float,
             "ratio": ratio,
+            "pct_gap_pp": round(sp - npct, 1) if (sp is not None and npct is not None) else None,
             "settlement_date": (n or {}).get("settlement_date"),
             "days_to_cover": (n or {}).get("days_to_cover"),
             "verdict": verdict,
@@ -484,7 +493,10 @@ def main():
     if nasdaq_si is None:
         xc_rows, xc_status = [], "not_supplied"
     else:
-        wanted = {r["ticker"] for r in sf_rows[:40]} | set(inter["union"])
+        # EVERY name the screen publishes — the cross-check is about the screen's
+        # MEMBERSHIP, not a footnote on the top of the table (measured 2026-11-16:
+        # 27 of 134 published names disagreed, 52 of them failed the 20% gate).
+        wanted = {r["ticker"] for r in sf_rows}
         # Only names the run ACTUALLY fetched are listed. A name that was never
         # queried is "not attempted", not "no data"; a name that WAS fetched and
         # came back without a figure is NO_DATA.
@@ -532,6 +544,11 @@ def main():
             "agree_band": [SI_AGREE_LO, SI_AGREE_HI],
             "rows": xc_rows,
             "counts": {v: sum(1 for r in xc_rows if r["verdict"] == v) for v in sorted(SI_VERDICTS)},
+            "contradicted_above_gate": sorted(
+                r["ticker"] for r in xc_rows
+                if (r.get("shibui_short_pct_float") or 0) > 20
+                and r.get("source_short_pct_float") is not None
+                and r["source_short_pct_float"] <= 20),
         },
         "source_health": [
             {"source": "shibui MCP (stock_data_query via mcp_bridge.py)",
@@ -745,26 +762,40 @@ def _si_crosscheck_md(xc_rows, xc_status):
     agree = sum(1 for r in xc_rows if r["verdict"] == "AGREE")
     div = sum(1 for r in xc_rows if r["verdict"] == "DIVERGES")
     nod = sum(1 for r in xc_rows if r["verdict"] == "NO_DATA")
-    out = ["**Source:** Nasdaq short-interest table (settlement-dated, published twice a month) "
-           "vs the short interest shibui's own ratio implies. **Status: ok** — "
+    contra = [r for r in xc_rows if (r.get("shibui_short_pct_float") or 0) > 20
+              and (r.get("source_short_pct_float") is not None)
+              and r["source_short_pct_float"] <= 20]
+    out = ["**Source:** an independent short-interest figure (settlement-dated), compared with "
+           "the short interest shibui's own ratio implies. **Status: ok** — "
            f"{len(xc_rows)} names cross-checked: {agree} AGREE, {div} DIVERGES, {nod} NO_DATA.",
            "",
-           "| Ticker | Shibui Short %Float | Shibui Float (sh) | Shibui SI (sh) | Nasdaq SI (sh) | "
-           "Ratio | Nasdaq Settlement | Days to Cover | Verdict |",
-           "|---|---|---|---|---|---|---|---|---|"]
+           f"**{len(contra)} of the {len(xc_rows)} cross-checked names publish a short % of float "
+           "that the independent source contradicts ABOVE the 20% gate** — shibui says >20% and "
+           "the independent source says <=20%. Those rows are the ones to distrust; the screen's "
+           "membership is shibui's, not the cross-check's."
+           if contra else
+           "No cross-checked name is contradicted above the 20% gate.",
+           "",
+           "| Ticker | Shibui %Float | Source %Float | Gap (pp) | Shibui Float (sh) | Source Float (sh) | "
+           "Shibui SI (sh) | Source SI (sh) | Ratio | Days to Cover | Verdict |",
+           "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(xc_rows, key=lambda x: (x["verdict"] != "DIVERGES", x["ticker"])):
-        out.append(f"| {r['ticker']} | {pct(r['shibui_short_pct_float'])} | {r['shibui_float_shares']:,} | "
+        out.append(f"| {r['ticker']} | {pct(r['shibui_short_pct_float'])} | "
+                   f"{pct(r['source_short_pct_float'])} | "
+                   f"{(r['pct_gap_pp'] if r['pct_gap_pp'] is not None else '—')} | "
+                   f"{r['shibui_float_shares']:,} | "
+                   f"{(format(r['source_float_shares'], ',') if r.get('source_float_shares') else '—')} | "
                    f"{r['shibui_si_shares']:,} | "
-                   f"{(format(r['nasdaq_si_shares'], ',') if r['nasdaq_si_shares'] else '—')} | "
+                   f"{(format(r['source_si_shares'], ',') if r['source_si_shares'] else '—')} | "
                    f"{r['ratio'] if r['ratio'] is not None else '—'} | "
-                   f"{r['settlement_date'] or '—'} | {r['days_to_cover'] or '—'} | {r['verdict']} |")
+                   f"{r['days_to_cover'] or '—'} | {r['verdict']} |")
     out += ["",
-            "**Ratio** is shibui's implied short-interest shares ÷ Nasdaq's short-interest "
-            "shares. AGREE = the ratio is inside 0.67–1.50; DIVERGES = outside it. A DIVERGES "
-            "row means the two sources disagree about the SIZE OF THE SHORT POSITION — it does "
-            "not say which is right. The usual cause is the float denominator: shibui's "
-            "`shares_float` is close to shares OUTSTANDING for a recent IPO or a dual-class "
-            "name, while short interest is measured against the free float.", ""]
+            "**Ratio** is shibui's implied short-interest shares ÷ the independent source's "
+            "short-interest shares. AGREE = the ratio is inside 0.67–1.50; DIVERGES = outside "
+            "it. Read the two float columns to attribute a divergence: if the FLOATS agree and "
+            "the share counts do not, the short position itself is disputed; if the share "
+            "counts agree and the FLOATS do not, only the float definition differs and the "
+            "position is the same. A DIVERGES row does not say which source is right.", ""]
     return head + "\n".join(out) + "\n"
 
 

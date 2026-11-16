@@ -378,19 +378,29 @@ def main():
                 if num(ratio) is None or abs(float(ratio) - want) > 0.02:
                     fail("C16", f"cross-check row {r.get('ticker')}: published ratio {ratio!r} != "
                                 f"recomputed {want} ({si}/{nsi})")
+            sp, npct, gap = r.get("shibui_short_pct_float"), r.get("source_short_pct_float"), r.get("pct_gap_pp")
+            if num(sp) is not None and num(npct) is not None:
+                wgap = round(float(sp) - float(npct), 1)
+                if num(gap) is None or abs(float(gap) - wgap) > 0.11:
+                    fail("C16", f"cross-check row {r.get('ticker')}: published gap {gap!r} != "
+                                f"recomputed {wgap} ({sp} - {npct})")
         sfm = docs["weekly-high-short-float.md"]
         if "## Short-interest cross-check" not in sfm:
             fail("C16", "weekly-high-short-float.md does not publish the short-interest "
                         "cross-check section")
         else:
-            mrows = {r[0]: r for r in table_rows(sfm, "## Short-interest cross-check")
-                     if r and r[0] not in ("Ticker",)}
+            _all = table_rows(sfm, "## Short-interest cross-check")
+            _hdr = next((r for r in _all if r and r[0] == "Ticker"), None)
+            _vi = _hdr.index("Verdict") if _hdr and "Verdict" in _hdr else None
+            if _vi is None:
+                fail("C16", "the published cross-check table has no 'Verdict' column")
+            mrows = {r[0]: r for r in _all if r and r[0] not in ("Ticker",)}
             if st == "ok":
                 for r in rows_x:
                     m = mrows.get(r.get("ticker"))
                     if not m:
                         fail("C16", f"cross-check row {r.get('ticker')} is not in the published table")
-                    elif len(m) >= 9 and m[8] != r.get("verdict"):
+                    elif _vi is not None and len(m) > _vi and m[_vi] != r.get("verdict"):
                         fail("C16", f"cross-check row {r.get('ticker')}: the table says {m[8]!r} "
                                     f"and the JSON says {r.get('verdict')!r}")
                 if len(mrows) != len(rows_x):
