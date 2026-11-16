@@ -193,6 +193,24 @@ issuer carries that one USD figure.** The rule, in four parts:
    `common` line has no primary**: its cap cannot be resolved to a primary listing, so its names
    are DROPPED from the cap-filtered table and recorded in `_excluded.json` with reason
    `issuer_unresolved`. They are never published with a borrowed cap.
+
+**Which common line is the primary, when the issuer has several.** A root group can hold more than
+one `common` line - Bombardier has `TSX:BBD.A` and `TSX:BBD.B`, Canadian Tire has `TSX:CTC` and
+`TSX:CTC.A`, and a trust can hold `TSX:DHT.U` and `TSX:DHT.UN`. The primary is the line whose
+`market_cap_basic` carries the source's OWN per-line cap: the source computes that number as
+`close x share count` for one line per instrument, so it arrives with a **fractional part**, while
+every sibling line of the same issuer carries the company-level integer cap. Measured 2026-11-16 on
+the Canada file, that signature picks the carrier on all 14 root groups with more than one common
+line - `TSX:BBD.B`, `TSX:CCL.B`, `TSX:CSW.A`, `TSX:CTC.A`, `TSX:FFH.U`, `TSX:QBR.B`, `TSX:RCI.B`,
+`TSX:SGR.U`, `TSX:TCL.A`, `TSX:TECK.B`, `TSX:TPX.A`, `TSX:URB.A`, `TSX:DHT.U` - and it is the only
+rule that survives the three cases a volume tie-break gets wrong (`TSX:DHT.U` 200 shares against
+`TSX:DHT.UN` 23,807; `TSX:FFH.U` 0 shares against `TSX:FFH` 49,304; `TSX:SGR.U` 22,735 against
+`TSX:SGR.UN` 123,436). Where no common line carries a fractional cap, the most liquid common line
+is the primary. **The issuer group is keyed on the VENUE as well as the ticker root** (`(venue,
+root)`): a carried cap must resolve to the same issuer *and* the same venue, because the
+verification in `scripts/intl_assert.py` compares the venue-qualified ticker root - a cap carried
+across venues is a hard failure, and a group whose common line sits on another venue is excluded as
+`issuer_unresolved` rather than published with a borrowed cap.
 2. **Carry the cap, and record the carry.** Every row publishes `cap_source_symbol`: the ticker
    of the line whose `market_cap_basic` the published USD cap was taken from. For the primary
    line it is the row's own ticker; for every other line of the issuer it is the primary's
@@ -376,6 +394,29 @@ in `price_conflict`.
 **Where no official price can be obtained, the third-party close stands and the row carries no
 `price_conflict`** — an unverified conflict is not a conflict. Say which one it was in
 `## Source health`.
+
+## The contract-adjustment artefact — the change field can be measured against an unadjusted price basis (2026-11-16)
+
+**A capital repayment with a share consolidation makes the source's `change` field meaningless, and
+the implied-prior test does NOT catch it.** Measured 2026-11-16 (cron #05): `TWSE:3714` (Ennostar)
+returned **+54.14%** on its first day back from a trading suspension - TAIFEX contract adjustment
+56-2026 suspended the stock from 5 to 13 November for a **NT$4.579508488 capital repayment and share
+consolidation**, effective 16 November, with 1,084.0983 ex-right shares per contract. The stock
+closed at NT$87.40 against a pre-adjustment NT$56.70: a real fall of about **16%**, published as a
+**+54% gain**. The source's own arithmetic still reconciles (the implied prior equals the unadjusted
+prior close), so the stale-print test passes it and the row looks clean.
+
+**So a large move is checked for a corporate action before it is published as a move.**
+1. A `|change|` above ~20% with an `open` far above the prior close, or a trading suspension
+   ending on the session, is a contract-adjustment candidate - not a move.
+2. The exchange's own contract-adjustment notice (TAIFEX, the exchange's corporate-action feed) names
+   the suspension window and the adjustment; the effective price is the adjusted close and the real
+   move is measured against the ADJUSTED prior base.
+3. Such a row stays in the CSV with the source's own field (the archive's convention) and is
+   **excluded from the mover tables and from the headline**, with the artefact disclosed in the
+   report's caveats. A fabricated +54% in a mover table is worse than a missing row.
+4. The `open` column is the tell: on 2026-11-16 `TWSE:3714` opened at NT$101 against a NT$87.40
+   close, a range that no session on the adjusted basis could produce.
 
 ## The close of record — a SETTLEMENT STAMP is not a PRICE (2026-11-05)
 
