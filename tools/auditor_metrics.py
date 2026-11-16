@@ -545,7 +545,10 @@ def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=N
 
     return {
         "audit_date_et": date_str,
-        "audit_date_dow": DOW_NAMES[iso_dow],
+        # iso_dow is 1=Mon..7=Sun (datetime.isoweekday); DOW_NAMES is keyed by the
+        # cron convention 0=Sun..6=Sat.  Indexing DOW_NAMES with iso_dow raised
+        # KeyError: 7 on EVERY Sunday audit (the Sunday routine rows never ran).
+        "audit_date_dow": DOW_NAMES[iso_dow % 7],
         "market_closed": date_str in holidays,
         "origin_main_sha": git(repo, "rev-parse", "--short", "origin/main").strip(),
         "prior_gaps": prior_gaps,

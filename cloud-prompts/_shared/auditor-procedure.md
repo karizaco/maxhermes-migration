@@ -1,7 +1,7 @@
 # cron #90 delivery-auditor — THE PROCEDURE
 
 AUDITOR_PROCEDURE_V1
-PROCEDURE_VERSION: 2026-11-13.1
+PROCEDURE_VERSION: 2026-11-16.1
 
 This file is the PROCEDURE for cron #90 (delivery-auditor). It is fetched at RUN time by the
 routine's prompt, which carries only the title block, the fetch ladder and the REPLY FORMAT.
@@ -271,7 +271,7 @@ before this run; otherwise it is `not_due` and is not a gap.
 | 26-agentic-pre-market-brief | `30 8 * * 1-5` | `daily-briefs/{date}-pre-market.md` | Mon-Fri |
 | 08-pre-market-gapper | `34 8 * * 1-5` | `daily-screens/{date}/pre-market-gapper.md` | Mon-Fri |
 | 92a-preopen-catalyst-capture | `30 8 * * 1-5` | `preopen-feed/{date}-0830.jsonl` | Mon-Fri |
-| 25-ntrt-gap-brief-daily | `0 9 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
+| 25-ntrt-gap-brief-daily | `45 8 * * 1-5` | `ntrt/{date}.md` | Mon-Fri |
 | 26b-agentic-pre-market-brief-refresh | `20 9 * * 1-5` | `daily-briefs/{date}-pre-market-refresh.md` | Mon-Fri |
 | 07-focus-rvol-09:45 | `45 9 * * 1-5` | `daily-screens/{date}/focus-rvol-snapshot.md` | Mon-Fri |
 | 92b-preopen-catalyst-capture | `50 9 * * 1-5` | `preopen-feed/{date}-0950.jsonl` | Mon-Fri |
