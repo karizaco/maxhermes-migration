@@ -252,3 +252,23 @@ artifact is now itself a red flag that the gate would show.
   publishes no US row — a pure waste that also makes `earnings_dates: calendar 0` look
   accidental. It wants a `SETTLE_MODE` guard, measured separately from the date-chain fix.
 - Finding 2 of the 2026-11-11 review (order-dependent venue selection) is still open.
+
+### 6.3 The push subject lost the routine's name (fixed)
+
+`cloud-prompts/_shared/push_artifact.sh` derives the commit subject's **name** from a path
+table, and the table had **no row for the settlement artifact**: `earnings/*-reactions.md`
+is cron **#15**, and nothing matched `earnings/*-reactions-settled.md`. So this slot's
+commits were titled `cron 15b earnings 2026-11-16` — the number was right (cron #90's
+triage greps `cron (#)?NN `, so the push was attributed) but the NAME was the generic
+output directory, which belongs to no routine and makes the log harder to scan.
+
+One additive row fixes it:
+
+```
+earnings/*-reactions-settled.md) _NN=15b; _NM=earnings-reaction-settlement ;;
+```
+
+The glob cannot match #15's morning artifact (that pattern requires the path to **end** in
+`-reactions.md`), so no other routine's subject changes. The shared script is fetched at
+run time, so the next fire writes `cron 15b earnings-reaction-settlement <date>` with no
+`cron_update` and no prompt change.

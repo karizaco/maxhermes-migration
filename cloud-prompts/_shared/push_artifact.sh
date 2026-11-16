@@ -306,6 +306,7 @@ for _addp in $ADD_ALL; do
     asia-pre-market/*) _NN=02; _NM=asia-pre-market-reactions ;;
     earnings/*-reminders.md) _NN=19; _NM=earnings-reminder-daily ;;
     earnings/*-reactions.md) _NN=15; _NM=earnings-reaction-scanner ;;
+    earnings/*-reactions-settled.md) _NN=15b; _NM=earnings-reaction-settlement ;;
     daily-briefs/*-pre-market.md) _NN=26; _NM=agentic-pre-market-brief ;;
     daily-briefs/*-pre-market.csv) _NN=26; _NM=agentic-pre-market-brief ;;
     daily-briefs/*-pre-market-refresh.md) _NN=26b; _NM=agentic-pre-market-brief-refresh ;;
