@@ -501,3 +501,51 @@ The busiest venue's line is often the stale one, and the move it reports can be 
 of two. This is the same shape as the archive's other silent-defect classes — the FX direction,
 the carry-over tolerance — and it is caught the same way: by reconciling the source against its
 own prior reading, not by checking the output for plausibility.
+
+
+## 14. The carrier line is the one with the SOURCE's own cap, and a contract adjustment can fake a 54% gain (2026-11-16)
+
+Date: 2026-11-16. Scope: cron #05's build path. Artifact: `international-eod/2026-11-16/` - 4,381
+rows across 16 regions, `scripts/intl_assert.py` green with **0 failures and 97 warnings** (the
+documented baseline, unchanged from the 2026-11-13 artifact).
+
+**Finding 1 - "which common line is the primary" was never written down, and the obvious answer is
+wrong.** The skill says the issuer's primary line is the group's `common` line, but a root group can
+hold several common lines (Bombardier `TSX:BBD.A` and `TSX:BBD.B`, Canadian Tire `TSX:CTC` and
+`TSX:CTC.A`, DRI Healthcare `TSX:DHT.U` and `TSX:DHT.UN`), and the published `cap_source_symbol`
+must pick one. The answer that fits the archive is **the line whose `market_cap_basic` carries the
+source's own per-line cap**: the source computes that field as `close x share count` for one line per
+instrument, so it arrives with a **fractional part**, while every sibling line of the same issuer
+carries the company-level integer cap. On all 14 Canadian root groups with more than one common line
+this picks the carrier, and it is the only rule that survives the three cases a volume tie-break gets
+wrong - `TSX:DHT.U` (200 shares) beats `TSX:DHT.UN` (23,807), `TSX:FFH.U` (0) beats `TSX:FFH`
+(49,304) and `TSX:SGR.U` (22,735) beats `TSX:SGR.UN` (123,436). Where no common line carries a
+fractional cap, the most liquid common line is the primary. The rule is now in the skill spec.
+
+**The issuer group is keyed on the VENUE as well as the ticker root.** `scripts/intl_assert.py`
+compares the venue-qualified ticker root (`TSX:ENB` vs `TSXV:ENB`), so a cap carried across venues
+is a hard failure. Keying the group on `(venue, root)` keeps every carry venue-consistent, and a
+group whose common line sits on another venue is excluded as `issuer_unresolved` rather than
+published with a borrowed cap.
+
+**Finding 2 - the implied-prior test cannot catch a contract adjustment, and it produced a fake
++54% gain.** `TWSE:3714` (Ennostar) returned **+54.14%** on its first session back from a trading
+suspension: TAIFEX contract adjustment suspended the stock from 5 to 13 November for a **NT$4.579508488
+capital repayment and share consolidation**, effective 16 November (1,084.0983 ex-right shares per
+contract). The stock closed at NT$87.40 against a pre-adjustment NT$56.70 - a real fall of about
+**16%**, published as a **+54% gain**. The source's own arithmetic still reconciles (the implied
+prior equals the unadjusted prior close), so the stale-print test passes it and the row looks clean:
+the off-official test is blind to a change in the PRICE BASIS. The rule is now in the skill spec: a
+`change` above ~20% is checked for a corporate action before it is published as a move, the `open`
+column is the tell (`TWSE:3714` opened at NT$101 against a NT$87.40 close), the row stays in the CSV
+with the source's own field, and it is **excluded from the mover tables and from the headline** with
+the artefact disclosed in the caveats.
+
+**What the cross-session check caught this time.** The per-region WRITTEN row counts landed within
+1% of the 2026-11-13 archive in every region (au 299 vs 293, jp 1,383 vs 1,382, tw 879 vs 872,
+ca 648 vs 658, de 115 vs 115, fr 257 vs 260, it 178 vs 179, es 136 vs 137, nl 56 vs 56, be 76 vs 76,
+at 51 vs 50, pt 27 vs 28, ie 17 vs 17, fi 101 vs 101, dk 75 vs 75, gr 83 vs 84), and the numeric
+formatter regression test reproduced **34,074 of 34,074** numeric cells byte-for-byte. The
+2026-11-16 artifact also ran with **zero off-official rows** (the 13 November file dropped 48), so
+the stale-print path stayed dormant - which is exactly why the contract-adjustment artefact had to
+be caught by a different test.
