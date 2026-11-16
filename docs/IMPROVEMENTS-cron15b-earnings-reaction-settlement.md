@@ -1,6 +1,6 @@
-# Cron #15b — earnings-reaction-settlement: the slot's inputs do not survive the sandbox
+# Cron #15b — earnings-reaction-settlement: the slot's inputs, and the dates it publishes
 
-**Date:** 2026-11-11 (the 12:15 ET fire, session `2026-11-11`)
+**Date:** 2026-11-11 and 2026-11-16 (the 12:15 ET fires, sessions `2026-11-11` and `2026-11-16`)
 **Scope:** cron #15b (`earnings-reaction-settlement`), the 12:15 ET EU/UK settlement pass.
 
 Everything below was measured on the 2026-11-11 fire against live TradingView and Yahoo
@@ -149,3 +149,106 @@ Two things are still open, and neither is worth changing from inside a fire:
    row in a change-sorted scan — for AIXA that is XETR (volume 721,190), which is also the
    venue Yahoo mirrors. This changes row selection for #15's morning artifact as well, so
    it wants a tested change with both artifacts re-measured, not a same-day edit.
+
+---
+
+## 6. Two defects found on the 2026-11-16 fire (pipeline 2026-11-16.1 / 2026-11-16.2)
+
+**Date:** 2026-11-16 (the 12:15 ET fire, session `2026-11-16`)
+**Scope:** cron #15b again, but both findings live in `scripts/earnings_reaction_scanner.py`
+(`karizaco/minimax-cloud-outputs`), which cron **#15** shares. The fixes are in the script,
+so the next 08:00 fire inherits them too.
+
+### 6.1 The settlement branch never rendered five disclosures the contract requires
+
+**The finding.** `tools/check_reaction_artifact.py` gates five earnings-date provenance
+disclosures on the **pipeline version**, not on the artifact kind:
+
+| Gate | Requires |
+|---|---|
+| `QUALITY` | the `earnings_date_quality` table (per market) |
+| `CENSUS` | the `earnings_dates:` line (catalog / calendar / asx / screener) |
+| `CALENDAR` | `earnings_field_stale_rows` |
+| `BUDGET` | the `catalyst_budget` split |
+| `TIERS` | `earnings_tiers: fresh=<n> near=<n>` |
+
+The **08:00 scan branch** has rendered all five since pipeline `2026-11-15.5`. The **12:15
+settlement branch** rendered none of them. So every settlement artifact produced by that
+pipeline failed five contract gates — the 2026-11-16 fire failed exactly those five:
+
+```
+FAIL: 5 contract violation(s) in earnings/2026-11-16-reactions-settled.md
+  - QUALITY: ... does not publish the `earnings_date_quality` table
+  - CENSUS: ... does not publish the `earnings_dates:` census
+  - CALENDAR: ... does not publish `earnings_field_stale_rows`
+  - BUDGET: ... does not publish the catalyst budget split
+  - TIERS: ... does not publish `earnings_tiers`
+```
+
+**Why the checker was NOT relaxed.** The obvious "fix" is to scope the gates to the scan
+artifact. That would have been the wrong trade: the gates say what they mean — *the reader
+must see how good the published earnings dates are* — and a settlement artifact publishes
+earnings dates exactly as much as a scan artifact does. Relaxing the gate would have left
+the reader with an unprovable date and a checker that no longer says anything. **The
+disclosures were rendered instead, from this pass's own data**, and the artifact passes
+`check_reaction_artifact.py` with the gate untouched.
+
+Two of them needed a settlement-scoped reading rather than a copy of the scan's line:
+
+- `earnings_date_quality` — the settlement pass publishes **EU/UK rows only**, so `us` and
+  `au` have **0 rows BY DESIGN** (the US session is open at 12:15 ET; the AU rows belong
+  to the 08:00 scan). A zero row is the truth, and the line says so in words.
+- `catalyst_budget` — the settlement pass performs **no new lookups** (no research happens
+  in this slot), so the split is `0 US + 0 EU + 0 AU + 0 APAC/Gulf = 0 lookups`, with the
+  morning's catalog named in the same line as the source of every published catalyst cell.
+- `earnings_tiers` — measured over **this table's rows** (fresh = the event is dated on the
+  session that just settled, near = the previous session), not over the US rows the scan
+  ranks.
+
+### 6.2 The date chain was region-blind, so an EU row inherited an Australian company's report date
+
+**The finding.** `earnings_date_for()` consulted the **US** bulk calendar and the **AU**
+announcements feed for **every** row, whatever its market. The catalyst merge was already
+region-matched ("a ticker is not a company"), but the *date* chain was not.
+
+Measured on the 2026-11-16 settlement pass, `PLT` (Oslo Børs, the **#2 mover at
++12.16%**) published:
+
+```
+| PLT | norway | OSL | 12.36 | +12.16 | ... | 2026-11-16 (0d ago) | ...
+```
+
+because an **ASX-listed company that happens to share the ticker `PLT`** reported on
+2026-11-16. The Norwegian PLT's own screener field says **2026-08-06** (verified directly
+against `scanner.tradingview.com/norway/scan`: `OSL:PLT` → `earnings_release_date`
+`2026-08-06`, `earnings_release_next_date` `2027-02-24`). The published date was wrong, and
+it was wrong in the worst direction: it made the row's earnings event look **hours old**
+when it was over three months old — it also counted as "fresh" in `earnings_tiers`.
+
+The 33 ASX codes with a results-classified announcement that day included `PLT`, `AEG`,
+`AXI`, `CAM`, `HUM`, `NRL`, `SET`, `TRA`… — several of which are plausible ticker
+collisions with a European venue, so this is a CLASS of defect, not a one-row typo. The
+same blindness lets a US calendar date leak into a European row.
+
+**The fix.** Each bulk feed is now consulted **only for a row in its own market**: the
+Nasdaq calendar for `region == "US"`, the ASX announcements feed for `region == "AU"`.
+Every other region falls through to the researched catalog entry (already region-matched)
+or the screener's own field. The artifact's `earnings_dates:` census now reads
+`catalog 1, calendar 0, asx 0, screener 28` — and a non-zero `asx` count in a EU-only
+artifact is now itself a red flag that the gate would show.
+
+### What was checked on the 2026-11-16 fire
+
+- `check_reaction_artifact.py` → **OK** (`conforms to REACTION_ARTIFACT_V2`), gate
+  untouched.
+- The reference-close cross-check: `agree=29 mismatch=1 unverified=0 stale_reference=1`,
+  `rows_dropped_stale_ref=1`, `degraded_sources=0`.
+- The `scan_to_settle` measurement the slot exists for: **16** rows compared with the
+  08:00 scan, **median drift 1.29pp**, **max 3.95pp**, **10 of 16** more than 1pp apart.
+
+### Still open
+
+- The settlement pass still calls the **US** bulk earnings calendar (8 calls) although it
+  publishes no US row — a pure waste that also makes `earnings_dates: calendar 0` look
+  accidental. It wants a `SETTLE_MODE` guard, measured separately from the date-chain fix.
+- Finding 2 of the 2026-11-11 review (order-dependent venue selection) is still open.
