@@ -732,6 +732,49 @@ python3 /workspace/eod_scripts/fetch_eod_settled.py --symbols <symbols.csv> \
 - The loop exits when a round is quiet AND the residue re-pull is quiet. `--max-rounds`
   bounds the wait; the residue is then published as it stands and the artifact says so.
 
+**THE PROBE'S DETECTOR IS BATCHED, AND THE VENUE POLLS ON ITS OWN CADENCE (2026-11-16).**
+
+Measured on the 2026-11-13 fire: the probe loop put **~11,951 requests** on the wire (5,593
+vendor bars + 5,593 venue prints + 765 duplicate chart re-pulls) over 12 rounds, against a
+Yahoo egress measured at 8.8 req/s and a Nasdaq endpoint measured taking **777 s on its
+second pass instead of 255 s** — the loop was throttling the very source the next stage
+depends on. Three changes, **none of which touches what is published**:
+
+- **THE DETECTOR IS BATCHED.** Yahoo's `v7/finance/spark` carries **up to 20 symbols in ONE
+  request** (measured 2026-11-16: 20/20 resolved, 10 back-to-back 20-symbol calls in 1.45 s
+  ≈ 138 symbols/second). The probe now detects movement with ~24 requests per round instead
+  of ~466. The spark close is **ROUNDED** (2-3 dp) and carries no volume/open/high/low, so
+  it is a **detector value only**: the movement tolerance is `max(0.005, |close| x 0.0002)`
+  and the rounding error is ~1e-5, three orders of magnitude inside it. **Any symbol the
+  probe decides MOVED is re-read from the per-symbol chart**, which carries the full bar and
+  the full-precision close - the same bytes as before. A symbol spark cannot resolve falls
+  back to the per-symbol chart, so the detector is never blind for any name.
+- **THE VENUE POLLS ON ITS OWN CADENCE.** The venue's settled print is a **stamped** auction
+  print; the vendor's daily bar is a series that keeps ingesting - the two do not settle at
+  the same time. The venue is polled **every round while it is still MOVING** and backs off
+  to **every other round** once it has been quiet for two consecutive polls; any venue
+  movement snaps it straight back to every round. The cadence is set by the EVIDENCE, not by
+  a guess - and the run now **reports `bar_moved` and `venue_moved` separately per round**,
+  so the next session's data can set the cadence from measurement.
+- **THE PROBE SET SHRINKS.** The old residue was the set of symbols that had **ever**
+  changed, so it grew monotonically (765 names by the last round on 2026-11-13) and every
+  round re-pulled names that had been quiet for hours. It is now the set of symbols that are
+  **still moving** - a symbol that moved is re-measured until it stops moving and then
+  LEAVES. The invariant is unchanged: **every symbol that ever changed is re-pulled until it
+  stops changing.**
+
+The exit test is unchanged in strength and explicit about the venue: **a round can only be
+called quiet when the venue was measured in it**, and the quiet streak counts consecutive
+quiet **venue polls** - a round that skipped the venue neither advances nor resets it, so two
+quiet polls 8 minutes apart still count as two.
+
+**The probe loop has its own contract test**, `tools/test_eod_settle_probe_contract.py`
+(15 cases): it drives the REAL `main()` against a SYNTHETIC feed - no network, no clock, no
+sleep - and asserts the invariants above, including the one that matters most: **a rounded
+spark close is not a movement**. Five fault injections (the venue value not stored on a
+move, the cadence never backing off, the spark fallback dropped, a skipped round advancing
+the quiet streak, the ever-changed residue restored) are each observed to FAIL it.
+
 **THE INDEPENDENT CONFIRMATION — a different feed, and the measured reason the obvious
 one is wrong.** The published close is the VENUE's settled print, so the independent reading
 must be a source that is not the venue. Measured on 2026-11-11: the **TradingView America
@@ -897,11 +940,13 @@ The derive stage is a **script**, not prose, so the numbers cannot drift between
 # and it would silently write the 14-column file. The contents API is authoritative and
 # is NOT CDN-cached, so it is tried first.
 # Each file carries its OWN marker: EOD_SETTLE_V1 for the settle-stage scripts,
+# EOD_SETTLE_V2 for the BATCHED probe script (2026-11-16 - a stale copy without the
+# batched detector would silently put the old request volume back on the wire),
 # EOD_BASE_V1 for the base assembly, EOD_DERIVE_V2 for the derive/report stages.
 mkdir -p /workspace/eod_scripts
 for SPEC in \
   "fetch_eod_universe.py:EOD_SETTLE_V1" "fetch_eod_quotes.py:EOD_SETTLE_V1" \
-  "fetch_eod_settled.py:EOD_SETTLE_V1" "fetch_eod_venue.py:EOD_SETTLE_V1" \
+  "fetch_eod_settled.py:EOD_SETTLE_V2" "fetch_eod_venue.py:EOD_SETTLE_V1" \
   "build_eod_base.py:EOD_BASE_V1" "patch_eod_session_closes.py:EOD_BASE_V1" \
   "eod_derive.py:EOD_DERIVE_V2" "build_eod_report.py:EOD_DERIVE_V2" ; do
   F=${SPEC%%:*}; MARK=${SPEC##*:}

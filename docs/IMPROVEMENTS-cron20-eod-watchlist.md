@@ -546,3 +546,93 @@ The venue's day range is **only populated close to the session** — a Saturday-
 got `N/A` from `/summary` for the illiquid names, so 4,561 rows publish a range against the
 in-window run's 4,842. Outside the window those rows publish an EMPTY range (flagged
 `HIGH_LOW_UNAVAILABLE`), never an invented one.
+
+---
+
+## 2026-11-16 — the probe's detector is BATCHED, and the venue polls on its own cadence
+
+### What the 2026-11-13 fire actually put on the wire
+
+The settle probe loop is the only part of the routine that makes thousands of requests, and
+it runs against the two sources that throttle. Measured on the 2026-11-13 fire:
+
+| pull | requests |
+|---|---|
+| the vendor's session bar, one symbol per request | **5,593** (466 probe names x 12 rounds) |
+| the venue's settled print, one symbol per request | **5,593** |
+| the DUPLICATE chart re-pull after every bar movement | **765** |
+| **total** | **~11,951** |
+
+That is ~53 s of pure wait per round against a Yahoo egress measured at 8.8 req/s, and the
+repo's own numbers record the Nasdaq endpoint taking **777 s on its second pass instead of
+255 s** - the loop was throttling the very source the next stage depends on. The probe set
+was 423-503 names per round, above its own `--probe-size 300`, because the residue held
+every symbol that had **ever** changed (765 by the last round) and could never shrink.
+
+### Three changes, none of which touches what is published
+
+- **THE DETECTOR IS BATCHED.** Yahoo's `v7/finance/spark` carries **up to 20 symbols in ONE
+  request** - measured 2026-11-16: 20/20 resolved, 10 back-to-back 20-symbol calls in 1.45 s
+  (~138 symbols/second), no cookie and no crumb needed, and class shares resolve once the
+  Yahoo form is used (`ABR-P-D` -> `ABR-PD`; `ABR-PD`, `USB-PH`, `AGM-PD`, `BRK-A`, `LEN-B`
+  all resolved). The spark close is **ROUNDED** (2-3 dp) and carries no volume/open/high/low,
+  so it is a **detector value only**: the movement tolerance is `max(0.005, |close| x
+  0.0002)` and the rounding error is ~1e-5 - three orders of magnitude inside it, and
+  measured on 15 names (AAPL, BRK-A, the class shares, the thin names) the spark and chart
+  closes are indistinguishable to the movement test. **Any symbol the probe decides MOVED is
+  re-read from the per-symbol chart**, which carries the full bar and the full-precision
+  close - the same bytes as before - and a symbol spark cannot resolve falls back to the
+  per-symbol chart, so the detector is never blind for any name.
+- **THE VENUE POLLS ON ITS OWN CADENCE.** The venue's settled print is a **stamped** auction
+  print; the vendor's daily bar is a series that keeps ingesting. The two do not settle at
+  the same time, so the venue is polled **every round while it is still MOVING** and backs
+  off to **every other round** once it has been quiet for two consecutive polls; any venue
+  movement snaps it straight back to every round. The cadence is set by the EVIDENCE, not by
+  a guess - and the run now **reports `bar_moved` and `venue_moved` separately per round**,
+  so the next session's data can set it from measurement.
+- **THE PROBE SET SHRINKS.** The residue is now the set of symbols that are **still moving**,
+  not the set that ever changed. A symbol that moved is re-measured until it stops moving
+  and then LEAVES. The invariant is unchanged: every symbol that ever changed is re-pulled
+  until it stops changing.
+
+The exit test is unchanged in strength and explicit about the venue: **a round can only be
+called quiet when the venue was measured in it**, and the quiet streak counts consecutive
+quiet **venue polls** - a round that skipped the venue neither advances nor resets it, so
+two quiet polls 8 minutes apart still count as two.
+
+### The contract test, and the bug it caught before it could ship
+
+`tools/test_eod_settle_probe_contract.py` drives the REAL `main()` against a SYNTHETIC
+feed - no network, no clock, no sleep - and asserts the invariants above, including the one
+that matters most: **a rounded spark close is not a movement**. 15 cases.
+
+**The test caught a bug in this change before it was pushed:** when the venue's print MOVED,
+the new value was not stored, so the old value was compared against the new one on every
+later round and the venue reported a movement on every round forever. It was caught because
+the feed's venue settles while its bar keeps moving - the shape of the real problem.
+
+Five fault injections are each observed to FAIL the test: the venue value not stored on a
+move, the cadence never backing off, the spark fallback dropped, a skipped round advancing
+the quiet streak, and the ever-changed residue restored (the probe set then grows
+monotonically: 7, 7, 11, 15, 16, 20, 22, 26, 28, 30, 31, 32 instead of returning to 7).
+
+### The equivalence evidence
+
+A full re-run of the 2026-11-13 session against the new script, on settled data:
+
+- **3,993 of 4,772 session closes (83.68%) are IDENTICAL** to the old probe's output;
+- the probe set fell to **305 names** (from 423-503) and the loop **settled after 2 rounds**
+  on data that had already settled;
+- the 779 that differ are the names that were **still moving when the old probe hit its
+  12-round cap** - the new run reads them settled.
+
+### What this does NOT fix
+
+The **floor** is the settle itself: the thin tail's last ingestion is ~16:45 ET and no
+source publishes the auction print earlier, so the loop cannot exit before ~16:49 whatever
+it does. The remaining wall clock is a measured wait, and the only way past it is to change
+what is published (a two-part artifact), which is a product decision, not an optimisation.
+
+**The capability marker moved to `EOD_SETTLE_V2` for `fetch_eod_settled.py`** and the skill's
+fetch ladder demands it, so a stale copy of the script - which would silently put the old
+request volume back on the wire - is rejected rather than run.

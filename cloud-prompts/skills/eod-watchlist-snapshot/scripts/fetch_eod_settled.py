@@ -59,7 +59,12 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-MARKER = "EOD_SETTLE_V1"
+MARKER = "EOD_SETTLE_V2"
+
+# THE WIRE COUNTERS (2026-11-16). The probe is the only part of the routine that makes
+# thousands of requests, and it runs against sources that throttle - so its load is
+# MEASURED and reported, not assumed.
+WIRE = {"chart": 0, "spark": 0, "venue": 0}
 
 HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -125,6 +130,7 @@ class Throttle:
 def fetch_chart(ticker: str, rng: str, interval: str, throttle: Throttle,
                 timeout: float = 25.0) -> list:
     """One Yahoo chart request -> a list of [epoch, o, h, l, c, v] bars."""
+    WIRE["chart"] += 1
     ysym = yahoo_form(ticker)
     for attempt in range(4):
         host = throttle.next_host()
@@ -175,6 +181,84 @@ def fetch_chart(ticker: str, rng: str, interval: str, throttle: Throttle,
     return []
 
 
+def fetch_spark_batch(tickers: list, session: str, throttle: Throttle,
+                      batch: int = 20, timeout: float = 25.0) -> dict:
+    """{ticker: session close} for up to 20 tickers per request.
+
+    THE PROBE'S DETECTION IS BATCHED (2026-11-16).
+    -----------------------------------------------
+    Yahoo's `v7/finance/spark` carries up to **20 symbols in ONE request** (measured: a
+    20-symbol call returns 20/20, and 10 back-to-back 20-symbol calls took 1.45 s - about
+    138 symbols/second). The probe used to pull every probe symbol's 5-day chart
+    INDIVIDUALLY: ~466 requests per round x 12 rounds = **5,593 requests** against an
+    8.8 req/s egress ceiling, which is ~53 s of pure wait per round.
+
+    Two properties make this safe for DETECTION:
+      * the spark close is ROUNDED (2-3 dp) and carries no volume/open/high/low - but the
+        archive's movement tolerance is `max(0.005, |close| * 0.0002)` and the rounding
+        error is ~1e-5, i.e. three orders of magnitude inside the tolerance, so a spark
+        close and a chart close are indistinguishable to the movement test;
+      * the spark value NEVER reaches the artifact. Any symbol the probe decides MOVED (or
+        that appeared for the first time) is re-read from the PER-SYMBOL chart, which
+        carries the full bar and the full-precision close - the same bytes as before.
+    A symbol spark does not resolve falls back to the per-symbol chart, so the detector is
+    never blind. Class shares need the YAHOO form (`ABR-P-D` -> `ABR-PD`), which
+    `yahoo_form()` already produces; measured: ABR-PD, USB-PH, AGM-PD, BRK-A, LEN-B all
+    resolve.
+    """
+    out: dict = {}
+    if not tickers:
+        return out
+    todo = [t for t in dict.fromkeys(tickers)]
+    chunks = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+    for chunk in chunks:
+        WIRE["spark"] += 1
+        syms = ",".join(yahoo_form(t) for t in chunk)
+        for attempt in range(3):
+            host = throttle.next_host()
+            url = (f"{host}/v7/finance/spark?symbols={urllib.parse.quote(syms)}"
+                   f"&range=5d&interval=1d")
+            req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                       "Accept": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read()
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 999):
+                    throttle.block(host, 20.0 + 10 * attempt)
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+            except Exception:  # noqa: BLE001 - a transport error is a data fact
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            try:
+                doc = json.loads(body)
+            except Exception:
+                continue
+            for entry in ((doc.get("spark") or {}).get("result") or []):
+                sym = entry.get("symbol")
+                inner = (entry.get("response") or [{}])[0]
+                ts = inner.get("timestamp") or []
+                cl = ((inner.get("indicators") or {}).get("quote") or [{}])[0]
+                closes = cl.get("close") or []
+                for i, t in enumerate(ts):
+                    try:
+                        c = closes[i]
+                    except IndexError:
+                        continue
+                    if c is None:
+                        continue
+                    if day_of(t) == session:
+                        # map the YAHOO symbol back to the pipeline's own ticker key
+                        for t0 in chunk:
+                            if yahoo_form(t0) == sym:
+                                out[t0] = float(c)
+                                break
+            break
+    return out
+
+
 def fetch_venue(ticker: str) -> float | None:
     """The venue's settled print (Nasdaq's consolidated record), or None.
 
@@ -189,6 +273,7 @@ def fetch_venue(ticker: str) -> float | None:
     after-hours tape keeps ticking, so the probe measured the extended session moving and
     never went quiet (122 symbols still "changed" in round 12, at 17:08 ET).
     """
+    WIRE["venue"] += 1
     sym = nasdaq_form(ticker)
     url = NASDAQ_INFO % sym.replace("^", "%5E")
     try:
@@ -345,10 +430,28 @@ def main() -> int:
     rnd = random.Random(17)
 
     residue = {t for t in tickers if state[t]["close"] is None}
+    # THE STILL-MOVING SET, NOT THE EVER-CHANGED SET (2026-11-16).
+    # The old residue grew monotonically with every symbol that had EVER moved (765 on
+    # 2026-11-13), so the probe set could never shrink and every round re-pulled names
+    # that had been quiet for hours. A symbol that moved is re-measured until it stops
+    # moving and then LEAVES the set - the invariant ("every symbol that ever changed is
+    # re-pulled until it stops changing") is kept, the dead weight is not.
+    still_moving = set(residue)
     rounds = 0
     total_changed = 0
+    bar_moved_total = 0
+    venue_moved_total = 0
+    venue_polls = 0
     quiet_streak = 0
-    last_residue_size = -1
+    last_no_close_size = -1
+    # THE VENUE'S OWN CADENCE (2026-11-16). The venue's settled print is a STAMPED auction
+    # print, while the vendor's daily bar is a series that keeps ingesting - the two do
+    # not settle at the same time. The venue is polled every round while it is still
+    # MOVING and backs off to every OTHER round once it has been quiet for two
+    # consecutive polls. Any venue movement snaps it straight back to every round, so the
+    # cadence is set by the EVIDENCE, not by a guess.
+    venue_cadence = 1
+    venue_quiet_streak = 0
     for rnd_no in range(1, args.max_rounds + 1):
         rounds = rnd_no
         if rnd_no > 1:
@@ -357,62 +460,122 @@ def main() -> int:
         probe_thin = rnd.sample(thin, min(half, len(thin))) if thin else []
         rest = [t for t in tickers if t not in set(thin)]
         probe_rand = rnd.sample(rest, min(args.probe_size - len(probe_thin), len(rest)))
-        probe_set = sorted(set(probe_thin) | set(probe_rand) | residue)
+        probe_set = sorted(set(probe_thin) | set(probe_rand) | still_moving)
 
-        def bar_work(t):
-            return t, close_of(fetch_chart(t, "5d", "1d", throttle), args.session)
+        venue_due = (not args.no_venue) and (venue_cadence == 1 or rnd_no % venue_cadence == 1)
 
-        with ThreadPoolExecutor(max_workers=args.threads) as pool:
-            bars_now = dict(pool.map(bar_work, probe_set))
+        def detect_bars():
+            """The DETECTOR: the session close for every probe symbol, BATCHED."""
+            got = fetch_spark_batch(probe_set, args.session, throttle)
+            missing = [t for t in probe_set if t not in got]
+            if missing:
+                # spark could not resolve these - fall back to the per-symbol chart, so
+                # the detector is never blind for any name
+                def one(t):
+                    return t, close_of(fetch_chart(t, "5d", "1d", throttle), args.session)
+                with ThreadPoolExecutor(max_workers=args.threads) as pool:
+                    for t, c in pool.map(one, missing):
+                        if c is not None:
+                            got[t] = c
+            return got
 
-        venue_now = {}
-        if not args.no_venue:
-            def venue_work(t):
+        def detect_venue():
+            def one(t):
                 return t, fetch_venue(t)
             with ThreadPoolExecutor(max_workers=args.venue_threads) as pool:
-                venue_now = dict(pool.map(venue_work, probe_set))
+                return dict(pool.map(one, probe_set))
 
-        changed = []
+        # the bar detection and the venue sweep are INDEPENDENT pulls - run them together
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_bars = pool.submit(detect_bars)
+            f_venue = pool.submit(detect_venue) if venue_due else None
+            bars_now = f_bars.result()
+            venue_now = f_venue.result() if f_venue is not None else {}
+
+        bar_moved = []
+        venue_moved = []
+        appeared = []
         for t in probe_set:
             new_close = bars_now.get(t)
             old_close = state[t]["close"]
             new_venue = venue_now.get(t) if venue_now else None
             old_venue = state[t]["venue"]
-            bar_moved = (new_close is not None and old_close is not None
-                         and abs(new_close - old_close) > tol(old_close))
-            venue_moved = (new_venue is not None and old_venue is not None
-                           and abs(new_venue - old_venue) > tol(old_venue))
-            if bar_moved:
-                state[t]["bars"] = replace_session_bar(
-                    state[t]["bars"], args.session,
-                    session_bar(fetch_chart(t, "5d", "1d", throttle), args.session))
-                state[t]["close"] = new_close
-            if venue_moved:
+            if (new_close is not None and old_close is not None
+                    and abs(new_close - old_close) > tol(old_close)):
+                bar_moved.append(t)
+            if (new_venue is not None and old_venue is not None
+                    and abs(new_venue - old_venue) > tol(old_venue)):
+                venue_moved.append(t)
                 state[t]["venue"] = new_venue
-            if bar_moved or venue_moved:
-                state[t]["round"] = rnd_no
-                state[t]["changes"] += 1
-                changed.append(t)
             if new_close is not None and old_close is None:
-                state[t]["close"] = new_close
-                state[t]["round"] = rnd_no
-                changed.append(t)
+                appeared.append(t)
             if new_venue is not None and old_venue is None:
                 state[t]["venue"] = new_venue
+
+        # THE AUTHORITATIVE READ (2026-11-16). The spark close is a DETECTOR value: it is
+        # rounded and carries no volume/open/high/low, so it NEVER reaches the artifact.
+        # Any symbol that moved - or that appeared for the first time - is re-read from
+        # the per-symbol chart, which carries the full bar and the full-precision close.
+        # The old code pulled that chart TWICE (once for the close, once for the bar) and
+        # could therefore publish a close that disagreed with the bar it had just inserted.
+        authoritative = list(dict.fromkeys(bar_moved + appeared))
+        if authoritative:
+            def refresh(t):
+                return t, fetch_chart(t, "5d", "1d", throttle)
+            with ThreadPoolExecutor(max_workers=args.threads) as pool:
+                for t, bars in pool.map(refresh, authoritative):
+                    sb = session_bar(bars, args.session)
+                    if sb is None:
+                        continue
+                    if t in bar_moved:
+                        state[t]["bars"] = replace_session_bar(
+                            state[t]["bars"], args.session, sb)
+                    state[t]["close"] = float(sb[4])
+
+        changed = list(dict.fromkeys(bar_moved + venue_moved + appeared))
+        for t in changed:
+            state[t]["round"] = rnd_no
+            state[t]["changes"] += 1
         total_changed += len(changed)
-        residue = {t for t in tickers if state[t]["close"] is None}
-        residue |= set(changed)
+        bar_moved_total += len(bar_moved)
+        venue_moved_total += len(venue_moved)
+
+        # the venue's own cadence: back off only while it is quiet, snap back the moment
+        # it moves again
+        if venue_due:
+            venue_polls += 1
+            if venue_moved:
+                venue_cadence = 1
+                venue_quiet_streak = 0
+            else:
+                venue_quiet_streak += 1
+                if venue_quiet_streak >= 2 and venue_cadence == 1:
+                    venue_cadence = 2
+                    venue_quiet_streak = 0
+
+        # the STILL-MOVING set: a symbol that moved is re-measured next round, and drops
+        # out once it has stopped moving
+        no_close = {t for t in tickers if state[t]["close"] is None}
+        still_moving = set(changed) | no_close
         # The exit test is the FEED'S QUIET, not the residue's emptiness: ~6% of the universe
         # never publishes a session bar, so an empty residue is not a thing that happens.
-        # The loop exits on TWO consecutive quiet rounds (nothing moved, nothing new
-        # appeared) with the residue size unchanged - the feed has stopped moving.
-        residue_stable = len(residue) == last_residue_size
-        quiet_streak = quiet_streak + 1 if not changed else 0
-        last_residue_size = len(residue)
-        print(f"  round {rnd_no}: probe={len(probe_set)} changed={len(changed)} "
-              f"residue={len(residue)} quiet_streak={quiet_streak} "
+        # A round can only be called quiet when the VENUE was measured in it - a round
+        # that skipped the venue cannot prove the venue's print stopped moving.
+        venue_checked = venue_due or args.no_venue
+        if venue_checked:
+            # the streak counts consecutive QUIET VENUE POLLS. A round that skipped the
+            # venue leaves the streak UNTOUCHED - it neither advances nor resets it -
+            # so two quiet venue polls 8 minutes apart still count as two, while a
+            # round that skipped the venue can never itself be called quiet.
+            quiet_streak = quiet_streak + 1 if not changed else 0
+        no_close_stable = len(no_close) == last_no_close_size
+        last_no_close_size = len(no_close)
+        print(f"  round {rnd_no}: probe={len(probe_set)} bar_moved={len(bar_moved)} "
+              f"venue_moved={len(venue_moved)} changed={len(changed)} "
+              f"still_moving={len(still_moving)} no_close={len(no_close)} "
+              f"venue_poll={'yes' if venue_due else 'no'} quiet_streak={quiet_streak} "
               f"{time.strftime('%H:%M:%S')}", flush=True)
-        if quiet_streak >= 2 and residue_stable:
+        if quiet_streak >= 2 and no_close_stable:
             print(f"  settled after {rnd_no} round(s)", flush=True)
             break
     else:
@@ -420,7 +583,11 @@ def main() -> int:
               f"as it stands", file=sys.stderr)
 
     write_outputs(args, state, fetch_list)
-    print(f"probe: {rounds} round(s); {total_changed} symbol(s) changed after pass 1",
+    print(f"probe: {rounds} round(s); {total_changed} symbol(s) changed after pass 1 "
+          f"(bar_moved={bar_moved_total}, venue_moved={venue_moved_total}); "
+          f"venue polls={venue_polls}/{rounds}, final cadence {venue_cadence}; "
+          f"wire: {WIRE['chart']} chart + {WIRE['spark']} spark + {WIRE['venue']} venue "
+          f"= {sum(WIRE.values())} requests",
           flush=True)
     return 0
 
