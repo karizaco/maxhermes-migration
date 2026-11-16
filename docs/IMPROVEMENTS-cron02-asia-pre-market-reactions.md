@@ -238,3 +238,89 @@ Lenovo (80992), Geely (80175) and China Resources Beer (80291) — exist in the 
 CNY counters, and no HKEX HKD twin exists for them. The contract drops non-HKD rows, so these
 names cannot be published at all; press puts Tencent at about -3% and Lenovo at -6.33%. The
 2026-11-13 artifact states the gap rather than substituting the CNY print.
+
+---
+
+## 2026-11-16 — Korea's preferred lines are a second venue artifact, and Taiwan's limit lock is a cluster
+
+Measured on the 2026-11-16 fire (Asia session 2026-11-16, all four markets open and fresh:
+JP/TW/HK/KR archive-compare all `fresh`).
+
+### 1. A Korean preferred line took the top slot with the opposite sign to its common twin
+
+`KRX:18064K` (HANJIN KAL Corp. Preferred) printed **-17.86%** while the same issuer's common
+line `KRX:180640` closed **+5.90%** in the same session. The scanner attaches the **common line's
+market cap to both rows** (13,555,243,583,679 KRW on each), so nothing in the payload marks one as
+a different share class — the only structural signal is the ticker suffix (`K` = preferred, `R` =
+2nd preferred, `U` = 3rd preferred) and the shared `description`.
+
+This is the Korean twin of the Japan regional-print rule that the skill already carries, and it is
+**not** covered by it: the JP rule resolves a row whose `exchange` is wrong, while this row's
+`exchange` is correct (`KRX`) and only the **share class** is wrong.
+
+**Effect on the brief.** The preferred row is the largest absolute move in the Korea section, so it
+takes the headline slot and pushes the largest genuine common-line move (`KRX:319660` PSK -14.01%)
+down the tier, where it is far less likely to be read. The 2026-11-16 artifact publishes both and
+flags the pair explicitly in `## What matters today` -> *Top 3 artifact traps* and in `## Flags`,
+so no wrong number was published — but the tiering was decided by an artifact row.
+
+**Proposed skill rule (mirrors THE JP REGIONAL-PRINT RULE, resolve-and-drop, no new published
+field).** For every KRX row whose ticker carries a preferred suffix (`K` / `R` / `U`) **or** whose
+`description` matches another KRX row in the same scan, resolve against the **common line**:
+
+1. If a common line exists (no preferred suffix), publish the common line's close and change and
+   drop the preferred row.
+2. If no common line exists, publish the preferred row but tag it as a preferred line in the
+   catalyst/notes cell.
+
+Resolve this **before** the 15-up/15-down cap, for the same reason the JP rule is: a bogus row
+otherwise takes the top slot. A `description`-based match is the more robust test than the suffix
+alone (it also catches preferred lines whose suffix the scanner renders differently).
+
+### 2. Taiwan's decliners were all limit-locked, and nothing tagged them
+
+Taiwan's daily limit is +/-10%. On 2026-11-16 **15 of the 15 published Taiwan decliners closed
+between -9.96% and -10.00%** — the entire down leg was locked at the floor — and the up leg held
+only 3 names (+3.97%, +3.08%, +2.42%). Eight of the 18 Taiwan rows are therefore mechanical
+prints of the limit, not measured moves.
+
+The skill mentions "Taiwan's +10% cluster" only as an example of a *trap to pick by hand* (the
+`Top 3 artifact traps` selection rule). There is **no detection rule**, so a future fire can
+publish a limit-locked row as a normal mover, and the reader sees "-10.00%" as a precise
+measurement when it is the exchange's floor.
+
+**Proposed skill rule (a mechanical tag, not a filter).** A Taiwan row whose published (rounded,
+2dp) change is exactly -10.00% (or +10.00%) is a **limit lock**: tag it `TW_LIMIT_LOCK` in the
+notes cell and say so in the caveat line. Do **not** filter it out — the limit lock is itself the
+information, and the TAIEX level is what the reader should use for the day's magnitude.
+
+### 3. TradingEconomics printed a Taiwan index on the wrong basis
+
+TradingEconomics showed a 16 Nov Taiwan figure of **42,175.72 (+1.35%)** under the label
+`TSI` (Taiwan Stock Index), against the TAIEX's own close of **41,040.08 (-6.03%)**. The two are
+different index families and the TradingEconomics number is internally inconsistent with the same
+day's open (43,512.42 per CNA).
+
+The chart-derived TAIEX close survived a four-source same-day cross-check: open 43,512.42 (CNA),
+intraday low 42,211.49 (UDN), 41,868.67 / -4.14% at 11:19 Taipei time (Cnyes), and a close below
+42,000 with more than 1,900 points lost (Economic Daily). The chart number is the one published,
+and the conflict is recorded in `## Flags`. **Recorded because the conflict is a trap the reader
+can hit** — the skill's rule (cross-check the close LEVEL against two independent same-day press
+closes before publishing a contested index number) is what caught it, not the row data.
+
+### Other confirmed-this-run behaviour (no change needed)
+
+- **JP regional-print rule fired at full strength, again.** All 16 Japan regional rows (NAG / FSE /
+  SAPSE) diverged from their TSE line: Takeda `SAPSE` **+23.26%** against `TSE` **+0.16%** (the
+  same frozen print as the 2026-11-10 and 2026-11-13 artifacts), `NAG` 8601 +21.03% against `TSE`
+  +0.25%, `NAG` 5333 -33.40% against `TSE` -5.39% (a sign flip), `FSE` 7011 -9.28% against `TSE`
+  -0.70%. Six of the regional tickers had a TSE line of |change| >= 2% and were re-substituted;
+  the other ten dropped entirely because their TSE line is sub-2%. **Every regional row was wrong
+  again** — the rule is not optional.
+- **The HK CNY-counter gap persisted and widened**: 8 HK names (Tencent, Lenovo, Geely, China
+  Resources Beer, Meituan, JD Health, Li Ning, Kuaishou) came back CNY-only with no HKD twin, so
+  they remain unpublishable. All 8 were dropped; the gap is disclosed in `## Flags`.
+- **The 8-screener-leg merge assertion earned its keep.** All 8 legs returned rows == totalCount
+  (JP 76/142, TW 3/150, HK 47/111, KR 19/71) against `range` = 20,000. The up/down asymmetry
+  (TW 3 gainers vs 150 decliners) is a genuine session, not a truncation — a zero-row Korea leg
+  would have been the red flag instead.
