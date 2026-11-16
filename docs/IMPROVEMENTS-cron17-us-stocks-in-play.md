@@ -895,3 +895,76 @@ findings). Verified: every published board from 2026-10-26 to 2026-11-13, both s
 and rejected **exactly** as the v2 checker accepted and rejected it; the fault-injection test
 catches 27 of 27 breaches; and Friday's real board, rebuilt as v3 with the gap-leaders table,
 passes 43/43 with SBC in the published selection.
+
+## The 09:50 cut was a five-minute look-ahead (fixed 2026-11-16, `OPEN_0950_PULL_V2`)
+
+**Found on the 2026-11-16 open fire, and it would have biased every published name.**
+
+A 5-minute bar's timestamp is the **START** of its interval, so the bar stamped `09:50` **closes
+at 09:55**. The engine's cut was `if hh <= CUT` with `CUT = "09:50"`, so it published the
+**09:55 price** — and the 09:50–09:55 volume — as the "09:50" state. The skill spec says the
+opposite, and has said so since 2026-11-05: *"a bar's timestamp is the START of its 5-minute
+interval, so the price at 09:50 is the close of the bar stamped 09:45 and the session volume
+to 09:50 is the sum of the bars stamped 09:30, 09:35, 09:40 and 09:45."* The engine and the
+spec had drifted apart, and the engine was the one the run used.
+
+**Measured on the index itself, 2026-11-16** (the engine's own reconstruction, against an
+independent fetch of the same Yahoo 5-minute series):
+
+| Index | engine (09:50-stamped close) | spec (09:45-stamped close) | error |
+|---|---|---|---|
+| SPY | 747.02 → **-0.96%** | 748.39 → **-0.78%** | **0.18pp** |
+| QQQ | 668.65 → **-1.65%** | 670.34 → **-1.41%** | **0.25pp** |
+| IWM | 275.10 → **-0.89%** | 275.82 → **-0.63%** | **0.26pp** |
+
+The direction of the error is not random: on a falling tape the look-ahead made every move look
+**worse** than the 09:50 state actually was, and it added five minutes of volume to the
+`session_vol_to_0950` numerator — so it inflated the pace as well. The error lands hardest on
+the largest movers, which is where the board is read.
+
+**The fix** is one character (`hh < CUT`) plus the comment that explains why the comparison is
+strict, and the capability marker was bumped `OPEN_0950_PULL_V1` → **`OPEN_0950_PULL_V2`** on
+purpose: the skill's fetch ladder greps for `V2`, so a **cached `V1` copy — the one with the
+look-ahead — can never win the fetch**. (The same trick as the window check's `WINDOW_CHECK_V2`
+and the checker's `in-play-artifact-v3`.)
+
+**The regression proof.** Two new selftest cases assert the spec's rule directly — the 09:50
+price is the close of the bar stamped 09:45, and the volume to 09:50 sums 09:30–09:45 only —
+and a fault-injection run (reverting `hh < CUT` to `hh <= CUT`) makes **exactly those two
+checks fail** while the other 48 still pass. Selftest: **50/50**.
+
+## A warrant the universe filter could not see (fixed 2026-11-16, `OPEN_0950_PULL_V2`)
+
+The engine's warrant/unit rule is **name-based** (`is_warrant_or_unit(sym, description)`), and
+it reported **0** warrant exclusions on the 2026-11-16 run. It missed **PSNYW** — Polestar
+Automotive's US warrant — because its TradingView description reads *"Polestar Automotive
+Holding UK Limited"* and carries no "warrant" keyword. It published at **+59.71%** on **$63.3m**
+of turnover with a **pace of 33,003** and a **3,522-share** 10-day average.
+
+**A bare "ends in W" rule is wrong** — measured on the same published set: **CLW** (Clearwater
+Paper), **DOW** (Dow Inc), **GLW** (Corning), **RDW** (Redwire), **BW** (Babcock & Wilcox),
+**TWN** (Taiwan Fund), **MTW** (Manitowoc), **ETHW** and **FLTW** are ordinary listings, and the
+spec's own suffix heuristic ("W, WS, .W, U") would have thrown all of them out.
+
+**The rule that separates them is the DERIVATIVE PROFILE**: a W/WS/`.W` ticker **AND** a 10-day
+average share volume below **100,000**. The volume test is the discriminator — a real listing
+has a real average; a warrant does not. The exclusion now happens where the average is
+available (`select_published`), not in the name filter, and the seven new selftest cases pin
+both sides: PSNYW's profile is a derivative; CLW, DOW, GLW, TWN, NVDA and a thin non-W name are
+not.
+
+## Two more state defects found on the same fire (both in the artifact's Source health)
+
+1. **The run-time output directory carried a `records.jsonl` from a previous session.** The
+   engine resumes by symbol and does not validate the date, so the stale records would have
+   been published with the wrong session's prices — on the first attempt the SPY/QQQ records
+   carried **2026-11-12's** prior closes (757.20 / 688.21) against the true ones (754.37 /
+   679.89). The directory must be wiped before a run whose date differs from the last one that
+   wrote it; the engine's resume is only safe within one session.
+2. **`_shared/rvol_fetch.py` publishes an EMPTY average map when one requested session fails**
+   (its threshold is "a symbol must have volume in all `args.sessions` sessions"), and an empty
+   `avg10` silently empties the **board** — `select_published` drops every name with no
+   `avg_vol_10d`. On 2026-11-16 the upstream feed refused 2026-11-09 three times, which would
+   have published a **zero-name board**. The session was re-fetched and the denominator is
+   complete for all ten sessions; a helper that publishes an empty denominator should say so
+   loudly rather than hand the caller a file that looks valid.

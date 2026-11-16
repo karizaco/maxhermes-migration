@@ -2,7 +2,7 @@
 """
 open_0950_pull.py — cron #17 `us-stocks-in-play`, OPEN slot: the 09:50 ET pull.
 
-CAPABILITY MARKER: OPEN_0950_PULL_V1
+CAPABILITY MARKER: OPEN_0950_PULL_V2
 
 WHY THIS EXISTS
 ---------------
@@ -125,7 +125,7 @@ import urllib.request
 import zlib
 from datetime import datetime, timedelta, timezone
 
-CAPABILITY_MARKER = "OPEN_0950_PULL_V1"
+CAPABILITY_MARKER = "OPEN_0950_PULL_V2"
 
 # --- published constants ----------------------------------------------------
 PACE_CONSTANT = 0.125
@@ -368,7 +368,17 @@ def build_record(sym: str, res: dict, date: str, prior: str) -> dict:
         c = cell(closes, i)
         v = cell(vols, i) or 0
         o = cell(opens, i)
-        if hh <= CUT:
+        # A 5-minute bar's timestamp is the START of its interval, so the bar
+        # stamped 09:50 CLOSES at 09:55. `hh <= CUT` therefore published the
+        # 09:55 price - and the 09:50-09:55 volume - as the "09:50" state: a
+        # five-minute LOOK-AHEAD that biases every published move toward the next
+        # five minutes. The skill spec is explicit: "the price at 09:50 is the
+        # close of the bar stamped 09:45 and the session volume to 09:50 is the
+        # sum of the bars stamped 09:30, 09:35, 09:40 and 09:45".
+        # Measured 2026-11-16 on the index itself: SPY 747.02 (the 09:50-stamped
+        # close, -0.96%) against the spec's 748.39 (-0.78%) - 0.18pp on SPY and
+        # 0.25pp on QQQ, on every name the board published.
+        if hh < CUT:
             # the VOLUME of a bar is real even when its close is null — it must
             # count towards the session total (a null-close bar dropped its
             # volume and under-counted the window)
@@ -562,6 +572,25 @@ def build_universe():
     }
 
 
+def is_derivative_profile(ticker, avg_vol_10d, vol_floor=100_000):
+    """A warrant/unit that the name-based universe filter missed.
+
+    The suffix alone is not enough (CLW, DOW, GLW, RDW, BW, TWN, MTW, ETHW, FLTW
+    are ordinary listings); the derivative profile is the suffix AND a 10-day
+    average share volume below the floor, where the "average" is a handful of
+    shares and the pace measure is meaningless.
+    """
+    if not ticker or avg_vol_10d is None:
+        return False
+    if not (ticker.endswith("W") or ticker.endswith("WS") or ".W" in ticker):
+        return False
+    try:
+        v = float(avg_vol_10d)
+    except (TypeError, ValueError):
+        return False
+    return v < vol_floor
+
+
 def select_published(records, universe, avg10):
     """The open slot's floors, applied to the reconstructed 09:50 state.
 
@@ -582,6 +611,17 @@ def select_published(records, universe, avg10):
         a = avg.get(ticker)
         a = a.get("avg") if isinstance(a, dict) else a
         if not a:
+            continue
+        # A warrant the universe filter missed: the description carries no
+        # "warrant" keyword, so the name-based heuristic cannot see it. The
+        # DERIVATIVE profile does: a W suffix AND a 10-day average share volume
+        # that does not exist (measured 2026-11-16: PSNYW, +59.71%, a 3,522-share
+        # 10-day average, a pace of 33,003). The volume test is what separates it
+        # from the ordinary listings that end in W - CLW (Clearwater Paper), DOW
+        # (Dow Inc), GLW (Corning), RDW (Redwire), BW (Babcock & Wilcox), TWN
+        # (Taiwan Fund), MTW (Manitowoc), ETHW and FLTW are all real listings.
+        if is_derivative_profile(ticker, a):
+            rec["excluded_derivative"] = True
             continue
         prior_daily = ((avg10.get("prior_session") or {}).get("volumes") or {}).get(ticker)
         factor = None
@@ -1004,6 +1044,42 @@ def selftest():
     check("the volume to the cut sums the bars WITH a null close too",
           rec2.get("session_vol_to_0950_raw") == 1000,
           "got %r" % rec2.get("session_vol_to_0950_raw"))
+
+    # --- 2b. the 09:50 CUT excludes the bar stamped 09:50 (no look-ahead) ---
+    # A 5-minute bar's timestamp is the START of its interval, so the bar
+    # stamped 09:50 closes at 09:55. Publishing its close as the "09:50" price
+    # is a five-minute look-ahead (measured 2026-11-16: 0.18pp on SPY, 0.25pp on
+    # QQQ). This case FAILS on the pre-fix engine.
+    d_30 = datetime(2026, 11, 16, 9, 30, tzinfo=ET)
+    d_35 = datetime(2026, 11, 16, 9, 35, tzinfo=ET)
+    d_40b = datetime(2026, 11, 16, 9, 40, tzinfo=ET)
+    d_45b = datetime(2026, 11, 16, 9, 45, tzinfo=ET)
+    d_50b = datetime(2026, 11, 16, 9, 50, tzinfo=ET)
+    cut_bars = [bar(d_30.timestamp(), 100.0, 101.0, 100),
+                bar(d_35.timestamp(), 101.0, 102.0, 200),
+                bar(d_40b.timestamp(), 102.0, 103.0, 300),
+                bar(d_45b.timestamp(), 103.0, 104.0, 400),
+                bar(d_50b.timestamp(), 104.0, 105.0, 500)]
+    rec3 = build_record("SPY", mk(prior_bars, cut_bars), "2026-11-16", "2026-11-13")
+    check("the 09:50 price is the close of the bar stamped 09:45, not 09:50",
+          rec3.get("close_0950") == 104.0,
+          "got %r (the 09:50-stamped close is 105.0 - that is the 09:55 price)"
+          % rec3.get("close_0950"))
+    check("the volume to 09:50 sums 09:30, 09:35, 09:40 and 09:45 only",
+          rec3.get("session_vol_to_0950_raw") == 1000,
+          "got %r (the 09:50 bar's 500 shares must not count)" % rec3.get("session_vol_to_0950_raw"))
+
+    # --- 2c. the derivative profile -----------------------------------------
+    check("PSNYW's profile is a derivative (W suffix, no real 10-day volume)",
+          is_derivative_profile("PSNYW", 3522))
+    check("CLW is NOT a derivative (W suffix, real 10-day volume)",
+          not is_derivative_profile("CLW", 1_500_000))
+    check("DOW is NOT a derivative", not is_derivative_profile("DOW", 8_000_000))
+    check("GLW is NOT a derivative", not is_derivative_profile("GLW", 12_000_000))
+    check("TWN is NOT a derivative", not is_derivative_profile("TWN", 900_000))
+    check("a thin name without a W suffix is NOT a derivative",
+          not is_derivative_profile("ESP", 1_200))
+    check("NVDA is NOT a derivative", not is_derivative_profile("NVDA", 40_000_000))
 
     # --- 3. the throttle body is classified as a THROTTLE -------------------
     k, _ = classify_body("Edge: Too Many Requests")

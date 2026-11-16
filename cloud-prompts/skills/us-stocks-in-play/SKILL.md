@@ -301,13 +301,37 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/open_0950_pull.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$E.tmp" "$U" 2>/dev/null
-  if [ -s "$E.tmp" ] && grep -q 'OPEN_0950_PULL_V1' "$E.tmp" 2>/dev/null; then
+  if [ -s "$E.tmp" ] && grep -q 'OPEN_0950_PULL_V2' "$E.tmp" 2>/dev/null; then
     mv -f "$E.tmp" "$E"; break
   fi
   rm -f "$E.tmp"
 done
 [ -s "$E" ] || { echo "open_0950_pull.py: UNAVAILABLE — do NOT hand-roll the pull; say so and stop"; exit 1; }
 ```
+
+**`OPEN_0950_PULL_V2` (2026-11-16) fixes the 09:50 CUT.** The engine's cut was
+`if hh <= CUT` with `CUT = "09:50"`, and because a 5-minute bar's timestamp is the **START** of
+its interval, the bar stamped 09:50 **closes at 09:55** — so the engine published the
+**09:55 price** and the 09:50–09:55 volume as the "09:50" state. That is a five-minute
+**look-ahead** on every published move, and it biases toward the next five minutes. Measured on
+the index itself on 2026-11-16: SPY **747.02** (the 09:50-stamped close, -0.96%) against the
+spec's **748.39** (-0.78%) — **0.18pp on SPY and 0.25pp on QQQ**, on every name the board
+published. The spec's rule is unchanged and is now what the engine does: **the price at 09:50
+is the close of the bar stamped 09:45, and the session volume to 09:50 is the sum of the bars
+stamped 09:30, 09:35, 09:40 and 09:45** (`hh < CUT`).
+
+The capability marker was bumped to `OPEN_0950_PULL_V2` **on purpose**: the fetch ladder above
+greps for it, so a cached `V1` copy of the engine — the one with the look-ahead — can never
+win the fetch. Do not accept `V1` as a substitute; if the ladder cannot find `V2`, say so and
+stop rather than publishing a board on the old cut.
+
+`V2` also excludes the **derivative profile** from the published set: a W/WS/`.W` ticker whose
+10-day average share volume does not exist (measured 2026-11-16: Polestar's **PSNYW**, +59.71%,
+a 3,522-share 10-day average, a pace of 33,003 — the name-based filter missed it because its
+description carries no "warrant" keyword). The volume test is what separates it from the
+ordinary listings that end in W — **CLW** (Clearwater Paper), **DOW** (Dow Inc), **GLW**
+(Corning), **RDW** (Redwire), **BW** (Babcock & Wilcox), **TWN** (Taiwan Fund), **MTW**
+(Manitowoc), **ETHW** and **FLTW** are all real listings and stay in.
 
 ```bash
 # the whole open-slot data spine, in one call
