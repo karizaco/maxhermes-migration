@@ -689,6 +689,16 @@ tables, a band row that is not actually below the floor, a missing `boundary_cas
 
 ## Sample output
 
+> **THE BLOCK BELOW IS AN ILLUSTRATION — NEVER COPY A NUMBER OUT OF IT.** The roster, the counts
+> and the coverage-floor numbers in this sample are placeholders, not a measured fire. **Measured on
+> 2026-11-16 — the very date this sample carries:** ARM and QCOM do not report until **2027-02-03**,
+> KDP is **not** an S&P 500 constituent, and **no** US name at or above the $50B floor reported that
+> day; the real roster was a single row (TSN, $20.85B, reaction score 4.51). A sample that happens
+> to carry the current date is the most dangerous thing in this file: every figure in it must be
+> re-measured on the fire, never copied. The floor decomposition in the sample
+> (5,542 / 4,954 / 67 / 417 / 104) is from an EARLIER fire — measure it and publish what you
+> measured.
+
 ```markdown
 ---
 date: 2026-11-16
@@ -861,6 +871,21 @@ coverage_floor: floor_usd=50000000000 band_low_usd=40000000000 us_population=554
   the prior close. **The chain carries NO expiry field** — parse the OCC symbol
   `{ROOT}{YYMMDD}{C|P}{strike*1000 padded to 8}`: `strike = int(s[-8:])/1000`, `side = s[-9]`,
   `expiry = s[-15:-9]`. Cast every date part to `int` or the parse throws.
+- **The scanner's `in` operator is rejected for STRINGS, not just for `type`.** Measured
+  2026-11-16: `{"left":"exchange","operation":"in","right":["NASDAQ","NYSE","AMEX"]}` answers **HTTP
+  400** with `{"totalCount":0,"error":"Unsupported string operation in"}` — so the scanner filter
+  this routine needs cannot be expressed in the payload at all. The working string operator is
+  **`match`** (regex): `{"left":"exchange","operation":"match","right":"NASDAQ|NYSE|AMEX"}`, with
+  `type in (stock, dr)` applied in python after the call. The recipe that reproduces the US
+  population exactly: scan `exchange match NASDAQ|NYSE|AMEX` + `close > 1` (totalCount 10,241),
+  then filter `type in (stock, dr)` in python -> **5,545** US names. `country` is unreliable on this
+  scanner (Anglogold reads "United States"); derive the US set from the exchange, not the country.
+- **Issuer IR hosts answer 403 to a scripted fetch, but their INDEXED releases are searchable.**
+  Measured 2026-11-16: `ir.hworld.com`, `ir.nio.com`, `ir.xiaopeng.com`, `ir.ke.com` answer **403**
+  to curl AND to `web_fetch`. `web_search` on the issuer's own release title returns the IR page,
+  the PRNewswire/GlobeNewswire copy AND the HKEX announcement PDF or the SEC 6-K — enough for Rule B
+  (date + local release hour, on issuer-owned pages). To test whether a print actually LANDED, read
+  `https://data.sec.gov/submissions/CIK<10-digit>.json` (no crumb; lists recent filings with dates).
 - **TradingView scanner**: the payload key is `filter` (SINGULAR) — `filters` is silently ignored
   and returns the whole universe. Numeric ops are `greater` / `less` (not `egreater`). `market_cap_basic`
   is USD. Use `type in (stock, dr)` so ADRs are not dropped.
