@@ -152,6 +152,15 @@ Source health publishes the census (`earnings_dates: catalog <n>, calendar
 <n>, asx <n>, screener <n>`), so a reader can see how much of the table rests
 on the lagging source on any given day.
 
+**AND THE PER-MARKET QUALITY TABLE** (`earnings_date_quality`): each market's
+rows, the rows with **no date at all**, the median age of the published date,
+and the rows within 7 and 30 days. The point is that a WRONG date and a
+RIGHT date must be distinguishable by the reader: measured on the 2026-11-12
+artifact, india, indonesia and ksa published no date at all, while uk,
+switzerland, denmark and thailand were fresh — so the defect is PER-MARKET,
+not "foreign = bad", and only the table says so. The checker requires the
+table and requires it to cover every market that publishes rows.
+
 **The bulk calendar reaches the US markets only.** EarningsWhispers answers
 (`?d=YYYY-MM-DD`, no block) but carries no ASX / STO / XETR names, so the
 foreign rows still use the screener's field and still carry its lag — a known
@@ -177,6 +186,45 @@ entitlement-offer result. Matching "results" loosely dates every AGM as a
 report. The shipped classifier matches the REPORT FORMS (Appendix 4E/4D/4F,
 `Q3 … results`, `First Quarter Results Presentation`, `financial results`)
 and excludes meetings, AGMs, offers, assays and remuneration reports.
+
+### The venue calendars — a venue holiday moves the base back one session
+
+A row's reference close must be the VENUE's previous session, and a venue
+that was **closed** on the intervening day has a base one session older than a
+plain weekday walk suggests. The weekday walk does not know that, so an honest
+row gets flagged — and because the checker blocks the push, a false flag
+STOPS the routine from publishing.
+
+**The calendars are DERIVED FROM THE DATA, not typed** (measured 2026-11-16):
+for each venue, two liquid reference symbols' Yahoo daily bars were compared
+and a date counts as a closure only if **both** missed it, so a
+company-specific halt can never fake a venue-wide closure. Dates after the
+derivation date are not closures, and a weekday missing in *every* week is
+the venue's non-session weekday, not a holiday.
+
+**A calendar is a LOWER BOUND** — Yahoo sometimes carries a bar on a national
+holiday (Euronext Paris on 8 May), so a real closure can be missing from the
+table. Therefore the floor is the **OLDEST** of (the weekday walk, the
+calendar walk): the calendar may only **relax** a floor, never tighten one. A
+missing closure can then never make an honest row fail, and a known closure
+still catches a base that is one session too old.
+
+AU is deliberately absent (Yahoo's ASX bars are labelled inconsistently — some
+by the session open, some by the close — so its missing-Friday pattern is a
+labelling artefact, not a closure); ireland and greece are absent (no Yahoo
+coverage for `.IR`/`.AT` lines). The APAC calendars are published for
+reference only: their bar labels do not share the EU convention, so they never
+tighten a floor.
+
+**THE CALENDAR IS A CHECKER-SIDE ASSET.** The pipeline's own foreign
+reference-close test is deliberately LOOSE (it tolerates a base up to four days
+back), so it never false-drops a row — and a LOWER-BOUND calendar must not be
+used to DROP rows, because a missing closure would then drop an honest row.
+The calendar's job is the opposite: it stops the checker from FALSE-FLAGGING
+an honest row, and a false flag BLOCKS the push. So the table lives in the
+checker, the floor is the OLDEST of (the weekday walk, the calendar walk), and
+`tools/test_reaction_earnings_tier.py` executes the checker's own floor
+function against the Polish and German cases.
 
 ### `Settle` — the row says whether its move is finished
 

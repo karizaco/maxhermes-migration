@@ -136,14 +136,50 @@ NYSE_HOLIDAYS_2026 = {
 # venues still use the weekday walk, so a venue holiday on a foreign market
 # can still raise a false REFCLOSE. Add each venue's list from its exchange's
 # published calendar, dated, when that venue first produces one.
+# The VENUE CALENDARS. DERIVED FROM THE DATA, NOT TYPED (measured 2026-11-16):
+# for each venue, two liquid reference symbols' Yahoo daily bars were compared and
+# a date counts as a closure only if BOTH missed it - so a company-specific halt can
+# never fake a venue-wide closure. Dates after the derivation date are not closures,
+# and a weekday missing in EVERY week is the venue's non-session weekday, not a holiday.
+#
+# THIS IS A LOWER BOUND: Yahoo sometimes carries a bar on a national holiday
+# (Euronext Paris on 8 May), so a real closure can be missing here. THE CALENDAR MAY
+# THEREFORE ONLY RELAX A FLOOR, NEVER TIGHTEN ONE - the floor is the OLDEST of (the
+# weekday walk, the calendar walk). A missing closure can then never make an honest
+# row fail, and a present closure can never let a stale base through.
+#
+# AU is deliberately absent: Yahoo's ASX bars are labelled inconsistently (some by
+# the session open, some by the close), so its missing-Friday pattern is a
+# LABELLING ARTEFACT and not a closure. ireland and greece are absent because
+# Yahoo carries no coverage for .IR/.AT lines.
 VENUE_HOLIDAYS = {
-    # Warsaw Stock Exchange, 2026 exchange holidays (gpw.pl, "Exchange
-    # holidays"): 1 Jan, 6 Jan, 3 Apr, 6 Apr, 1 May, 4 Jun, 11 Nov, 24 Dec,
-    # 25 Dec, 31 Dec.
-    "poland": {
-        "2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01",
-        "2026-06-04", "2026-11-11", "2026-12-24", "2026-12-25", "2026-12-31",
-    },
+    "uk": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04", "2026-05-25", "2026-08-31"},
+    "germany": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "france": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "netherlands": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "belgium": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "portugal": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "ireland": {},
+    "italy": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "switzerland": {"2026-01-01", "2026-01-02", "2026-04-03", "2026-04-06", "2026-05-01", "2026-05-14", "2026-05-25"},
+    "spain": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01"},
+    "sweden": {"2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01", "2026-05-14", "2026-06-19"},
+    "norway": {"2026-01-01", "2026-04-02", "2026-04-03", "2026-04-06", "2026-05-01", "2026-05-14", "2026-05-25"},
+    "denmark": {"2026-01-01", "2026-03-23", "2026-04-02", "2026-04-03", "2026-04-06", "2026-05-14", "2026-05-15", "2026-05-25", "2026-06-05"},
+    "finland": {"2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01", "2026-05-14", "2026-06-19"},
+    "poland": {"2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", "2026-05-01", "2026-06-04", "2026-11-11"},
+    "austria": {"2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01", "2026-10-26"},
+    "greece": {},
+# The APAC calendars are PUBLISHED for reference only: the APAC bar labels do not
+# share the EU convention (the label shift is unverified per venue), so they never
+# tighten a floor.
+    "india": {"2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-10"},
+    "thailand": {"2026-01-01", "2026-01-02", "2026-03-03", "2026-04-06", "2026-04-13", "2026-04-14", "2026-04-15", "2026-05-01", "2026-05-04", "2026-06-01", "2026-06-03", "2026-07-28", "2026-07-29", "2026-08-12", "2026-10-13", "2026-10-16", "2026-10-23"},
+    "indonesia": {"2026-01-01", "2026-01-16", "2026-02-16", "2026-02-17", "2026-03-18", "2026-03-19", "2026-03-20", "2026-03-23", "2026-03-24", "2026-04-03", "2026-05-01", "2026-05-14", "2026-05-15", "2026-05-27", "2026-05-28", "2026-06-01", "2026-06-16", "2026-08-17", "2026-08-25"},
+    "china": {"2026-01-01", "2026-01-02", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-04-06", "2026-05-01", "2026-05-04", "2026-05-05", "2026-06-19", "2026-09-25", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07"},
+    "singapore": {"2026-01-01", "2026-02-17", "2026-02-18", "2026-04-03", "2026-05-01", "2026-05-27", "2026-06-01", "2026-08-10", "2026-11-09"},
+    "newzealand": {"2026-01-01", "2026-02-05", "2026-04-02", "2026-07-09"},
+    "ksa": {"2026-03-17", "2026-03-18", "2026-03-19", "2026-03-23", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-09-23"},
 }
 
 # Which venue a table belongs to, for the prior-session test.
@@ -268,6 +304,26 @@ def venue_prior_session(date_str, market=None):
     return None
 
 
+def base_floor(session_asof, market=None):
+    """The OLDEST base label a row with this session may carry.
+
+    The minimum of the weekday walk and the venue-calendar walk, so a
+    lower-bound calendar can only RELAX the floor: the weekday walk ignores a
+    venue's closures, the calendar walk skips them, and the calendar is a
+    LOWER BOUND of the real closures. Taking the older of the two can never
+    make an honest row fail, and a known closure still catches a base that is
+    one session too old.
+    """
+    cands = []
+    walk = prior_session_date(session_asof, "EU")
+    if walk:
+        cands.append(walk)
+    cal = venue_prior_session(session_asof, market)
+    if cal:
+        cands.append(cal)
+    return min(cands) if cands else None
+
+
 def row_ref_floor(session_asof, venue, market=None):
     """The oldest base label a row with this session label may carry.
 
@@ -304,10 +360,11 @@ def row_ref_floor(session_asof, venue, market=None):
     if not prev:
         return None
     mk = (market or "").strip().lower()
-    if mk in VENUE_HOLIDAYS:
-        vp = venue_prior_session(s.isoformat(), mk)
-        if vp:
-            prev = vp
+    # The venue's own calendar may only RELAX the floor: take the OLDEST of
+    # the weekday walk and the calendar walk.
+    vp = venue_prior_session(s.isoformat(), mk)
+    if vp and vp < prev:
+        prev = vp
     if venue in ("AU", "APAC"):
         try:
             prev = (datetime.datetime.strptime(prev, "%Y-%m-%d").date()
@@ -631,6 +688,36 @@ def check(path, reply_text=None):
     pipeline_version = pvm.group(1) if pvm else ""
     calendar_contract = _version_ge(pipeline_version, "2026-11-15.1")
     datechain_contract = _version_ge(pipeline_version, "2026-11-15.4")
+    # the per-market quality table first appears in pipeline 2026-11-15.5
+    quality_contract = _version_ge(pipeline_version, "2026-11-15.5")
+
+    # ---- QUALITY - the per-market earnings-date table -------------------
+    # The artifact must publish how good its earnings dates are, per market.
+    # A market with no date at all (or a stale one) is a COVERAGE fact the
+    # reader needs; without the table, a wrong date is indistinguishable from
+    # a right one.
+    if quality_contract:
+        if "earnings_date_quality" not in sh:
+            failures.append("QUALITY: the source health section does not publish the "
+                            "`earnings_date_quality` table - the per-market quality of "
+                            "the earnings dates is invisible to the reader")
+        else:
+            qm = set()
+            for _line in sh.splitlines():
+                m2 = re.match(r"^\|\s*([a-zA-Z/ ]+?)\s*\|\s*\d+\s*\|\s*\d+\s*\|",
+                              _line)
+                if m2:
+                    qm.add(m2.group(1).strip().lower())
+            published_mkts = {"us", "au"}
+            for _t, _ti, _h, _c, _ri in published:
+                mi = column_index(_h, "market")
+                if mi is not None and mi < len(_c) and _c[mi].strip():
+                    published_mkts.add(_c[mi].strip().lower())
+            missing_mkts = sorted(published_mkts - qm)
+            if missing_mkts:
+                failures.append("QUALITY: the earnings-date quality table does not "
+                                f"cover the market(s) {missing_mkts} that publish rows")
+
 
     # ---- DATESPLIT - the prose date and the date column must agree ----
     # The catalyst cell names the report date ("... (reported 2026-11-12):")
@@ -639,6 +726,10 @@ def check(path, reply_text=None):
     # says one thing and a date that says another - which is exactly what the
     # 2026-11-12 artifact did for a same-morning reporter (MEKO, NORBT, FG).
     for title, ti, header, cells, ri in published:
+        if cells and all((c or "").strip() in ("", "—") for c in cells):
+            # the EMPTY-TABLE placeholder row (a table with no rows is written
+            # as one row of dashes) is not a published row
+            continue
         cat_idx = column_index(header, "catalyst")
         er_idx = column_index(header, "last_earnings")
         if cat_idx is None or er_idx is None:

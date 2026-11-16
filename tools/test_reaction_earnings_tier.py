@@ -29,6 +29,7 @@ Usage:
 Exit codes: 0 = all assertions hold, 1 = a regression.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -111,18 +112,21 @@ def fetch_artifact(date):
         return r.read().decode("utf-8", "replace")
 
 
-def extract(src, *names):
+def extract(src, *names, **kw):
     """Pull top-level functions out of the pipeline source and exec them.
 
     They are exec'd in the order given, into ONE namespace, because the
     shipped functions call each other (event_freshness -> cal_rec).
     """
-    ns = {"re": re, "json": json, "CAL": {}, "RUN_DATE": RUN_DATE,
-          "PREV_SESSION": PREV_SESSION, "CATALYST_TOTAL_CAP": NEW_BUDGET_CAP}
+    ns = {"re": re, "json": json, "datetime": datetime, "os": os,
+          "CAL": {}, "RUN_DATE": RUN_DATE, "PREV_SESSION": PREV_SESSION,
+          "CATALYST_TOTAL_CAP": NEW_BUDGET_CAP, "VENUE_HOLIDAYS": {}}
     for name in names:
         m = re.search(rf"^def {re.escape(name)}\(.*?(?=^\S)", src, re.S | re.M)
         if not m:
-            raise SystemExit(f"FAIL | the pipeline has no function {name}()")
+            if kw.get("required", True):
+                raise SystemExit(f"FAIL | the source has no function {name}()")
+            continue
         exec(m.group(0), ns)
     return ns
 
@@ -230,6 +234,44 @@ def main():
           "the catalog carries the researched report date")
     check("ASX_ANN" in src and '"asx"' in src,
           "the chain includes the ASX feed as a source")
+
+    # --- the venue calendars: the two copies must AGREE ------------------
+    def cal_of(text):
+        m = re.search(r"VENUE_HOLIDAYS = \{(.*?)\n\}", text, re.S)
+        if not m:
+            return {}
+        out = {}
+        for k, v in re.findall(r'"([a-z]+)":\s*\{([^}]*)\}', m.group(1)):
+            out[k] = set(re.findall(r'"(\d{4}-\d{2}-\d{2})"', v))
+        return out
+
+    ck_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "check_reaction_artifact.py")
+    ck_src = open(ck_path, encoding="utf-8").read() if os.path.exists(ck_path) else ""
+    ck_cal = cal_of(ck_src)
+    check(bool(ck_cal), "the checker carries a venue calendar",
+          f"{len(ck_cal)} markets")
+    check("poland" in ck_cal and "2026-11-11" in ck_cal["poland"],
+          "the Polish calendar carries 2026-11-11 - the closure that broke the checker")
+    check("germany" in ck_cal and "2026-11-11" not in ck_cal["germany"],
+          "Germany traded on 2026-11-11 (no false holiday)")
+
+    # --- the floor: the OLDEST acceptable base, per the venue calendar ----
+    # EXECUTED FROM THE CHECKER, which is where the calendar lives: a false
+    # REFCLOSE flag BLOCKS the push, and the calendar is what prevents it.
+    fl = extract(ck_src, "venue_prior_session", "base_floor", "prior_session_date",
+                 "_d", required=False)
+    fl["VENUE_HOLIDAYS"] = {k: set(v) for k, v in ck_cal.items()}
+    bf = fl["base_floor"]
+    check(bf("2026-11-12", "poland") == "2026-11-10",
+          "the Polish floor for the 2026-11-12 session is 2026-11-10 (Nov 11 closed)",
+          str(bf("2026-11-12", "poland")))
+    check(bf("2026-11-12", "germany") == "2026-11-11",
+          "the German floor for the 2026-11-12 session is 2026-11-11 (Germany traded)",
+          str(bf("2026-11-12", "germany")))
+    check(bf("2026-11-12", "ireland") == "2026-11-11",
+          "a market with no calendar falls back to the weekday walk",
+          str(bf("2026-11-12", "ireland")))
 
     # --- the ADR test, executed from the shipped source ------------------
     lib2 = extract(src, "is_adr_security")
