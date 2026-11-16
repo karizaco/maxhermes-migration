@@ -324,3 +324,74 @@ closes before publishing a contested index number) is what caught it, not the ro
   (JP 76/142, TW 3/150, HK 47/111, KR 19/71) against `range` = 20,000. The up/down asymmetry
   (TW 3 gainers vs 150 decliners) is a genuine session, not a truncation — a zero-row Korea leg
   would have been the red flag instead.
+### 4. The skill's six assertions do NOT check the per-country ordering — a real defect slips through all of them
+
+Found on the 2026-11-16 fire while composing the brief. The generator selected each country's
+rows as `up[:15] + dn[:15]` and rendered the REACTION table in that order, i.e. **all the
+gainers first, then all the decliners**, instead of the skill's *Output ordering* rule:
+
+> Inside each country, sort every row by `|change %|` descending — the REACTION table first, then
+> the NOTABLE one-liners, which together form one continuous descending stream.
+
+The published Japan table came out as `+16.84, +9.66, +9.15, ... +4.36, -14.40, -13.86, ...`
+instead of `+16.84, -14.40, -13.86, ... +9.66, ...`. **All six of the skill's pre-publish
+assertions passed on the wrong body**: assertion 1 (name uniqueness) passed because the names were
+unique, assertion 3 (catalyst cell) passed because every row had a cell, assertion 5 (What-matters
+percentages) passed because the three event rows matched their table rows, and assertion 6
+(backdrop) is unrelated. Nothing in the skill measures order.
+
+The defect was caught by re-reading the composed reply, not by the assertions. The artifact was
+rebuilt and re-pushed before delivery; the shipped file is correctly ordered.
+
+**Proposed assertion (cheap, and it closes a whole class of defect):**
+
+```bash
+# 7 - every country section is ONE continuous descending |change %| stream.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+heads = list(re.finditer(r"^## (Japan|Korea|Taiwan|Hong Kong)[^\n]*$", body, re.M))
+for m in heads:
+    nxt = re.search(r"^## ", body[m.end():], re.M)      # ANY h2 ends the country block
+    end = m.end() + (nxt.start() if nxt else len(body) - m.end())
+    blk = body[m.start():end]
+    pcts = []
+    for ln in blk.splitlines():
+        ln = ln.strip()
+        if ln.startswith("|"):
+            if re.fullmatch(r"\|[\s\-:|]+\|?", ln): continue
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            if len(cells) < 4: continue
+            mm = re.search(r"([+-]\d+\.\d+)%", cells[3])
+            if mm: pcts.append(abs(float(mm.group(1))))
+        elif ln.startswith("- "):
+            mm = re.search(r"([+-]\d+\.\d+)%", ln)
+            if mm: pcts.append(abs(float(mm.group(1))))
+    bad = [(pcts[j-1], pcts[j]) for j in range(1, len(pcts)) if pcts[j-1] < pcts[j]]
+    assert not bad, "%s is not sorted by |change %%| desc: %s" % (m.group(1), bad)
+print("SORT-ORDER ASSERTION OK")
+PY
+```
+
+Two traps in writing it, both hit on this run:
+
+1. **The block must end at the NEXT `## ` heading of any kind, not at the next country heading.**
+   The last country section runs to the end of the file, so a country-only slicer sweeps in
+   `## Flags` and `## Method, source health & caveats` — and every prose percentage in those
+   sections ("-23.26%", "-17.86%", "+1.35%") then reads as an ordering violation. The skill's
+   assertion 1 already uses the correct `^## ` slicer; copy it.
+2. **Take the move percentage, not any percentage.** A catalyst cell legitimately contains other
+   percentages ("H1 net income +63.4% YoY", "SOX -3.43% Fri"), so a naive
+   `re.findall(r"([+-]\d+\.\d+)%", ln)` picks them up and reports false violations. Read the
+   published `Chg` cell (column 4 of the country table) or the percentage immediately after the
+   ticker on a one-liner, and nothing else.
+
+**Also note for the chat reply**: the reply's country blocks need the same check, and the same two
+traps apply. The reply additionally carries catalyst text inline, so the ticker-anchored regex
+(`^- [A-Z]+:[0-9A-Z]+ ([+-]\d+\.\d+)%` with `re.M`) is the right one there.
+
+**Root cause worth recording:** the skill says "sort by `|change %|` descending" in prose but its
+procedure snippet builds the per-market list as two direction-sorted legs (up and down), which is
+an invitation to concatenate rather than merge. The selection cap (15 up + 15 down) and the
+presentation order (one descending stream) are two different operations, and the snippet only
+shows the first.
