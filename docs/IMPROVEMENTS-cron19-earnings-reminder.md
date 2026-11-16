@@ -459,3 +459,66 @@ stated with these two worked examples in the skill spec.
 3 non-US rows (KDDI reported 02:00 ET, HKEX reported, Constellation pending after the TSX close),
 8 band rows, 2 exclusions confirmed on issuer pages (BRK.B posts on Sat 7 Nov; ECHO filed its 10-Q
 on 3 Nov). `errors: 0` — no source was degraded in a way that changed a published number.
+
+---
+
+## §22 — 2026-11-16 fire: the skill's own SAMPLE block is the biggest trap in the file
+
+The `## Sample output` section of `cloud-prompts/skills/earnings-reminder/SKILL.md` is dated
+**2026-11-16** — the current fire date — and carries a US roster of **ARM ($216.3B, score 10.38),
+QCOM ($175.6B, 8.78) and KDP ($50.1B, 3.10)**, plus a coverage-floor decomposition of
+5,542 / 4,954 / 67 / 417 / 104. Measured on the real 2026-11-16 fire:
+
+- ARM and QCOM do not report until **2027-02-03** (TradingView `earnings_release_next_date`);
+- **KDP is not an S&P 500 constituent** (the live Wikipedia list does not carry it);
+- **no** US name at or above the $50B floor reported that day — the calendar's biggest name was
+  Tyson Foods at $20.85B, and the real roster was **one row** (TSN, reaction score 4.51);
+- the real floor decomposition was **5,545 / 4,958 / 66 / 417 / 104**.
+
+A sample that happens to carry the CURRENT date is the most dangerous thing in a run-time-fetched
+skill: a fire that trusted it would publish three invented names with invented scores, on a day
+when the honest roster is a single row. The skill now carries a warning block immediately above
+the sample, and the sample's counts are labelled as an earlier fire.
+
+Two measured source facts were added to the skill's source-facts section in the same commit:
+
+1. **The TradingView scanner rejects the `in` operator for STRINGS, not just for `type`.**
+   `{"left":"exchange","operation":"in","right":["NASDAQ","NYSE","AMEX"]}` answers **HTTP 400**
+   `{"totalCount":0,"error":"Unsupported string operation in"}`. The working string operator is
+   **`match`** (regex). The recipe that reproduces the US population exactly:
+   `exchange match "NASDAQ|NYSE|AMEX"` + `close > 1` (totalCount 10,241) → filter
+   `type in (stock, dr)` in python → **5,545** US names. `country` is unreliable on this scanner
+   (Anglogold reads "United States") — derive the US set from the exchange, not the country.
+2. **Issuer IR hosts answer 403 to a scripted fetch**, but their INDEXED releases are searchable:
+   `ir.hworld.com`, `ir.nio.com`, `ir.xiaopeng.com`, `ir.ke.com` → 403 to curl *and* to
+   `web_fetch`. `web_search` on the issuer's own release title returns the IR page, the
+   PRNewswire/GlobeNewswire copy AND the HKEX announcement PDF or the SEC 6-K — enough for Rule B
+   (date + local release hour, on issuer-owned pages). To test whether a print actually LANDED,
+   read `https://data.sec.gov/submissions/CIK<10-digit>.json` (no crumb).
+
+### The ET-day rule for Asian and Israeli issuers (this fire)
+
+Every local business window maps onto the SAME ET calendar day as the local announcement date
+(HK close 08:00 HKT = 03:00 ET; Israel 08:00-17:00 IST = 01:00-10:00 ET), so a Nov 16 local
+release is a Nov 16 ET print. The conference-call hour is the only usable hour signal, and the
+issuer's own filing states that the call FOLLOWS the announcement:
+
+| issuer | call | ET-day status at the 06:00 ET fire |
+|---|---|---|
+| H World (1179.HK / HTHT) | 06:00 ET | `reported` — the announcement precedes the call |
+| iQIYI (IQ) | 06:30 ET | `pending` — the announcement precedes the call, which is still ahead |
+| XPeng (9868.HK / XPEV), KE Holdings (2423.HK / BEKE) | 07:00 ET | `pending` |
+| Baidu (9888.HK / BIDU) | 07:30 ET | `pending` |
+| Bank Hapoalim (POLI.TA / BKHYY) | 10:00 ET | `pending` — Israeli business hours put the release anywhere from 01:00 to 10:00 ET |
+
+### What the fire published
+
+US roster 1 row (TSN), non-US table 6 rows (all issuer-confirmed), band 4 rows, one
+already-reported row (H World, figures `not measured` because `ir.hworld.com` answers 403 and
+EDGAR carried no results 6-K at 06:07 ET). Names checked and dropped with the reason recorded:
+**Trip.com** (no issuer-confirmed date — the aggregators' Nov 16 estimate is explicitly
+unconfirmed), **NIO**, **NIU**, **SK Square** (Q3 already published Nov 13), **Nidec**. The
+published watchlist was fetched (8 names) and none reports today, so the watchlist section was
+omitted rather than shipped empty. Yahoo's quote API was HTTP 429 (a rate limit, not an absence):
+the roster market cap came from the Nasdaq earnings-calendar field and was cross-checked against
+the TradingView issuer-level cap (2.8% spread).
