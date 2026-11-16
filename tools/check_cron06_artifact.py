@@ -30,11 +30,14 @@ import sys
 CONTRACT_VERSION = "cron06-refresh-v2"
 TRADEABLE_VERDICTS = {"TRADEABLE", "THIN", "ILLIQUID", "FLOAT_ARTIFACT", "NO_QUOTE"}
 TAG_CHANGES = {"NEW", "UNCHANGED", "ADDED", "REMOVED", "MIXED"}
+SI_VERDICTS = {"AGREE", "DIVERGES", "NO_DATA"}
+SI_STATUSES = {"ok", "no_rows", "not_supplied"}
+SI_AGREE_LO, SI_AGREE_HI = 0.67, 1.50
 REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-backlog.md",
                    "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
-CHECKS = 15
+CHECKS = 16
 
 
 def fail(clause: str, msg: str) -> None:
@@ -339,6 +342,60 @@ def main():
         for t in (inter.get("union") or []):
             if t not in reply:
                 fail("C14", f"the reply does not name the intersection name {t}")
+
+    # ---------------------------------------------------------------- C16 short-interest cross-check
+    # shibui's short-interest ratio depends on a float definition nobody else shares, so the
+    # artifact must be cross-checked against an INDEPENDENT short-interest figure (shares),
+    # and the block must be published even when the source failed — a missing cross-check
+    # that says nothing is a silent failure.
+    xc = data.get("short_interest_crosscheck")
+    if not isinstance(xc, dict):
+        fail("C16", "the JSON companion publishes no short_interest_crosscheck block")
+    else:
+        st = xc.get("status")
+        if st not in SI_STATUSES:
+            fail("C16", f"short_interest_crosscheck.status {st!r} is outside {sorted(SI_STATUSES)}")
+        if not xc.get("source"):
+            fail("C16", "short_interest_crosscheck does not name its source")
+        rows_x = xc.get("rows") or []
+        for r in rows_x:
+            v = r.get("verdict")
+            if v not in SI_VERDICTS:
+                fail("C16", f"cross-check row {r.get('ticker')}: verdict {v!r} is outside "
+                            f"{sorted(SI_VERDICTS)}")
+            ratio, si, nsi = r.get("ratio"), r.get("shibui_si_shares"), r.get("nasdaq_si_shares")
+            if v == "AGREE":
+                if num(ratio) is None:
+                    fail("C16", f"cross-check row {r.get('ticker')}: AGREE without a numeric ratio")
+                elif not (SI_AGREE_LO <= float(ratio) <= SI_AGREE_HI):
+                    fail("C16", f"cross-check row {r.get('ticker')}: AGREE with ratio {ratio}, "
+                                f"outside the {SI_AGREE_LO}-{SI_AGREE_HI} band")
+            if v == "DIVERGES" and num(ratio) is not None and SI_AGREE_LO <= float(ratio) <= SI_AGREE_HI:
+                fail("C16", f"cross-check row {r.get('ticker')}: DIVERGES with ratio {ratio}, "
+                            f"inside the {SI_AGREE_LO}-{SI_AGREE_HI} band")
+            if num(si) is not None and num(nsi):
+                want = round(float(si) / float(nsi), 2)
+                if num(ratio) is None or abs(float(ratio) - want) > 0.02:
+                    fail("C16", f"cross-check row {r.get('ticker')}: published ratio {ratio!r} != "
+                                f"recomputed {want} ({si}/{nsi})")
+        sfm = docs["weekly-high-short-float.md"]
+        if "## Short-interest cross-check" not in sfm:
+            fail("C16", "weekly-high-short-float.md does not publish the short-interest "
+                        "cross-check section")
+        else:
+            mrows = {r[0]: r for r in table_rows(sfm, "## Short-interest cross-check")
+                     if r and r[0] not in ("Ticker",)}
+            if st == "ok":
+                for r in rows_x:
+                    m = mrows.get(r.get("ticker"))
+                    if not m:
+                        fail("C16", f"cross-check row {r.get('ticker')} is not in the published table")
+                    elif len(m) >= 9 and m[8] != r.get("verdict"):
+                        fail("C16", f"cross-check row {r.get('ticker')}: the table says {m[8]!r} "
+                                    f"and the JSON says {r.get('verdict')!r}")
+                if len(mrows) != len(rows_x):
+                    fail("C16", f"the published cross-check table has {len(mrows)} rows and the "
+                                f"JSON publishes {len(rows_x)}")
 
     # ---------------------------------------------------------------- C15 delta
     # The week-over-week short-float delta is the whole point of the state series.

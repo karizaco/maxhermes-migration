@@ -234,3 +234,86 @@ Two lessons, both now written into the skill spec (§8b):
 * **`ownership_stats` is a live snapshot**, so both weeks' screens read the SAME short-interest
   numbers — the prior week's table is not a replayable snapshot and the prior week's universe
   size cannot be re-derived from it. Only the price/volume history is date-pinned.
+
+---
+
+## 5. The short-interest numbers needed a second source (2026-11-16)
+
+### 5.1 What the user asked, and what was measured
+
+The 2026-11-14 artifact published short-float percentages and short-float deltas from ONE
+source. The user asked where the short-float data comes from and whether a weekly routine
+could cross-check it, because some of the numbers looked off. Both were answered with a
+measurement, not an opinion.
+
+**The source:** `shibui.ownership_stats.short_percent_float` — a DECIMAL FRACTION (0.20 =
+20%), joined to `shibui.valuation.market_cap` and `shibui.stock_quotes.volume` on the
+resolved date. It is reached over the MCP-over-HTTP bridge (`mcp_bridge.py shibui
+stock_data_query`), and the table has **no `date` column**: it is a live snapshot, so it
+cannot be replayed for a past date and it is NOT the same series twice.
+
+**The cross-check:** Nasdaq's settlement-dated short-interest table,
+`https://api.nasdaq.com/api/quote/<SYMBOL>/short-interest?assetclass=stocks`
+(`data.shortInterestTable.rows[0]` = settlementDate / interest / avgDailyShareVolume /
+daysToCover). The endpoint path matters — the older `api/company/<SYMBOL>/short-interest`
+returns **404** (measured 2026-11-16).
+
+A PERCENTAGE cannot be compared across sources, because shibui's float definition is its
+own. The **short interest in SHARES** can: `short_percent_float × shares_float` against
+Nasdaq's `interest`. Twelve names were cross-checked against the 10/30/2026 settlement:
+
+| Name | shibui % | shibui SI (sh) | Nasdaq SI (sh) | ratio | verdict |
+|---|---|---|---|---|---|
+| LQDA | 24.0% | 15,638,410 | 17,511,349 | 0.89 | AGREE |
+| REPL | 34.0% | 23,191,990 | 24,609,876 | 0.94 | AGREE |
+| WULF | 30.0% | 115,896,557 | 122,054,730 | 0.95 | AGREE |
+| ONDS | 43.9% | 233,948,351 | 245,972,246 | 0.95 | AGREE |
+| SHOE | 55.1% | 9,902,133 | 9,523,171 | 1.04 | AGREE |
+| ENPH | 24.9% | 31,883,173 | 27,337,300 | 1.17 | AGREE |
+| WGS | 38.6% | 7,901,356 | 6,552,860 | 1.21 | AGREE |
+| CLSK | 42.9% | 105,759,831 | 78,727,139 | 1.34 | AGREE |
+| CHTR | 43.9% | 48,483,786 | 17,865,755 | **2.71** | DIVERGES |
+| QMCO | 58.6% | 20,012,975 | 4,500,292 | **4.45** | DIVERGES |
+| MMED | 34.4% | 96,727,214 | 9,813,734 | **9.86** | DIVERGES |
+
+**Nine of twelve agree within ±25%.** The three that diverge share one cause: shibui's
+`shares_float` is close to SHARES OUTSTANDING (mcap ÷ close) rather than the free float —
+MMED 99.9% (281.3M vs 280.8M), CHTR 92.7%, QMCO 86.6%. Short interest is measured against
+the free float; a recent IPO or a dual-class structure makes those two numbers diverge, and
+the resulting percentage is inflated by exactly the same factor.
+
+### 5.2 The snapshot moved under the published artifact
+
+Two days after the 2026-11-14 fire, **20 of the 134 published names had changed**, and
+**MMED went from 72.6% to 34.4% with an UNCHANGED share count (281,265,526)** — a 38pp
+vendor correction with no market event behind it. The published number was true when it was
+pulled; it is a fact about that instant, not about the week.
+
+### 5.3 What changed in the repo
+
+* **Engine** (`cloud-prompts/_shared/cron06_refresh.py`): a new `--si-crosscheck-json` input
+  (raw Nasdaq rows) and a `si_crosscheck()` derivation that owns the ratio and the verdict.
+  The short-float artifact now publishes a `## Short-interest cross-check` section — ALWAYS,
+  with `status` `ok` / `no_rows` / `not_supplied` — and the JSON companion publishes the same
+  rows under `short_interest_crosscheck`.
+* **Checker** (`tools/check_cron06_artifact.py`): new clause **C16** — the section must be
+  published, the `status` must be in the closed set, every verdict must be `AGREE` /
+  `DIVERGES` / `NO_DATA`, an AGREE ratio must sit inside the band and a DIVERGES ratio
+  outside it, the published ratio must equal the recomputed one, and the markdown table must
+  agree with the JSON row for row.
+* **Test** (`tools/test_cron06_contract.py`): two new fault-injection cases (the section
+  missing; a verdict outside the closed set) — 17 mutations, each caught by its own clause.
+* **Skill spec** (§8b.3 / §8b.4 / §8b.5): the fetch step with the exact endpoint, the
+  published-field vocabulary, and the two traps — a live snapshot that refreshes between
+  runs, and a percentage that cannot be cross-checked (only the shares can).
+
+### 5.4 Deliberately NOT done
+
+* **The 2026-11-14 artifact was NOT re-rendered.** The cross-check is computable from
+  Nasdaq's settlement data (which does not drift), but shibui's snapshot HAS drifted for 20
+  names — so a re-render today would publish a mix of Saturday's ratios and today's
+  snapshot, which is a different dataset. The cross-check lands on the next fire, where both
+  sides come from the same instant.
+* **The contract version stays `cron06-refresh-v2`.** The cross-check adds a section and a
+  JSON block but changes no existing field, vocabulary or file set. A defect fix and an
+  additive block are not a new contract.

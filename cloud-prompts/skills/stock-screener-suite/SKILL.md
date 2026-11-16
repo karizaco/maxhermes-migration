@@ -2508,15 +2508,33 @@ markdown. A hand-typed price is a defect, not a style choice.
    cap) in ONE query, plus the IPO names' liquidity — **and every remaining name in the
    short-float universe**, so that no published row carries a `NO_QUOTE` verdict that only
    means "this run did not measure it". `NO_QUOTE` must mean NO VOLUME HISTORY.
-5. Fetch the prior ledger (`pattern-study/peoplewish-1000pct-backlog.md`) and the most
+5. **Cross-check the short interest against an INDEPENDENT source** (Nasdaq's settlement-dated
+   short-interest table). shibui's `short_percent_float` is a fraction of a float definition
+   nobody else shares, so the PERCENTAGE cannot be compared with another source directly —
+   the short interest in SHARES can:
+   ```bash
+   curl -s --max-time 20 -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36" \
+     -H "Accept: application/json" -H "Referer: https://www.nasdaq.com/" \
+     "https://api.nasdaq.com/api/quote/<SYMBOL>/short-interest?assetclass=stocks"
+   ```
+   → `data.shortInterestTable.rows[0]` = `{settlementDate, interest, avgDailyShareVolume,
+   daysToCover}`. **The endpoint is `api/quote/...`; the `api/company/...` path returns 404**
+   (measured 2026-11-16). Fetch it for the top 40 short-float names plus every intersection
+   name (~0.4 s apart) and pass the rows to the engine as `--si-crosscheck-json`:
+   `[{"ticker": "VG", "interest_shares": 12345678, "settlement_date": "10/30/2026",
+   "days_to_cover": 3.1}]`. The engine computes the ratio and the verdict. If the fetch
+   fails, pass `[]` and the artifact publishes `status: no_rows`; if you never fetch it the
+   artifact publishes `status: not_supplied`. **Never omit the section silently.**
+6. Fetch the prior ledger (`pattern-study/peoplewish-1000pct-backlog.md`) and the most
    recent PRIOR state snapshot (`pattern-study/cron06-state/short-float-*.json` with a
    fire_date earlier than this one) from the outputs repo. Both are needed: the ledger
    for continuity, the state for the change in short float.
-6. Run the engine → the three `.md` artifacts, `cron06-refresh.json` and the state file.
-7. Run the checker: `python3 tools/check_cron06_artifact.py --md-dir <dir> --json <json>
-   --state <state> --prior-backlog <ledger>`. **A non-zero exit means the run FAILS** —
+7. Run the engine → the three `.md` artifacts, `cron06-refresh.json` and the state file.
+8. Run the checker: `python3 tools/check_cron06_artifact.py --md-dir <dir> --json <json>
+   --state <state> --prior-backlog <ledger> --prior-state <prior state file>`
+   `--reply <the reply you are about to send>`. **A non-zero exit means the run FAILS** —
    fix the artifact, do not publish it.
-8. Push the `daily-screens` tree AND the `pattern-study` ledger + state file, then verify
+9. Push the `daily-screens` tree AND the `pattern-study` ledger + state file, then verify
    each path with `verify_delivery.sh`.
 
 #### 8b.4 — the published fields (a field, never a sentence)
@@ -2530,6 +2548,7 @@ markdown. A hand-typed price is a defect, not a style choice.
 | `mcap_verified` | `YES` when a `shibui.valuation` row exists within 14 days; `NO` means the name passed the $1B floor BY DEFAULT, not on a stamped number. |
 | `days_since_ipo` / `post_lockup` | days since the IPO date; `post_lockup = YES` past 180 days (the standard lockup length, used as a calendar marker, not a filing fact). |
 | `tag_change` | `NEW` / `UNCHANGED` / `ADDED` / `REMOVED` / `MIXED` — the live tag set against the ledger's frozen tags. |
+| `short_interest_crosscheck` | per name: `shibui_si_shares`, `nasdaq_si_shares`, `ratio`, `settlement_date`, `days_to_cover` and a verdict `AGREE` (ratio 0.67–1.50) / `DIVERGES` / `NO_DATA`. The block's `status` is `ok` / `no_rows` / `not_supplied` — **the section is published even when the source failed**. |
 
 A placeholder `—` in one of these fields is a SILENT FAILURE, not a missing value. The
 checker rejects it.
@@ -2557,6 +2576,18 @@ checker rejects it.
   published `NO_PRIOR_SNAPSHOT` — an artifact that looks complete and reports no change at
   all (fixed 2026-11-14; `tools/check_cron06_artifact.py` clause C15 now recomputes the
   delta from the prior snapshot and refuses that artifact).
+* **`ownership_stats` is a LIVE SNAPSHOT that refreshes between runs.** Measured 2026-11-16,
+  two days after the 2026-11-14 fire: **20 of the 134 published names had moved** and MMED
+  went from 72.6% to 34.4% of float with an UNCHANGED share count (281,265,526) — a 38pp
+  vendor correction, not a market event. A published short-float number is a fact about the
+  moment it was pulled, so the artifact must carry its own cross-check against an
+  independent source rather than let the reader assume the number is stable.
+* **A short-interest PERCENTAGE cannot be cross-checked; only the SHARES can.** shibui's
+  `shares_float` is close to shares OUTSTANDING for a recent IPO or a dual-class name, while
+  short interest is measured against the FREE float — so a "wrong" percentage is often a
+  wrong DENOMINATOR. Measured 2026-11-16 against Nasdaq: 9 of 12 cross-checked names agree
+  within ±25% on the implied share count, while MMED (9.9×), QMCO (4.5×) and CHTR (2.7×)
+  diverge — and in all three shibui's `shares_float` is 87–100% of shares outstanding.
 * **The backlog is a discovery ledger, not a quote sheet.** The carried-forward rows stay
   FROZEN at their first-tagging values, with their `First Tagged` date. The live re-score
   carries this week's tags. Freezing the TAGS too would hide the coil -> breakout

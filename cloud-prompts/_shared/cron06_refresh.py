@@ -80,6 +80,12 @@ IPO_FLOOR = 1_000_000_000      # $1B market-cap floor (filter N)
 
 TRADEABLE_VERDICTS = {"TRADEABLE", "THIN", "ILLIQUID", "FLOAT_ARTIFACT", "NO_QUOTE"}
 TAG_CHANGES = {"NEW", "UNCHANGED", "ADDED", "REMOVED", "MIXED"}
+# The short-interest CROSS-CHECK: an independent short-interest figure (Nasdaq's
+# settlement-date table) compared with the shares shibui's own ratio implies.
+SI_AGREE_LO = 0.67          # ratio band inside which the two sources agree
+SI_AGREE_HI = 1.50
+SI_VERDICTS = {"AGREE", "DIVERGES", "NO_DATA"}
+SI_STATUSES = {"ok", "no_rows", "not_supplied"}
 
 FAILURES: list[str] = []
 
@@ -122,6 +128,46 @@ def tradeable_verdict(short_pct: float | None, adv30: float | None) -> str:
     if adv30 < ADV_TRADEABLE:
         return "THIN"
     return "TRADEABLE"
+
+
+def si_crosscheck(sf_rows, nasdaq_rows):
+    """Compare shibui's short interest with an INDEPENDENT short-interest figure.
+
+    shibui publishes `short_percent_float` (a FRACTION) and `shares_float`. The
+    product is the short interest in SHARES — the only quantity that can be
+    compared with another source, because the percentage depends on a float
+    definition nobody else shares. A DIVERGES verdict means the two sources
+    disagree about the size of the short position; it does NOT say which is
+    right, and the artifact says so.
+    """
+    by_t = {str(r.get("ticker", "")).upper(): r for r in (nasdaq_rows or [])}
+    out = []
+    for r in sf_rows:
+        t = r["ticker"]
+        n = by_t.get(t.upper())
+        sp = r.get("short_pct_float")
+        fl = r.get("shares_float")
+        shibui_si = round((sp / 100.0) * fl) if (sp is not None and fl) else None
+        nsi = n.get("interest_shares") if n else None
+        ratio = round(shibui_si / nsi, 2) if (shibui_si and nsi) else None
+        if not n or nsi is None or shibui_si is None:
+            verdict = "NO_DATA"
+        elif SI_AGREE_LO <= ratio <= SI_AGREE_HI:
+            verdict = "AGREE"
+        else:
+            verdict = "DIVERGES"
+        out.append({
+            "ticker": t,
+            "shibui_short_pct_float": sp,
+            "shibui_float_shares": fl,
+            "shibui_si_shares": shibui_si,
+            "nasdaq_si_shares": nsi,
+            "ratio": ratio,
+            "settlement_date": (n or {}).get("settlement_date"),
+            "days_to_cover": (n or {}).get("days_to_cover"),
+            "verdict": verdict,
+        })
+    return out
 
 
 def squeeze_flag(short_pct: float | None, adv30: float | None) -> str:
@@ -240,6 +286,9 @@ def main():
     ap.add_argument("--sf-enrich-json")
     ap.add_argument("--scan-json")
     ap.add_argument("--shape-json")
+    ap.add_argument("--si-crosscheck-json",
+                    help="independent short-interest rows: [{ticker, interest_shares, "
+                         "settlement_date, days_to_cover}] — the cross-check source")
     ap.add_argument("--backlog-md")
     ap.add_argument("--prior-state")
     ap.add_argument("--master-csv")
@@ -258,6 +307,7 @@ def main():
     sf_en = {r["symbol"]: r for r in (load_json(args.sf_enrich_json, []) or [])}
     scan = load_json(args.scan_json, []) or []
     shape = {r["symbol"]: r for r in (load_json(args.shape_json, []) or [])}
+    nasdaq_si = load_json(args.si_crosscheck_json, None)
     prior_ledger, prior_meta = parse_backlog_md(args.backlog_md)
     prior_state = load_json(args.prior_state, None)
 
@@ -430,10 +480,23 @@ def main():
     newly_common = [r for r in newly if type_by_ticker.get(r["ticker"]) == "Common Stock"]
     excluded_new = [r for r in newly if type_by_ticker.get(r["ticker"]) != "Common Stock"]
 
+    # ---------------------------------------------------------------- cross-check
+    if nasdaq_si is None:
+        xc_rows, xc_status = [], "not_supplied"
+    else:
+        wanted = {r["ticker"] for r in sf_rows[:40]} | set(inter["union"])
+        # Only names the run ACTUALLY fetched are listed. A name that was never
+        # queried is "not attempted", not "no data"; a name that WAS fetched and
+        # came back without a figure is NO_DATA.
+        fetched = {str(r.get("ticker", "")).upper() for r in nasdaq_si}
+        xc_rows = [r for r in si_crosscheck(sf_rows, nasdaq_si)
+                   if r["ticker"].upper() in fetched and r["ticker"] in wanted]
+        xc_status = "ok" if xc_rows else "no_rows"
+
     # ---------------------------------------------------------------- render
     os.makedirs(args.out_md_dir, exist_ok=True)
     write_ipo_md(args, ipo_rows, inter, sf_rows, sf_display)
-    write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct)
+    write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct, xc_rows, xc_status)
     write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
                       ledger, prior_meta, inter, live_by_ticker, type_by_ticker, sf_rows)
 
@@ -461,6 +524,15 @@ def main():
         "prior_state_fire_date": prior_fire,
         "verdict_vocabulary": sorted(TRADEABLE_VERDICTS),
         "tag_change_vocabulary": sorted(TAG_CHANGES),
+        "short_interest_crosscheck": {
+            "status": xc_status,
+            "source": "Nasdaq short-interest table (api.nasdaq.com/api/quote/<symbol>/short-interest)"
+                      if xc_status == "ok" else "not supplied in this run",
+            "verdict_vocabulary": sorted(SI_VERDICTS),
+            "agree_band": [SI_AGREE_LO, SI_AGREE_HI],
+            "rows": xc_rows,
+            "counts": {v: sum(1 for r in xc_rows if r["verdict"] == v) for v in sorted(SI_VERDICTS)},
+        },
         "source_health": [
             {"source": "shibui MCP (stock_data_query via mcp_bridge.py)",
              "query": "IPO (general_info+valuation) / short float (ownership_stats) / 10y scan (stock_quotes)",
@@ -604,7 +676,8 @@ def write_ipo_md(args, ipo_rows, inter, sf_rows, sf_display):
     open(os.path.join(args.out_md_dir, "weekly-ipo.md"), "w", encoding="utf-8").write(txt)
 
 
-def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct):
+def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
+                xc_rows=None, xc_status="not_supplied"):
     fire, data = args.fire_date, args.data_date
     head = _hdr("Weekly High-Short-Float Refresh", fire, data)
     cov = (f"**Universe:** Common Stock with `short_percent_float > 20%`. **Latest available shibui date:** {data} "
@@ -644,6 +717,7 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct):
         trend = ("- **Δ vs Prior Wk (pp)** is `NO_PRIOR_SNAPSHOT` on every row: this is the FIRST state snapshot. "
                  "`ownership_stats` has no date column, so the short-float book cannot be replayed — this week's "
                  "sample is the beginning of the series, and next week's run can publish the change.\n")
+    xc = _si_crosscheck_md(xc_rows or [], xc_status)
     notes = ("## Notes\n" + trend +
              "- `short_percent_float` is a fraction in shibui (`0.20` = 20%); values > 100% occur where disclosed "
              "short interest exceeds float — the `FLOAT_ARTIFACT` verdict marks those rows as noise, not squeeze fuel.\n"
@@ -653,8 +727,45 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct):
              "it costs no extra call.\n")
     txt = (head + cov + "\n".join(rows) + "\n\n" + _intersection_md(inter, sf_rows) +
            f"## Intersection names (enriched regardless of rank)\n\n" + "\n".join(irows) + "\n\n" +
-           notes + _source_health(data))
+           xc + notes + _source_health(data))
     open(os.path.join(args.out_md_dir, "weekly-high-short-float.md"), "w", encoding="utf-8").write(txt)
+
+
+def _si_crosscheck_md(xc_rows, xc_status):
+    """The cross-check block. It is ALWAYS published — a missing source is named,
+    never silently absent."""
+    head = "## Short-interest cross-check\n\n"
+    if xc_status == "not_supplied":
+        return (head + "**Status: not_supplied** — no independent short-interest source was "
+                "passed to this run, so the short-interest numbers below are UNVERIFIED against "
+                "a second source.\n\n")
+    if not xc_rows:
+        return (head + "**Status: no_rows** — the cross-check source was queried but returned no "
+                "row for any name in this universe.\n\n")
+    agree = sum(1 for r in xc_rows if r["verdict"] == "AGREE")
+    div = sum(1 for r in xc_rows if r["verdict"] == "DIVERGES")
+    nod = sum(1 for r in xc_rows if r["verdict"] == "NO_DATA")
+    out = ["**Source:** Nasdaq short-interest table (settlement-dated, published twice a month) "
+           "vs the short interest shibui's own ratio implies. **Status: ok** — "
+           f"{len(xc_rows)} names cross-checked: {agree} AGREE, {div} DIVERGES, {nod} NO_DATA.",
+           "",
+           "| Ticker | Shibui Short %Float | Shibui Float (sh) | Shibui SI (sh) | Nasdaq SI (sh) | "
+           "Ratio | Nasdaq Settlement | Days to Cover | Verdict |",
+           "|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(xc_rows, key=lambda x: (x["verdict"] != "DIVERGES", x["ticker"])):
+        out.append(f"| {r['ticker']} | {pct(r['shibui_short_pct_float'])} | {r['shibui_float_shares']:,} | "
+                   f"{r['shibui_si_shares']:,} | "
+                   f"{(format(r['nasdaq_si_shares'], ',') if r['nasdaq_si_shares'] else '—')} | "
+                   f"{r['ratio'] if r['ratio'] is not None else '—'} | "
+                   f"{r['settlement_date'] or '—'} | {r['days_to_cover'] or '—'} | {r['verdict']} |")
+    out += ["",
+            "**Ratio** is shibui's implied short-interest shares ÷ Nasdaq's short-interest "
+            "shares. AGREE = the ratio is inside 0.67–1.50; DIVERGES = outside it. A DIVERGES "
+            "row means the two sources disagree about the SIZE OF THE SHORT POSITION — it does "
+            "not say which is right. The usual cause is the float denominator: shibui's "
+            "`shares_float` is close to shares OUTSTANDING for a recent IPO or a dual-class "
+            "name, while short interest is measured against the free float.", ""]
+    return head + "\n".join(out) + "\n"
 
 
 def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,

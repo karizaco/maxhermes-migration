@@ -125,6 +125,14 @@ PRIOR_STATE = {
 
 MASTER_CSV = "symbol,stylists\nAAAA,jeff_sun\nCCCC,stockbee\n"
 
+# an INDEPENDENT short-interest source (shares), for the cross-check
+SI_XCHECK = [
+    {"ticker": "AAAA", "interest_shares": 100_000_000, "settlement_date": "2026-10-30", "days_to_cover": 3},
+    {"ticker": "CCCC", "interest_shares": 12_000_000, "settlement_date": "2026-10-30", "days_to_cover": 4},
+    {"ticker": "DDDD", "interest_shares": 1_000_000, "settlement_date": "2026-10-30", "days_to_cover": 2},
+    {"ticker": "EEEE", "interest_shares": 300_000, "settlement_date": "2026-10-30", "days_to_cover": 6},
+]
+
 
 def write_inputs(d: Path):
     (d / "ipo.json").write_text(json.dumps(IPO, indent=1))
@@ -136,6 +144,7 @@ def write_inputs(d: Path):
     (d / "prior_backlog.md").write_text(PRIOR_LEDGER)
     (d / "prior_state.json").write_text(json.dumps(PRIOR_STATE, indent=1))
     (d / "master.csv").write_text(MASTER_CSV)
+    (d / "si_xcheck.json").write_text(json.dumps(SI_XCHECK, indent=1))
 
 
 def run_engine(d: Path):
@@ -146,6 +155,7 @@ def run_engine(d: Path):
            "--ipo-enrich-json", str(d / "ipo_enrich.json"),
            "--sf-enrich-json", str(d / "sf_enrich.json"),
            "--scan-json", str(d / "scan.json"), "--shape-json", str(d / "shape.json"),
+           "--si-crosscheck-json", str(d / "si_xcheck.json"),
            "--backlog-md", str(d / "prior_backlog.md"),
            "--prior-state", str(d / "prior_state.json"),
            "--master-csv", str(d / "master.csv"),
@@ -298,6 +308,21 @@ def main():
 
         mut("C14 the reply omits a newly tagged ticker", "C14",
             lambda: reply.write_text("### Signal\n\n- nothing here\n"))
+
+        # rename the heading, not the file tail: truncating at the section would ALSO
+        # remove the source-health section, and the mutation would then be "caught" by
+        # C13 instead of its own clause.
+        mut("C16 the short-interest cross-check section is missing", "C16",
+            lambda: edit_md("weekly-high-short-float.md",
+                            lambda t: t.replace("## Short-interest cross-check",
+                                                "## Cross-check removed", 1)))
+
+        def bad_verdict(j):
+            for r in j["short_interest_crosscheck"]["rows"]:
+                if r["ticker"] == "CCCC":
+                    r["verdict"] = "FINE"
+        mut("C16 a cross-check verdict is outside the closed set", "C16",
+            lambda: edit_json(bad_verdict))
 
         def blank_delta(j):
             for r in j["short_float_rows"]:
