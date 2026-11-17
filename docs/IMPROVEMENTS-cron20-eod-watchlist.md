@@ -636,3 +636,46 @@ what is published (a two-part artifact), which is a product decision, not an opt
 **The capability marker moved to `EOD_SETTLE_V2` for `fetch_eod_settled.py`** and the skill's
 fetch ladder demands it, so a stale copy of the script - which would silently put the old
 request volume back on the wire - is rejected rather than run.
+
+---
+
+## 2026-11-17 — the published VOLUME is the auction's volume, and the tape keeps filling afterwards
+
+The 2026-11-17 fire published the 32-column file (4,887 rows) on the standard path, and the
+settle probe loop hit its `--max-rounds` cap for the second session running - **12 rounds,
+758 symbols changed after pass 1, the loop stopped at 16:58 ET**, with 165 names still moving
+in the last round. That is the known thin-name wall, not a new defect, and the artifact says
+so in its provenance opener and in `## Source health`.
+
+**The new measurement: the published `volume` is systematically BELOW a later consolidated
+tape.** The post-close cross-check (40 of the most liquid names, re-quoted after the close
+through the bridge's `market-recap`, a source that is not the venue's print) reads:
+
+| measurement | result |
+|---|---|
+| published close vs the consolidated tape's print | **34 of 40 within 0.1%**; the other 6 differ by 1-2 ticks on sub-$3 names (BURU 0.2211 vs 0.233, SHFS 0.0148 vs 0.015, NIO 2.82 vs 2.81) |
+| published volume vs the tape's volume | **the tape is higher on 40/40** - from **0.1% to 25.4%**, median **4.5%** |
+
+Two different things are being measured and both are correct:
+
+1. **The CLOSE differences are the documented thin-name behaviour, not an error.** The
+   published close is the venue's 16:00 ET **auction print** (`secondaryData`, stamped
+   "Closed at 4:00 PM ET"); the tape's `last` is a LATER off-auction print. On a $0.22 stock
+   one penny is 4.5%. The published close is the contract's close of record, it sits inside
+   the published range in every case, and 4 of the 6 rows are `UNCONFIRMED` - the file already
+   says "no independent reading agreed for this line".
+2. **The VOLUME difference is a source-lag fact that no artifact used to state.** The venue's
+   settled volume is stamped at the auction; the consolidated tape keeps filling afterwards,
+   so a reader comparing this file with a later feed sees a HIGHER volume on the same
+   session - by a median of 4.5% and up to 25% on a name like SHFS. `rel_volume` and
+   `avg_daily_dollar_volume` inherit the same basis, because they are computed from the same
+   history pull.
+
+**What changed:** the fire publishes the cross-check as an eighth `## Source health` row, with
+the numbers measured by a script from the run's own artifacts (the published CSV and the
+bridge's response) - never typed in by hand. The report is still built FROM the published CSV,
+so the row is data, not prose.
+
+**What did NOT change:** the CSV. No close, no volume, no derived column was edited; the
+cross-check confirmed the published close and explained the volume basis. The 34 assertions
+passed before and after the rebuild.
