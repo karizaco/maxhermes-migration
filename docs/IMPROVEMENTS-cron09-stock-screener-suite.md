@@ -1127,3 +1127,93 @@ A replay is not a debugging convenience — it is what runs when a fire is resum
 it is the path a stalled, rate-limited or resumed fire will take. It now has its own
 test file, `tools/test_sweep_replay.py` (6 checks), and every fix above is asserted
 there rather than discovered again.
+
+---
+
+## 2026-11-17 — the size-cut sentence contradicts the size-cut number, and the Focus cap silently truncates Tier-A
+
+The 2026-11-17 fire (18:30 ET) ran clean on the data — 9/9 branches complete, `rows_kept == rows_passing`
+everywhere, the VIX pair pulled twice and identical — but two defects in what the artifact SAYS survived the
+check stage, and one of them is the class this suite already fights elsewhere: a truncation that looks like a result.
+
+### 1. `tools/sweep_pipeline.py` prints a FALSE sentence next to a TRUE number
+
+`render_daily_sweep_md()` renders the regime row as:
+
+```
+| `size_cut_pct` | **50** (breadth 34.16% is far above the 40% trigger) |
+```
+
+`compute_regime()` in `scripts/screen.py` fires the cut at `size_cut = 50` when
+`index_below_20sma and breadth_pct < 40`. On 2026-11-17 breadth was **34.16%** — BELOW the 40% trigger — and
+`index_below_20sma` was true (0 of 5 index ETFs above their 20-DMA), so **the size cut was ON**. The number in
+`_regime.json` is right; the sentence around it says the opposite. A reader who trusts the prose takes the
+opposite position from the reader who reads the flag.
+
+The sentence is a hard-coded comparison written without consulting the predicate that produced the flag — the
+same shape as the `late_cycle` key trap this suite already fixed (a consumer reading the wrong key gets a flag
+that can never fire). **A derived number and a derived sentence must come from ONE source.**
+
+**Suggested fix:** publish the predicate itself from `compute_regime()` (e.g. `size_cut_active: true`, plus
+`size_cut_reason: "index below 20-DMA and breadth 34.16% < 40%"`) and have both renderers print that reason
+verbatim. Until then, the renderer must at least state the fired/not-fired state rather than assert a
+comparison. `breadth.md`'s own regime row has the mirror-image defect — it prints the RULE
+("size cut only when the index is below its 20-DMA and breadth < 40% — breadth is 34.16%") without saying
+whether the rule fired.
+
+The 2026-11-17 artifact corrects this in its flags block; the renderer still needs the fix.
+
+### 2. The 12-name Focus cap binds BEFORE Tier-A, and nothing says so
+
+`select_focus()` ends with `return dict(list(out.items())[:12])` — the cap slices the **insertion order** of the
+candidates dict, which is the order the T+1 branches were merged in, each branch ordered by its own metric on
+the previous session. `consume()` then calls `select_tier_a(focus)` — so **Tier-A is derived from the
+already-truncated Focus list**, and any name that clears ≥3 stylists but lands outside the first 12 can never
+reach Tier-A.
+
+Measured on the 2026-11-17 book: **28 names cleared ≥3 stylists; Tier-A published 2** (CGON, SEZL). The cap that
+actually bound was Focus's 12, not Tier-A's 8 — and because Tier-A never exceeded 8, `_results.json` published
+`tier_a_truncated: false`. **The artifact's own truncation flag therefore does not reveal that 26 qualifying
+names were dropped upstream.** That is the silent-truncation class §2 of the skill spec fights for the
+per-branch `LIMIT`, in a place nobody was looking: 28 → 2 with a green check and a `truncated: false`.
+
+Concretely: **SLS** (SELLAS Life Sciences) closed **+156.4%** on the pivotal Phase 3 REGAL readout, carries
+**4 stylists**, and is `fresh+t1` — it is in the book, in `_results.json`, in `master.csv`, and in neither the
+Focus nor the Tier-A list, because the ranking it is judged by is the **2026-11-16** four-percent-breakout gain
+ordering. The fresh book's own leaders (SLS, LUCK, ELA, BILL) are ranked by yesterday's move.
+
+A second, related defect in the same function: **the `OR top-5 velocity` clause is structurally dead.**
+`out` is loaded with every high-conviction name (186 on 2026-11-17) and the velocity names are appended
+*afterwards*, so `[:12]` slices them away on any normal day. It survives only when fewer than 12 names clear
+≥2 stylists. (On 2026-11-17 no name was lost to it — the top-5 velocity names also cleared ≥2 stylists — which
+is exactly why this has never surfaced.)
+
+**Suggested fix — this one changes published semantics, so it wants a decision before it lands:**
+
+1. Compute **Tier-A from the full candidate set** (the ≥3-stylist shortlist), not from the truncated Focus.
+   Focus stays the ≥2-stylist watchlist; Tier-A is not required to be a subset of it.
+2. **Rank Focus by conviction before the cap** — `n_stylists` desc, then 14-day velocity desc, then symbol —
+   instead of slicing insertion order.
+3. Make the **top-5 velocity clause survive the cap** (add it to the ranked pool, not after it).
+4. **Publish the pool sizes**: `focus_pool`, `focus_truncated`, `tier_a_pool`, `tier_a_truncated`, so the
+   artifact can say "28 names cleared ≥3 stylists; the Focus cap kept 12" instead of presenting 2 as if it were
+   the whole shortlist.
+
+Until this lands, every artifact should disclose the ordering rule — the 2026-11-17 one does, in its flags
+block.
+
+### 3. Operational: the narrative re-render can be made free, and today it was
+
+The pipeline writes `daily-sweep.md` / `breadth.md` with `<!-- FILL: ... -->` slots for the Agent's narrative,
+but `cmd_run` has no way to re-render from the collected data alone: `--live-json` is only read at render time
+INSIDE a run that has already fetched everything. Re-running to fill the narrative therefore re-spent the whole
+fetch (~24 metered bridge calls on 2026-11-17).
+
+Today the narrative re-render was done at **zero data cost** by wrapping the four collectors
+(`collect_branches`, `collect_canslim_growth`, `collect_enrichment`, `collect_breadth`) to dump their returns,
+then re-running with `--fresh-json / --branches-json / --canslim-json / --enrichment-json / --overlay-json /
+--breadth-json / --t1-date / --live-json`. Only the book-quote batch (2 bridge calls) was re-spent.
+
+**Suggested fix:** make that a first-class path — `cmd_run` should persist its collectors' returns under
+`--scratch` by default and re-use them when they are present and the date matches, so `--live-json` can be
+applied without a refetch. The replay flags already exist; they just are not fed automatically.
