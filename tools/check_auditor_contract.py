@@ -564,6 +564,109 @@ def check_procedure_parity(procedure_path, contract, rep):
                   f"{expected}")
 
 
+def check_gap_lifecycle(metrics_path, status, contract, rep):
+    """A gap that names an artifact which is ALREADY there is not a true statement.
+
+    The engine measures the tree ONCE and the status file is written from that same
+    measurement, so the two cannot disagree because of a race - and if they do, one
+    of them is wrong. This is the check that ends a gap that would otherwise be
+    carried forward for ever: cron #13's `macro-calendar/2026-11-11-midweek.md` was
+    carried across five audits (age 17 h -> 113 h) because nothing ever asked whether
+    the path had appeared.
+
+    A MISSING gap must name a path the engine measured as ABSENT. A `reconstructed`
+    gap must name a path the engine measured as PRESENT - the claim is that the
+    artifact exists and was rebuilt after the fact.
+    """
+    try:
+        with open(metrics_path, encoding="utf-8") as fh:
+            metrics = json.load(fh)
+    except (OSError, ValueError) as exc:
+        rep.fail("C20", f"could not read the metrics file: {exc}")
+        return
+    presence = metrics.get("path_presence") or {}
+    if not presence:
+        return                       # nothing was measured - there is no claim to check
+    for g in status.get("gaps") or []:
+        if not isinstance(g, dict):
+            continue
+        label = g.get("label")
+        path = g.get("path") or ""
+        if not path or path not in presence:
+            continue                   # a path the engine never measured
+        present = bool(presence[path])
+        if label == "MISSING" and present:
+            rep.fail("C20", f"the status publishes a MISSING gap for {path}, but the engine "
+                            f"measured that path as PRESENT on origin/main - the gap should "
+                            f"have been retired (a reconstruction, or a delivery)")
+        if label == "reconstructed" and not present:
+            rep.fail("C21", f"the status publishes a reconstructed gap for {path}, but the "
+                            f"engine measured that path as ABSENT on origin/main - the claim "
+                            f"is not supported")
+
+
+def _gap_shape(contract):
+    """The contract's gap template as a regex - the placeholders become matchers."""
+    tpl = (contract.get("digest") or {}).get("gap") or ""
+    if not tpl:
+        return None
+    out = []
+    for part in re.split(r"(<[^>]+>)", tpl):
+        if part.startswith("<") and part.endswith(">"):
+            if part == "<n>":
+                out.append(r"([0-9]+(?:\.[0-9]+)?)")
+            elif part == "<detail>":
+                out.append(r"(.*)")
+            else:
+                out.append(r"(\S+)")
+        else:
+            out.append(re.escape(part))
+    return re.compile("^" + "".join(out) + r"$")
+
+
+def check_procedure_gap_templates(procedure_path, contract, rep):
+    """Every gap template the procedure prints must be in the contract's exact form.
+
+    Two templates were published in a form the gate rejects - `ROSTER_DESYNC`
+    instead of `roster_desync`, and no `cause=`/`age_h=` at all - while the
+    procedure said "publish each line VERBATIM". Following the procedure verbatim
+    failed the gate, which is how a procedure and its own gate came to disagree.
+    """
+    try:
+        with open(procedure_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        rep.fail("P04", f"could not read the procedure file: {exc}")
+        return
+    shape = _gap_shape(contract)
+    if shape is None:
+        return
+    labels = set(contract.get("gap_labels") or [])
+    causes = set(contract.get("causes") or [])
+    label_causes = contract.get("label_causes") or {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("gap:"):
+            continue
+        m = shape.match(line)
+        if not m:
+            rep.fail("P04", f"the procedure prints a gap template that is not in the contract's "
+                            f"form: '{line[:110]}'")
+            continue
+        label, cause = m.group(2), m.group(4)
+        if label.startswith("<"):
+            continue                   # a placeholder - only the shape can be checked
+        if label not in labels:
+            rep.fail("P04", f"the procedure's gap template uses the label '{label}', which is "
+                            f"not in the contract's gap_labels")
+        elif cause not in causes:
+            rep.fail("P04", f"the procedure's gap template uses the cause '{cause}', which is "
+                            f"not in the contract's causes")
+        elif cause not in (label_causes.get(label) or []):
+            rep.fail("P04", f"the procedure's gap template pairs '{label}' with '{cause}', which "
+                            f"the contract does not allow")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -575,6 +678,8 @@ def main():
     ap.add_argument("--prompt", help="the deployed prompt, for the reply-template parity check")
     ap.add_argument("--procedure", help="the procedure file the prompt fetches, for the "
                                         "inline-contract parity check")
+    ap.add_argument("--metrics", help="the measurements the engine wrote (_audit/metrics.json), "
+                                      "for the gap-lifecycle check")
     args = ap.parse_args()
 
     for p in (args.status, args.contract, args.ground_truth):
@@ -611,6 +716,12 @@ def main():
         check_prompt_parity(args.prompt, contract, rep)
     if args.procedure:
         check_procedure_parity(args.procedure, contract, rep)
+        check_procedure_gap_templates(args.procedure, contract, rep)
+    if args.metrics:
+        if not os.path.exists(args.metrics):
+            rep.fail("C20", f"no such file: {args.metrics}")
+        else:
+            check_gap_lifecycle(args.metrics, status, contract, rep)
 
     if rep.failures:
         for f in rep.failures:

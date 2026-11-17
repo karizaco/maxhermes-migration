@@ -90,6 +90,245 @@ DEFAULT_AUDITOR_PROCEDURE = os.path.join(
 ID_RE = re.compile(r"^([0-9]+[a-z]?)")
 
 
+# --------------------------------------------------------------------------
+# THE CANONICAL CRON SEMANTICS
+# --------------------------------------------------------------------------
+# These helpers are the ONE place the fleet's idea of "when does this schedule
+# fire" is written down. `auditor_metrics.py` imports them (it needs the same
+# answer the detector needs), and the auditor's own procedure quotes their
+# meaning. A SECOND copy of this logic is how the roster drifted in the first
+# place: the detector compared only routine NAMES, so a schedule that said the
+# wrong TIME looked identical to one that said the right time.
+#
+# A "slot" is one (minute, hour, weekday) triple - the three fields that decide
+# when a routine actually fires. Two schedules are equivalent when their slot
+# sets are equal. Expanding the day-of-week field is what lets a copy that
+# splits a two-slot routine into two rows ("50 9 * * 1-5" and "50 15 * * 1-5")
+# be compared against a ground truth that states it once ("50 9,15 * * 1-5").
+#
+# The day-of-month and month fields are NOT expanded: every schedule in this
+# fleet uses "*" for both. A schedule that pins a date is left as an opaque
+# token so it can never be silently compared as if it were a daily rule.
+
+def parse_schedule(schedule):
+    """'30 9,15 * * 1-5' -> the five cron fields, or None."""
+    parts = (schedule or "").split()
+    if len(parts) != 5:
+        return None
+    return parts
+
+
+def _expand_field(field, lo, hi):
+    """Expand one cron field into the set of values it covers."""
+    field = field.strip()
+    if field == "*":
+        return set(range(lo, hi + 1))
+    out = set()
+    for chunk in field.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "/" in chunk:                      # */n and a-b/n
+            base, _, step = chunk.partition("/")
+            try:
+                step = int(step)
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+            if base == "*":
+                out |= set(range(lo, hi + 1, step))
+            elif "-" in base:
+                a, _, b = base.partition("-")
+                try:
+                    a, b = int(a), int(b)
+                except ValueError:
+                    return None
+                out |= set(range(a, b + 1, step))
+            else:
+                return None
+        elif "-" in chunk:
+            a, _, b = chunk.partition("-")
+            if not (a.isdigit() and b.isdigit()):
+                return None
+            a, b = int(a), int(b)
+            if b < a:
+                return None
+            out |= set(range(a, b + 1))
+        elif chunk.isdigit():
+            out.add(int(chunk))
+        else:
+            return None
+    return {v for v in out if lo <= v <= hi}
+
+
+def schedule_slots(schedule):
+    """The set of (minute, hour, weekday) slots a cron schedule fires at.
+
+    Weekday 0 is Sunday and 7 is also Sunday, so 7 is folded into 0 - a copy
+    that says "0" and a copy that says "7" fire at the same time and must not
+    be reported as drift.
+
+    Returns None when the schedule cannot be expanded into slots (a pinned
+    day-of-month or month, or an unparseable field). None is NOT "equal" and
+    NOT "different": the caller compares the raw schedule text in that case,
+    so an unusual schedule can never be reported as a false difference.
+    """
+    parts = parse_schedule(schedule)
+    if not parts:
+        return None
+    minute_f, hour_f, dom_f, mon_f, dow_f = parts
+    if dom_f.strip() != "*" or mon_f.strip() != "*":
+        return None                            # not a recurring rule
+    minutes = _expand_field(minute_f, 0, 59)
+    hours = _expand_field(hour_f, 0, 23)
+    dows = _expand_field(dow_f, 0, 7)
+    if minutes is None or hours is None or dows is None:
+        return None
+    dows = {0 if d == 7 else d for d in dows}
+    return frozenset((m, h, d) for m in minutes for h in hours for d in dows)
+
+
+def schedules_equivalent(a, b):
+    """Do two cron schedules fire at exactly the same times?
+
+    Slot-set equality is the test, so a two-row copy of a two-slot routine
+    matches a one-row ground truth. When either side cannot be expanded, the
+    normalised text is compared instead - conservative, never a false positive.
+    """
+    sa, sb = schedule_slots(a), schedule_slots(b)
+    if sa is None or sb is None:
+        return " ".join((a or "").split()) == " ".join((b or "").split())
+    return sa == sb
+
+
+def slots_set_text(slots):
+    """A human-readable summary of a slot set: '09:50 Mon-Fri; 15:50 Mon-Fri'."""
+    dow_names = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+    by_slot = {}
+    for minute, hour, dow in slots:
+        by_slot.setdefault((hour, minute), set()).add(dow)
+    out = []
+    for (hour, minute) in sorted(by_slot):
+        dows = sorted(by_slot[(hour, minute)])
+        if len(dows) == 7:
+            runs = ["daily"]
+        elif dows == [1, 2, 3, 4, 5]:
+            runs = ["Mon-Fri"]
+        elif dows == [0]:
+            runs = ["Sun"]
+        elif dows == [6]:
+            runs = ["Sat"]
+        else:
+            runs = [dow_names[d] for d in dows]
+        out.append("%02d:%02d %s" % (hour, minute, ", ".join(runs)))
+    return "; ".join(out)
+
+
+def slots_text(schedule):
+    """A human-readable slot summary: '09:50 Mon-Fri; 15:50 Mon-Fri'."""
+    slots = schedule_slots(schedule)
+    if not slots:
+        return " ".join((schedule or "").split()) or "(unparseable)"
+    return slots_set_text(slots)
+
+
+def cron_dow_matches(field, cron_dow):
+    """Does a cron day-of-week field fire on this cron weekday (0=Sun..6=Sat)?"""
+    dows = _expand_field(field, 0, 7)
+    if dows is None:
+        return False
+    return cron_dow in {0 if d == 7 else d for d in dows}
+
+
+def dow_matches(field, iso_dow):
+    """Does a cron day-of-week field fire on this ISO weekday (1=Mon..7=Sun)?"""
+    return cron_dow_matches(field, iso_dow % 7)
+
+
+def fire_times(schedule):
+    """The ET clock times a schedule fires -> [(hour, minute)]."""
+    parts = parse_schedule(schedule)
+    if not parts:
+        return []
+    minutes = _expand_field(parts[0], 0, 59)
+    hours = _expand_field(parts[1], 0, 23)
+    if minutes is None or hours is None:
+        return []
+    return [(h, m) for h in sorted(hours) for m in sorted(minutes)]
+
+
+def schedule_compatible(copy_sched, gt_sched):
+    """Is the COPY's schedule a COMPATIBLE view of the task's schedule?
+
+    Two shapes are compatible:
+      * the copy names ONE SLOT of a task that fires MORE THAN ONCE a day
+        (#17's open slot is `50 9 * * 1-5` while the task itself is
+        `50 9,15 * * 1-5`);
+      * the copy names the task exactly.
+
+    Everything else is a desync, and it is a MEANINGFUL one: a Mon-Fri task listed
+    as Wednesday-only would make the audit call four days of fires `not_due`, and
+    those missing artifacts would never be looked for. That is the same class of
+    blind spot as an unmonitored routine, so it is reported, not tolerated.
+
+    This is the ROW-level rule. The COPY-level rule is `schedule_sets_agree`,
+    which also catches a copy that simply DROPS one of the task's slots.
+    """
+    t, g = parse_schedule(copy_sched), parse_schedule(gt_sched)
+    if not t or not g:
+        return copy_sched == gt_sched
+    if t[0] != g[0] and t[0] != "*":
+        return False                                  # the minute must match
+    t_hours = _expand_field(t[1], 0, 23)
+    g_hours = _expand_field(g[1], 0, 23)
+    if t[1] != "*" and (t_hours is None or g_hours is None
+                        or not t_hours <= g_hours):
+        return False                                  # the hour must be one of the task's
+    if t[4] != g[4]:
+        if g_hours is None or len(g_hours) <= 1:
+            return False                              # a single-fire task must match exactly
+        for dow in range(0, 8):                      # a slot row may narrow the days
+            if cron_dow_matches(t[4], dow) and not cron_dow_matches(g[4], dow):
+                return False
+    return True
+
+
+def slots_union(schedules):
+    """The union of the fire slots of several schedules.
+
+    None when any of them cannot be expanded - the caller then falls back to the
+    row-level rule, so an unusual schedule is never a false difference.
+    """
+    out = None
+    for s in schedules:
+        sl = schedule_slots(s)
+        if sl is None:
+            return None
+        out = sl if out is None else (out | sl)
+    return out
+
+
+def schedule_sets_agree(schedules, gt_schedule):
+    """Do the copy's rows, taken TOGETHER, fire exactly when the ground truth says?
+
+    This is the COPY-level rule and it is stricter than the row-level one: a copy
+    that states a two-slot task as two rows agrees with a ground truth that states
+    it once ("50 9,15 * * 1-5"), but a copy that DROPS one of the slots does not -
+    and a dropped slot means the routine is never checked for that slot at all.
+
+    Returns (agrees, detail) where detail describes what the copy says, so the
+    finding can name both sides.
+    """
+    union = slots_union(schedules)
+    gsl = schedule_slots(gt_schedule)
+    if union is None or gsl is None:
+        # Cannot expand one side: fall back to the row-level rule per row.
+        agrees = all(schedule_compatible(s, gt_schedule) for s in schedules)
+        return agrees, "; ".join(s for s in schedules)
+    return union == gsl, slots_set_text(union)
+
+
 def _read_json(path):
     with open(path, encoding="utf-8") as fh:
         raw = fh.read()
@@ -216,12 +455,45 @@ def _copy_candidates(name, repo, explicit=None):
         "auditor_procedure": os.path.join("cloud-prompts", "_shared", "auditor-procedure.md"),
     }[name]
     here = os.path.dirname(os.path.abspath(__file__))
-    return [
+    cands = [
         explicit,
         os.path.join(repo, rel),
         os.path.join(here, os.path.basename(rel)),
-        os.path.join("/workspace", os.path.basename(rel)),
     ]
+    if os.path.abspath(here) == "/workspace":
+        # The audit's own sandbox: the fetched copies sit next to the detector.
+        # The fallback is NOT used from anywhere else - a /workspace on some other
+        # machine is a DIFFERENT environment, and reading it would turn another
+        # environment's copies into findings here (measured 2026-11-17: the
+        # regression test picked up the audit's own fetched deploy_prompts.py and
+        # reported four phantom drifts).
+        cands.append(os.path.join("/workspace", os.path.basename(rel)))
+    return cands
+
+
+def _step4_rows(src):
+    """[(routine name, schedule)] from the auditor procedure's STEP 4 roster table.
+
+    The table is the auditor's own copy of the roster, so its Schedule column is
+    compared against the ground truth as carefully as its Routine column is.
+    """
+    m = re.search(r"##\s*STEP 4\b(.*?)(?=\n##\s|\Z)", src, re.S)
+    if not m:
+        return []
+    rows = []
+    for line in m.group(1).splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        nm = cells[0].strip("` ")
+        if not nm or nm == "Routine" or set(nm) <= set("- "):
+            continue
+        if not ID_RE.match(nm):
+            continue
+        rows.append((nm, cells[1].strip("` ").strip()))
+    return rows
 
 
 def copy_drift(ground_truth, repo=REPO, procedure=None,
@@ -233,29 +505,69 @@ def copy_drift(ground_truth, repo=REPO, procedure=None,
     disagreement. It is reported under `roster_copy_not_checked` instead, and it never
     raises the exit code: a check that cries wolf on every audit is worse than no
     check at all.
+
+    A copy that DISAGREES is drift, in two ways:
+
+      * the routine is MISSING from the copy (the original check), and
+      * the routine is PRESENT but its SCHEDULE disagrees with the ground truth.
+
+    The second one is what the 2026-11-15 audit missed: the STEP 4 roster table
+    carried `0 9 * * 1-5` for #25 while the ground truth said `45 8 * * 1-5`, and a
+    check that compared only routine NAMES could not see it. Schedules are compared
+    as SLOT SETS, so a copy that splits a two-slot routine over two rows
+    ("50 9 * * 1-5" + "50 15 * * 1-5") still matches a ground truth that states it
+    once ("50 9,15 * * 1-5"), while a copy that DROPS one of the slots is drift -
+    the routine would simply never be checked.
     """
     drift = []
     not_checked = []
 
-    def note(copy, missing, why):
+    gt_sched = {}
+    for n, spec in ground_truth.items():
+        gt_sched[routine_id(n)] = (spec.get("schedule") or "").strip()
+
+    display = {}          # routine id -> the name the auditor's roster table uses
+
+    def display_name(name):
+        rid = routine_id(name)
+        if rid in display:
+            return display[rid]
+        return name[:-3] if name.endswith(".md") else name
+
+    def note(copy, missing, why, path=None, gt_schedule=None, copy_schedule=None,
+             routine=None):
         for name in sorted(missing):
-            # The line is the AUDITOR'S OWN gap format, verbatim:
-            #   gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>
-            # `roster_desync` and its cause `cron_update_failed` are already in the
-            # contract's label_causes, so a copy drift is published with the labels
-            # the auditor already knows - no new vocabulary and no prompt edit.
-            drift.append({
+            detail = " ".join(why.split())
+            gap_path = path or copy
+            pub = routine or display_name(name)
+            entry = {
                 "name": name,
+                "routine": pub,
                 "routine_id": routine_id(name),
                 "copy": copy,
-                "why": why,
+                "path": gap_path,
+                "why": detail,
                 "label": "roster_desync",
                 "cause": "cron_update_failed",
-                "line": f"gap: {name} ROSTER_DESYNC {copy} — cause=cron_update_failed "
-                        f"age_h=0 — {why}",
-            })
+                # The line is the auditor's own gap format, VERBATIM:
+                #   gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>
+                # The label is LOWERCASE (the contract's spelling) and the path is the
+                # FILE that disagrees - one whitespace-free token, so the line parses
+                # under the checker's gap regex. An earlier version printed
+                # `ROSTER_DESYNC` and a multi-word copy description, which the gate
+                # rejects (C04: unknown label; D04: unparseable gap).
+                "line": f"gap: {pub} roster_desync {gap_path} — "
+                        f"cause=cron_update_failed age_h=0 — {detail}",
+            }
+            if gt_schedule is not None:
+                entry["ground_truth_schedule"] = gt_schedule
+            if copy_schedule is not None:
+                entry["copy_schedule"] = copy_schedule
+            drift.append(entry)
 
-    # (4) the roster/index generator's ARTIFACTS map
+    # ---- (4) the roster/index generator's ARTIFACTS map --------------------
+    # The map carries artifact paths, not schedules, so this copy is a PRESENCE
+    # check only - there is nothing in it to disagree about a time.
     gr_path = _resolve(_copy_candidates("gen_roster", repo, gen_roster_path))
     if not gr_path:
         not_checked.append({
@@ -282,14 +594,18 @@ def copy_drift(ground_truth, repo=REPO, procedure=None,
                        if routine_id(n) not in _ids(exempt)
                        and routine_id(n) not in _ids(arts)}
             note("tools/gen_roster.py ARTIFACTS", missing,
-                 "the generated README index and ROSTER.md cannot show its output path")
+                 "the generated README index and ROSTER.md cannot show its output path",
+                 path="tools/gen_roster.py")
         except (OSError, ValueError, AttributeError) as exc:
             not_checked.append({
                 "copy": "tools/gen_roster.py ARTIFACTS",
                 "why": f"unreadable: {exc}",
             })
 
-    # (3) the deploy harness's task map
+    # ---- (3) the deploy harness's task map ---------------------------------
+    # This is the DEPLOYMENT-critical copy: it is what a cron_update is handed, so a
+    # stale schedule here fires the routine at the wrong time. Nobody compared its
+    # schedules before 2026-11-17.
     dp_path = _resolve(_copy_candidates("deploy_prompts", repo, deploy_prompts_path))
     if not dp_path:
         not_checked.append({
@@ -300,17 +616,35 @@ def copy_drift(ground_truth, repo=REPO, procedure=None,
         try:
             src = open(dp_path, encoding="utf-8").read()
             m = re.search(r"^[A-Z_]+\s*=\s*\{(.*?)\n\}", src, re.S | re.M)
-            dep = set(re.findall(r'"([^"]+\.md)"\s*:', m.group(1)))
+            dep = {}
+            for mm in re.finditer(r'"([^"]+\.md)"\s*:\s*\(\s*"[^"]*"\s*,\s*"([^"]*)"\s*\)',
+                                  m.group(1)):
+                dep[mm.group(1)] = mm.group(2).strip()
             missing = {n for n in ground_truth if n not in dep}
             note("tools/deploy_prompts.py", missing,
-                 "the deploy harness cannot deploy or byte-verify it")
+                 "the deploy harness cannot deploy or byte-verify it",
+                 path="tools/deploy_prompts.py")
+            for n in sorted(ground_truth):
+                cp = dep.get(n)
+                if cp is None:
+                    cands = [v for k, v in dep.items() if routine_id(k) == routine_id(n)]
+                    cp = cands[0] if len(cands) == 1 else None
+                if cp is None:
+                    continue
+                gt = gt_sched[routine_id(n)]
+                if schedules_equivalent(gt, cp):
+                    continue
+                note("tools/deploy_prompts.py", {n},
+                     f"the deploy harness would fire it at {slots_text(cp)}, "
+                     f"the ground truth says {slots_text(gt)}",
+                     path="tools/deploy_prompts.py", gt_schedule=gt, copy_schedule=cp)
         except (OSError, ValueError, AttributeError) as exc:
             not_checked.append({
                 "copy": "tools/deploy_prompts.py",
                 "why": f"unreadable: {exc}",
             })
 
-    # (2) the auditor procedure's own STEP 4 roster table
+    # ---- (2) the auditor procedure's own STEP 4 roster table ----------------
     ap_path = _resolve(_copy_candidates("auditor_procedure", repo, procedure))
     if not ap_path:
         not_checked.append({
@@ -320,25 +654,45 @@ def copy_drift(ground_truth, repo=REPO, procedure=None,
     else:
         try:
             src = open(ap_path, encoding="utf-8").read()
-            m = re.search(r"##\s*STEP 4\b(.*?)(?=\n##\s|\Z)", src, re.S)
-            if not m:
-                raise ValueError("no STEP 4 section")
+            rows = _step4_rows(src)
             ids = set()
-            for line in m.group(1).splitlines():
-                if not line.startswith("|"):
-                    continue
-                cells = [c.strip() for c in line.strip().strip("|").split("|")]
-                if len(cells) < 2:
-                    continue
-                nm = cells[0].strip("` ")
-                if not nm or nm == "Routine" or set(nm) <= set("- "):
-                    continue
-                mm = ID_RE.match(nm)
-                if mm:
-                    ids.add(mm.group(1))
+            by_id = {}
+            for nm, sched in rows:
+                ids.add(routine_id(nm))
+                by_id.setdefault(routine_id(nm), []).append((nm, sched))
+                display.setdefault(routine_id(nm), nm)
             missing = {n for n in ground_truth if routine_id(n) not in ids}
             note("cloud-prompts/_shared/auditor-procedure.md STEP 4", missing,
-                 "the auditor never checks its artifact")
+                 "the auditor never checks its artifact",
+                 path="cloud-prompts/_shared/auditor-procedure.md")
+            # The table's schedules, compared per routine id over the UNION of that
+            # id's rows. The union is the point: #17 fires twice and is written as
+            # two rows, and a check that compared row-by-row would either miss the
+            # dropped second slot or flag the legitimate first one.
+            for rid, gt in sorted(gt_sched.items()):
+                entries = by_id.get(rid)
+                if not entries:
+                    continue
+                # ONE finding per routine, never one per row: the gap line is keyed
+                # on (routine, label, path), so two lines for the same table would
+                # be two gaps for one defect.
+                problems = []
+                named = entries[0][0]
+                for nm, sched in entries:
+                    if not schedule_compatible(sched, gt):
+                        problems.append(f"the row for {nm} says {slots_text(sched)}")
+                        named = nm
+                agrees, cp_txt = schedule_sets_agree([s for _, s in entries], gt)
+                if not agrees:
+                    problems.append(f"the table fires at {cp_txt}, the ground truth says "
+                                    f"{slots_text(gt)}")
+                if not problems:
+                    continue
+                n = next((gn for gn in ground_truth if routine_id(gn) == rid), rid)
+                note("cloud-prompts/_shared/auditor-procedure.md STEP 4", {n},
+                     "; ".join(problems),
+                     path="cloud-prompts/_shared/auditor-procedure.md",
+                     gt_schedule=gt, copy_schedule=cp_txt, routine=named)
         except (OSError, ValueError) as exc:
             not_checked.append({
                 "copy": "cloud-prompts/_shared/auditor-procedure.md STEP 4",

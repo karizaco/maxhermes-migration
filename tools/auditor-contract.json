@@ -85,7 +85,9 @@
       "quota_2067",
       "push_failure",
       "delayed_replay",
-      "cron_update_failed"
+      "cron_update_failed",
+      "connection_error",
+      "never_fired"
     ],
     "present_but_empty": [
       "connection_error",

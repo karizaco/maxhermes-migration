@@ -1,7 +1,7 @@
 # cron #90 delivery-auditor — THE PROCEDURE
 
 AUDITOR_PROCEDURE_V1
-PROCEDURE_VERSION: 2026-11-16.1
+PROCEDURE_VERSION: 2026-11-17.1
 
 This file is the PROCEDURE for cron #90 (delivery-auditor). It is fetched at RUN time by the
 routine's prompt, which carries only the title block, the fetch ladder and the REPLY FORMAT.
@@ -346,8 +346,18 @@ It prints one row per roster row and writes the full table to `/workspace/_audit
 | `last_delivered` / `age_days` / `stale` | the STEP 4b staleness check, per routine, with that routine's own tolerance |
 | `health` | `ok` / `degraded` — a stub that carries a `fetch_failed` marker is NOT a delivery |
 | `market_closed` | the audited date is an NYSE closure (from `nyse-holidays.txt`), so a gap is probably a skip by design |
-| `notes` | a `ROSTER_DESYNC` when the table's schedule disagrees with the ground truth, a `STALE` line |
+| `roster_schedule_agreement` | whether this row's schedule is a compatible view of the ground truth's — the RAW pair, not a verdict: the detector owns the verdict (STEP 4e-2) |
+| `notes` | a `STALE` line, and anything the MEASUREMENT found about this routine |
 | `prior_streak` / `prior_latency_min` | the carry-forward from the previous audit |
+
+The engine also writes two things that are NOT per-row, and they are the ones that end a
+carried-forward gap (STEP 4c-3a):
+
+| field | what it means |
+|---|---|
+| `prior_gaps[].path_present` | the artifact the PREVIOUS audit's gap names is on `origin/main` right now |
+| `prior_gaps[].reconstruction` | that artifact declares itself a RECONSTRUCTION — `(RECONSTRUCTION)` in its title, or "this is a RECONSTRUCTION" in its section 0 |
+| `path_presence` | every path the engine measured, and whether it is on `origin/main` — the gate's cross-check (STEP 6b) that a gap never names an artifact that is already there |
 
 **The engine measures; you judge.** It cannot see a session's `status_message`, a skip marker,
 a platform error or the run records — so the STATE, the CAUSE and the STORY still come from
@@ -436,6 +446,16 @@ options-data service, market-wide call/put and open interest from Cboe's daily m
 statistics, underlying closes from Yahoo) and **no strike-level V/OI table at all** — expired
 chains are not served by any reachable source. When either date falls in an audit window, label
 it `reconstructed` and state the cause. Do not report either as `MISSING`: the path exists.
+
+- **2026-11-11** (cron #13's midweek calendar, `macro-calendar/2026-11-11-midweek.md`) — the
+  14:00 ET fire died at the platform level before doing any work: the session's last message is
+  `[Error] Connection error.`, `finish_reason: error`, and `usage.total_tokens == 0`, so no title
+  was set, no artifact was written and no commit was made. The routine itself is healthy (task
+  `457174550757502`, enabled, `0 14 * * 3`; its skill fetch and its window check both pass for
+  the next fire). The artifact was REBUILT on 2026-11-17 from the archival sources in this repo —
+  the 2026-11-08 week-ahead (which carries every Nov 11/12/13 row with its prior and its
+  consensus) and the 2026-11-10 briefs (which carry the CPI actual) — and it says so in its own
+  title and in its section 0. So it is a `reconstructed` artifact, not a MISSING one.
 
 **WRITTEN_OFF — gaps the operator has accepted. Do NOT report these again.**
 `WRITTEN_OFF="14-macro-calendar-week-ahead:2026-10-25"`
@@ -690,6 +710,12 @@ for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.p
   [ -s "$D" ] || echo "fetch FAILED: $F"
 done
 
+# `auditor_metrics.py` IMPORTS `auditor_roster_check.py` - the cron semantics live in
+# ONE place, so "when does this schedule fire" cannot mean two different things in two
+# files of the same audit. A failed fetch of the detector therefore takes the ENGINE down
+# too: if you see "fetch FAILED: auditor_roster_check.py", the engine cannot run either,
+# and you must say so once (`errors: 1`) and fall back to the hand-rolled loops.
+
 # The NYSE closure calendar lives with the SHARED helpers, not in tools/. It is what
 # tells the auditor that a gap on a holiday is a skip by design and not a failure -
 # so the measurement engine needs it in the sandbox too.
@@ -710,12 +736,22 @@ done
 S=/workspace/schedule-ground-truth.json
 ```
 
-Compare each roster row's `Schedule (ET)` column with the ground-truth entry for the same
-routine. If they differ, the TABLE is stale — report it:
+**The DETECTOR owns this comparison** (STEP 4e-2): it compares this table's `Schedule (ET)`
+column against the ground truth as SLOT SETS, so it also catches a table that DROPS one of a
+two-slot routine's slots — a row-by-row reading cannot see that. Publish the detector's line and
+do NOT publish a second line for the same drift: one defect, one gap line.
 
-    gap: <routine> ROSTER_DESYNC <ground truth> (table says <table schedule>)
+If the detector could not be fetched or could not run, compare the rows by hand and publish each
+disagreement in the contract's EXACT gap form:
 
-A `ROSTER_DESYNC` is a finding even when no artifact is missing: every due/not_due decision made
+    gap: <routine> roster_desync cloud-prompts/_shared/auditor-procedure.md — cause=cron_update_failed age_h=0 — <detail>
+
+`<routine>` is this table's own name for the routine, `<detail>` says what the table says and what
+the ground truth says. The label is lowercase (`roster_desync`) and the path is the FILE that
+disagrees — one whitespace-free token. A hand-written line in any other shape does not parse and
+the gate (STEP 6b) rejects the audit.
+
+A `roster_desync` is a finding even when no artifact is missing: every due/not_due decision made
 from a stale table is suspect. If the ground truth cannot be fetched, say so once (`errors: 1`)
 and carry on with the table — never guess a schedule.
 
@@ -806,6 +842,39 @@ git show origin/audit/status:_audit/status.json 2>/dev/null \
 
 **A streak of 3 or more is surfaced on its own line in the digest** — a dead routine must
 never hide inside a count.
+
+### 4c-3a — IS THE CARRIED-FORWARD GAP STILL A GAP? (the retirement rule)
+
+A gap is a statement about an artifact that is NOT there. The moment the artifact IS there the
+statement is false — and a gap carried forward after its artifact landed is a lie that grows.
+Cron #13's `macro-calendar/2026-11-11-midweek.md` was carried across five audits (age 17 h →
+41 h → 65 h → 89 h → 113 h) because nothing ever re-checked whether the path had appeared.
+
+So: **before you carry a gap forward, MEASURE it.** The engine has already done that — each
+entry of `prior_gaps` in `/workspace/_audit/metrics.json` carries `path_present` (the artifact the
+gap names is on `origin/main` right now) and `reconstruction` (that artifact declares itself a
+RECONSTRUCTION). Then:
+
+| the prior gap's `path_present` | what you publish |
+|---|---|
+| `false` | carry it forward unchanged — same label, same cause, the age updated (STEP 4c-2), the streak unchanged (STEP 4c-3) |
+| `true`, and `reconstruction` is `true` | the artifact was REBUILT after the fact: publish it as `reconstructed`, with the cause of the ORIGINAL loss, the path unchanged, and the age measured from the ORIGINAL missed fire (STEP 4c-2). It is NOT a MISSING, and it does NOT change `audit_status` |
+| `true`, and `reconstruction` is `false` | the artifact landed after all — a delivery, not a gap. Publish nothing for it and record the routine as delivered |
+
+Which prior gaps are carried at all:
+
+- a prior gap labelled `MISSING` is carried while its artifact is absent (the table above);
+- a prior gap labelled `reconstructed` is **NOT** carried again — it was reported once, with the
+  cause of the loss; reporting it every audit is noise;
+- a prior gap labelled `roster_desync` is **re-derived**, not carried: publish it only if the
+  detector still reports that drift (STEP 4e-2);
+- a prior gap labelled `stalled`, `present_but_empty`, `partial`, `stale` or `never_delivered` is
+  a finding about a SPECIFIC audited date — it is not carried into the next audit.
+
+**The gate checks this.** With `--metrics`, the gate fails the audit if the status file publishes
+a `MISSING` gap whose path the engine measured as PRESENT (the gap should have been retired), or
+a `reconstructed` gap whose path the engine measured as ABSENT (the claim is not supported). The
+measurement and the claim come from the SAME snapshot of `origin/main`, so the check has no race.
 
 ### 4c-4 — DID THE FIRE EVER START? (two free signals)
 
@@ -936,13 +1005,24 @@ The routine list is COPIED into four places, and a copy that drifts is a copy th
 | 4 | `tools/gen_roster.py` `ARTIFACTS` | the roster/index GENERATOR — it renders the README index's Output column and `ROSTER.md` |
 
 The detector compares copy 1 against copies 2, 3 and 4 and reports every disagreement under
-`roster_copy_drift`. **Every entry it prints becomes a finding** — and it prints it in the gap
-format this audit already uses, so publish each line VERBATIM:
+`roster_copy_drift` — a routine MISSING from a copy, **and a copy whose SCHEDULE disagrees with
+the ground truth**. Schedules are compared as slot sets, so a copy that states a two-slot routine
+as two rows still matches a ground truth that states it once (`50 9,15 * * 1-5`), while a copy
+that DROPS one of the slots is drift — and a dropped slot means that routine is never checked for
+it at all. **Every entry it prints becomes a finding** — and it prints it in the gap format this
+audit already uses, so publish each line VERBATIM:
 
-    gap: <routine> ROSTER_DESYNC <copy> — cause=cron_update_failed age_h=0 — <detail>
+    gap: <routine> roster_desync <path> — cause=cron_update_failed age_h=0 — <detail>
 
-`roster_desync` and its cause `cron_update_failed` are already in the contract's `label_causes`,
-so a copy drift needs no new vocabulary and no change to the prompt's reply format.
+`<path>` is the FILE that disagrees — `cloud-prompts/_shared/auditor-procedure.md`,
+`tools/deploy_prompts.py` or `tools/gen_roster.py` — one whitespace-free token, exactly as the
+detector prints it. The label is lowercase (`roster_desync`, the contract's spelling) and the
+cause `cron_update_failed` is already in the contract's `label_causes`, so a copy drift needs no
+new vocabulary and no change to the prompt's reply format.
+
+**Do not rewrite the line.** The detector prints the routine, the label, the path, the cause and
+the age in the contract's exact form; a hand-edited line — an uppercase label, a multi-word path,
+a missing `cause=` — does not parse, and the gate (STEP 6b) rejects the audit.
 
 Measured 2026-11-12: cron #92's two pre-open slots were missing from copy 4 and from nothing
 else. The consequence was that the GENERATED README index published their Output column as
@@ -988,7 +1068,7 @@ LATE (STEP 4a). Every gap carries a label AND a cause (STEP 4c-1) AND an age in 
 | `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 | `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
-| `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md` and `options-flow/2026-10-26.md` are the only two. |
+| `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md`, `options-flow/2026-10-26.md` and `macro-calendar/2026-11-11-midweek.md` are the three. |
 
 **WHAT A GAP'S DETAIL MUST CARRY** (the detail is the evidence — never leave it bare):
 
@@ -1115,7 +1195,8 @@ python3 /workspace/check_auditor_contract.py \
         --tasks  /workspace/.audit-tasks.json \
         --ground-truth "$S" \
         --contract /workspace/auditor-contract.json \
-        --procedure /workspace/auditor-procedure.md
+        --procedure /workspace/auditor-procedure.md \
+        --metrics /workspace/_audit/metrics.json
 ```
 
 It exits 0 when the audit satisfies the contract, and 1 with one `FAIL <id> <message>` line per

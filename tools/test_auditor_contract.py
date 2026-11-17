@@ -138,6 +138,20 @@ TASKS = {
     }
 }
 
+# The engine's own measurement of the tree, for the GAP LIFECYCLE check. The
+# fixture audit says `ntrt/2026-11-02.md` is MISSING and `us-eod/2026-11-02.csv`
+# is a RECONSTRUCTION, so the measurement that agrees with it is "the first is
+# absent, the second is present". Flip either and the status file is caught
+# telling a story the measurement does not support.
+METRICS_OK = {
+    "path_presence": {
+        "ntrt/2026-11-02.md": False,
+        "us-eod/2026-11-02.csv": True,
+        "daily-briefs/2026-11-02-pre-market-refresh.md": True,
+    },
+    "prior_gaps": [],
+}
+
 RESULTS = []
 
 
@@ -147,7 +161,7 @@ def record(ok, name, detail=""):
 
 
 def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None,
-                procedure=None, contract=None):
+                procedure=None, contract=None, metrics=None):
     s = tmp / "status.json"
     s.write_text(json.dumps(status, indent=1), encoding="utf-8")
     d = tmp / "digest.txt"
@@ -165,6 +179,10 @@ def run_checker(tmp, status, digest, tasks=None, prompt=None, ground_truth=None,
         cmd += ["--procedure", str(procedure)]
     if contract is not None:
         cmd += ["--contract", str(contract)]
+    if metrics is not None:
+        m = tmp / "metrics.json"
+        m.write_text(json.dumps(metrics), encoding="utf-8")
+        cmd += ["--metrics", str(m)]
     p = subprocess.run(cmd, capture_output=True, text=True)
     first = ""
     for line in p.stdout.splitlines():
@@ -250,6 +268,56 @@ def main():
         digest[0] = digest[0].replace("cause=platform_500 age_h=18.4",
                                        "the fire died with a platform 500")
     expect_catch(tmp, "a digest gap line without a cause is caught", digest_no_cause, "D04")
+
+    # --- 2a. the GAP LIFECYCLE (C20/C21) ---------------------------------------
+    # A gap is a statement about an artifact that is NOT there. If the engine
+    # measured that path as present, the statement is false - and it is exactly
+    # how cron #13's 2026-11-11 midweek calendar was carried across five audits
+    # while nothing ever re-checked whether the path had appeared.
+    rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST, tasks=copy.deepcopy(TASKS),
+                              metrics=copy.deepcopy(METRICS_OK))
+    record(rc == 0, "a status file that agrees with the engine's measurement passes the gate",
+           detail)
+
+    metrics_flip = copy.deepcopy(METRICS_OK)
+    metrics_flip["path_presence"]["ntrt/2026-11-02.md"] = True
+    rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST, tasks=copy.deepcopy(TASKS),
+                              metrics=metrics_flip)
+    record(rc != 0 and "C20" in detail,
+           "a MISSING gap whose artifact the engine measured as PRESENT is caught", detail)
+
+    metrics_flip = copy.deepcopy(METRICS_OK)
+    metrics_flip["path_presence"]["us-eod/2026-11-02.csv"] = False
+    rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST, tasks=copy.deepcopy(TASKS),
+                              metrics=metrics_flip)
+    record(rc != 0 and "C21" in detail,
+           "a reconstructed gap whose artifact the engine measured as ABSENT is caught", detail)
+
+    # --- 2a-2. the PROCEDURE's gap templates (P04) ----------------------------
+    # The procedure says "publish each line VERBATIM". Two of its templates were
+    # in a form the gate rejects - `ROSTER_DESYNC` instead of `roster_desync`, and
+    # no `cause=`/`age_h=` at all - so following the procedure verbatim failed the
+    # gate. The shipped procedure must be publishable, and a broken one must be
+    # caught.
+    real_proc = ROOT / "cloud-prompts" / "_shared" / "auditor-procedure.md"
+    rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST, tasks=copy.deepcopy(TASKS),
+                              procedure=str(real_proc))
+    record(rc == 0, "the SHIPPED procedure's gap templates are in the contract's exact form",
+           detail)
+
+    bad_proc = tmp / "bad-procedure.md"
+    # The REAL procedure with ONE template put back the way it was on 2026-11-15:
+    # the uppercase label and the multi-word path. Everything else stays, so the
+    # only thing the gate can complain about is the template.
+    bad_proc.write_text(
+        real_proc.read_text(encoding="utf-8").replace(
+            "gap: <routine> roster_desync <path> — cause=cron_update_failed age_h=0 — <detail>",
+            "gap: <routine> ROSTER_DESYNC <copy> — cause=cron_update_failed age_h=0 — <detail>"),
+        encoding="utf-8")
+    rc, detail = run_checker(tmp, copy.deepcopy(STATUS), DIGEST, tasks=copy.deepcopy(TASKS),
+                              procedure=str(bad_proc))
+    record(rc != 0 and "P04" in detail,
+           "a procedure whose gap template is not in the contract's form is caught", detail)
 
     # --- 2b. the 2026-11-12 additions: connection_error, the per-routine
     #        allowance (C17) and the degraded-artifact pairing (C18) ---------------

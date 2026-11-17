@@ -60,6 +60,7 @@ GT = {
         "01-weekly-health.md": {"schedule": "0 2 * * 0", "timezone": "America/New_York"},
         "92a-preopen-0830.md": {"schedule": "30 8 * * 1-5", "timezone": "America/New_York"},
         "92b-preopen-0950.md": {"schedule": "50 9 * * 1-5", "timezone": "America/New_York"},
+        "17-two-slot.md": {"schedule": "50 9,15 * * 1-5", "timezone": "America/New_York"},
     }
 }
 
@@ -67,6 +68,7 @@ GEN_ROSTER = '''ARTIFACTS = {
  "01-weekly-health": ("mcp-health/YYYY-Wnn.md", "mcp-health", ".md"),
  "92a-preopen-0830": ("preopen-feed/{date}-0830.md", "preopen-feed", "-0830.md"),
  "92b-preopen-0950": ("preopen-feed/{date}-0950.md", "preopen-feed", "-0950.md"),
+ "17-two-slot": ("us-stocks-in-play/{date}.md", "us-stocks-in-play", ".md"),
 }
 NO_ARTIFACT = {"91-schedule-drift-guard"}
 '''
@@ -81,6 +83,7 @@ DEPLOY = '''TASKS = {
     "01-weekly-health.md":               ("111", "0 2 * * 0"),
     "92a-preopen-0830.md":               ("222", "30 8 * * 1-5"),
     "92b-preopen-0950.md":               ("333", "50 9 * * 1-5"),
+    "17-two-slot.md":                     ("444", "50 9,15 * * 1-5"),
 }
 '''
 
@@ -91,6 +94,8 @@ PROCEDURE = """## STEP 4 - CHECK EVERY ROUTINE
 | 01-weekly-health | `0 2 * * 0` | `mcp-health/{ISO-week}.md` | Sun |
 | 92a-preopen-0830 | `30 8 * * 1-5` | `preopen-feed/{date}-0830.jsonl` | Mon-Fri |
 | 92b-preopen-0950 | `50 9 * * 1-5` | `preopen-feed/{date}-0950.jsonl` | Mon-Fri |
+| 17-two-slot-open | `50 9 * * 1-5` | `us-stocks-in-play/{date}-open.md` | Mon-Fri |
+| 17-two-slot | `50 15 * * 1-5` | `us-stocks-in-play/{date}.md` | Mon-Fri |
 
 ## STEP 5 - CLASSIFY EVERY GAP
 """
@@ -101,6 +106,8 @@ TASKS = {"tasks": [
     {"task_id": "222", "cron_name": "92a-preopen-0830.md", "schedule": "30 8 * * 1-5",
      "timezone": "America/New_York", "enabled": True},
     {"task_id": "333", "cron_name": "92b-preopen-0950.md", "schedule": "50 9 * * 1-5",
+     "timezone": "America/New_York", "enabled": True},
+    {"task_id": "444", "cron_name": "17-two-slot.md", "schedule": "50 9,15 * * 1-5",
      "timezone": "America/New_York", "enabled": True},
 ]}
 
@@ -241,6 +248,82 @@ def main():
                "an absent copy is reported as not_checked, never as drift",
                f"rc={p.returncode} drift={rep.get('roster_copy_drift_count')} "
                f"not_checked={rep.get('roster_copy_not_checked_count')}")
+
+        # ---- 3c. SCHEDULE DRIFT - the 2026-11-15 blind spot ----------------
+        # The copy check compared routine NAMES only, so a copy that said the right
+        # routine at the WRONG TIME looked identical to a correct copy. On the
+        # 2026-11-15 audit the auditor's own table said `0 9 * * 1-5` for #25 while
+        # the ground truth said `45 8 * * 1-5`: the audit would have looked for
+        # `ntrt/{date}.md` at the wrong time and never for the slot that fires.
+        root = Path(tmp) / "sched-table"
+        proc_bad = PROCEDURE.replace("| 92a-preopen-0830 | `30 8 * * 1-5` |",
+                                      "| 92a-preopen-0830 | `0 9 * * 1-5` |")
+        t = build_repo(tmp, root, procedure=proc_bad)
+        rc, rep = run_check(root, t)
+        drift = rep.get("roster_copy_drift", [])
+        record(rc == 3 and any(d.get("name") == "92a-preopen-0830.md" for d in drift),
+               "a table row that says the WRONG TIME is drift, not a clean copy",
+               f"rc={rc} drift={[d.get('name') for d in drift]}")
+
+        root = Path(tmp) / "sched-deploy"
+        dp_bad = DEPLOY.replace('"92b-preopen-0950.md":               ("333", "50 9 * * 1-5")',
+                                '"92b-preopen-0950.md":               ("333", "0 9 * * 1-5")')
+        t = build_repo(tmp, root, deploy=dp_bad)
+        rc, rep = run_check(root, t)
+        drift = rep.get("roster_copy_drift", [])
+        record(rc == 3 and any(d.get("name") == "92b-preopen-0950.md"
+                               and d.get("path") == "tools/deploy_prompts.py" for d in drift),
+               "the deploy harness's STALE schedule is drift - it is what a cron_update gets",
+               f"rc={rc} drift={[d.get('name') for d in drift]}")
+
+        root = Path(tmp) / "sched-dropped-slot"
+        proc_bad = PROCEDURE.replace(
+            "| 17-two-slot | `50 15 * * 1-5` | `us-stocks-in-play/{date}.md` | Mon-Fri |\n", "")
+        t = build_repo(tmp, root, procedure=proc_bad)
+        rc, rep = run_check(root, t)
+        drift = rep.get("roster_copy_drift", [])
+        record(rc == 3 and any(d.get("name") == "17-two-slot.md" for d in drift),
+               "a table that DROPS one of a two-slot routine's slots is drift - a row-level "
+               "check cannot see it",
+               f"rc={rc} drift={[d.get('name') for d in drift]}")
+
+        root = Path(tmp) / "sched-two-rows"
+        t = build_repo(tmp, root)
+        rc, rep = run_check(root, t)
+        record(rc == 0 and rep.get("roster_copy_drift_count") == 0,
+               "a two-slot routine stated as TWO rows is NOT drift - the slots are compared "
+               "as a set",
+               f"rc={rc} drift={rep.get('roster_copy_drift_count')}")
+
+        # ---- 3d. the published line must be in the contract's exact form -----
+        # The procedure says "publish each line VERBATIM". A line that does not parse
+        # - an uppercase label, a multi-word path, no `cause=` - makes the audit fail
+        # its own gate. The two templates that were broken are the reason this check
+        # exists.
+        sys.path.insert(0, str(ROOT / "tools"))
+        import check_auditor_contract as CAC
+        contract = json.loads((ROOT / "tools" / "auditor-contract.json").read_text())
+        root = Path(tmp) / "sched-table2"
+        t = build_repo(tmp, root, procedure=proc_bad)
+        rc, rep = run_check(root, t)
+        bad_lines = []
+        for d in rep.get("roster_copy_drift", []):
+            line = d.get("line", "")
+            m = CAC.RE_GAP.match(line)
+            if not m:
+                bad_lines.append(f"unparseable: {line}")
+                continue
+            label, cause, path = m.group(2), m.group(4), m.group(3)
+            if label not in contract["gap_labels"]:
+                bad_lines.append(f"label {label} not in gap_labels")
+            elif cause not in contract["label_causes"].get(label, []):
+                bad_lines.append(f"cause {cause} not allowed for {label}")
+            if len(path.split()) != 1:
+                bad_lines.append(f"path {path!r} is not one token")
+        record(not bad_lines,
+               "every drift line the detector prints parses under the gate's own gap regex, "
+               "with a legal label/cause and a one-token path",
+               "; ".join(bad_lines))
 
         # ---- 4. the copy check did not change the live-vs-ground-truth check --
         root = Path(tmp) / "roster-gap"

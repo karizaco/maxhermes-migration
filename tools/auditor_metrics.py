@@ -79,105 +79,28 @@ except Exception as exc:                                     # noqa: BLE001
     sys.stderr.write("auditor_metrics: cannot import gen_roster: %s\n" % exc)
     sys.exit(1)
 
+# THE CRON SEMANTICS LIVE IN ONE PLACE. `auditor_roster_check.py` owns them, and
+# this engine imports them, so "when does this schedule fire" cannot mean two
+# different things in two files of the same audit. A second copy of this logic is
+# how the roster drifted in the first place: the detector compared only routine
+# NAMES, so a schedule that said the wrong TIME looked identical to one that said
+# the right time.
+try:
+    from auditor_roster_check import (parse_schedule, cron_dow_matches,
+                                      dow_matches, fire_times,
+                                      schedule_compatible, schedule_slots,
+                                      schedules_equivalent, slots_text,
+                                      slots_set_text)
+except Exception as exc:                                     # noqa: BLE001
+    sys.stderr.write("auditor_metrics: cannot import auditor_roster_check: %s\n" % exc)
+    sys.exit(1)
+
 DOW_NAMES = {0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
 ID_RE = re.compile(r"^([0-9]+[a-z]?)")
 DEGRADED_MARKERS = (
     "fetch_failed", "PROCEDURE_FETCH_FAILED", "skill_fetch_failed",
     "prompt_blocks_fetch_failed",
 )
-
-
-# ---------------------------------------------------------------------------
-# schedule helpers
-# ---------------------------------------------------------------------------
-def parse_schedule(schedule):
-    """'30 9,15 * * 1-5' -> the five cron fields."""
-    parts = (schedule or "").split()
-    if len(parts) != 5:
-        return None
-    return parts
-
-
-def cron_dow_matches(field, cron_dow):
-    """Does a cron day-of-week field fire on this cron weekday (0=Sun..6=Sat)?"""
-    if field == "*":
-        return True
-    for chunk in field.split(","):
-        chunk = chunk.strip()
-        if "-" in chunk:
-            lo, hi = chunk.split("-", 1)
-            if lo.isdigit() and hi.isdigit() and int(lo) <= cron_dow <= int(hi):
-                return True
-        elif chunk.isdigit() and int(chunk) == cron_dow:
-            return True
-    return False
-
-
-def dow_matches(field, iso_dow):
-    """Does a cron day-of-week field fire on this ISO weekday (1=Mon..7=Sun)?"""
-    return cron_dow_matches(field, iso_dow % 7)
-
-
-def fire_times(schedule):
-    """The ET clock times a schedule fires -> [(hour, minute)]."""
-    parts = parse_schedule(schedule)
-    if not parts:
-        return []
-    minute_f, hour_f = parts[0], parts[1]
-    hours = []
-    if hour_f == "*":
-        hours = [0]
-    else:
-        for h in hour_f.split(","):
-            if "-" in h:
-                lo, hi = h.split("-", 1)
-                if lo.isdigit() and hi.isdigit():
-                    hours.extend(range(int(lo), int(hi) + 1))
-            elif h.isdigit():
-                hours.append(int(h))
-    minutes = []
-    if minute_f == "*":
-        minutes = [0]
-    else:
-        for m in minute_f.split(","):
-            if "-" in m:
-                lo, hi = m.split("-", 1)
-                if lo.isdigit() and hi.isdigit():
-                    minutes.extend(range(int(lo), int(hi) + 1))
-            elif m.isdigit():
-                minutes.append(int(m))
-    return [(h, m) for h in hours for m in minutes]
-
-
-def schedule_compatible(table_sched, gt_sched):
-    """Is the TABLE's schedule a COMPATIBLE view of the task's schedule?
-
-    Two shapes are compatible:
-      * the table row names ONE SLOT of a task that fires MORE THAN ONCE a day
-        (#17's open slot is `50 9 * * 1-5` while the task itself is `50 9,15 * * 1-5`);
-      * the table row names the task exactly.
-
-    Everything else is a desync, and it is a MEANINGFUL one: a Mon-Fri task listed as
-    Wednesday-only would make the audit call four days of fires `not_due`, and those
-    missing artifacts would never be looked for. That is the same class of blind spot as
-    an unmonitored routine, so it is reported, not tolerated.
-    """
-    t, g = parse_schedule(table_sched), parse_schedule(gt_sched)
-    if not t or not g:
-        return table_sched == gt_sched
-    if t[0] != g[0] and t[0] != "*":
-        return False                                  # the minute must match
-    t_hours = {h for h in t[1].split(",") if h.isdigit()}
-    g_hours = {h for h in g[1].split(",") if h.isdigit()}
-    if t[1] != "*" and not t_hours <= g_hours:
-        return False                                  # the hour must be one of the task's
-    if t[4] != g[4]:
-        if len(g_hours) <= 1:
-            return False                              # a single-fire task must match exactly
-        for dow in range(0, 8):                      # a slot row may narrow the days
-            if cron_dow_matches(t[4], dow) and not cron_dow_matches(g[4], dow):
-                return False
-    return True
 
 
 def iso_week_of(date_str):
@@ -363,6 +286,26 @@ def last_delivered(files, suffix_set, name_re=None):
 # ---------------------------------------------------------------------------
 # the measurement itself
 # ---------------------------------------------------------------------------
+# A RECONSTRUCTION says so in its own text - the options-flow precedent
+# (2026-10-19, 2026-10-26) titles the file "(RECONSTRUCTION)" and opens with
+# "## 0. Read this first - this is a RECONSTRUCTION, not the original run".
+# The marker is what lets the auditor retire a carried-forward gap as
+# `reconstructed` instead of leaving it MISSING for ever.
+RECONSTRUCTION_MARKERS = ("(RECONSTRUCTION)", "this is a RECONSTRUCTION")
+
+# The gap labels whose `path` is an ARTIFACT in this repo. `roster_desync` is the
+# odd one out: its path is a file of the roster repo (the procedure file), so the
+# artifact tree says nothing about it.
+ARTIFACT_GAP_LABELS = ("MISSING", "stalled", "reconstructed", "present_but_empty",
+                       "partial", "stale", "never_delivered")
+
+
+def looks_like_reconstruction(text):
+    """Does this artifact declare itself a reconstruction rather than an original run?"""
+    head = "\n".join((text or "").splitlines()[:40])
+    return any(marker in head for marker in RECONSTRUCTION_MARKERS)
+
+
 def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=None):
     with open(ground_truth_path, encoding="utf-8") as fh:
         gt = json.load(fh)
@@ -409,11 +352,14 @@ def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=N
         gt_entry = gt_by_id.get(rid)
         gt_sched = gt_entry[1].get("schedule") if gt_entry else None
         row["ground_truth_schedule"] = gt_sched
-        if (gt_sched and table_sched
-                and not schedule_compatible(table_sched, gt_sched)):
-            row["notes"].append(
-                "ROSTER_DESYNC: the table says %s, the ground truth says %s"
-                % (table_sched, gt_sched))
+        # No roster verdict HERE. The detector (STEP 4e-2) owns it: it compares the
+        # table's Schedule column against the ground truth as SLOT SETS, so it also
+        # catches a table that DROPS one of a two-slot routine's slots - a row-level
+        # check here could not. Two owners for one defect would publish two gaps.
+        # What is left in the row is the raw pair, for the operator to read.
+        row["roster_schedule_agreement"] = (
+            schedule_compatible(table_sched, gt_sched)
+            if (gt_sched and table_sched) else None)
 
         # --- expected paths -------------------------------------------------
         templates, suffixes = artifacts_for(name)
@@ -543,6 +489,34 @@ def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=N
         row["prior_latency_min"] = pr.get("delivery_latency_min")
         rows.append(row)
 
+    # --- the GAP LIFECYCLE: is a carried-forward gap's artifact there yet? ----
+    # A gap stays MISSING until the artifact it names exists. When it DOES exist -
+    # because the routine re-ran, or because the artifact was rebuilt from archival
+    # sources - the gap is retired: `reconstructed` if the file says so, otherwise
+    # a plain delivery. Without this measurement a gap whose path already exists
+    # is carried forward for ever, which is exactly what happened to cron #13's
+    # 2026-11-11 midweek calendar (carried across five audits, age 113 hours).
+    presence = {}
+    for r in rows:
+        for p in [r.get("expected_path")] + list(r.get("alternates") or []):
+            if p:
+                presence[p] = p in files
+    for g in prior_gaps:
+        if not isinstance(g, dict):
+            continue
+        p = g.get("path") or ""
+        if not p:
+            continue
+        if g.get("label") not in ARTIFACT_GAP_LABELS:
+            # `roster_desync` names a file in the ROSTER repo, not an artifact in
+            # this one - there is nothing to look for it here.
+            continue
+        present = p in files
+        g["path_present"] = present
+        g["reconstruction"] = bool(
+            present and looks_like_reconstruction(blob_text(repo, p, limit=4000)))
+        presence[p] = present
+
     return {
         "audit_date_et": date_str,
         # iso_dow is 1=Mon..7=Sun (datetime.isoweekday); DOW_NAMES is keyed by the
@@ -552,6 +526,7 @@ def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=N
         "market_closed": date_str in holidays,
         "origin_main_sha": git(repo, "rev-parse", "--short", "origin/main").strip(),
         "prior_gaps": prior_gaps,
+        "path_presence": presence,
         "rows": rows,
     }
 
