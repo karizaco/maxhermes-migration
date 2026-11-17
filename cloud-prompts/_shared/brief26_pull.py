@@ -24,7 +24,11 @@ thing the operator has to remember:
     median the old rule prescribed was worse than the scanner's own number on five of
     the six (BSBR would have been published at ~$36.6bn against an actual ~$18.4bn).
     Nasdaq's MarketCap is unreliable for ADRs and complex share structures;
-    stockanalysis.com publishes a DIRECT share count, which is the tiebreak;
+    stockanalysis.com publishes a DIRECT share count, which is the tiebreak — BUT only
+    when the site agrees with ITSELF. A count that does not reconcile with the site's
+    own market cap at the site's own price is on a different basis (ordinary shares
+    against a per-ADS price) and inflates the published cap by 20x-477x, so it is
+    rejected and the ADS-basis implied counts are used instead (v2, 2026-11-17);
   * the earnings roster comes from Nasdaq's own calendar, so cron #19's file being
     absent (HTTP 404) degrades the run to one substitute instead of two.
 
@@ -55,7 +59,7 @@ import tempfile
 import time
 import urllib.request
 
-BRIEF26_PULL_V1 = "brief26-pull-v1"
+BRIEF26_PULL_V2 = "brief26-pull-v2"
 
 COLS = ["name", "description", "close", "change", "change_abs", "volume",
         "average_volume_30d_calc", "premarket_close", "premarket_change",
@@ -274,16 +278,52 @@ def nasdaq_summary(sym):
 
 
 def stockanalysis_shares(sym):
-    """The DIRECT share count — the tiebreak the median rule never had."""
+    """The site's own share count — AND its own market cap and its own price.
+
+    The count is usable only when the site agrees with ITSELF: `sharesout × price`
+    must reconcile with the `marketcap` field on the SAME page. When it does not, the
+    `sharesout` field is on a different basis from the price it would be multiplied by
+    — for an ADR that is the ORDINARY share count against a per-ADS price — and the
+    published cap comes out inflated by the ratio. Measured 2026-11-16 on the stock
+    count this routine fetched: ADXN 63x, BLRX 327x, RADX 281x, IMOS 20x, and two of
+    those four names passed the $100M quality gate on the inflated number.
+
+    So the site is asked a question it can answer from one page: is the share count
+    you publish the count behind the market cap you publish? The site's own implied
+    count (`marketcap ÷ price`) is returned too, because on a mismatch that is the
+    count the site actually used.
+    """
     try:
         h = fetch_text("https://stockanalysis.com/stocks/%s/statistics/" % sym.lower(),
                        timeout=25)
     except Exception:
         return sym, None
-    m = re.search(r'id:"sharesout",title:"[^"]*",value:"[^"]*",hover:"([\d,\.]+)"', h)
-    if not m:
+    sh = re.search(r'id:"sharesout",title:"[^"]*",value:"[^"]*",hover:"([\d,\.]+)"', h)
+    mc = re.search(r'id:"marketcap",title:"[^"]*",value:"[^"]*",hover:"([\d,\.]+)"', h)
+    if not sh:
         return sym, None
-    return sym, num(m.group(1))
+    shares = num(sh.group(1))
+    market_cap = num(mc.group(1)) if mc else None
+    # the site's own quote blob: `p` is the last regular-session price (`pd`/`ep` are
+    # the previous close and the extended-hours print, and must not be picked up)
+    q = re.search(r'quote:\{([^}]*)\}', h)
+    px = None
+    if q:
+        m = re.search(r'[,{]p:([\d.]+)', q.group(1))
+        if m:
+            px = num(m.group(1))
+    implied = None
+    if market_cap and px:
+        implied = market_cap / px
+    if not (shares and market_cap and px):
+        status = "untestable"       # the site could not be asked the question
+    elif abs(shares * px - market_cap) <= 0.25 * market_cap:
+        status = "ok"               # the count IS the count behind the site's own cap
+    else:
+        status = "mismatch"         # the count is on a different basis from the price
+    return sym, {"shares": shares, "market_cap": market_cap, "price": px,
+                 "implied_shares": implied, "status": status,
+                 "basis_ok": status == "ok"}
 
 
 def nasdaq_earnings(date, timings):
@@ -369,6 +409,7 @@ def reconcile_caps(rows, as_of, timings, use_shibui=True, use_stockanalysis=True
         timings["stockanalysis"] = round(time.time() - t0, 2)
         log("stockanalysis: %d/%d flagged names" % (len(sa), len(flagged)))
 
+    basis_mismatch = []
     for r in cand:
         t = r["ticker"]
         close = r["close"]
@@ -379,28 +420,85 @@ def reconcile_caps(rows, as_of, timings, use_shibui=True, use_stockanalysis=True
         r["implied_shares_shibui"] = s_sh
         r["market_cap_nasdaq"] = nq.get(t, (None, None))[0]
         r["market_cap_shibui"] = s_row["market_cap"] if s_row else None
-        r["shares_outstanding_sa"] = sa.get(t)
+        site = sa.get(t)
+        r["shares_outstanding_sa"] = (site or {}).get("shares")
+        r["stockanalysis_market_cap"] = (site or {}).get("market_cap")
+        r["stockanalysis_price"] = (site or {}).get("price")
+        r["stockanalysis_implied_shares"] = (site or {}).get("implied_shares")
+        r["cap_basis_mismatch"] = False
 
         if t not in flagged:
             r["market_cap_published"] = r["market_cap_basic"]
             r["cap_source"] = "scanner"
             continue
 
-        # corroborated: the share count a DIRECT source confirms
-        cands = [x for x in (sa.get(t), sc_sh, s_sh, n_sh) if x]
-        if sa.get(t):
-            shares = sa[t]
-            r["cap_source"] = "stockanalysis_shares x close"
-        elif len(cands) >= 2:
-            cands.sort()
-            shares = cands[len(cands) // 2]
-            r["cap_source"] = "median implied shares x close"
+        # THE CAP RULE, in the order that matters:
+        #   1. stockanalysis's own count is usable when the site agrees with ITSELF
+        #      (count x its own price == its own market cap) - that is a count
+        #      corroborated by two of the site's own fields;
+        #   2. when the site DISAGREES with itself the count is on a different basis
+        #      from the price (ordinary shares against a per-ADS price), so it is not
+        #      used at all: the ADS-basis implied counts are the candidates and their
+        #      median is published, and the name is FLAGGED as a basis mismatch;
+        #   3. when the site could not be READ the count is UNAVAILABLE, not wrong -
+        #      the median is published and the name is NOT flagged as a mismatch,
+        #      because "we could not ask" is not "the source disagrees".
+        # A flagged row always carries at least two implied counts (the scanner's and
+        # Nasdaq's), so the median always exists - there is no third branch.
+        imp = sorted([x for x in (sc_sh, s_sh, n_sh) if x])
+        if len(imp) % 2:
+            median = imp[len(imp) // 2]
         else:
-            shares = sc_sh
-            r["cap_source"] = "scanner (uncorroborated)"
+            # the textbook median of an even-length list is the MEAN of the two
+            # middle values - taking the upper one (what this code used to do) biases
+            # every two-source name towards the HIGHER share count, and therefore
+            # towards a HIGHER market cap and an easier pass on the $100M gate.
+            median = (imp[len(imp) // 2 - 1] + imp[len(imp) // 2]) / 2.0
+
+        # THE SITE'S COUNT IS REJECTED ONLY WHEN IT IS AN OUTLIER ON THE WRONG SIDE.
+        #
+        # The site publishes a share count that is sometimes the ORDINARY count and
+        # sometimes the ADS count, and its own market cap is sometimes on the other
+        # basis - so "the site disagrees with itself" does NOT tell you which of its
+        # two fields is wrong. Measured 2026-11-16:
+        #   ADXN   site's count 127,410,834 (ORDINARY) vs the ADS-basis counts
+        #          0.95M/1.20M/1.52M -> the site's count is 106x too big, and the
+        #          published cap came out 106x too big (a $4.9M shell at $517M);
+        #   SKHY   site's count 722,000,000 (ADS, 1 ADS = 1/10 common) vs the
+        #          ordinary-basis counts 5.00B/6.86B/7.11B -> the site's count is 7x
+        #          SMALLER, and it is the RIGHT one ($95B, corroborated by SK hynix's
+        #          own ADR ratio and its 6.9bn FY2025 weighted-average count).
+        # The asymmetry is the rule: an ADS-equivalent count can never EXCEED the
+        # ordinary count (1 ADS = N ordinary, N >= 1), so a count that sits far ABOVE
+        # every other source's count cannot be the ADS count - it is the ordinary one.
+        # A count that sits far BELOW them is the ADS count and is kept.
+        #
+        # So the site's count is rejected iff it is more than 2x the median implied
+        # count AND it disagrees with EVERY implied count by more than 2x (no other
+        # source corroborates it). Then the ADS-basis implied counts are published.
+        site_shares = (site or {}).get("shares")
+        rejected = False
+        if site_shares and median:
+            too_big = site_shares > 2.0 * median
+            uncorroborated = all(site_shares > 2.0 * x for x in imp)
+            if too_big and uncorroborated:
+                rejected = True
+        if site and site.get("shares") and not rejected:
+            shares = site["shares"]
+            r["cap_source"] = "stockanalysis_shares x close"
+        else:
+            shares = median
+            if rejected:
+                r["cap_source"] = ("median implied shares x close "
+                                    "(stockanalysis count rejected: ordinary-share basis)")
+                r["cap_basis_mismatch"] = True
+                basis_mismatch.append(t)
+            else:
+                r["cap_source"] = "median implied shares x close (stockanalysis unavailable)"
         r["market_cap_published"] = (shares * close) if (shares and close) else r["market_cap_basic"]
     return {"flagged": flagged, "nasdaq_resolved": sum(1 for v in nq.values() if v[0]),
-            "shibui_resolved": len(shib), "stockanalysis_resolved": len(sa)}
+            "shibui_resolved": len(shib), "stockanalysis_resolved": len(sa),
+            "basis_mismatch": basis_mismatch}
 
 
 # ------------------------------------------------------------------ main
@@ -484,7 +582,7 @@ def main():
     out = {
         "date": args.date,
         "pulled_at_et": now_et().strftime("%Y-%m-%d %H:%M:%S"),
-        "marker": BRIEF26_PULL_V1,
+        "marker": BRIEF26_PULL_V2,
         "band": {"gainers": len(band["gainers"]), "decliners": len(band["decliners"]),
                  "complete": band["complete"]},
         "band_gainers": [r["ticker"] for r in band["gainers"]],

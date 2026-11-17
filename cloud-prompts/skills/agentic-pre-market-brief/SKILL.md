@@ -115,11 +115,17 @@ for F in brief26_pull.py shibui_caps.py tv_scan.py; do
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
       -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/workspace/tools/$F.tmp" "$U" 2>/dev/null
     if [ -s "/workspace/tools/$F.tmp" ] && head -1 "/workspace/tools/$F.tmp" | grep -q '^#!'; then
+      # brief26_pull.py must be the v2 cap rule - a cached OLD copy must not win
+      if [ "$F" = "brief26_pull.py" ] && ! grep -q 'brief26-pull-v2' "/workspace/tools/$F.tmp"; then
+        rm -f "/workspace/tools/$F.tmp"; continue
+      fi
       mv -f "/workspace/tools/$F.tmp" "/workspace/tools/$F"; break
     fi
     rm -f "/workspace/tools/$F.tmp"
   done
 done
+grep -q 'brief26-pull-v2' /workspace/tools/brief26_pull.py \
+  || echo "brief26_pull.py v2 NOT FETCHED - the cap rule in this skill is the v2 rule, so do not publish a brief from the v1 helper"
 python3 /workspace/tools/brief26_pull.py --date {date} \
   --out /workspace/_mcp/merged.json --extra-tickers "<the trending list and the earnings names>"
 ```
@@ -344,12 +350,45 @@ as one. The tail screen's `totalCount` is far above its row cap by design, so it
 > on CDNL and PSFE.
 >
 > **So the rule is: publish `shares x close` from the source whose SHARE COUNT is corroborated.**
-> stockanalysis.com publishes the share count directly (`id:"sharesout"`), so it is the only
-> uncorrupted tiebreak. If it is unavailable, take the median of the implied counts — never the
-> median of the caps. Measured 2026-11-13 on 75 flagged names: 74 resolved to
-> `stockanalysis_shares x close`, and on SHFS the scanner's implied count was **132,248,533
-> shares** against a direct count of **1,027,745** — a 1-for-128 reverse split that the old
-> median rule would have carried into a published cap.
+> stockanalysis.com publishes the share count directly (`id:"sharesout"`), so it is the
+> tiebreak — **but a count can be on the wrong basis.** For an ADR the count is sometimes
+> the ORDINARY share count while the price it is multiplied by is per ADS, so the published
+> cap comes out inflated by the ratio. Measured 2026-11-16 on the 109 flagged names the
+> helper fetched, five caps changed: **ADXN 106x, BLRX 367x, RADX 258x, IMOS 19x, ZBAO 4x**
+> too big, and **three of them (ADXN, BLRX, RADX) passed the $100M quality gate on the
+> inflated number** — RADX sat 0.5pp outside the top-10 losers table with a $3.30bn cap on a
+> ~$10.6M company.
+>
+> **The rejection rule, and the asymmetry that makes it work.** The site's share count and
+> the site's own market cap are each sometimes on the ordinary basis and sometimes on the
+> ADS basis, so "the site disagrees with itself" does NOT tell you which field is wrong:
+> **ADXN**'s count is the ordinary one (its own cap is the ADS-basis cap) and **SKHY**'s
+> count is the ADS one (1 ADS = 1/10 common, so its count is legitimately *smaller* than the
+> ordinary-basis counts every other vendor carries — SK hynix's own FY2025 weighted-average
+> count of 6.9bn corroborates them, and $95bn is SKHY's real US-listing cap). The
+> asymmetry is the discriminator: **an ADS-equivalent count can never EXCEED the ordinary
+> count** (1 ADS = N ordinary, N ≥ 1), so a count that sits far ABOVE every other source's
+> count cannot be the ADS count.
+>
+> **So the site's count is rejected iff it is more than 2x the median of the ADS-basis
+> implied counts (scanner / Nasdaq / shibui) AND it disagrees with EVERY one of them by
+> more than 2x** — an uncorroborated outlier on the wrong side. Then the ADS-basis implied
+> counts are published (their median; the mean of the two middle values when there are
+> two), the name is flagged in `cap_meta["basis_mismatch"]`, and the reason is in its
+> `cap_source`. A site count that is corroborated by even ONE other source is kept
+> (measured: WETO's count agrees with Nasdaq's implied count and is right), and a site
+> whose page could not be read is **unavailable, not wrong** — it falls back to the median
+> implied count without being flagged as a mismatch. Verified on the 2026-11-16 pull: the
+> rule changes 5 of the 109 flagged names and leaves SKHY, SHFS and WETO alone.
+>
+> The median of the implied counts is **not** a universal answer either: the scanner does not
+> refresh its share count, so on names it has gone stale the site is the right source and the
+> scanner is the outlier (measured 2026-11-16: the scanner's implied count was 482x off HELP,
+> 21.7x off RNTZ and 10.5x off GOW, while the site was internally coherent on all three).
+> Measured 2026-11-13 on 75 flagged names: 74 resolved to `stockanalysis_shares x close`, and
+> on SHFS the scanner's implied count was **132,248,533 shares** against a direct count of
+> **1,027,745** — a 1-for-128 reverse split that the old median rule would have carried into a
+> published cap.
 >
 > **The published cap is always `shares x close`**, so it is on the gate's basis by construction
 > and cannot go stale the way a cached market-cap field can. `_shared/brief26_pull.py` does the
@@ -496,10 +535,51 @@ scanner. It is the best roster available and it is already on disk.
 - **Never publish a range** like "79-122 reporters depending on the calendar source". Count from
   one named source, or say which source you counted.
 
-**Macro:** web_search `economic calendar <YYYY-MM-DD> FRED` — and, on a US election or a
-scheduled-central-bank day, search the event itself (`US midterm elections <date>`). One search,
-≤ 3 lines summary. The macro calendar is not only releases: an election, a central-bank decision or
-a war headline is the macro of the day, and a brief that lists only FRED releases misses it.
+**Macro — READ THE PRINT FROM ITS PRIMARY SOURCE, NEVER FROM A CALENDAR.** The 08:30 ET
+releases land at the minute this routine fires, and the calendar aggregators are not there
+yet: measured 2026-11-16, at the 08:43 ET pull the aggregators (tradingcharts /
+sigmanomics / crtlab / tradingeconomics) carried the schedule, the consensus (17.6) and the
+previous (25.5) but **NO actual** — and the actual was **7.8**, a ~10-point miss the brief
+could not publish. The 2026-11-06 fire hit the same wall on the Employment Situation, where
+two searches returned only previews. **Publishing a forecast as the actual is the worst
+failure mode a macro number has**, so the value comes from the issuer's own source through
+`_shared/macro_actual.py`, which also resolves *which release* it is reading (the Empire
+State's "Latest Report" link encodes the release month in its path; the BLS response carries
+the month on every observation):
+
+```bash
+D=/workspace/tools/macro_actual.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/macro_actual.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/macro_actual.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/macro_actual.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$D.tmp" "$U" 2>/dev/null
+  if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
+     && head -1 "$D.tmp" | grep -q '^#!'; then
+    mv -f "$D.tmp" "$D"; break
+  fi
+  rm -f "$D.tmp"
+done
+python3 "$D" --date {date}                   # the NY Empire State print (08:30 ET)
+python3 "$D" --date {date} --release bls     # the Employment Situation, when it is the print of the day
+```
+
+**Fetch it LATE in the run** — it is a different source from the tape, so a second fetch of it
+never creates a second version of a tape number — and publish what it returns:
+
+- `status: ok` → publish `headline` with its label, the release month and the fetch clock;
+- `status: not_yet_posted` → publish "released 08:30 ET, the source has not posted it yet",
+  with the release month the source still carries. That is a FACT about a named source, and it
+  is not the same as "no source";
+- `status: unavailable` → publish the reason from `note`. The BLS keyless tier has a DAILY
+  threshold, so **never probe it** — ask for everything in ONE call.
+
+**Never publish the value from `web_search`, and never from FRED.** FRED serves the PREVIOUS
+vintage of a same-day print (measured 2026-11-06: the pre-release payroll vintage). The
+search is for the schedule and for the context — an election, a central-bank decision or a war
+headline is the macro of the day, and a brief that lists only FRED releases misses it — but
+the number itself comes from the primary source or it does not go in the brief.
 
 ### Step 9 — Write the brief
 
@@ -541,7 +621,10 @@ number.
 9. **`## 7. Overnight / futures / index / crypto`** — compact block.
 10. **`## 8. Macro calendar`** — ≤ 5 lines.
 11. **`## 9. Earnings today`** — only if anything material, split BMO / AMC.
-12. **`## 10. Source health`** — every source that succeeded/failed.
+12. **`## 10. Source health`** — every source that succeeded/failed, and **every name in
+    `cap_meta["basis_mismatch"]`** (the caps that had to be rebuilt rather than taken, with
+    the source that won and the one that was rejected). A reader has to be able to see that a
+    market cap was rebuilt; a silently rebuilt cap is a hidden edit to a gate input.
 13. **`## 11. Open research queue`** — ≤ 5 carry-forwards.
 
 Cap top news to **10 items**, **all theme-anchored** (no per-ticker news for non-theme watchlist names).
