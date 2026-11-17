@@ -310,6 +310,15 @@ Rules:
 
 - **Exactly three bullets.**
 - **One name per bullet.** Draw from tomorrow's earnings calendar and the news-to-watch list.
+- **Pick a subject whose ticker is NOT one of the checker's blocked tokens.** Both the artifact's
+  and the reply's check for these three bullets resolve the subject by counting ticker-shaped
+  tokens and **stripping a blocklist** that contains `HD`, `JD`, `SR`, `WB`, `AS`, `IT`, `MA`,
+  `NO`, `UP`, `LOW`, `HIGH`, `OPEN`, `HOLD`, `SELL`, `BUY`, `GAP`, `PRICE`, `PRIOR`, `PUT` — and
+  every two-letter combination. A subject on that list resolves to **ZERO** tickers and the check
+  FAILS (it demands exactly one), so on 2026-11-16 Home Depot could not be used in either place
+  and the published names were NVDA, DIS and VIK instead. If the name you want is blocked, pick a
+  name from the same calendar that is not blocked, and carry the blocked name in the
+  `### Earnings calendar` section instead — no one-ticker rule applies there.
 - **Each bullet carries a LEVEL** — the number a trader marks. Use the §5.7 level set when the
   name traded after hours (its `gap_fill_level`), otherwise its 16:00 ET close.
 - **Each bullet carries a CATALYST** — what resolves it. If you could not source a catalyst,

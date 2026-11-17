@@ -575,3 +575,140 @@ names at +84.12% and -34.50%. And cron #20's universe file prices its own closes
 differently from the bridge on a couple of names (Modine 135.80 vs 135.66, Dell 344.30 vs 344.53);
 the artifact now discloses that the movers table's closes are the universe file's while the bridge
 is the quote source of record everywhere else.
+
+## 7.0 The 2026-11-16 fire — a Monday night with a REAL overnight, and a participation read that is not distribution-adjusted
+
+### 7.1 A Monday fire has a live overnight print — and one extra call PROVES it
+
+§6.2 recorded the Friday trap: CME equity-index futures are closed for the weekend, the bridge
+freezes at the 16:59:59 ET settlement, and the futures scanner will offer a post-close indicative
+print that is not a trade. The 2026-11-16 fire was a **Monday**, and the same rule behaved
+correctly in the opposite direction — every futures row carried a live `as_of` between **22:22 and
+22:23 ET**, well inside the post-18:00 ET Globex window:
+
+| Contract | Overnight last | 2026-11-16 close | Change |
+|---|---|---|---|
+| ES=F | 7,443.50 | 7,439.00 | +0.06% |
+| NQ=F | 27,439.25 | 27,284.25 | +0.57% |
+| YM=F | 51,515 | 51,670 | -0.30% |
+| RTY=F | 2,743.10 | 2,751.40 | -0.30% |
+| ZN=F | 105.4063 | 105.4375 | -0.03% |
+
+The check that makes this publishable rather than assumed is **one extra `price_history` call for
+the five futures**: it returned the 2026-11-16 daily close for each contract, and every one of
+those closes equals the `previous_close` the quote row carried (ES 7439.00, NQ 27284.25, YM 51670,
+RTY 2751.40, ZN 105.4375). When the quote's `previous_close` **equals the dated bar for the fire
+date**, the change printed against it IS the overnight move, and the row is not a stale
+settlement. That test is cheap (one metered call, five symbols) and it is the difference between
+"the quote looked fresh" and "the reference is provably today's".
+
+The read the numbers gave: the Nasdaq future +0.57% against the Dow and the Russell both -0.30%
+is a **chip-specific bid, not a broad risk-on turn**. Worth stating explicitly in the brief,
+because "futures are up" is the summary a reader takes away otherwise.
+
+### 7.2 The participation read is NOT distribution-adjusted — 255 rows carry a dividend bias
+
+Cron #20's `us-eod/2026-11-16.csv` published **Icahn Enterprises at -24.05%**. The price-only move
+on the 16 November ex-dividend date was **-15.09%**: the units went $4.24 to $3.60, while the
+published field measured $3.60 against the **$4.74 pre-distribution close**. The row is flagged
+`EX_DISTRIBUTION` in the CSV — and **255 rows carry that flag**.
+
+That is not a one-name problem. `change_pct` is the field the §5.5 participation read is built on
+(`advancers`, `decliners`, `unchanged`, `median_name_move_pct`, `liquid_adv_dec_ratio`), so on any
+day a meaningful number of distributions land, the counts and the median carry a small
+dividend-adjustment bias in the direction of "worse than it was". The artifact published cron #20's
+field unchanged (one number per field, one source per field) and disclosed the divergence in
+`## Method notes` and in the open research queue — which is the correct behaviour under the
+contract as written.
+
+**The finding for the fleet:** the universe CSV's `change_pct` is not distribution-adjusted for
+`EX_DISTRIBUTION` rows, and every routine that reads that CSV inherits the bias (cron #10's
+breadth, cron #23's participation read, cron #20's own movers). The fix belongs in cron #20's
+generator, not in a reader: publish a distribution-adjusted `change_pct`, or publish a second
+column (`change_pct_adj`) and keep the raw one. Until that exists, a reader should either exclude
+`EX_DISTRIBUTION` rows from a participation read or say so.
+
+### 7.3 The volatility cross-check and the put/call split both worked as written
+
+§5.8 and §8's rules held, and both are now proven on a session where the numbers were right:
+
+- **VIX and VXN were read from the DATED history, not the quote row**, and cross-checked against
+  CBOE's own dated close files: VIX **22.91** (+18.71%) and VXN **32.90** (+11.98%), both agreeing
+  to the cent with `https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` and
+  `VXN_History.csv` (rows dated 11/16/2026). The quote rows for the two volatility indices did
+  carry the fire date this time — the rule to read them from the history is what made the
+  cross-check possible at all.
+- **The CBOE daily statistics payload carried `selectedDate` 2026-11-16** (equal to the fire
+  date) and its split came from ONE object and reconciles from that same object: total put/call
+  **0.95** (7,655,860 puts over 8,018,994 calls), index 1.01, ETP 1.16, equity 0.73
+  (1,737,568 over 2,393,752 = 0.73), VIX 0.42, SPX 1.23, XSP 1.01. §5.10 says not to publish a
+  put/call component split — **that prohibition is about SPLITTING THE SOURCE, not about the
+  split existing.** When one payload carries the components and they reconcile with the total,
+  publishing them is more honest, not less.
+
+### 7.4 The one-ticker rule silently forbids a dozen REAL tickers — and cost a bullet on this fire
+
+§5.8 rule 2 and the artifact's own §5.4 check both resolve a bullet's subject by counting
+ticker-shaped tokens and **stripping the checker's `NON_TICKERS` blocklist**. That blocklist
+contains, among others, **HD, JD, SR, WB, AS, IT, MA, NO, UP, LOW, HIGH, OPEN, HOLD, SELL, BUY,
+GAP, PRICE, PRIOR, PUT** — and every two-letter combination, because the blocklist was built to
+stop "AH", "ET" and "AMC" from reading as tickers.
+
+The collision: a bullet whose subject is **HD** resolves to **ZERO** tickers, and both the artifact's
+"Tomorrow's three things to watch" check and the reply's copy of it demand **exactly one** — so
+the name cannot be used in either place. The same applies to JD, SR, WB, AS and every other
+blocked token that is also a listed US ticker. On this fire it cost the natural choice (Home Depot
+reports before the open on the 17th) and the three names published were **NVDA, DIS and VIK**,
+chosen precisely because their tickers survive the blocklist.
+
+**Two changes, one made and one recommended:**
+
+1. **MADE — `cloud-prompts/skills/agentic-post-market-brief/SKILL.md` §5.4 now tells the next
+   fire to pick a subject whose ticker is not one of the checker's blocked tokens, and names the
+   common ones.** This lands with the next fire (the spec is fetched at run time) and costs no
+   `cron_update`.
+2. **RECOMMENDED — the checker should stop resolving the subject by blocklist.** The bullet format
+   §5.4 mandates is `- <TICKER> — <level> — <catalyst>`, so the subject is **the first token
+   before the em dash**. A rule that reads the subject from the bullet's own structure would make
+   "HD" legal while still failing a bullet that names a second name later in the line. The
+   change needs a fault-injection test (a bullet carrying two tickers must still FAIL) before it
+   ships, because a gate that has never been observed failing is a claim, not a gate — and that
+   test was not run in this fire, so the checker is deliberately left unchanged here.
+
+### 7.5 The participation read and the sector column, for the next run's baseline
+
+From `us-eod/2026-11-16.csv` (4,890 rows, 4,844 priced, 46 without a usable `change_pct`),
+liquid set `market_cap` above $2B (1,786 names):
+
+| Metric | 2026-11-16 | 2026-11-10 | 2026-11-13 |
+|---|---|---|---|
+| advancers | 1,086 | — | — |
+| decliners | 3,594 | — | — |
+| unchanged | 164 | — | — |
+| median_name_move_pct | -1.17% | — | — |
+| liquid_adv_dec_ratio | 0.37 (476 : 1,279) | — | — |
+| cap_weight_penalty_bp | -90 | -34 | -56 |
+
+The cap-weight penalty **flipped negative** for the first time in the five-session window
+(2026-11-10 -34, 11-11 +52, 11-12 +51, 11-13 -56, 11-16 -90): the equal-weight index beat the
+cap-weighted one by 90bp, because the two mega-caps that carried the index (NVDA and the chip
+complex) were exactly what fell. The cap-weighted sector column, de-duplicated on
+`cap_source_symbol` with `EX_DISTRIBUTION` / `NO_CAP` / `NO_SECTOR` excluded (4,197 rows survive),
+ran from **Consumer Staples +0.295%** to **Information Technology -2.956%**, with every sector
+inside ±20% (the doubled-parent-cap assertion passed). One gap needed naming:
+**Communication Services -2.891% against its ETF's -1.720%, a -1.17pp concentration effect** —
+GOOGL alone ($3,469B cap, -4.07%) contributes -1.27pp of it, and the sector ex-GOOGL is -1.625%.
+
+### 7.6 The $1B after-hours floor hid the session's real leaders again
+
+The floor is the contract's screen, but the leaders outside it must be published in
+`## Source health` or the table reads as the whole tape. On 2026-11-16 the no-floor pull surfaced
+**CSAI +51.54%** ($1.1M cap), AYTU +43.96%, GLAS +31.78%, AKAN +22.62% on the way up and
+**BAER -33.03%**, STEM -29.95%, **RCAT -26.19%** ($539M — the Red Cat withdrawal of its FY2026
+revenue target), VIVK -26.13% on the way down. RCAT is the one that matters operationally: it is a
+sub-$1B name that reported after the close and would have been the session's headline after-hours
+reaction. One extra scanner pull without the floor is the whole cost.
+
+Carried forward: the same run also showed the after-hours tape moving between vendors (RCAT
+-24.65% at 18:01 ET against the scanner's -26.19% at ~22:30 ET) — §5.7's "publish the scanner's
+print as the source of record and NAME the other" rule is the right call and was applied.
