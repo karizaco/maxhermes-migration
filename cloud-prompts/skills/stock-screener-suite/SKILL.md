@@ -1689,6 +1689,29 @@ python3 "$U" --fire-date <the fire's scheduled date, YYYY-MM-DD> \
     --out-dir /workspace/daily-screens/<date>
 ```
 
+**The resolver does NOT leave `focus.csv` on disk — it reads the file and keeps only the
+manifest.** So the `--from-csv` path the pull needs is YOUR job: fetch the sweep's own
+`focus.csv` yourself and hand the pull the LOCAL path. Measured 2026-11-17, the resolver
+printed `universe_path: daily-screens/2026-11-16/focus.csv` (a repo path, not a local file)
+and no such file existed in the out-dir:
+
+```bash
+# the exact file the resolver resolved, fetched to a LOCAL path
+F=/workspace/focus_<denominator-session>.csv
+for U in \
+  "https://api.github.com/repos/karizaco/minimax-cloud-outputs/contents/daily-screens/<denominator-session>/focus.csv?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/minimax-cloud-outputs/main/daily-screens/<denominator-session>/focus.csv" \
+  "https://cdn.jsdelivr.net/gh/karizaco/minimax-cloud-outputs@main/daily-screens/<denominator-session>/focus.csv" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$F.tmp" "$U" 2>/dev/null
+  if [ -s "$F.tmp" ] && head -1 "$F.tmp" | grep -qi 'ticker\|symbol'; then mv -f "$F.tmp" "$F"; break; fi
+  rm -f "$F.tmp"
+done
+```
+
+Use the denominator session the MANIFEST names (`ref_close_session`), and the same file the
+manifest resolved — a focus.csv from any other session is the wrong-universe bug.
+
 **A manifest whose `status` is `FAIL` means THERE IS NO ARTIFACT.** The resolver exits **3** and
 prints the failed assertion. The hard assertions:
 
@@ -1972,6 +1995,23 @@ confirmed catalyst is published as **"no catalyst confirmed in this run"** — n
 A confirmed catalyst on a name whose move is structurally a BETA does not override the beta: the
 structural driver is what tells the trader how the name will behave today, and the catalyst is
 appended to the driver basis.
+
+**NEVER write a LADDER PERCENTAGE into the context file — the ladder is RE-SCANNED on every
+wave, so its gaps MOVE between the pull and the render.** Measured 2026-11-17: the first pull
+carried the ladder at RCAT −33.73%, COHR +8.89%, AAOI +7.82%, AS +4.81% and 22 names; after
+the 08:40 re-pull wave the same scan read RCAT −34.84%, COHR +8.45%, AAOI +7.22%, AS +6.53%
+and **21** names — MRVL had fallen out of the filter entirely. A context note that quotes
+"+8.9%" is a number that disagrees with the artifact's own table the moment the wave lands.
+**Name the names, let the table carry the numbers.** The same applies to a note that repeats a
+FOCUS row's gap: those numbers are stable, so they may be quoted.
+
+**The ladder's `driver_class` is computed from the index/sector proxies ALONE**, so a group of
+names that moved together on one story can be published as `IDIOSYNCRATIC` — measured
+2026-11-17: the whole AI-optical complex (COHR, AAOI, LITE, CRDO, ALAB) was gapping on ONE
+policy story, and the engine classified every one of them `IDIOSYNCRATIC` ("no proxy within
+1.5pp"), because the sector ETFs were flat. The context file's catalyst note is the ONLY place
+the real driver can be said, so when a group moved on one story, SAY SO in the note — name the
+group and the story, not just the name.
 
 #### 6.7 ARTIFACT FORMAT CONTRACT v6
 

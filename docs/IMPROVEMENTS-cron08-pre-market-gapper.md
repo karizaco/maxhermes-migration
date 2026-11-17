@@ -1047,3 +1047,62 @@ commit (`cron 08 … 2026-11-13: correction`), both paths verified.
 and it published at **08:52 ET** — `daily-screens/2026-11-12/focus.csv` and `focus.md` are
 now on `main`. So the universe that today's fire had to run degraded is complete, and tonight's
 18:30 ET sweep will publish the 2026-11-13 Focus list for tomorrow's fresh fire.
+
+---
+
+## 2026-11-17 — the ladder is RE-SCANNED on every wave, so the context file must never quote a ladder number
+
+**The run.** Universe proven on the strict path (H1-H5 all `ok`): the expected prior session
+resolved from the market's own history to **2026-11-16**, the published Focus list matched it,
+the close column was chosen **by date** (`today_close` → 2026-11-16), and **12/12** reference
+closes were confirmed session-exactly by an independent source with **zero conflicts**. The
+sweep's `screen_close_resolved` column (data_date 2026-11-13) was rejected as a denominator.
+Tape: wave 1 at 08:36:46 ET (12 names), wave 2 at 08:40:38 ET (4 names — CPRI, FENC, MOD,
+SENS); the wave revised MOD to +1.24% on a newer print. **0 of 12 Focus names flagged** — the
+book did not fire — so the ladder carried the artifact, as it should. Contract checker: **34/34
+ok**; both files verified present on `origin/main`; commit
+`cron 08 stock-screener-pre-market-gapper 2026-11-17`.
+
+**Finding 1 — the ladder moves between the pull and the render.** The market ladder is
+re-scanned on every wave, so its gaps are a FRESH snapshot at render time, not the numbers the
+first pull printed. Measured on this fire:
+
+| name | wave 1 pull | after the wave (rendered) |
+|---|---|---|
+| RCAT | −33.73% | **−34.84%** |
+| COHR | +8.89% | **+8.45%** |
+| AAOI | +7.82% | **+7.22%** |
+| AS | +4.81% | **+6.53%** |
+| LITE | +4.98% | **+4.59%** |
+| MRVL | +4.41% | **out of the filter entirely** (22 names → 21) |
+
+**Consequence:** a context file that quotes a ladder percentage publishes a number that
+disagrees with the artifact's own table. The 2026-11-17 draft did exactly that ("Coherent
++8.9%, Applied Optoelectronics +7.8% …") and it was caught by re-reading the rendered table
+against the prose before the push. **The rule now in the skill (§6.6a): name the names, let the
+table carry the numbers.** A FOCUS row's gap is stable and may be quoted; a ladder gap may not.
+
+**Finding 2 — the resolver still does not leave `focus.csv` on disk.** It fetches the file,
+parses it and keeps only `_universe.json`; the `universe_path` it prints is a REPO path
+(`daily-screens/2026-11-16/focus.csv`) that does not exist locally. The skill's run sequence
+says `--from-csv <the focus.csv the resolver used>` without saying where that file comes from,
+so the pull has nothing to open unless the agent fetches it. The skill now carries the fetch
+block and the rule that it must be the manifest's own denominator session.
+
+**Finding 3 — `max_tape_gap_pct` and the published `pm_high`/`pm_low` can disagree.** TNDM's
+executed tape carried a **+10.93%** print intraday while the published PM high/low columns read
+**+0.92% / −0.70%** on the same record — the two come from different sources (the tape's own
+print table vs the high/low fields). The engine's `flag_reason` cites the tape figure
+("crossed the bar intraday … reached 10.93%") while the Focus table cites the other source, so
+the artifact can show a flag whose numbers the table does not contain. Not fixed here (the
+artifact is engine-owned and the checker passes it) — recorded so the next fire does not read
+the two as one number, and so the context note does not repeat a figure the table contradicts.
+
+**Finding 4 — a coherent group can be published as `IDIOSYNCRATIC`.** The ladder's
+`driver_class` is derived from the index/sector proxies ALONE, so a whole cluster moving on one
+story is classified "no proxy within 1.5pp" when the sector ETF is flat. On this fire the entire
+AI-optical complex (COHR +8.45%, AAOI +7.22%, LITE +4.59%, CRDO +4.22%, ALAB +4.08%) moved on
+ONE story — Reuters reporting the US administration moving ahead with restrictions on Chinese
+data-centre optical transceiver imports — and every one of them was published as
+`IDIOSYNCRATIC`. The context note is the only place the real driver can be said, so the skill
+now says: when a group moved on one story, name the group AND the story in the note.
