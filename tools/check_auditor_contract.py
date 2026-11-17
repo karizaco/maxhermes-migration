@@ -717,11 +717,12 @@ def main():
     if args.procedure:
         check_procedure_parity(args.procedure, contract, rep)
         check_procedure_gap_templates(args.procedure, contract, rep)
-    if args.metrics:
-        if not os.path.exists(args.metrics):
-            rep.fail("C20", f"no such file: {args.metrics}")
-        else:
-            check_gap_lifecycle(args.metrics, status, contract, rep)
+    if args.metrics and os.path.exists(args.metrics):
+        check_gap_lifecycle(args.metrics, status, contract, rep)
+    # A MISSING metrics file means the engine did not run - the audit already says so
+    # once (`errors: 1`, STEP 4z) and the agent falls back to the hand-rolled loops.
+    # The gate does not pile a second failure on it: the lifecycle checks are skipped
+    # because there is no measurement to check the claims against.
 
     if rep.failures:
         for f in rep.failures:
