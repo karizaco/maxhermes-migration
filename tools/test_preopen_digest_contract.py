@@ -365,6 +365,96 @@ with tempfile.TemporaryDirectory() as td:
             check(guard(mb),
                   f"the guard is VIOLATED by {label} — the guard bites")
 
+# ----------------------------------------------------------------------------------
+# 8. A DATE-ONLY CATALYST IS PUBLISHED AS A DATE (2026-11-17.3).
+#
+# SEC EDGAR hands back a FILING DATE with no time on it ("2026-11-16"), and the renderer
+# used to format every stamp as a clock time - so a filing dated the day before the
+# capture printed "00:00:00": a bare midnight with no date on the row. Measured on the
+# 2026-11-17 08:30 board: 6 of the 9 dated catalysts rendered "00:00:00", and on three of
+# them (FRTT, FGL, GLAS) there was no date ANYWHERE on the row. The column's whole job
+# is WHEN.
+#
+# So a date-only value renders as the DATE, the board carries the date contract, and the
+# guard BITES: a renderer that loses the date branch must fail this test.
+# ----------------------------------------------------------------------------------
+print("\n8. a date-only catalyst is published as a DATE")
+check(dg.fmt_ts("2026-11-16") == "2026-11-16",
+      "a date-only stamp renders as the DATE, not as a bare clock time")
+check(dg.fmt_ts("2026-11-16") != "00:00:00",
+      "a filing date is never rendered as midnight")
+check(dg.fmt_ts("2026-11-10T14:38:21Z") == "09:38:21",
+      "the date branch does not touch a full timestamp")
+check(getattr(dg, "DATE_CONTRACT", "") == "preopen-dates-v1",
+      "the renderer names its date contract")
+
+DATE_ROWS = [
+    {"ts": "2026-11-17T08:34:56-05:00", "src": "pipeworx", "ticker": "FRTT",
+     "name": "Fort Technology", "pct": 30.92, "price": 12.34, "cat": "earnings",
+     "why": "Fort Technology Reports Record Year-to-Date Revenues of $12 Million",
+     "ref": "https://www.sec.gov/Archives/edgar/data/1/x.htm", "conf": "medium",
+     "trending_ts": None, "trending_score": None, "volume": 1234567,
+     "exchange": "NASDAQ", "news_date": "2026-11-17",
+     "news_url": "https://www.sec.gov/Archives/edgar/data/1/x.htm",
+     "pm_notional": 1234567.0, "sign_conflict": False},
+    {"ts": "2026-11-17T08:34:56-05:00", "src": "scanner", "ticker": "OMH",
+     "name": "One Main Holdings", "pct": -15.58, "price": 44.0, "cat": "other",
+     "why": None, "ref": None, "conf": "low", "trending_ts": None,
+     "trending_score": None, "volume": 1234567, "exchange": "NYSE",
+     "news_date": None, "news_url": None, "pm_notional": 1234567.0,
+     "sign_conflict": False},
+]
+with tempfile.TemporaryDirectory() as td4:
+    t4 = Path(td4) / "2026-11-17-0830.jsonl"
+    o4 = Path(td4) / "2026-11-17-0830.md"
+    with t4.open("w", encoding="utf-8") as fh:
+        for r in DATE_ROWS:
+            fh.write(json.dumps(r) + "\n")
+    subprocess.run(
+        [sys.executable, str(DG_PATH), "--tape", str(t4), "--out", str(o4),
+         "--date", "2026-11-17", "--slot", "0830"],
+        capture_output=True, text=True)
+    date_board = o4.read_text(encoding="utf-8")
+    frtt_line = next((ln for ln in date_board.splitlines()
+                      if ln.startswith("| FRTT |")), "")
+    check(bool(frtt_line), "the date-only row is published")
+    if frtt_line:
+        cells = [c.strip() for c in frtt_line.strip().strip("|").split("|")]
+        check(cells[4] == "2026-11-17",
+              f"the date-only catalyst shows the DATE in 'When it broke' "
+              f"(got {cells[4]!r})")
+        check(cells[4] != "00:00:00",
+              "the date-only catalyst is not printed as a bare clock time")
+    check("preopen-dates-v1" in date_board,
+          "the board carries the date contract marker")
+
+    # The guard must BITE: a renderer that loses the date branch must fail.
+    src = DG_PATH.read_text(encoding="utf-8")
+    target = "if _DATE_ONLY_RE.match(s):"
+    if target not in src:
+        check(False, "the mutation target for the date branch is missing")
+    else:
+        mpath = Path(td4) / "mutated_date.py"
+        mpath.write_text(src.replace(target, "if False and _DATE_ONLY_RE.match(s):"),
+                         encoding="utf-8")
+        mt = Path(td4) / "mutated_tape.jsonl"
+        mo = Path(td4) / "mutated_out.md"
+        shutil.copyfile(t4, mt)
+        subprocess.run(
+            [sys.executable, str(mpath), "--tape", str(mt), "--out", str(mo),
+             "--date", "2026-11-17", "--slot", "0830"],
+            capture_output=True, text=True)
+        mb = mo.read_text(encoding="utf-8")
+        mutated_line = next((ln for ln in mb.splitlines() if ln.startswith("| FRTT |")), "")
+        mutated_cell = ""
+        if mutated_line:
+            mutated_cell = [c.strip() for c in
+                            mutated_line.strip().strip("|").split("|")][4]
+        check(mutated_cell == "00:00:00",
+              "the mutation DOES reproduce the defect (the guard has something to bite)")
+        check(mutated_cell != "2026-11-17",
+              "a renderer that loses the date branch FAILS the board - the guard bites")
+
 print()
 if FAILURES:
     print(f"FAILED ({len(FAILURES)}):")

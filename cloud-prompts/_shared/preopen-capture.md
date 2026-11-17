@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-17.2
+PROCEDURE_VERSION: 2026-11-17.3
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -90,10 +90,18 @@ for U in \
   # mark the renderer that publishes the board's SIZE SPLIT and the DEGRADED banner
   # that names the real cause instead of blaming a budget that was never binding. A
   # stale renderer would publish the old, WRONG cause text and no split at all.
+  #
+  # PREOPEN_EDGAR_DATE_V1 (2026-11-17.3) is demanded for the SAME reason one step
+  # further: the renderer changed how it prints a DATE. EDGAR hands back a filing date
+  # with no time on it, and the old renderer formatted every stamp as a clock time, so
+  # a filing dated 2026-11-16 printed "00:00:00" - a bare midnight with no date on the
+  # row, and on three of the 2026-11-17 08:30 board's rows no date ANYWHERE. The
+  # column's whole job is WHEN. A stale renderer must not win the ladder.
   if grep -q 'PREOPEN_DIGEST_V2' "$D.tmp" 2>/dev/null \
      && grep -q 'PREOPEN_MOVER_COVERAGE_V1' "$D.tmp" 2>/dev/null \
      && grep -q 'PREOPEN_EDGAR_V1' "$D.tmp" 2>/dev/null \
-     && grep -q 'PREOPEN_SIZE_SPLIT_V1' "$D.tmp" 2>/dev/null; then
+     && grep -q 'PREOPEN_SIZE_SPLIT_V1' "$D.tmp" 2>/dev/null \
+     && grep -q 'PREOPEN_EDGAR_DATE_V1' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
@@ -420,6 +428,22 @@ and otherwise prints an em-dash.** It never falls back to the capture clock — 
 clock when the script ran, not when the news broke. `tools/check_preopen_checkpoint.py`
 enforces all of this, and the ARWR row is itself a fault-injection case in
 `tools/test_preopen_checkpoint_contract.py`.
+
+**A DATE-ONLY CATALYST IS PUBLISHED AS A DATE (2026-11-17.3).** EDGAR hands back a
+**filing date** with no time on it — `2026-11-16` — and the renderer formatted every stamp
+as a clock time, so a filing dated the day before the capture printed **`00:00:00`**: a
+bare midnight that reads like an intraday print and carries no date at all. Measured on the
+2026-11-17 08:30 board: **6 of the 9 dated catalysts** rendered `00:00:00`, and on three of
+them (FRTT, FGL, GLAS) there was **no date anywhere on the row** — so a reader could not
+tell whether the news broke today or yesterday. The column's whole job is WHEN, and the
+tape's WHEN is a filing date.
+
+So the renderer prints a date-only value **as the date**, and a full timestamp still prints
+as the ET wall clock. The board carries a **`preopen-dates-v1`** contract marker, and
+`tools/check_preopen_checkpoint.py` enforces it: a board published on or after **2026-11-17**
+must carry the marker, and no row on it may print a date-only catalyst as a bare clock
+time. A board published **before** that date is **GRANDFATHERED** — it was written under
+the old rule and is not failed by a rule it never saw.
 
 **xAI/Grok is NOT used.** The xAI chat API no longer serves live search (`search_parameters`
 returns HTTP 410, "Live search is deprecated") and the Agent Tools API that replaces it is not

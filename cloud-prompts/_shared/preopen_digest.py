@@ -4,6 +4,7 @@ PREOPEN_DIGEST_V2
 PREOPEN_MOVER_COVERAGE_V1
 PREOPEN_EDGAR_V1
 PREOPEN_SIZE_SPLIT_V1
+PREOPEN_EDGAR_DATE_V1
 make_digest.py — render the human-readable board that sits BESIDE a pre-open tape.
 
 WHY THIS EXISTS
@@ -59,12 +60,27 @@ USAGE
 import argparse
 import json
 import os
+import re
 import urllib.request
 
 TOP_N = 15
 DIGEST_COLUMNS = ["Ticker", "%", "Conf", "Catalyst", "When it broke"]
 CONFIDENCES = ("high", "medium", "low", "unverified")
 NO_CATALYST = "_no catalyst captured_"
+
+# A date-only stamp: "2026-11-16" and nothing else. SEC EDGAR's filing dates arrive in
+# exactly this shape, and they are the reason the renderer has a date branch at all.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# THE DATE CONTRACT — the marker that says "this board renders a date-only catalyst as a
+# DATE". It is the same shape as COVERAGE_CONTRACT below: a board that carries the marker is
+# checked against the CURRENT rule, and a board that carries NO marker was written before
+# the rule existed and is GRANDFATHERED against it.
+#
+# It exists because EDGAR (2026-11-17) introduced date-only `news_date` values into the
+# tape, and the renderer formatted every stamp as a clock time — so a filing dated
+# 2026-11-16 printed "00:00:00". See fmt_ts below.
+DATE_CONTRACT = "preopen-dates-v1"
 
 # THE COVERAGE CONTRACT — the marker that says "this board was rendered under the
 # mover-coverage floor". It is the same shape as cron #17's `in-play-artifact-v2`: a board
@@ -121,6 +137,19 @@ def fmt_ts(v):
     if not v:
         return "—"
     s = str(v).strip()
+    # A DATE-ONLY stamp carries no clock time, and the clock is not what it is missing:
+    # it is the DATE. SEC EDGAR hands back a filing date ("2026-11-16") with no time, and
+    # rendering it through the time formatter printed "00:00:00" — a bare midnight that
+    # reads like an intraday print and carries no date at all. Measured on the 2026-11-17
+    # 08:30 board: 6 of the 9 dated catalysts rendered "00:00:00", and three of them
+    # (FRTT, FGL, GLAS) had no date ANYWHERE on the row, so a reader could not tell
+    # whether the news broke today or yesterday. The column's whole job is WHEN, and the
+    # tape's WHEN is a filing date.
+    #
+    # So a date-only value renders as the DATE, and a full timestamp still renders as the
+    # ET wall clock. The date is printed in ISO form so it cannot be mistaken for a time.
+    if _DATE_ONLY_RE.match(s):
+        return s
     try:
         from datetime import datetime, timezone
         from zoneinfo import ZoneInfo
@@ -326,6 +355,8 @@ def render(rows, date_str, slot, tape_name, scan_note):
     # has not lost its marker - and the grandfather rule cannot be used to hide a
     # board that stopped publishing its measurement.
     out.append(f"- **Coverage contract:** `{COVERAGE_CONTRACT}`")
+    out.append(f"- **Date contract:** `{DATE_CONTRACT}` · a date-only catalyst (an SEC EDGAR "
+               f"filing date) is published as the DATE it broke, never as a bare clock time")
     if mv_total == 0:
         out.append(f"- **mover coverage:** n/a — the digest published no movers table · "
                    f"**floor:** {floor_pct:.0f}% · **BELOW FLOOR**")

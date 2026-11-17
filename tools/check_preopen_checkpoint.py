@@ -53,6 +53,18 @@ TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "groun
 # because a gate that reads a different window than the one that wrote the tape
 # checks nothing.
 CATALYST_MAX_AGE_DAYS = 4
+# A date-only stamp: "2026-11-16" and nothing else. SEC EDGAR's filing dates arrive in
+# exactly this shape, and they are why the board needs a date branch at all.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# THE DATE CONTRACT — the marker a board carries when it renders a date-only catalyst as
+# a DATE. A board that carries it is checked against the CURRENT rule; a board that
+# carries NO marker was written before the rule existed and is GRANDFATHERED against it.
+DATE_CONTRACT = "preopen-dates-v1"
+# The day the date rule took effect. EDGAR (2026-11-17) is what introduced date-only
+# `news_date` values into the tape, so that is the first day a board can carry a
+# date-only catalyst at all - and the first day the rule is enforced. A board published
+# before it is grandfathered.
+DATE_RULE_EFFECTIVE = "2026-11-17"
 # The capture script the procedure must demand. The version moves when the capture's
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
@@ -201,6 +213,10 @@ def check_procedure(path):
           "the digest fetch ALSO demands the PREOPEN_MOVER_COVERAGE_V1 marker - the "
           "metric changed, so a stale V2 renderer (the old whole-tape floor) must not "
           "win the ladder")
+    check(re.search(r"PREOPEN_EDGAR_DATE_V1", t) is not None,
+          "the digest fetch ALSO demands the PREOPEN_EDGAR_DATE_V1 marker - the "
+          "date-rendering rule changed, so a stale renderer that prints a filing date "
+          "as a bare clock time must not win the ladder")
 
     # 9. THE MOVER COVERAGE FLOOR. The procedure is where the metric, the floor, the
     # arithmetic, the labels and the reply lines are SPECIFIED - the prompt is
@@ -520,6 +536,12 @@ def check_digest_script(path):
     check("PREOPEN_SIZE_SPLIT_V1" in t,
           "carries the PREOPEN_SIZE_SPLIT_V1 marker - the renderer that publishes the "
           "size split and the CORRECTED degradation cause")
+    check("PREOPEN_EDGAR_DATE_V1" in t,
+          "carries the PREOPEN_EDGAR_DATE_V1 marker - the renderer that publishes a "
+          "date-only catalyst (an SEC EDGAR filing date) as a DATE and not as a clock time")
+    check(re.search(r"DATE_CONTRACT\s*=\s*[\"']preopen-dates-v\d+[\"']", t) is not None,
+          "the renderer stamps the date contract on the board, so a pre-fix board can be "
+          "grandfathered against the rule")
     check("DIGEST_COLUMNS" in t and "Ticker" in t,
           "the board's columns are fixed in code")
     check("TOP_N = 15" in t, "the board lists the top 15 movers")
@@ -587,16 +609,26 @@ def _parse_date(v):
         return None
 
 
-def _fmt_et(v):
+def _fmt_et(v, dates=True):
     """Render a tape timestamp the way the board renders it: ET wall clock.
 
     This is an INDEPENDENT copy of the renderer's rule, on purpose - a checker that
     calls the code under test proves nothing. tools/test_preopen_digest_contract.py
     pins the renderer's own conversion separately.
+
+    `dates=True` is the CURRENT rule: a DATE-ONLY value (an SEC EDGAR filing date,
+    "2026-11-16") renders as the DATE. `dates=False` is the LEGACY rule, which
+    formatted every stamp as a clock time and so printed a filing date as "00:00:00" -
+    a bare midnight with no date on it, which left the reader unable to tell whether the
+    news broke today or yesterday. A board written before the rule existed is checked
+    against the legacy rule; a board carrying the date contract is checked against the
+    current one.
     """
     if not v:
         return "\u2014"
     s = str(v).strip()
+    if dates and _DATE_ONLY_RE.match(s):
+        return s
     try:
         from datetime import timezone
         from zoneinfo import ZoneInfo
@@ -897,6 +929,12 @@ def check_digest(tape_path, digest_path, slot):
     # ------------------------------------------------------------------
     by_ticker = {r.get("ticker"): r for r in rows}
     wrong_time, cap_fallback = [], []
+    # THE DATE CONTRACT. A board that carries the marker renders a date-only catalyst as
+    # a DATE; a board that carries NO marker was written before that rule existed and is
+    # checked against the LEGACY rule (every stamp as a clock time), so a pre-fix board
+    # is not failed by a rule it was never written under.
+    has_date_contract = re.search(r"preopen-dates-v\d+", t) is not None
+    dates = has_date_contract
     for cells in body:
         if len(cells) < 5:
             continue
@@ -905,18 +943,48 @@ def check_digest(tape_path, digest_path, slot):
         if rec is None:
             continue
         nd = rec.get("news_date")
-        want = (_fmt_et(nd) if nd
-                else (_fmt_et(rec.get("trending_ts")) if rec.get("trending_ts") else "\u2014"))
+        want = (_fmt_et(nd, dates) if nd
+                else (_fmt_et(rec.get("trending_ts"), dates) if rec.get("trending_ts") else "\u2014"))
         got = cells[4].strip()
         if got != want:
             wrong_time.append((tick, got, want))
-        if rec.get("ts") and got == _fmt_et(rec.get("ts")) and want != got:
+        if rec.get("ts") and got == _fmt_et(rec.get("ts"), dates) and want != got:
             cap_fallback.append(tick)
     check(not wrong_time,
           f"every row's 'When it broke' shows the NEWS date, not the capture clock "
           f"({len(wrong_time)} wrong: {wrong_time[:3]})")
     check(not cap_fallback,
           f"no row falls back to the capture clock for its break time ({cap_fallback[:3]})")
+    # ------------------------------------------------------------------
+    # A FILING DATE IS A DATE, NOT A CLOCK TIME.
+    #
+    # EDGAR (2026-11-17) put date-only `news_date` values into the tape - a filing date
+    # with no time on it - and the renderer formatted every stamp as a clock time, so a
+    # filing dated 2026-11-16 printed "00:00:00". Measured on the 2026-11-17 08:30
+    # board: 6 of the 9 dated catalysts rendered "00:00:00", and three of them (FRTT,
+    # FGL, GLAS) had no date ANYWHERE on the row - so the reader could not tell whether
+    # the news broke today or yesterday. The column's whole job is WHEN.
+    #
+    # So a board published on or after the effective date must carry the date contract,
+    # and no row on it may print a date-only catalyst as a bare clock time. A board
+    # published BEFORE the effective date is grandfathered: it was written under the old
+    # rule and is not failed by a rule it never saw.
+    # ------------------------------------------------------------------
+    dated_rows = [r for r in rows
+                  if r.get("news_date")
+                  and _DATE_ONLY_RE.match(str(r["news_date"]).strip())]
+    if dated_rows:
+        d = _digest_date(digest_path)
+        check(has_date_contract or d is None or d < datetime.date.fromisoformat(DATE_RULE_EFFECTIVE),
+              f"a board published on or after {DATE_RULE_EFFECTIVE} carries the "
+              f"{DATE_CONTRACT} marker - it renders a filing date as a DATE")
+        bad_midnight = [c[0].strip() for c in body
+                        if len(c) >= 5 and by_ticker.get(c[0].strip()) is not None
+                        and _DATE_ONLY_RE.match(str(by_ticker[c[0].strip()].get("news_date") or "").strip())
+                        and c[4].strip() == "00:00:00"]
+        check(not bad_midnight,
+              f"no row prints a date-only catalyst as a bare clock time (00:00:00) "
+              f"({len(bad_midnight)} rows: {bad_midnight[:3]})")
 
     # ------------------------------------------------------------------
     # THE MOVER COVERAGE FLOOR.
