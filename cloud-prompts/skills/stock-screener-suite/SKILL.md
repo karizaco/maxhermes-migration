@@ -2526,9 +2526,9 @@ markdown. A hand-typed price is a defect, not a style choice.
    (MMED 9,813,734 on both) but **returns `"data": null` for every NYSE name** ("Short interest
    is only supported for Nasdaq Listed stocks"). An HTTP 200 with a null body is NOT a figure.
 
-   **Budget:** one statistics page per published name (~130 pages, ~125 KB each, ~2-3 min with
-   a short pause between calls). Fetch them with a small concurrency (4-6 threads) — the
-   pages are independent and the site rate-limits a burst.
+   **Budget (measured 2026-11-17):** one statistics page per published name (~138 pages,
+   ~125 KB each). Fetch them with 6 threads: **138 names in 6 s**, no rate-limit hit. A
+   sequential fetch of the same set takes minutes — use the threads.
 
    Pass the rows to the engine as `--si-crosscheck-json`:
    `[{"ticker":"VG","interest_shares":48857305,"short_pct_float":9.366,"days_to_cover":3.42,
