@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-15.1
+PROCEDURE_VERSION: 2026-11-17.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -48,14 +48,16 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   fi
-  # 2026-11-15.1 is the version that MEASURES THE COVERAGE OF THE MOVERS THE BOARD
-  # PUBLISHES - the reader-facing number - and gates THAT at 50%. The 2026-11-13.3
-  # version gated the WHOLE TAPE at 40%, which needed 66 explained rows on a 164-row
-  # tape: a floor that could never be cleared, so every checkpoint was DEGRADED
-  # forever. The 2026-11-11.2 dated the tape from the previous session's closes, and
-  # it published a matched article's stamp without checking that stamp was inside
-  # the window - both are defects this version fixes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-15.1' "$S.tmp" 2>/dev/null; then
+  # 2026-11-17.1 is the version that RETRIES THE CHEAP LEG and REPORTS THE ROUTER'S
+  # FAILURES. Measured 2026-11-17: the grounded router answered 4 of 5 calls for AKAN
+  # (confidence 0.85-0.95) and 3 of 5 for GP (0.95) when called ONE AT A TIME - so the
+  # capability was always there - while `call_grounded` made exactly ONE call. The
+  # article feed (200 CREDITS a call) was retried three times and the router ($0.02) was
+  # not retried at all, so a name the feed could not date had one shot at a cheap
+  # answer and three at an index lookup that, for a nano-cap, answers with articles
+  # from 2024. Result on 2026-11-16: 2/15 explained (13%, under the 30% floor) at
+  # 08:30 AND again at 09:50 - a structural miss, not an outage.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-17.1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -259,6 +261,37 @@ today's news) **cannot arise from this path at all**.
 **20.19 s** against **101.77 s** serial — 5.0× — with no rate limiting and no HTTP failure.
 The sequential grounded calls had been ~264 s of the capture's 270 s: **98 % of the capture's
 wall clock**, while the four feed calls took 2.6 s.
+
+**THE RETRY BELONGS ON THE CHEAP LEG (2026-11-17).** The router's failure is INTERMITTENT and
+the call is cheap; the feed's failure is the same and the call is metered at 200 credits.
+Measured 2026-11-17 on the eight largest movers the 2026-11-16 08:30 checkpoint could not
+explain, calling the router **one at a time**: it answered **4 of 5** calls for AKAN
+(confidence 0.85–0.95) and **3 of 5** for GP (0.95) — while the same names, fired eight-wide
+concurrently, were refused **7 of 8**. So the capability was there and the capture never used
+it: `call_grounded` made exactly **ONE** call, and the 200-credit article feed was retried
+**three** times. A name the feed could not date therefore had one chance at a $0.02 answer and
+three chances at an index lookup that, for a nano-cap, answers with articles from 2024.
+
+The capture now asks the router **three times** (`ROUTER_ATTEMPTS`), with backoff, and retries
+**only the transport class** — a call that produced no usable answer (a tool error, a
+refusal, an empty answer). A call that **did** answer is never asked again: if the capture's
+own filters then blank that answer (it restates the price move, it is a filing-index entry,
+its confidence is under 0.6), that is a quality decision, and asking again until one passes
+would be fishing.
+
+**AND THE ARTICLE FEED STOPS EARLY ON A REPEATED ERROR.** Two consecutive **identical** feed
+errors are a dead index, not a blip — measured 2026-11-17: DVLT's feed answered `tool_error`
+on 4 of 4 calls and a bare empty result on a fifth. The third metered attempt is spent only
+when the error **changed**, so a persistent failure costs two calls instead of three and a
+recovering one still gets its third chance.
+
+**THE ROUTER'S FAILURES ARE COUNTED (2026-11-17).** They used to be invisible: a name the
+router refused recorded the *article's* error, so the 2026-11-16 08:30 checkpoint — 10 article
+errors and **13** router refusals — reported one distinct provider error, and thirteen
+published movers lost their explanations to a provider hiccup while the reply's `errors:`
+number did not move. The two legs now report separately (`article_errors=` and
+`router_errors=`), and both enter the errors ledger, so a degraded run can name **which leg**
+failed.
 
 **THE CONFIDENCE TOKEN now means something.** `high`/`medium` is reserved for a catalyst that
 is **DATED, in-window and checkable**; a retail-chatter reason — no publication stamp, no

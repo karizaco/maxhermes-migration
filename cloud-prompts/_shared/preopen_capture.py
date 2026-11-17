@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-15.1
+CAPTURE_SCRIPT_VERSION: 2026-11-17.1
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -338,6 +338,28 @@ MOVERS_TABLE_N = 15
 # refusals, identical to its serial behaviour). 8 concurrent article fetches
 # took 1.98s against 14.80s serial.
 CATALYST_WORKERS = 8
+# HOW MANY TIMES THE GROUNDED ROUTER IS ASKED FOR ONE NAME.
+#
+# THE RETRY BELONGS HERE, NOT ON THE ARTICLE FEED. Measured 2026-11-17 06:5x ET,
+# on the eight largest movers the 2026-11-16 08:30 checkpoint could not explain:
+# the router answered 4 of 5 calls for AKAN (confidence 0.85-0.95) and 3 of 5 for
+# GP (0.95) when it was called ONE AT A TIME - so the capability was there and the
+# capture never used it, because `call_grounded` made exactly ONE call.
+# Per-call success 60-80% => P(explain in one call) 60-80%, in three 94-99%.
+#
+# THE ARITHMETIC OF THE TWO CALLS. The router is ~$0.02 a call after the daily
+# free allowance; the article feed is 200 CREDITS a call. The script retried the
+# EXPENSIVE call three times and gave the cheap one a single shot - so a name the
+# feed could not date had one chance at a $0.02 answer and three chances at a
+# 200-credit index lookup that, for a nano-cap, answers with articles from 2024.
+#
+# The failure is INTERMITTENT, not permanent: the same ticker answers on call 1
+# and refuses on call 2 with the SAME question. The retry is therefore on the
+# TRANSPORT class only - a call that produced no usable answer is asked again.
+# A call that DID answer is never asked again: if our own filters then blank the
+# answer (it restates the price move, or it is a filing index entry), that is a
+# quality decision and retrying until one passes would be fishing.
+ROUTER_ATTEMPTS = 3
 # How many names are put in contention for a catalyst at all. The pool is the
 # cheapest pass - one article fetch each - so it can be wider than the router
 # budget; the router budget stays `top_n` and is spent only on pool names the
@@ -669,34 +691,71 @@ def call_top_movers(category="gainers", limit=40):
     return {"movers": movers, "as_of": out.get("as_of"), "total": out.get("total")}
 
 
-def call_grounded(ticker, name=None):
-    """A per-name catalyst with evidence, URL and confidence."""
+def call_grounded(ticker, name=None, attempts=ROUTER_ATTEMPTS):
+    """A per-name catalyst with evidence, URL and confidence.
+
+    RETRIED, because the router's failure is intermittent and the call is cheap.
+    Measured 2026-11-17: the SAME question for the SAME ticker answered on call 1
+    (confidence 0.95) and refused on call 2 - the capability is there, the timing
+    is not. One attempt turned a 60-80% per-call success into a 60-80% per-name
+    success, which is what left 13 of the 15 movers on the 2026-11-16 08:30 board
+    unexplained (2/15 = 13%, below the 30% floor) at 08:30 AND again at 09:50.
+
+    WHAT IS RETRIED: a call that produced no usable answer - a transport error, a
+    `tool_error`, a refusal, or an empty answer. Those are the intermittent class.
+    WHAT IS NOT: a call that DID answer. Our own filters (a restated price move, a
+    filing-index entry, confidence < 0.6) blank the answer afterwards, and asking
+    again until one passes would be fishing for a better answer rather than a
+    different one.
+    """
     who = f"{name} ({ticker})" if name else ticker
     # Ask for NEWS routing explicitly. The router will otherwise reach for SEC filings
     # first and come back empty ("not_in_source") on a name that moved on a press release.
     q = (f"What specific news, press release, analyst action or corporate event moved "
          f"{who} stock sharply right now? Prefer company news, press releases and news wires "
          "over SEC filing index entries. Give the one-clause reason and the source URL.")
-    out = rpc(PACK_MARKET, "ask_pipeworx_grounded", {"question": q},
-              prefer=["ask_pipeworx_grounded"])
-    if "error" in out:
-        return {"error": out["error"]}
-    r = out.get("ask_pipeworx_grounded") or {}
-    ans = (r.get("answer") or "").strip()
-    # The router sometimes restates the PRICE MOVE instead of naming a catalyst, and
-    # sometimes reaches for the wrong source. Both are caught here, not downstream.
-    if ans and re.search(r"(moved|rose|fell|up |down )\s*\$?\d|\d+(\.\d+)?%\s*(increase|decrease|move)", ans, re.I):
-        ans = ""
-    newsish = ("news", "press", "wire", "article", "headline", "8k", "sec_events")
-    tool = (r.get("tool_used") or "")
-    if ans and not any(t in tool.lower() for t in newsish):
-        ans = ""                      # a filing index entry is not a catalyst
-    conf = r.get("confidence") or 0
-    if ans and conf < 0.6:
-        ans = ""
-    return {"answer": ans or None, "evidence": r.get("evidence"),
-            "confidence": conf, "refusal": r.get("refusal_reason"),
-            "tool_used": r.get("tool_used"), "second_source": r.get("second_source")}
+    last = None
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        out = rpc(PACK_MARKET, "ask_pipeworx_grounded", {"question": q},
+                  prefer=["ask_pipeworx_grounded"])
+        if "error" in out:
+            # A TRANSPORT/TOOL failure: the intermittent class. Remember it and ask
+            # again - it is the class that measured 60-80% recoverable.
+            last = {"error": out["error"]}
+            if attempt < attempts:
+                time.sleep(0.6 * attempt)
+            continue
+        r = out.get("ask_pipeworx_grounded") or {}
+        ans = (r.get("answer") or "").strip()
+        if not ans:
+            # The router REFUSED or answered nothing - also intermittent: measured
+            # `not_in_source` and `tool_error` on consecutive calls for one ticker.
+            last = {"error": "router_refused",
+                    "refusal": r.get("refusal_reason"), "tool_used": r.get("tool_used")}
+            if attempt < attempts:
+                time.sleep(0.6 * attempt)
+            continue
+        # It ANSWERED. The filters below decide whether the answer is publishable;
+        # a filtered answer is not a reason to ask again.
+        # The router sometimes restates the PRICE MOVE instead of naming a catalyst, and
+        # sometimes reaches for the wrong source. Both are caught here, not downstream.
+        if re.search(r"(moved|rose|fell|up |down )\s*\$?\d|\d+(\.\d+)?%\s*(increase|decrease|move)", ans, re.I):
+            ans = ""
+        newsish = ("news", "press", "wire", "article", "headline", "8k", "sec_events")
+        tool = (r.get("tool_used") or "")
+        if ans and not any(t in tool.lower() for t in newsish):
+            ans = ""                      # a filing index entry is not a catalyst
+        conf = r.get("confidence") or 0
+        if ans and conf < 0.6:
+            ans = ""
+        return {"answer": ans or None, "evidence": r.get("evidence"),
+                "confidence": conf, "refusal": r.get("refusal_reason"),
+                "tool_used": r.get("tool_used"), "second_source": r.get("second_source")}
+    # EVERY ATTEMPT FAILED. The name keeps its price and NO cause - and the failure
+    # is REPORTED (see `router_error` in resolve_catalysts), because a name that lost
+    # its explanation to a provider hiccup must not be published as a name that has
+    # no news.
+    return last or {"error": "router_failed"}
 
 
 def fetch_articles(ticker, limit=8, attempts=3):
@@ -711,9 +770,20 @@ def fetch_articles(ticker, limit=8, attempts=3):
     different facts, and the second one silently costs a name its dated catalyst -
     the pipeline would send it to the expensive router and publish a price with no
     cause, which is exactly what the article-first design is here to prevent.
+
+    IT ALSO STOPS EARLY ON A REPEATED ERROR (2026-11-17). An article call is 200
+    CREDITS, so three attempts on a ticker whose index does not exist cost 600
+    credits and return the same nothing. Measured 2026-11-17 06:4x ET: DVLT's
+    article feed answered `tool_error` on 4 of 4 calls and a bare empty result on
+    a fifth - the index is not coming back. Two consecutive IDENTICAL failures are
+    a dead index, not a blip, so the third attempt is spent only when the error
+    CHANGED (a transient failure that is recovering). A transient sequence
+    (error A, error B, success) still gets its third chance; a persistent one
+    (error A, error A) stops at two.
     """
     err = None
     detail = None
+    last_err = None
     for i in range(attempts):
         out = rpc(PACK_POLYGON, "polygon_io_news", {"ticker": ticker, "limit": limit},
                   prefer=["results"])
@@ -726,6 +796,12 @@ def fetch_articles(ticker, limit=8, attempts=3):
             # The account is exhausted. Retrying cannot help and would only spend
             # the run's wall clock: fail fast and let the run REPORT it.
             return [], f"{err}: {detail}" if detail else err
+        if err == last_err and i + 1 < attempts:
+            # THE SAME ERROR TWICE = A DEAD INDEX, NOT A BLIP. Stop here and save the
+            # third metered call; the router covers this name instead, and the
+            # router's failure is now REPORTED rather than silently blanking it.
+            break
+        last_err = err
         time.sleep(0.4 * (i + 1))
     return [], (f"{err}: {detail}" if detail else err)
 
@@ -998,6 +1074,29 @@ def article_catalyst(ticker, cutoff, limit=8, name=None):
             "error": ferr, "sentiment": ins.get("sentiment")}
 
 
+def _router_error(g):
+    """The router's failure for ONE name, as a short countable string.
+
+    It is kept apart from the article feed's error on purpose: they are different
+    legs with different causes, and a ledger that folds them together cannot tell
+    the reader WHICH leg failed. Measured 2026-11-17: the 2026-11-16 08:30
+    checkpoint had 10 article errors and 13 router refusals, and the run reported
+    ONE distinct error - so the reply said `errors: 2` (one provider error plus
+    one coverage degradation) while thirteen published movers had been stripped of
+    their explanations by the router. The number was measured, but it was
+    measuring the wrong leg.
+    """
+    if not g:
+        return "router_missing"
+    err = g.get("error")
+    if err and err != "router_refused":
+        return f"router:{err}"
+    if err == "router_refused":
+        extra = g.get("refusal") or g.get("tool_used") or "no_answer"
+        return f"router:refused:{str(extra)[:60]}"
+    return "router_failed"
+
+
 def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
     """The catalyst pipeline: the ARTICLE FEED FIRST, then the router. Both parallel.
 
@@ -1072,7 +1171,16 @@ def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
         if not (g.get("answer") and not g.get("refusal")):
             out[t] = {"why": None, "date": None, "url": None, "conf": "low",
                       "src": "scanner", "tool": None, "origin": "none", "ref": None,
-                      "error": a.get("error")}
+                      "error": a.get("error"),
+                      # THE ROUTER'S FAILURE IS ITS OWN FACT, and it used to be
+                      # invisible. The row recorded the ARTICLE's error (or none),
+                      # so a checkpoint in which the router refused on every name
+                      # reported the article feed's error and NOTHING about the
+                      # router - and thirteen names lost their explanation to a
+                      # provider hiccup while the reply's `errors:` number did not
+                      # move. A name that lost its cause to a FAILURE must not be
+                      # published as a name that has no news.
+                      "router_error": _router_error(g)}
             continue
         nd, nurl, freshest = resolve_news_date(t, g["answer"], cutoff, a.get("articles"))
         conf = "high" if (g.get("confidence") or 0) >= 0.7 else "medium"
@@ -1394,6 +1502,13 @@ def build(date_str, checkpoint, top_n=8):
     errors = [e for e in (tr.get("error"), tm.get("error"), tm_dn.get("error"),
                           band_error, pm_error) if e]
     errors += sorted({c.get("error") for c in cats.values() if c.get("error")})
+    # THE ROUTER'S FAILURES JOIN THE LEDGER (2026-11-17). They are a DISTINCT set
+    # from the article feed's and they used to be invisible: a checkpoint whose
+    # router refused on every name reported the article feed's error and nothing
+    # else, so the reply's `errors:` number did not move and a degradation looked
+    # like the market being quiet. A quiet tape with a loud error beats a
+    # loud-looking tape with a silent one.
+    errors += sorted({c.get("router_error") for c in cats.values() if c.get("router_error")})
     if below_floor:
         # A MOVER-COVERAGE DEGRADATION IS ONE ERROR. The tape was written, but the
         # movers the board publishes are priced and UNEXPLAINED, and the run must
@@ -1426,6 +1541,9 @@ def build(date_str, checkpoint, top_n=8):
             # THE CATALYST PIPELINE's own ledger, so the run reports what it spent.
             "catalyst_pool": len(pool),
             "article_errors": sum(1 for c in cats.values() if c.get("error")),
+            # THE ROUTER'S OWN FAILURE COUNT - the second leg, counted on its own so
+            # the reply can name WHICH leg failed instead of saying "provider error".
+            "router_errors": sum(1 for c in cats.values() if c.get("router_error")),
             # A CREDIT FAILURE MUST APPEAR IN THE RUN'S ERRORS. The provider answers
             # an exhausted account with an error, and a caller that treats it as an
             # empty result publishes a tape with no catalysts and reports no error.
@@ -1547,6 +1665,7 @@ def main():
           f"catalysts: dated={res.get('catalyst_dated')} "
           f"(article={res.get('catalyst_article')}, router={res.get('catalyst_router')}), "
           f"pool={res.get('catalyst_pool')}, article_errors={res.get('article_errors')}, "
+          f"router_errors={res.get('router_errors')}, "
           f"sign_conflicts={res.get('sign_conflicts')}, "
           f"empty_dropped={len(res.get('empty_dropped') or [])}, "
           f"provider_errors={len(res.get('provider_errors') or [])}, "

@@ -56,7 +56,7 @@ CATALYST_MAX_AGE_DAYS = 4
 # The capture script the procedure must demand. The version moves when the capture's
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
-CAPTURE_VERSION = "2026-11-15.1"
+CAPTURE_VERSION = "2026-11-17.1"
 # THE MOVER COVERAGE FLOOR - the share of the MOVERS THE BOARD PUBLISHES that must
 # carry a cause for the board to be doing its job.
 #
@@ -251,6 +251,17 @@ def check_procedure(path):
           "the procedure states the STALENESS rule (a catalyst that cannot be today's news is dropped)")
     check(re.search(r"never falls back to the capture clock", t, re.I) is not None,
           "the procedure states that the board never publishes the capture clock as the break time")
+    # 9. the procedure states the RETRY POLICY and the two legs' separate accounting
+    # (2026-11-17). A procedure that does not say so is a procedure whose reader
+    # cannot tell WHY a checkpoint came back unexplained.
+    check(re.search(r"ROUTER_ATTEMPTS|three times|retries the cheap leg", t, re.I) is not None,
+          "the procedure states that the cheap leg is RETRIED")
+    check(re.search(r"router_errors", t) is not None,
+          "the procedure states that the router's failures are counted separately "
+          "from the article feed's")
+    check(re.search(r"article feed stops early|stops early on a repeated", t, re.I) is not None,
+          "the procedure states that the metered article feed stops early on a "
+          "repeated identical error")
 
 
 # ---- static: the shared scripts -----------------------------------------------
@@ -377,6 +388,47 @@ def check_script(path):
           "the capture recognises a CREDIT failure and does not treat it as 'no news'")
     check(re.search(r"provider_errors", t) is not None,
           "the capture reports the provider failures in its own ledger")
+
+    # ------------------------------------------------------------------
+    # THE RETRY BELONGS ON THE CHEAP LEG (2026-11-17).
+    #
+    # Measured 2026-11-17: the grounded router answered 4 of 5 calls for AKAN
+    # (confidence 0.85-0.95) and 3 of 5 for GP (0.95) when called ONE AT A TIME,
+    # while `call_grounded` made exactly ONE call per name - and the 200-CREDIT
+    # article feed was retried THREE times. The 2026-11-16 checkpoints then
+    # explained 2 of the 15 movers they published (13%, under the 30% floor) at
+    # 08:30 AND again at 09:50: a structural miss, not an outage. A capture that
+    # asks the cheap leg once is asking it once for no reason.
+    # ------------------------------------------------------------------
+    m_ra = re.search(r"ROUTER_ATTEMPTS\s*=\s*(\d+)", t)
+    check(m_ra is not None and int(m_ra.group(1)) >= 2,
+          "the grounded router is RETRIED (one attempt per name left 13 of 15 "
+          "published movers unexplained on 2026-11-16, at 08:30 and 09:50 alike)")
+    check(re.search(r"def call_grounded\([^)]*attempts", t) is not None,
+          "the router's retry budget is a parameter of call_grounded")
+    # The feed is the EXPENSIVE leg: two identical failures are a dead index, so
+    # the third metered attempt is spent only when the error CHANGED.
+    check(re.search(r"err\s*==\s*last_err", t) is not None,
+          "the article feed stops early on a REPEATED identical error (a dead index "
+          "is not a blip, and every attempt is 200 credits)")
+
+    # ------------------------------------------------------------------
+    # THE ROUTER'S FAILURES MUST BE COUNTED (2026-11-17). They used to be
+    # invisible: a name the router refused recorded the ARTICLE's error, so the
+    # 2026-11-16 08:30 checkpoint - 10 article errors and 13 router refusals -
+    # reported ONE distinct provider error, and thirteen published movers lost
+    # their explanations while the reply's `errors:` number did not move. A quiet
+    # tape with a loud error beats a loud-looking tape with a silent one.
+    # ------------------------------------------------------------------
+    check(re.search(r"router_error", t) is not None,
+          "the capture records the ROUTER's failure separately from the article "
+          "feed's (a name that lost its cause to a failure is not a name with no news)")
+    check(re.search(r"router_errors", t) is not None,
+          "the capture reports the router's failure count in its own ledger")
+    m_led = re.search(r"errors \+= sorted\(\{c\.get\(\"router_error\"\).*?\}\)", t, re.S)
+    check(m_led is not None,
+          "the router's failures ENTER the errors ledger - a checkpoint whose router "
+          "refused on every name must not report the market as quiet")
 
     # ------------------------------------------------------------------
     # THE MOVER COVERAGE FLOOR, IN THE CAPTURE.

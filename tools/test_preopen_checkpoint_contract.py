@@ -815,6 +815,58 @@ def m_procedure_drops_the_floor(tape, digest, repo):
     return True
 
 
+
+# ---- the retry-policy breaches (2026-11-17) ----------------------------------
+#
+# The retry policy is asserted on the capture's SOURCE by check_script(). These
+# cases are the other half: they prove the gates BITE - that a capture which gives
+# the policy up is caught by the checker, and not merely described.
+
+
+def m_no_router_retry(tape, digest, repo):
+    """The capture asks the grounded router for a name exactly ONCE.
+
+    Measured 2026-11-17: called ONE AT A TIME, the router answered 4 of 5 calls for
+    AKAN (confidence 0.85-0.95) and 3 of 5 for GP (0.95) - the same names that came
+    back refused when they were fired eight-wide. The capability was always there.
+    `call_grounded` made one call, so the 2026-11-16 checkpoints explained 2 of the
+    15 movers they published (13%, under the 30% floor) - at 08:30 AND at 09:50.
+    A capture that asks the cheap leg once is asking it once for no reason.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "ROUTER_ATTEMPTS = 3", "ROUTER_ATTEMPTS = 1")
+    return True
+
+
+def m_feed_retries_forever(tape, digest, repo):
+    """The metered article feed never stops on a repeated identical error.
+
+    An article call is 200 CREDITS. Measured 2026-11-17: DVLT's feed answered
+    `tool_error` on 4 of 4 calls and a bare empty result on a fifth - the index does
+    not exist. Three identical failures cost 600 credits and return the same nothing,
+    so the third attempt is spent only when the error CHANGED.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, "        if err == last_err and i + 1 < attempts:", "        if False:")
+    return True
+
+
+def m_router_errors_uncounted(tape, digest, repo):
+    """The capture does not COUNT the router's failures.
+
+    They used to be invisible: a name the router refused recorded the ARTICLE's
+    error, so the 2026-11-16 08:30 checkpoint - 10 article errors and 13 router
+    refusals - reported ONE distinct provider error. Thirteen published movers lost
+    their explanations to a provider hiccup while the reply's `errors:` number did
+    not move. A quiet tape with a loud error beats a loud-looking tape with a silent
+    one.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, '    errors += sorted({c.get("router_error") for c in cats.values() if c.get("router_error")})',
+           '    pass  # the router errors are not counted')
+    return True
+
+
 CASES = [
     # (name, expect_pass, mutator, fixture_builder)
     ("a conforming tape + board passes the checker", True, None),
@@ -888,6 +940,12 @@ CASES = [
      m_capture_stops_counting_the_degradation),
     ("a capture that counts the coverage degradation TWICE is caught", False,
      m_capture_counts_the_degradation_twice),
+    # THE RETRY POLICY AND THE TWO LEGS' ACCOUNTING (2026-11-17).
+    ("a capture that asks the grounded router ONCE is caught", False, m_no_router_retry),
+    ("a capture that does not stop the metered feed on a repeated error is caught", False,
+     m_feed_retries_forever),
+    ("a capture that does not COUNT the router's failures is caught", False,
+     m_router_errors_uncounted),
 ]
 
 
