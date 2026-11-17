@@ -315,8 +315,14 @@ with tempfile.TemporaryDirectory() as td:
               "the banner says WHICH floor it fell below")
         check(re.search(r"priced but unexplained", low) is not None,
               "the banner says it in plain words (priced but unexplained)")
-        check(re.search(r"grounded catalyst call", low) is not None,
+        check(re.search(r"could not resolve a dated cause|no in-window article", low) is not None,
               "the banner NAMES THE CAUSE")
+        check(re.search(r"budget did not reach", low) is None,
+              "the banner does NOT blame the catalyst budget - the pool is sized to "
+              "cover every mover the board publishes, so that was never the constraint")
+        check("Size split of the published movers" in low,
+              "the board publishes the SIZE SPLIT (context) - a reader deserves to "
+              "see WHY the coverage is what it is")
         check("Unexplained movers in the published table" in low,
               "the banner names the UNEXPLAINED MOVERS it publishes")
         unexplained_line = next((ln for ln in low.splitlines()

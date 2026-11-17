@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-17.1
+PROCEDURE_VERSION: 2026-11-17.2
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -48,16 +48,16 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   fi
-  # 2026-11-17.1 is the version that RETRIES THE CHEAP LEG and REPORTS THE ROUTER'S
-  # FAILURES. Measured 2026-11-17: the grounded router answered 4 of 5 calls for AKAN
-  # (confidence 0.85-0.95) and 3 of 5 for GP (0.95) when called ONE AT A TIME - so the
-  # capability was always there - while `call_grounded` made exactly ONE call. The
-  # article feed (200 CREDITS a call) was retried three times and the router ($0.02) was
-  # not retried at all, so a name the feed could not date had one shot at a cheap
-  # answer and three at an index lookup that, for a nano-cap, answers with articles
-  # from 2024. Result on 2026-11-16: 2/15 explained (13%, under the 30% floor) at
-  # 08:30 AND again at 09:50 - a structural miss, not an outage.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-17.1' "$S.tmp" 2>/dev/null; then
+  # 2026-11-17.2 is the version that ADDS SEC EDGAR AS THE SOURCE OF RECORD and
+  # corrects the board's DEGRADED cause. Measured 2026-11-17: the news vendor's
+  # TICKER INDEX held NO in-window article for ANY of the 13 movers the 2026-11-16
+  # checkpoints could not explain - eight of them have ZERO articles ever, and
+  # AKAN's newest is from 2024 - so the coverage floor could not be cleared no
+  # matter how the budget was spent. SEC EDGAR is free, dated and checkable, and
+  # EIGHT of those same thirteen have a catalyst-bearing filing inside the window.
+  # The banner also stopped blaming "the catalyst budget", which was never the
+  # constraint: the pool covers every mover the board publishes.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-17.2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -81,12 +81,19 @@ for U in \
   # demands V2.
   #
   # PREOPEN_MOVER_COVERAGE_V1 is demanded as well, because the METRIC changed on
-  # 2026-11-15: the board now gates the coverage of the MOVERS IT PUBLISHES (50%),
+  # 2026-11-15: the board now gates the coverage of the MOVERS IT PUBLISHES (30%),
   # not the coverage of the whole tape (40%, which could never be cleared). A stale
   # V2 renderer publishes the old metric and the old floor, and it must not win the
   # ladder.
+  #
+  # PREOPEN_EDGAR_V1 and PREOPEN_SIZE_SPLIT_V1 (2026-11-17.2) are demanded too: they
+  # mark the renderer that publishes the board's SIZE SPLIT and the DEGRADED banner
+  # that names the real cause instead of blaming a budget that was never binding. A
+  # stale renderer would publish the old, WRONG cause text and no split at all.
   if grep -q 'PREOPEN_DIGEST_V2' "$D.tmp" 2>/dev/null \
-     && grep -q 'PREOPEN_MOVER_COVERAGE_V1' "$D.tmp" 2>/dev/null; then
+     && grep -q 'PREOPEN_MOVER_COVERAGE_V1' "$D.tmp" 2>/dev/null \
+     && grep -q 'PREOPEN_EDGAR_V1' "$D.tmp" 2>/dev/null \
+     && grep -q 'PREOPEN_SIZE_SPLIT_V1' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
@@ -223,7 +230,7 @@ scan still contributes the names that have not moved yet. Two rules follow:
 that merely restates the price move, and drops one whose source was a filing index rather than
 news — a name with no findable catalyst is left with no catalyst, which is the honest result.
 
-## THE CATALYST PIPELINE — ARTICLE FIRST, THEN THE ROUTER, BOTH IN PARALLEL
+**THE CATALYST PIPELINE — ARTICLE FIRST, THEN EDGAR, THEN THE ROUTER, ALL IN PARALLEL**
 
 **The article feed goes FIRST.** It costs **0.21–0.24 s** per name and it answers directly,
 with the publication stamp and the article URL; the router costs **15 s** when it answers and
@@ -231,6 +238,36 @@ with the publication stamp and the article URL; the router costs **15 s** when i
 returned a dated article for **6 of 8**, while the router's own polygon path returned
 `tool_error` on **4 of the same 8**. The router is 60–100× more expensive and less reliable
 at the one thing it cannot do — say WHEN.
+
+**SEC EDGAR IS THE SOURCE OF RECORD, AND IT SITS BETWEEN THE FEED AND THE ROUTER
+(2026-11-17).** The news vendor's TICKER INDEX is the capture's only news path, and for a
+nano-cap it is a hole. Measured 2026-11-17 on the thirteen movers the 2026-11-16
+checkpoints could not explain: **eight of them have ZERO articles in the index ever**,
+and the other five hold articles from 2024–2026-07 — **ZERO of the thirteen had an
+in-window article**. The provider cannot cover this population, so the coverage floor
+could not be cleared however the budget was spent.
+
+EDGAR is free, dated and checkable: `company_tickers.json` maps a ticker to its CIK
+(one fetch, cached per run), the full-text search endpoint queried **by CIK and by date**
+returns the issuer's own filings with their filing date, form type and — for an 8-K —
+the **ITEM NUMBERS**, which are a classification in themselves (1.01 material definitive
+agreement, 2.02 results of operations, 3.01 failure to satisfy a continued listing rule,
+3.02 unregistered sale of equity, 4.02 non-reliance on previously issued financials,
+7.01 Regulation FD, usually a press release), and the filing's **EX-99.1 exhibit is the
+press release**, whose first line is the catalyst headline.
+
+**MEASURED YIELD on the same thirteen: EIGHT have a catalyst-bearing filing inside the
+window, and the items ARE the causes** — DVLT 8-K item 3.01 on 2026-11-13 (*"Datavault
+AI Receives Notice of Nasdaq Trading Suspension"*), CGON 8-K item 7.01 on 2026-11-16
+(*"PIVOT-006 Phase 3 Registrational Trial Demonstrates Unprecedented Improvement in
+Recurrence-Free Survival"*), LXEO 8-K item 2.02 on 2026-11-16, SHFS 8-K items 1.01 +
+3.02 on 2026-11-12.
+
+**WHAT EDGAR DOES NOT COVER: a press release that was never FILED.** GMM's Nov-16
+Anthropic announcement was a GlobeNewswire release with no filing, and the vendor's
+index does not hold it either — so GMM stays unexplained, which is the honest result.
+EDGAR covers FILINGS; the vendor covers what it covers; a release that reaches neither
+is a name with no findable cause.
 
 **THE CATALYST IS THE ARTICLE'S TICKER-SCOPED INSIGHT, NOT ITS HEADLINE.** Every article
 carries `insights`: a per-ticker entry with a `sentiment` and a one-clause
@@ -448,8 +485,8 @@ explain up to 15 of them, and **8 of 15 clears the floor with room to spare**.
 **Measured against the real thing.** On 2026-11-13 the two checkpoints came in at **4/15
 (27%)** and **6/15 (40%)** — the floor sits BETWEEN them. That is where a floor belongs: it
 fires when the provider answered for too few of the movers the board shows, and it stays
-quiet when it answered for enough of them. A floor set above the measured answer rate (the
-first draft was 50%) fires on every checkpoint, and a label that is always on is a label the
+quiet when it answered for enough of them. A floor set above the measured answer rate (a
+draft proposed 50%) fires on every checkpoint, and a label that is always on is a label the
 reader learns to skip. A gate that
 can never be cleared is not a gate: it is a ratchet, and a ratchet that fires on every
 checkpoint trains the reader to ignore the label.
@@ -498,16 +535,33 @@ next, and the whole-tape number on the line after that, clearly marked as contex
 
 ```
 - **Coverage contract:** `preopen-coverage-v2`
-- **mover coverage:** 4/15 (27%) · **floor:** 50% · **BELOW FLOOR** · published movers: 15 (8 up / 7 down)
+- **mover coverage:** 4/15 (27%) · **floor:** 30% · **BELOW FLOOR** · published movers: 15 (8 up / 7 down)
 - **catalyst coverage (whole tape):** 16/164 (10%) · **unexplained:** 148 records (138 price-only · 10 narrative-only) · CONTEXT ONLY — not the gated number
+- **Size split of the published movers:** ≥$50M cap: 2/3 explained · <$50M cap: 2/12 explained · CONTEXT — a micro-cap-dominated board publishes the movers no news vendor indexes
 ```
 
 and, only when the mover coverage is below the floor, the banner above the table:
 
 ```
-> ⚠ **DEGRADED — mover coverage 27% is below the 50% floor.** The movers on this board are priced but unexplained: the catalyst budget did not reach them. **11 of the 15 published movers carry no cause at all** — read those names as MOVERS, not as explained moves.
-> **Cause:** the grounded catalyst call did not explain them — 11 of the 15 movers this board publishes carry the pre-market scan price only (the movers scan / the pre-market band). The tape is complete; the EXPLANATION is not.
+> ⚠ **DEGRADED — mover coverage 27% is below the 30% floor.** The movers on this board are priced but unexplained: the catalyst pipeline could not resolve a dated cause for them. **11 of the 15 published movers carry no cause at all** — read those names as MOVERS, not as explained moves.
+> **Cause:** the catalyst pool is sized to cover every mover this board publishes, so this is NOT a budget shortfall — the news provider held no in-window article for these names, and the grounded router could not date a cause for them either. The tape is complete; the EXPLANATION is not.
 ```
+
+**THE BANNER MUST NOT BLAME THE BUDGET (2026-11-17).** It used to say *"the catalyst budget
+did not reach them"*, and that was **false**: the pool is sized to cover every mover the board
+publishes (the pool is the top N by |%|, the table is the top 15 of the same ranking), and on
+2026-11-16 all fifteen had a router call. The real cause is the provider's **ticker index**:
+measured 2026-11-17, it held NO in-window article for any of the 13 movers the board could not
+explain — eight had zero articles ever, and AKAN's newest was from 2024. A board that names
+the wrong cause sends the reader looking for a budget problem that does not exist.
+
+**THE SIZE SPLIT IS CONTEXT, AND IT FAILS SOFT.** The board pulls the published movers'
+market caps from the SAME scanner that priced them (one POST, `market_cap_basic`) and
+publishes the explained/ published split at the $50M cut. It is CONTEXT, not a gate; and if the
+pull fails the board says `unavailable (the market-cap pull failed)` rather than inventing a
+split. **THE TAPE'S ROW SHAPE IS UNCHANGED** — this is a dimension the board adds, not a field
+the tape grows, so cron #17's consumer is untouched and the board still cannot disagree with
+the data cron #17 reads at 15:50.
 
 The unexplained movers are listed in the header too, so a reader can look up the tickers the
 board publishes and did not explain:
@@ -519,7 +573,7 @@ board publishes and did not explain:
 In the reply, one line, ALWAYS:
 
 ```
-mover coverage: 4/15 (27%) · floor 50% · BELOW FLOOR
+mover coverage: 4/15 (27%) · floor 30% · BELOW FLOOR
 ```
 
 the whole-tape context on the next line:
@@ -531,10 +585,10 @@ catalyst coverage (whole tape): 16/164 (10%)
 and, only when the mover coverage is below the floor, one more line:
 
 ```
-degraded: mover coverage 27% is below the 50% floor — 11 of the 15 published movers carry no cause; the movers this board publishes are priced but unexplained
+degraded: mover coverage 27% is below the 30% floor — 11 of the 15 published movers carry no cause; the movers this board publishes are priced but unexplained
 ```
 
-At or above the floor the line reads `mover coverage: 8/15 (53%) · floor 50% · OK`, there
+At or above the floor the line reads `mover coverage: 8/15 (53%) · floor 30% · OK`, there
 is NO `degraded:` line, and the error count does not move.
 
 ### THE FLOOR DOES NOT RETRO-FIRE
@@ -560,10 +614,10 @@ the floor is not a footnote.
 carries the same count and the arithmetic around it, so it is the same line with the
 measurement attached:
 
-- `mover coverage: 4/15 (27%) · floor 50% · BELOW FLOOR` — the `4` is the number of the
+- `mover coverage: 4/15 (27%) · floor 30% · BELOW FLOOR` — the `4` is the number of the
   **published movers** that carry a cause, the `15` is the number of movers the board
-  publishes, and the floor is 50%.
-- `mover coverage: 8/15 (53%) · floor 50% · OK` — at or above the floor.
+  publishes, and the floor is 30%.
+- `mover coverage: 8/15 (53%) · floor 30% · OK` — at or above the floor.
 
 The whole-tape number travels on its own line, as context:
 
@@ -578,7 +632,7 @@ count goes up by ONE.** The capture already counted the degradation in its own l
 (`errors=`), so the number in the reply is the capture's `errors=` plus any stall error —
 never plus a second copy of the degradation:
 
-- `degraded: mover coverage 27% is below the 50% floor — 11 of the 15 published movers carry no cause; the movers this board publishes are priced but unexplained`
+- `degraded: mover coverage 27% is below the 30% floor — 11 of the 15 published movers carry no cause; the movers this board publishes are priced but unexplained`
 - Name the budget too when the capture printed it: `pool=20` is the size of the catalyst
   budget, and the capture's `mover_coverage=4/15` is the number of those movers the provider
   answered for. A degradation with no cause named is half a finding.

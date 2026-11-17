@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-17.1
+CAPTURE_SCRIPT_VERSION: 2026-11-17.2
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -170,6 +170,7 @@ EXIT CODES
 import argparse
 import concurrent.futures as _cf
 import datetime
+import html as html_mod
 import json
 import os
 import re
@@ -200,9 +201,11 @@ CAT_PATTERNS = [
     ("downgrade", r"\bdowngrade|lowers? (its )?price target|cuts? (its )?price target"),
     ("dividend", r"\bdividend|buyback|repurchase"),
     ("spin", r"\bspin-?off|spinout|stake sale"),
+    ("listing", r"\bdelist|listing standard|continued listing|nasdaq deficiency|"
+                r"stock exchange compliance|listing rule"),
 ]
 CAT_VOCAB = {"acquisition", "merger", "earnings", "guidance", "fda", "trial", "offering",
-             "halt", "downgrade", "guidance-cut", "spin", "dividend", "other"}
+             "halt", "downgrade", "guidance-cut", "spin", "dividend", "listing", "other"}
 DISAGREE_PP = 2.0
 # Liquidity floor, mirroring the skill's own open-slot floor. Without it the movers scan
 # returns 600+ rows dominated by sub-$1 shells that genuinely moved hundreds of percent
@@ -916,6 +919,79 @@ def resolve_news_date(ticker, answer, cutoff, articles=None):
     return _iso_z(chosen_dt), chosen.get("article_url"), _iso_z(freshest_dt)
 
 
+# ---------------------------------------------------------------------------
+# THE SOURCE OF RECORD: SEC EDGAR (2026-11-17)
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. The news vendor's TICKER INDEX is the capture's only news path,
+# and for a nano-cap it is a hole. Measured 2026-11-17 on the thirteen movers the
+# 2026-11-16 08:30 board could not explain: EIGHT of them have ZERO articles in the
+# vendor's index, and the other five hold articles from 2024-2026-07 - ZERO of the
+# thirteen had an in-window article. The provider cannot cover this population, so
+# the coverage floor could not be cleared no matter how the budget was spent.
+#
+# EDGAR IS THE SOURCE OF RECORD FOR A US LISTED ISSUER, and it is FREE:
+#   * `company_tickers.json` maps a ticker to its CIK (one fetch, cached per run);
+#   * the full-text search endpoint, queried BY CIK and by date, returns the
+#     company's own filings with their filing date, form type and - for an 8-K -
+#     the ITEM NUMBERS, which are a catalyst classification in themselves:
+#     1.01 material definitive agreement, 2.02 results of operations,
+#     3.01 failure to satisfy a continued listing rule, 3.02 unregistered sale of
+#     equity, 4.02 non-reliance on previously issued financial statements,
+#     7.01 Regulation FD (usually a press release), 8.01 other events;
+#   * the filing's EX-99.1 exhibit is the PRESS RELEASE, and its first line is the
+#     catalyst headline.
+#
+# MEASURED YIELD on the same thirteen: EIGHT of them have a catalyst-bearing filing
+# inside the window, and the items are the causes - DVLT 8-K item 3.01 (a continued
+# listing failure) on 2026-11-13, CGON 8-K item 7.01 (a press release: "PIVOT-006
+# Phase 3 Registrational Trial Demonstrates Unprecedented Improvement in
+# Recurrence-Free Survival") on 2026-11-16, LXEO 8-K item 2.02 (results of
+# operations) on 2026-11-16, SHFS 8-K items 1.01 + 3.02 (a definitive agreement and
+# an unregistered equity sale) on 2026-11-12.
+#
+# WHAT IT DOES NOT COVER: a press release that was never FILED. GMM's Nov-16
+# Anthropic announcement was a GlobeNewswire release with no filing, and the
+# vendor's index does not hold it either - so GMM stays unexplained, and that is
+# the honest result. EDGAR covers FILINGS; the vendor covers what it covers; a
+# press release that reaches neither is a name with no findable cause.
+#
+# It is therefore PHASE B: after the provider's article feed (whose per-ticker
+# sentiment is the EXACT direction) and BEFORE the grounded router (which costs
+# $0.02 a call and usually returns an UNDATED summary). A dated filing beats an
+# undated summary, and it is free.
+EDGAR_UA = "MavisFleet/1.0 (mavis-agent@example.com)"
+EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
+EDGAR_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accn}/{name}"
+# The forms that can plausibly BE the cause of a move on a pre-open tape. 13F/13D/
+# SC 13G are HOLDINGS reports - a fund's position is not a cause of a move - and
+# they are excluded, or every mid-cap would "have a filing" every fortnight.
+EDGAR_CATALYST_FORMS = {
+    "8-K", "8-K/A", "6-K", "6-K/A", "20-F", "20-F/A", "10-Q", "10-Q/A", "10-K",
+    "10-K/A", "424B5", "424B3", "424B4", "S-1", "S-1/A", "F-1", "F-1/A", "40-F",
+}
+# THE 8-K ITEM NUMBERS, as a catalyst CLASS. An item number is a filing's own
+# statement of what happened, and it is dated and checkable.
+EDGAR_ITEMS = {
+    "1.01": ("Entry into a Material Definitive Agreement", "acquisition"),
+    "1.02": ("Termination of a Material Definitive Agreement", "acquisition"),
+    "1.03": ("Bankruptcy or Insolvency", "other"),
+    "2.01": ("Completion of Acquisition or Disposition of Assets", "acquisition"),
+    "2.02": ("Results of Operations and Financial Condition", "earnings"),
+    "3.01": ("Failure to Satisfy a Continued Listing Rule", "listing"),
+    "3.02": ("Unregistered Sale of Equity Securities", "offering"),
+    "3.03": ("Material Modification to Rights of Security Holders", "other"),
+    "4.01": ("Change in Certifying Accountant", "other"),
+    "4.02": ("Non-Reliance on Previously Issued Financial Statements", "other"),
+    "5.02": ("Departure or Election of Directors or Officers", "other"),
+    "5.07": ("Submission of Matters to a Vote of Security Holders", "other"),
+    "7.01": ("Regulation FD Disclosure", "other"),
+    "8.01": ("Other Events", "other"),
+    "9.01": ("Financial Statements and Exhibits", "other"),
+}
+EDGAR_WORKERS = 4
+
+
 def infer_cat(text):
     if not text:
         return "other"
@@ -924,6 +1000,233 @@ def infer_cat(text):
         if re.search(pat, t):
             return cat
     return "other"
+
+
+def _http_get(url, headers=None, timeout=30):
+    """One GET. Returns the body as text, or None."""
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+
+
+def edgar_ticker_ciks():
+    """ticker -> CIK, from the SEC's own mapping file. Fetched once per run.
+
+    10,404 entries, ~800 KB, ~1.2 s. Cached for the process: the capture asks
+    about at most a couple of dozen names and this file answers all of them.
+    """
+    cached = getattr(edgar_ticker_ciks, "_map", None)
+    if cached is not None:
+        return cached
+    out = {}
+    body = _http_get(EDGAR_TICKERS_URL, headers={"User-Agent": EDGAR_UA}, timeout=60)
+    if body:
+        try:
+            for v in json.loads(body).values():
+                t = str(v.get("ticker") or "").upper()
+                if t:
+                    out[t] = str(v.get("cik_str")).zfill(10)
+        except Exception:
+            out = {}
+    edgar_ticker_ciks._map = out
+    return out
+
+
+def _strip_html(html):
+    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", html or "")
+    t = re.sub(r"(?s)<[^>]+>", " ", t)
+    t = html_mod.unescape(t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _edgar_headline(text):
+    """The catalyst line out of a filing document or its press-release exhibit.
+
+    A press-release exhibit begins with its headline in a heading tag, and the
+    stripped text starts with the EDGAR plumbing ("EX-99.1 2 <file> EX-99.1
+    Exhibit 99.1"), so the boilerplate is cut before the headline is taken. A
+    filing's COVER PAGE ("(Exact name of registrant as specified in its
+    charter) Delaware 001-41925...") is not a catalyst, so it is refused and the
+    caller falls back to the filing's item numbers.
+    """
+    t = _strip_html(text)
+    if not t:
+        return None
+    # THE EDGAR PLUMBING. An exhibit's stripped text opens with a run of tokens
+    # that are not part of the document: "EX-99.1 2 <file>.htm EX-99.1 EX-99.1
+    # Exhibit 99.1 <HEADLINE>". They are peeled off one at a time until the text
+    # stops looking like plumbing.
+    for _ in range(8):
+        before = t
+        t = re.sub(r"^(?:EX-?99\.\d+|EXHIBIT\s+99\.\d+|Exhibit\s+99\.\d+|\d+)\s+", "",
+                   t, flags=re.I)
+        t = re.sub(r"^[\w\-\.]+\.(?:htm|html|txt)\s+", "", t, flags=re.I)
+        t = t.strip()
+        if t == before:
+            break
+    for marker in ("UNITED STATES SECURITIES AND EXCHANGE COMMISSION",
+                   "CURRENT REPORT", "FORWARD-LOOKING STATEMENTS"):
+        i = t.find(marker)
+        if i >= 0:
+            t = t[i + len(marker):].strip()
+    t = re.sub(r"^(?:Pursuant to [^.]*\.\s*)+", "", t, flags=re.I).strip()
+    # THE COVER PAGE IS NOT A CATALYST. These are the openings of an SEC form's
+    # own boilerplate; a headline never starts like one.
+    if re.match(r"(?i)^\s*(?:\(?\s*Exact name of (?:the )?registrant|WASHINGTON,?\s*D\.?C\.?|"
+                r"FORM\s+(?:8-K|6-K|10-Q|10-K|20-F|S-1)|Report of Foreign Private Issuer|"
+                r"Annual Report|PROSPECTUS|This report on Form|"
+                r"(?:This|the) (?:report|document) contains forward-looking)", t):
+        return None
+    m = re.match(r"(.{20,220}?\.)(?:\s|$)", t)
+    cand = m.group(1) if m else t[:220]
+    cand = re.sub(r"\s+", " ", cand).strip()
+    if len(cand) < 25:
+        return None
+    return cand or None
+
+
+def _edgar_exhibit(cik, accn):
+    """The press-release exhibit of a filing, if it has one.
+
+    A filing's index lists its documents, and the EX-99.x exhibit is the PRESS
+    RELEASE - which is where the catalyst headline lives. The primary document of
+    an 8-K is the cover page, which says nothing about what happened.
+    """
+    accn = (accn or "").replace("-", "")
+    if not accn:
+        return None
+    body = _http_get(EDGAR_ARCHIVE_URL.format(cik=cik, accn=accn, name="index.json"),
+                     headers={"User-Agent": EDGAR_UA}, timeout=30)
+    if not body:
+        return None
+    try:
+        items = (json.loads(body).get("directory") or {}).get("item") or []
+    except Exception:
+        return None
+    names = [it.get("name") for it in items
+             if str(it.get("name") or "").lower().endswith((".htm", ".html"))
+             and re.search(r"ex.?99", str(it.get("name") or ""), re.I)]
+    if not names:
+        return None
+    names.sort(key=lambda n: (0 if re.search(r"ex.?99\.?1\b", n, re.I) else 1, n))
+    doc = _http_get(EDGAR_ARCHIVE_URL.format(cik=cik, accn=accn, name=names[0]),
+                    headers={"User-Agent": EDGAR_UA}, timeout=30)
+    return doc or None
+
+
+def edgar_filings(ticker, cutoff, ciks=None):
+    """This issuer's catalyst-bearing filings inside the window.
+
+    The window is CATALYST_MAX_AGE_DAYS back from the capture date and ENDS on
+    the capture date: a filing after the snapshot cannot have caused the move the
+    snapshot recorded.
+    """
+    ciks = ciks if ciks is not None else edgar_ticker_ciks()
+    cik = (ciks or {}).get((ticker or "").upper())
+    if not cik:
+        return []
+    end = cutoff.date() if cutoff is not None else datetime.date.today()
+    start = end - datetime.timedelta(days=CATALYST_MAX_AGE_DAYS)
+    url = (f"{EDGAR_SEARCH_URL}?ciks={cik}&dateRange=custom"
+           f"&startdt={start.isoformat()}&enddt={end.isoformat()}")
+    body = _http_get(url, headers={"User-Agent": EDGAR_UA}, timeout=30)
+    if not body:
+        return []
+    try:
+        hits = (json.loads(body).get("hits") or {}).get("hits") or []
+    except Exception:
+        return []
+    out = []
+    for h in hits:
+        s = h.get("_source") or {}
+        forms = [f for f in (s.get("root_forms") or []) if f in EDGAR_CATALYST_FORMS]
+        if not forms:
+            continue
+        fd = s.get("file_date")
+        if not fd:
+            continue
+        try:
+            if datetime.date.fromisoformat(fd) > end:
+                continue
+        except Exception:
+            continue
+        items = [i for i in (s.get("items") or []) if i]
+        out.append({
+            "date": fd,
+            "form": forms[0],
+            "items": items,
+            "accn": s.get("adsh") or "",
+            "cik": cik,
+            "doc": (h.get("_id") or "").split(":")[-1],
+            "index_url": EDGAR_ARCHIVE_URL.format(
+                cik=cik, accn=(s.get("adsh") or "").replace("-", ""),
+                name=f"{(s.get('adsh') or '').replace('-', '')}-index.htm"),
+        })
+    out.sort(key=lambda f: (f["date"], f["form"]), reverse=True)
+    return out
+
+
+def edgar_catalyst(ticker, cutoff, ciks=None):
+    """A DATED, CHECKABLE catalyst from SEC EDGAR for one name - or None.
+
+    The filing's own document is fetched to get the catalyst LINE: a press-release
+    exhibit's first sentence is the headline ("PIVOT-006 Phase 3 Registrational
+    Trial Demonstrates Unprecedented Improvement in Recurrence-Free Survival"), and
+    when there is no exhibit the ITEM NUMBERS carry the classification ("filed an
+    8-K on 2026-11-16 (Item 3.01 - Failure to Satisfy a Continued Listing Rule)").
+    """
+    filings = edgar_filings(ticker, cutoff, ciks=ciks)
+    if not filings:
+        return None
+    best = None
+    for f in filings:
+        # The strongest filing for a MOVE: an 8-K with items (an event), then a
+        # 6-K (a foreign issuer's report), then a periodic report, then an
+        # offering document.
+        rank = (0 if f["items"] else (1 if f["form"].startswith("6-K") else
+                                      (2 if f["form"].startswith(("10-", "20-")) else 3)))
+        if best is None or rank < best[0]:
+            best = (rank, f)
+        if rank == 0:
+            break
+    if best is None:
+        return None
+    f = best[1]
+    why = None
+    accn = (f.get("accn") or "").replace("-", "")
+    # THE PRESS RELEASE FIRST. The filing's primary document is a cover page;
+    # the EX-99.1 exhibit is the press release, and its first line IS the catalyst.
+    if accn:
+        exhibit = _edgar_exhibit(f["cik"], accn)
+        if exhibit:
+            why = _edgar_headline(exhibit)
+    if not why and accn and f.get("doc"):
+        doc = _http_get(EDGAR_ARCHIVE_URL.format(cik=f["cik"], accn=accn, name=f["doc"]),
+                        headers={"User-Agent": EDGAR_UA}, timeout=30)
+        why = _edgar_headline(doc) if doc else None
+    if not why:
+        # No exhibit and no usable document: the filing itself is the cause, and
+        # its ITEM NUMBERS are the classification.
+        descs = [f"{i} ({EDGAR_ITEMS[i][0]})" for i in f["items"] if i in EDGAR_ITEMS]
+        if descs:
+            why = (f"filed a {f['form']} with the SEC on {f['date']} — "
+                   + "; ".join(descs[:3]))
+        else:
+            why = f"filed a {f['form']} with the SEC on {f['date']}"
+    cat = "other"
+    for i in f["items"]:
+        if i in EDGAR_ITEMS:
+            cat = EDGAR_ITEMS[i][1]
+            break
+    if cat == "other":
+        cat = infer_cat(why)
+    return {"why": why, "date": f["date"], "url": f["index_url"], "cat": cat,
+            "form": f["form"], "items": f["items"]}
+
+
+
 
 
 def pm_notional(pr):
@@ -1134,9 +1437,22 @@ def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
     # PHASE A - the article feed, for every name in the pool. Cheap, and it dates.
     with _cf.ThreadPoolExecutor(max_workers=CATALYST_WORKERS) as ex:
         art = dict(zip(pool, ex.map(lambda t: article_catalyst(t, cutoff), pool)))
-    # PHASE B - the router, only for the names the feed could not date, and never
-    # more than the budget.
-    need = [t for t in pool if not (art.get(t) or {}).get("in_window")][:budget]
+    # PHASE B - SEC EDGAR, for the names the feed could not date. FREE, dated and
+    # checkable, and a filing's own 8-K ITEM NUMBERS are a classification in
+    # themselves. It sits BETWEEN the feed and the router because a dated filing
+    # beats an undated summary - and because the router costs $0.02 a call.
+    need_edgar = [t for t in pool if not (art.get(t) or {}).get("in_window")]
+    edg = {}
+    if need_edgar:
+        ciks = edgar_ticker_ciks()
+        with _cf.ThreadPoolExecutor(max_workers=EDGAR_WORKERS) as ex:
+            edg = dict(zip(need_edgar,
+                           ex.map(lambda t: edgar_catalyst(t, cutoff, ciks), need_edgar)))
+    # PHASE C - the router, only for the names NEITHER the feed nor EDGAR dated, and
+    # never more than the budget.
+    need = [t for t in pool
+            if not (art.get(t) or {}).get("in_window")
+            and not (edg.get(t) or {}).get("why")][:budget]
     with _cf.ThreadPoolExecutor(max_workers=CATALYST_WORKERS) as ex:
         gnd = dict(zip(need, ex.map(lambda t: call_grounded(t, names.get(t)), need)))
 
@@ -1166,6 +1482,18 @@ def resolve_catalysts(pool, cutoff, budget, names=None, pcts=None):
                       "conf": conf, "src": "pipeworx", "tool": "polygon_io_news",
                       "origin": "article", "ref": a.get("url"), "error": a.get("error"),
                       "sentiment": a.get("sentiment")}
+            continue
+        # PHASE B - A FILING. The provider's index had nothing in-window for this
+        # name, and SEC EDGAR did: a dated, checkable document, with the filing's
+        # own item numbers as the classification. It is the FIRST choice when it
+        # exists, because it carries a DATE (the router's answer usually does not)
+        # and the press-release exhibit carries the headline itself.
+        e = edg.get(t) or {}
+        if e.get("why"):
+            out[t] = {"why": e["why"], "date": e["date"], "url": e.get("url"),
+                      "conf": "medium", "src": "pipeworx", "tool": "sec_edgar",
+                      "origin": "edgar", "ref": e.get("url"), "error": a.get("error"),
+                      "sentiment": None, "cat": e.get("cat")}
             continue
         g = gnd.get(t) or {}
         if not (g.get("answer") and not g.get("refusal")):
@@ -1440,7 +1768,7 @@ def build(date_str, checkpoint, top_n=8):
             stale_dropped.append(tk)
         if cat and cat.get("why"):
             rec["why"] = cat["why"]
-            rec["cat"] = infer_cat(cat["why"])
+            rec["cat"] = cat.get("cat") or infer_cat(cat["why"])
             rec["ref"] = cat.get("ref")
             rec["conf"] = cat.get("conf") or "low"
             rec["src"] = cat.get("src") or "scanner"
@@ -1552,6 +1880,9 @@ def build(date_str, checkpoint, top_n=8):
             "catalyst_dated": sum(1 for r in rows if r.get("news_date")),
             "catalyst_article": sum(1 for c in cats.values() if c.get("origin") == "article"),
             "catalyst_router": sum(1 for c in cats.values() if c.get("origin") == "router"),
+            # THE FILING leg, counted on its own: the source of record for a US
+            # listed issuer, and the leg that closed the nano-cap coverage gap.
+            "catalyst_edgar": sum(1 for c in cats.values() if c.get("origin") == "edgar"),
             "sign_conflicts": sum(1 for r in rows if r.get("sign_conflict")),
             # THE GATED MEASUREMENT, and the counts that make it auditable.
             "mover_coverage": (round(mover_coverage, 4)
@@ -1663,7 +1994,8 @@ def main():
           f"premarket_unprinted={res.get('premarket_unprinted')}, "
           f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
           f"catalysts: dated={res.get('catalyst_dated')} "
-          f"(article={res.get('catalyst_article')}, router={res.get('catalyst_router')}), "
+          f"(article={res.get('catalyst_article')}, edgar={res.get('catalyst_edgar')}, "
+          f"router={res.get('catalyst_router')}), "
           f"pool={res.get('catalyst_pool')}, article_errors={res.get('article_errors')}, "
           f"router_errors={res.get('router_errors')}, "
           f"sign_conflicts={res.get('sign_conflicts')}, "

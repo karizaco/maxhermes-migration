@@ -2,6 +2,8 @@
 """
 PREOPEN_DIGEST_V2
 PREOPEN_MOVER_COVERAGE_V1
+PREOPEN_EDGAR_V1
+PREOPEN_SIZE_SPLIT_V1
 make_digest.py — render the human-readable board that sits BESIDE a pre-open tape.
 
 WHY THIS EXISTS
@@ -57,6 +59,7 @@ USAGE
 import argparse
 import json
 import os
+import urllib.request
 
 TOP_N = 15
 DIGEST_COLUMNS = ["Ticker", "%", "Conf", "Catalyst", "When it broke"]
@@ -201,8 +204,54 @@ def published_movers(top):
     return [r for r in top if r.get("pct") is not None]
 
 
+TV_SCAN = "https://scanner.tradingview.com/america/scan"
+# The size cut for the board's size split. Measured 2026-11-17 on the live band:
+# 14 of the 15 movers the 2026-11-16 boards published had a market cap of $62M or
+# LESS (XXII $0.27M, POLA $1.50M, ZBAO $1.81M, GP $2.96M ... HZN $6.5B was the only
+# large one) while the band itself is ~59% above $50M - ranking by |%| is a SIZE-BIASED
+# selector, because the smallest float produces the wildest percentage.
+SIZE_SPLIT_CAP = 50_000_000
+
+
+def market_caps(tickers):
+    """The published movers' market caps, from the SAME scanner that priced them.
+
+    ONE POST, and it FAILS SOFT: the size split is CONTEXT, and a context line
+    that cannot be measured is published as unavailable rather than invented.
+
+    WHY THE BOARD PULLS IT AND THE TAPE DOES NOT CARRY IT. The tape's row shape is
+    a contract with cron #17, and this adds a DIMENSION to the board rather than
+    restating a tape number - so the board still cannot disagree with the data
+    cron #17 reads at 15:50. It is the same endpoint, the same columns and the
+    same names the capture used minutes earlier.
+    """
+    syms = [t for t in (tickers or []) if t]
+    if not syms:
+        return {}
+    body = {"filter": [{"left": "type", "operation": "equal", "right": "stock"},
+                        {"left": "name", "operation": "in_range", "right": syms}],
+            "columns": ["name", "market_cap_basic"], "range": [0, len(syms) + 5]}
+    try:
+        req = urllib.request.Request(
+            TV_SCAN, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
+        data = json.loads(urllib.request.urlopen(req, timeout=30).read().decode())
+    except Exception:
+        return {}
+    out = {}
+    for rec in (data.get("data") or []):
+        d = rec.get("d") or []
+        if len(d) < 2:
+            continue
+        t = (d[0] or "").upper()
+        try:
+            out[t] = float(d[1])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def render(rows, date_str, slot, tape_name, scan_note):
-    n = len(rows)
     grok = sum(1 for r in rows if r.get("src") == "grok")
     scanner = sum(1 for r in rows if r.get("src") == "scanner")
     stocktwits = sum(1 for r in rows if r.get("src") == "stocktwits")
@@ -253,14 +302,16 @@ def render(rows, date_str, slot, tape_name, scan_note):
         else:
             out.append(f"> ⚠ **DEGRADED — mover coverage {mv_pct:.0f}% is below the "
                        f"{floor_pct:.0f}% floor.** The movers on this board are priced but "
-                       f"unexplained: the catalyst budget did not reach them. "
+                       f"unexplained: the catalyst pipeline could not resolve a dated cause "
+                       f"for them. "
                        f"**{mv_total - mv_named} of the {mv_total} published movers carry "
                        f"no cause at all** — read those names as MOVERS, not as explained "
                        f"moves.")
-            out.append(f"> **Cause:** the grounded catalyst call did not explain them — "
-                       f"{mv_total - mv_named} of the {mv_total} movers this board publishes "
-                       f"carry the pre-market scan price only (the movers scan / the "
-                       f"pre-market band). The tape is complete; the EXPLANATION is not.")
+            out.append(f"> **Cause:** the catalyst pool is sized to cover every mover this "
+                       f"board publishes, so this is NOT a budget shortfall — the news "
+                       f"provider held no in-window article for these names, and the "
+                       f"grounded router could not date a cause for them either. The tape "
+                       f"is complete; the EXPLANATION is not.")
         out.append("")
     out.append(f"- **Tape:** `{tape_name}` · **records:** {n} · **grok:** {grok} · "
                f"**scanner:** {scanner} · **unverified:** {unv}")
@@ -291,6 +342,28 @@ def render(rows, date_str, slot, tape_name, scan_note):
                f"**unexplained:** {unexplained} records "
                f"({len(price_only)} price-only · {len(narrative_only)} narrative-only) · "
                f"CONTEXT ONLY — not the gated number")
+    # THE SIZE SPLIT - WHY the coverage is what it is, in one line. A board whose
+    # movers are overwhelmingly micro-caps is a board the news vendor cannot cover:
+    # measured 2026-11-17, polygon's ticker index held NO in-window article for any
+    # of the 13 movers the 2026-11-16 boards could not explain. The reader deserves
+    # to see the population, not just the percentage.
+    if movers:
+        caps = market_caps([r.get("ticker") for r in movers])
+        if caps:
+            big = [r for r in movers
+                   if (caps.get((r.get("ticker") or "").upper()) or 0) >= SIZE_SPLIT_CAP]
+            small = [r for r in movers
+                     if (caps.get((r.get("ticker") or "").upper()) or 0) < SIZE_SPLIT_CAP]
+            big_named = sum(1 for r in big if r.get("why"))
+            small_named = sum(1 for r in small if r.get("why"))
+            out.append(f"- **Size split of the published movers:** "
+                       f"≥${SIZE_SPLIT_CAP / 1e6:.0f}M cap: {big_named}/{len(big)} explained · "
+                       f"<${SIZE_SPLIT_CAP / 1e6:.0f}M cap: {small_named}/{len(small)} explained · "
+                       f"CONTEXT — a micro-cap-dominated board publishes the movers no news "
+                       f"vendor indexes")
+        else:
+            out.append("- **Size split of the published movers:** unavailable (the "
+                       "market-cap pull failed) · CONTEXT")
     out.append("- **Grok call:** not used — the xAI chat API no longer serves live search "
                "(HTTP 410) and the Agent Tools API is not enabled on this key · cost **$0.0000**")
     out.append(f"- **Snapshot:** {scan_note}")

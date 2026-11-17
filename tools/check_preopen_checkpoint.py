@@ -56,7 +56,7 @@ CATALYST_MAX_AGE_DAYS = 4
 # The capture script the procedure must demand. The version moves when the capture's
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
-CAPTURE_VERSION = "2026-11-17.1"
+CAPTURE_VERSION = "2026-11-17.2"
 # THE MOVER COVERAGE FLOOR - the share of the MOVERS THE BOARD PUBLISHES that must
 # carry a cause for the board to be doing its job.
 #
@@ -262,6 +262,17 @@ def check_procedure(path):
     check(re.search(r"article feed stops early|stops early on a repeated", t, re.I) is not None,
           "the procedure states that the metered article feed stops early on a "
           "repeated identical error")
+    # 10. the procedure states the SOURCE OF RECORD and the CORRECTED degradation
+    # cause (2026-11-17). A procedure that still says the budget was the cause sends
+    # the reader looking for a problem that does not exist.
+    check(re.search(r"SEC EDGAR|EDGAR", t) is not None,
+          "the procedure states that SEC EDGAR is the source of record for a US "
+          "listed issuer")
+    check(re.search(r"size split", t, re.I) is not None,
+          "the procedure states that the board publishes the size split (context)")
+    check(re.search(r"budget did not reach", t, re.I) is None,
+          "the procedure does NOT mandate the false 'the catalyst budget did not "
+          "reach them' cause - the pool covers every mover the board publishes")
 
 
 # ---- static: the shared scripts -----------------------------------------------
@@ -390,6 +401,33 @@ def check_script(path):
           "the capture reports the provider failures in its own ledger")
 
     # ------------------------------------------------------------------
+    # SEC EDGAR IS THE SOURCE OF RECORD (2026-11-17). Without it the coverage
+    # floor could not be CLEARED: the news vendor's ticker index held no
+    # in-window article for ANY of the 13 movers the 2026-11-16 checkpoints could
+    # not explain (eight had zero articles ever; AKAN's newest was from 2024),
+    # while EIGHT of the same thirteen had a catalyst-bearing filing in EDGAR
+    # inside the window - DVLT's Nasdaq trading suspension, CGON's PIVOT-006
+    # Phase 3 readout, LXEO's interim data. A capture with no source of record
+    # for the filings that ARE the news cannot clear its own floor.
+    # ------------------------------------------------------------------
+    check("sec_edgar" in t and "edgar_catalyst" in t,
+          "the capture resolves catalysts through SEC EDGAR - the source of record "
+          "for a US listed issuer")
+    check("efts.sec.gov" in t or "EDGAR_SEARCH_URL" in t,
+          "the capture reaches EDGAR's search endpoint by CIK and by date")
+    check("company_tickers.json" in t,
+          "the capture maps a ticker to its CIK (the SEC's own ticker file)")
+    # The EDGAR leg must sit BETWEEN the article feed and the router: a dated
+    # filing beats an undated summary, and the router is the metered leg.
+    m_ph = re.search(r"def resolve_catalysts.*?article_catalyst\(t, cutoff\).*?"
+                     r"edgar_catalyst\(t, cutoff.*?call_grounded\(t, names", t, re.S)
+    check(m_ph is not None,
+          "the pipeline order is article feed -> EDGAR -> router (a dated filing beats "
+          "an undated summary, and the router costs money)")
+    check("EDGAR_ITEMS" in t and "sec_edgar" in t,
+          "a filing's own 8-K ITEM NUMBERS are used as the catalyst classification")
+
+    # ------------------------------------------------------------------
     # THE RETRY BELONGS ON THE CHEAP LEG (2026-11-17).
     #
     # Measured 2026-11-17: the grounded router answered 4 of 5 calls for AKAN
@@ -476,6 +514,12 @@ def check_digest_script(path):
     check("PREOPEN_DIGEST_V2" in t, "carries the PREOPEN_DIGEST_V2 marker")
     check("PREOPEN_MOVER_COVERAGE_V1" in t,
           "carries the PREOPEN_MOVER_COVERAGE_V1 marker (this renderer's metric)")
+    check("PREOPEN_EDGAR_V1" in t,
+          "carries the PREOPEN_EDGAR_V1 marker - the renderer that publishes the board "
+          "whose catalyst leg is SEC EDGAR")
+    check("PREOPEN_SIZE_SPLIT_V1" in t,
+          "carries the PREOPEN_SIZE_SPLIT_V1 marker - the renderer that publishes the "
+          "size split and the CORRECTED degradation cause")
     check("DIGEST_COLUMNS" in t and "Ticker" in t,
           "the board's columns are fixed in code")
     check("TOP_N = 15" in t, "the board lists the top 15 movers")
@@ -949,6 +993,18 @@ def check_digest(tape_path, digest_path, slot):
         check(m_fl is not None and int(m_fl.group(1)) == int(round(MOVER_COVERAGE_FLOOR * 100)),
               f"the board publishes the floor it was measured against "
               f"({int(round(MOVER_COVERAGE_FLOOR * 100))}%)")
+        # THE SIZE SPLIT (2026-11-17). It is CONTEXT, and it FAILS SOFT: the board
+        # either publishes the split or says it could not be measured. It is never
+        # silently absent - a split line that vanishes is the same silent failure as
+        # a coverage line that vanishes.
+        m_sz = re.search(r"\*\*Size split of the published movers:\*\*\s*(.+)", t)
+        if check(m_sz is not None,
+                 "the board publishes the SIZE SPLIT of the published movers (context; "
+                 "it is why the coverage is what it is)"):
+            sz = m_sz.group(1)
+            check(re.search(r"unavailable|explained", sz) is not None,
+                  "the size split either publishes the explained/ published counts or "
+                  "says it is unavailable - it never publishes a wrong split")
         degraded = "DEGRADED" in t
         m_st = re.search(r"\*\*(BELOW FLOOR|AT OR ABOVE THE FLOOR)\*\*", t)
         if check(m_st is not None,
@@ -970,9 +1026,14 @@ def check_digest(tape_path, digest_path, slot):
                       "the degradation says WHY the metric is undefined (the digest "
                       "published no movers table)")
             else:
-                check(re.search(r"grounded catalyst call", t, re.I) is not None,
-                      "the degradation NAMES THE CAUSE (the grounded catalyst call did "
-                      "not explain those rows)")
+                check(re.search(r"could not resolve a dated cause|no in-window article",
+                                t, re.I) is not None,
+                      "the degradation NAMES THE CAUSE (the pipeline could not resolve a "
+                      "dated cause for those rows)")
+                check(re.search(r"budget did not reach", t, re.I) is None,
+                      "the degradation does NOT blame the catalyst budget - the pool is "
+                      "sized to cover every mover the board publishes, so a budget "
+                      "shortfall was never the constraint (it was wrong on 2026-11-16)")
             # WHICH names are unexplained. A degradation that says "some of them" is not
             # a finding: every unexplained mover on the board has to be named. When the
             # board published no movers at all there is nothing to name, and the

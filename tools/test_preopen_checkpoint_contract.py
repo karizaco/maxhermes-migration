@@ -867,6 +867,75 @@ def m_router_errors_uncounted(tape, digest, repo):
     return True
 
 
+
+# ---- the source-of-record and the corrected-cause breaches (2026-11-17) --------
+
+
+def m_no_edgar_source(tape, digest, repo):
+    """The capture stops using SEC EDGAR - the SOURCE OF RECORD.
+
+    Measured 2026-11-17: the news vendor's ticker index held NO in-window article
+    for ANY of the 13 movers the 2026-11-16 checkpoints could not explain (eight
+    had zero articles ever; AKAN's newest was from 2024), while EIGHT of the same
+    thirteen had a catalyst-bearing filing in EDGAR inside the window - DVLT's
+    Nasdaq trading suspension, CGON's PIVOT-006 Phase 3 readout, LXEO's interim
+    data. A capture with no source of record for the filings that ARE the news
+    cannot clear its own floor.
+    """
+    p = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    mutate(p, 'EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"',
+           'EDGAR_SEARCH_URL = "https://example.invalid/search"')
+    mutate(p, 'EDGAR_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"',
+           'EDGAR_TICKERS_URL = "https://example.invalid/tickers.json"')
+    mutate(p, "ex.map(lambda t: edgar_catalyst(t, cutoff, ciks), need_edgar))",
+           "ex.map(lambda t: None, need_edgar))")
+    mutate(p, '"origin": "edgar"', '"origin": "none"')
+    return True
+
+
+def m_no_size_split(tape, digest, repo):
+    """The board stops publishing the SIZE SPLIT.
+
+    The split is CONTEXT, and it is why the coverage is what it is: a board whose
+    movers are overwhelmingly micro-caps is a board the news vendor cannot cover.
+    A split line that VANISHES is the same silent failure as a coverage line that
+    vanishes - the reader is left with a percentage and no population.
+    """
+    s = open(digest, encoding="utf-8").read()
+    lines = s.splitlines(True)
+    hit = [i for i, l in enumerate(lines) if "Size split of the published movers" in l]
+    if not hit:
+        raise AssertionError("the fixture board carries no size split")
+    for i in reversed(hit):
+        del lines[i]
+    out = "".join(lines)
+    if out == s:
+        raise AssertionError("the mutation did not change the board")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
+def m_budget_cause_restored(tape, digest, repo):
+    """The board goes back to blaming the CATALYST BUDGET.
+
+    It said "the catalyst budget did not reach them" on 2026-11-16, and that was
+    FALSE: the pool is the top N by |%|, the table is the top 15 of the same
+    ranking, and all fifteen had a router call. The real cause was the provider's
+    ticker index. A board that names the wrong cause sends the reader looking for
+    a budget problem that does not exist.
+    """
+    s = open(digest, encoding="utf-8").read()
+    # The rendered cause text wraps across lines, so the target is an unbroken
+    # fragment of it - a mutation whose target does not exist is reported as a
+    # failure by the harness, never as a false pass.
+    out = s.replace("the catalyst pool is sized to cover every mover this",
+                    "the catalyst budget did not reach them")
+    if out == s:
+        raise AssertionError("the fixture board does not carry the corrected cause")
+    open(digest, "w", encoding="utf-8").write(out)
+    return True
+
+
 CASES = [
     # (name, expect_pass, mutator, fixture_builder)
     ("a conforming tape + board passes the checker", True, None),
@@ -946,6 +1015,13 @@ CASES = [
      m_feed_retries_forever),
     ("a capture that does not COUNT the router's failures is caught", False,
      m_router_errors_uncounted),
+    # THE SOURCE OF RECORD AND THE CORRECTED CAUSE (2026-11-17).
+    ("a capture that stops using SEC EDGAR as its source of record is caught", False,
+     m_no_edgar_source),
+    ("a board that stops publishing the SIZE SPLIT is caught", False,
+     m_no_size_split),
+    ("a board that blames the CATALYST BUDGET again is caught", False,
+     m_budget_cause_restored, build_low_coverage),
 ]
 
 
