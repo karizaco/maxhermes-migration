@@ -522,3 +522,75 @@ published watchlist was fetched (8 names) and none reports today, so the watchli
 omitted rather than shipped empty. Yahoo's quote API was HTTP 429 (a rate limit, not an absence):
 the roster market cap came from the Nasdaq earnings-calendar field and was cross-checked against
 the TradingView issuer-level cap (2.8% spread).
+
+---
+
+## 7. The 2026-11-18 fire — a date sweep that puts a name on the wrong day, and a market-cap field that went dark
+
+**Date:** 2026-11-18 (the 06:00 ET fire) · **Scope:** cron #19's skill spec
+(`cloud-prompts/skills/earnings-reminder/SKILL.md`) and its artifact contract · **Commit:**
+`cron 19 earnings-reminder-daily 2026-11-18` in `karizaco/minimax-cloud-outputs` (artifact
+`earnings/2026-11-18-reminders.md`, checker `EARNINGS_REMINDER_V4`, 16/16 checks passed).
+
+### 7.1 A TradingView date stamp can be WRONG, not just stale — the sweep's hit was a false row
+
+The `america` scanner's `earnings_release_next_date` sweep for 2026-11-18 returned 76 US names,
+six of them S&P 500 members: PANW, TJX, LOW, TGT, P and **CPRT (Copart)**. Copart's own
+reporting pattern, Nasdaq/Zacks and MarketBeat all put its Q1 FY2027 print on **November 19**,
+and the company had not confirmed a date. Publishing the sweep's hit would have put a false
+2026-11-18 row in the roster for an S&P 500 member — the sweep is a completeness instrument, not
+a source of record for the date.
+
+The 2026-11-12 note already records a stamp that is STALE (a name drops out of the roster
+because of it). This is the opposite failure mode: **a name appears on the wrong day.** The
+skill now says that every name a date sweep surfaces must be confirmed on a second source
+before it is published, whether it is a hit or a miss. The three Rule B exclusions the fire
+recorded are the same rule in action: CPRT (issuer has not confirmed; three sources say Nov 19),
+SMPNY/Sompo (the issuer's own calendar says Nov 19, 3:30pm JST, against EarningsWhispers'
+"confirmed … November 18, before the market open"), and LNVGY/Lenovo (no issuer-confirmed
+Nov 18 date).
+
+### 7.2 Yahoo's `v7/finance/quote` is Unauthorized from the Cloud egress
+
+The endpoint answers `{"finance":{"result":null,"error":{"code":"Unauthorized"…}}}` with and
+without a crumb, so the skill's standing "Yahoo for market cap" cannot be served.
+`v10/finance/quoteSummary?modules=earningsTrend` still works with the seeded jar + crumb, so
+the EPS and revenue estimates were unaffected. The roster's market caps therefore came from the
+TradingView scanner's `market_cap_basic` (issuer-level USD) — the same source the band table
+already requires, so the caps and the band order came from the same scanner row — and the
+Yahoo quote endpoint was published as `degraded` in `## Source health`. Note the drift across
+fires: on 2026-11-16 the same field was served from the Nasdaq calendar, on 2026-11-18 from
+Yahoo. **Three sources, three bases, for one column.** The skill now fixes the scanner as the
+cap source for this routine and requires the degraded row to be named.
+
+### 7.3 What proves an overnight print
+
+`## Already reported` needs a dated issuer release WITH a timestamp, not a date alone.
+Measured 2026-11-18: Tencent's results PDF on `tencent.com` plus the HKEX filing timestamp
+(08:30 UTC = 03:30 ET) fix the ET day of a Hong Kong print, and Hafnia's Business Wire company
+announcement carries a publication timestamp of 01:38 ET that proves the print landed before
+the 06:00 fire. By the same rule **Metro Inc** and **Golar LNG** — both issuer-confirmed for
+November 18 — were NOT published as already-reported, because neither release hour was
+confirmed as before 06:00 ET; both are named in the artifact's notes instead of being guessed
+into the table.
+
+### 7.4 The Pass B completeness check is a per-market sweep
+
+Fifteen `scanner.tradingview.com/<market>/scan` date sweeps (one per market, over the
+standing candidate list's venues) answered in one pass and found exactly ONE standing-list
+candidate for the day. The working market slugs are `taiwan`, `japan`, `korea`, `hongkong`,
+`australia`, `canada`, `brazil`, `singapore`, `india`, `uk`, `germany`, `switzerland`,
+`france`, `spain`, `netherlands` — `london`, `paris`, `madrid`, `amsterdam` and `swiss` answer
+HTTP 404. The sweep's hits still need issuer confirmation; the sweep is the completeness
+evidence, not the source of record.
+
+### 7.5 What the fire published
+
+US roster 5 rows (P, PANW, TGT, TJX, LOW), non-US table 1 row (Tencent, `0700.HK`, already
+reported), band 10 rows, two already-reported rows (Tencent 03:30 ET; Hafnia 01:38 ET). The
+coverage floor was measured on this fire — 5,520 US names = 4,941 below the $40B band + 67 in
+the band + 410 at or above the $50B floor + 102 with no cap — and published in the three places
+the contract requires. The published watchlist was fetched (8 tickers) and none reports today,
+so the watchlist section was omitted rather than shipped empty. Two EPS spreads beyond the 2%
+tolerance are named in the artifact (PANW $0.97 vs Nasdaq's $0.52; P $0.78 vs $0.27) with the
+basis difference explained rather than averaged away.

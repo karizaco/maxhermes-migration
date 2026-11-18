@@ -975,6 +975,63 @@ coverage_floor: floor_usd=50000000000 band_low_usd=40000000000 us_population=554
   Telefonica cut its revenue-growth target while raising three others, and KEPCO missed the
   Yonhap Infomax consensus by 47% — a headline that a single "revenue grew" cell would have lost.
 
+## Traps measured on the 2026-11-18 fire — re-verify, but they are not opinions
+
+- **Yahoo's `v7/finance/quote` is `Unauthorized` from the Cloud egress, so "Yahoo for market
+  cap" is no longer satisfiable.** Measured 2026-11-18: the endpoint answers
+  `{"finance":{"result":null,"error":{"code":"Unauthorized"…}}}` both with and without a crumb,
+  while `v10/finance/quoteSummary?modules=earningsTrend` works fine with the seeded jar + crumb
+  (so the estimate fields are unaffected). **Take the roster's market cap from the TradingView
+  scanner's `market_cap_basic` (issuer-level USD) — the same source the band table wants, so
+  the caps and the band order come from the same row — and record the Yahoo quote endpoint as
+  `degraded` in `## Source health`.** A silent switch of source is not allowed; the 2026-11-16
+  fire served the field from the Nasdaq calendar instead, which is a third source and a third
+  basis.
+
+- **A TradingView `earnings_release_next_date` stamp can be plain WRONG, not merely stale.**
+  Measured 2026-11-18: the `america` date sweep stamped **CPRT (Copart) for 2026-11-18**, but
+  Copart's own reporting pattern, Nasdaq/Zacks and MarketBeat all put it at **November 19** —
+  and CPRT is an S&P 500 member, so publishing the sweep's hit would have put a false row in
+  the roster. The 2026-11-12 note warns that a stamp can be STALE (a name drops out); this is
+  the opposite failure — a name appears on the WRONG day. **Every name a date sweep surfaces
+  must be confirmed on a second source (issuer page, Nasdaq calendar, EarningsWhispers) before
+  it is published, whether it is a hit or a miss.**
+
+- **EarningsWhispers' "is confirmed to report earnings on …" is still not an issuer source for a
+  foreign issuer's ADR.** Measured 2026-11-18: SMPNY (Sompo Holdings) read "confirmed …
+  November 18, before the market open" while Sompo's own investor calendar says **November 19,
+  3:30pm JST** (= Nov 19 01:30 ET). The issuer's IR calendar overrules the aggregator for every
+  non-US issuer (step 8).
+
+- **What proves an overnight print, and what does not.** Measured 2026-11-18: the **Tencent**
+  results PDF on `tencent.com` plus the HKEX filing timestamp (08:30 UTC = 03:30 ET) fix the ET
+  day of a Hong Kong print, and **Hafnia**'s Business Wire company announcement carries a
+  publication timestamp (01:38 ET) that proves the print landed before the 06:00 fire. A dated
+  issuer release WITH a timestamp is publishable in `## Already reported`; a date with no
+  release hour is not. Two issuer-confirmed November 18 reporters were deliberately NOT
+  published as already-reported for exactly that reason — **Metro Inc** (issuer IR confirms the
+  date; the call is 9:00 a.m. ET) and **Golar LNG** (issuer release says "before the market
+  opens"; presentation 08:00 ET) — and both are named in the artifact's notes instead of
+  being guessed into the table.
+
+- **The Pass B completeness check is a PER-MARKET date sweep, not 47 per-issuer fetches.**
+  Measured 2026-11-18: `https://scanner.tradingview.com/<market>/scan` with the fire-date
+  window over 15 market slugs answered 15 sweeps and found exactly ONE standing-list candidate
+  for the day (Tencent). **The market slugs that work are `taiwan`, `japan`, `korea`,
+  `hongkong`, `australia`, `canada`, `brazil`, `singapore`, `india`, `uk`, `germany`,
+  `switzerland`, `france`, `spain`, `netherlands`** — `london`, `paris`, `madrid`, `amsterdam`
+  and `swiss` are NOT valid slugs and answer HTTP 404. The sweep's hits still need issuer
+  confirmation, and the sweep's stamps can be wrong (CPRT above), but the sweep is the
+  completeness evidence and it is far cheaper than one fetch per candidate.
+
+- **Issuer pages that answered without a fight on 2026-11-18** (step 8 says never construct an
+  IR URL; these are the resolved ones): Target `corporate.target.com/investors/events-presentations`,
+  Everpure `investor.everpuredata.com/news-and-events/events-and-presentations/default.aspx`,
+  Tencent `tencent.com/investors/announcements/` plus the results PDF under `wp-content/uploads/`,
+  Sompo `sompo-hd.com/en/ir/event/`, Golar `golarlng.com/investors/financial-calendar.aspx`,
+  Metro `corpo.metro.ca/en/investor-relations.html`, Hafnia
+  `investor.hafnia.com/events-and-presentations/`.
+
 ## Out of scope
 
 - Detailed model / DCF revisions — read-only reminder only.
