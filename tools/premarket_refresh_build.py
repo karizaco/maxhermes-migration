@@ -66,7 +66,7 @@ import os
 import re
 import sys
 
-PREMARKET_REFRESH_BUILD_V2 = "premarket-refresh-build-v2"
+PREMARKET_REFRESH_BUILD_V3 = "premarket-refresh-build-v3"
 
 CRON_VALUE = "26-agentic-pre-market-brief-refresh"
 SOURCE_VALUE = "TradingView america scanner"
@@ -371,6 +371,25 @@ def build(args):
     if args.slots and os.path.exists(args.slots):
         slots = json.load(open(args.slots, encoding="utf-8"))
     drivers = slots.get("drivers") or {}
+
+    # ---- the GATE's own verdict, read from its output file ----
+    # The gate is the decider, so the file that carries its verdict is the source of truth for
+    # the branch, and the builder CROSS-CHECKS the branch it was told to publish against it.
+    # Measured 2026-11-18: the gate returned OPEN on one isolated scanner `close` defect for a
+    # pull that landed before the open; the run published PRE-OPEN and had to say so in prose.
+    # Now the disagreement is mechanical: both verdicts are published, and the defects are named.
+    gate = {}
+    if args.state and os.path.exists(args.state):
+        try:
+            gate = json.load(open(args.state, encoding="utf-8"))
+        except Exception as exc:                       # a broken gate file is not a reason to lie
+            warn("the session-state verdict file %s could not be read (%s) — the file's session "
+                 "state is published unverified" % (args.state, exc))
+    gate_state = (gate.get("session_state") or "").upper()
+    defects = gate.get("close_field_defects") or []
+    if gate_state and gate_state != args.session_state.upper():
+        warn("the session-state gate returned %s and this file is published as %s — both "
+             "verdicts are published in Source health" % (gate_state, args.session_state))
 
     # The PUBLISHED cap, in order of trust: the morning brief's own reconciled figure (it ran
     # the three-source sweep and published the corroborated cap), then the pull's reconciled
@@ -872,9 +891,16 @@ def build(args):
     flips = [x for x in real_moves if (x[3] > 0) != (x[4] > 0)]
     if big_setup:
         t, mg, g = big_setup[2], big_setup[3], big_setup[4]
-        A("**Two facts behind those numbers.** %s - one of the morning brief's setups - gave back "
-          "**%.2fpp**, from %+.2f%% to %+.2f%%.%s"
-          % (t, big_setup[1], mg, g,
+        # The verb follows the SIGN of the change. The old template said "gave back" whatever
+        # the sign was, so a setup whose gap EXTENDED was published as "gave back 7.48pp, from
+        # +13.08% to +20.56%" — a sentence that contradicts the two numbers in it.
+        # Measured 2026-11-18 (BRBR, +7.48pp).
+        delta = big_setup[1]
+        verb = ("gave back **%.2fpp**" % abs(delta)) if delta < 0 else \
+               ("extended its gap **%.2fpp**" % abs(delta))
+        A("**Two facts behind those numbers.** %s - one of the morning brief's setups - %s, "
+          "from %+.2f%% to %+.2f%%.%s"
+          % (t, verb, mg, g,
              (" A second setup flipped sign, from %+.2f%% to %+.2f%%."
               % (flips[0][3], flips[0][4])) if flips else ""))
     wid = sorted([x for x in moved if x[4] < 0 and x[1] < 0], key=lambda x: x[1])[:4]
@@ -918,6 +944,19 @@ def build(args):
         A("- **The regular session had not opened at the pull.** The scanner's `close` column is "
           "the last completed regular session's close, and the companion CSV's `live_close`, "
           "`live_change_pct` and `live_volume` columns are **blank, never 0**.")
+    if defects:
+        A("- **The scanner's `close` column disagreed with the morning brief on %d name(s): %s.** "
+          "These are ISOLATED field defects, not a live session — the gate reads a live session "
+          "as the `close` column moving off the prior close for essentially every common name. "
+          "The morning brief's own Source health usually names the same rows it corrected, and "
+          "the published prior close for each of these names is the derived one, not the "
+          "scanner's `close`." % (len(defects), ", ".join(defects)))
+    if gate_state and gate_state != args.session_state.upper():
+        A("- **The session-state gate returned `%s` and this file is published as `%s`.**%s The "
+          "gate's own reason: %s"
+          % (gate_state, args.session_state.upper(),
+             (" " + args.state_note) if args.state_note else "",
+             gate.get("verdict_reason") or "not recorded"))
     A("- **`prior_close` is DERIVED**, never taken from the screener's `close` column: "
       "`round(premarket_close / (1 + premarket_change_pct / 100), 4)`, computed from the values "
       "this CSV publishes (4 dp price, 2 dp change) so every row reproduces its own prior close.")
@@ -1102,6 +1141,13 @@ def main():
     ap.add_argument("--snapshot-et", default=None,
                     help="the pull's ET clock (default: taken from the merged file's pulled_at_et)")
     ap.add_argument("--session-state", default="PRE-OPEN", choices=["PRE-OPEN", "OPEN"])
+    ap.add_argument("--state", default=None,
+                    help="session_state.py's verdict file (state.json). The builder reads the "
+                         "gate's OWN verdict and the names of any isolated scanner `close` "
+                         "defects from it, and publishes both in Source health")
+    ap.add_argument("--state-note", default=None,
+                    help="the run's reason when it publishes a session state other than the "
+                         "gate's verdict")
     ap.add_argument("--stall-min", type=int, default=0,
                     help="the platform's delay before this fire's first tool call, in minutes "
                          "(from the window check's stall_min) - published in the intro")

@@ -25,6 +25,17 @@ THE THREE TESTS
       completed regular session's close and it matches (measured 2026-11-12: 220 of 220).
       Once the session opens, `close` becomes the LIVE price and it stops matching — so this
       is the test that actually separates the two states.
+
+      A MISMATCH IS NOT A SESSION ON ITS OWN. It has to be CORROBORATED before it can decide.
+      Measured 2026-11-18: the scanner served a PRE-MARKET print (66.26) in the `close` column
+      for one name, AUGO, against the morning brief's corrected prior close of 66.98 — 72 cents
+      against this tool's 2-cent tolerance — and the old logic read that single row as "the
+      session is live" and returned OPEN for a pull that landed 5 minutes 20 seconds BEFORE the
+      09:30 ET open. A LIVE session moves the `close` column off the prior close for essentially
+      EVERY name; a scanner field defect moves it for a handful. So the mismatch RATE is the
+      discriminator now: at or above OPEN_MISMATCH_RATE it is a session, below it the disagreeing
+      names are ISOLATED defects and the verdict is PRE-OPEN with the defects named. The
+      live-like fraction corroborates it independently.
   (c) CORROBORATOR — the fraction of rows whose pre-market print sits within 1% of the
       scanner's `close`. On a band screen this is ~0 while the session is shut (every band
       name moved >=3% from that close) and rises once the session is live (the live price
@@ -51,6 +62,12 @@ EXIT CODES
     0 = PRE-OPEN (the normal case — write the pre-market artifact, `live_*` BLANK)
     3 = OPEN (the session is live — take the LATE-PULL branch)
     4 = INDETERMINATE (a test failed or the morning baseline is missing — do NOT guess)
+
+ISOLATED DEFECTS
+    A PRE-OPEN verdict that carries `close_field_defects` is NOT a clean pull: those names' rows
+    disagreed with the morning brief and the names are listed in the output. The run must name
+    them in Source health — they are the scanner's `close` column misreporting, and the morning
+    brief's own Source health usually already names the ones it corrected.
 """
 
 import argparse
@@ -60,7 +77,7 @@ import json
 import os
 import sys
 
-SESSION_STATE_V1 = "session-state-v1"
+SESSION_STATE_V2 = "session-state-v2"
 
 # The environment's America/New_York has NO DST: November is EST (UTC-5). Confirmed against
 # the platform's own scheduled_at_ms (cron #26 at 08:30 ET = 13:50 UTC, cron #26b at 09:20 ET
@@ -72,6 +89,14 @@ ET_OFFSET_HOURS = -5
 TOL_IDENTITY = 0.02          # a settled session's change_abs, in price units
 TOL_PRIOR_CLOSE = 0.02       # the scanner's close vs the morning brief's prior_close
 LIVE_LIKE_PCT = 1.0          # |pm - close| within this % of close = "the live price is here"
+OPEN_MISMATCH_RATE = 0.25     # the share of common names whose `close` disagrees with the
+                              # morning brief's prior_close that a LIVE session produces. A live
+                              # session flips the `close` column for essentially every name
+                              # (measured 2026-11-18: a live pull mismatched ~100% of 703); an
+                              # isolated scanner field defect flips it for one (1 of 703).
+OPEN_MISMATCH_MIN = 3         # and the mismatching names must be at least this many, so a
+                              # SMALL common set cannot tip the verdict on one defect (a 4-name
+                              # common set with one defect is a 25% rate — and a defect).
 
 
 def now_et():
@@ -139,6 +164,7 @@ def test_prior_close(rows, morning_csv):
                 prior[(r.get("ticker") or "").strip()] = v
     checked = failed = 0
     bad = []
+    defects = []
     for r in rows:
         t = (r.get("ticker") or "").strip()
         c = num(r.get("close"))
@@ -147,10 +173,13 @@ def test_prior_close(rows, morning_csv):
         checked += 1
         if abs(c - prior[t]) > TOL_PRIOR_CLOSE:
             failed += 1
+            defects.append(t)
             if len(bad) < 5:
                 bad.append(t)
+    rate = (failed / checked) if checked else None
     return {"ok": (checked > 0 and failed == 0), "checked": checked, "failed": failed,
-            "examples": bad}
+            "examples": bad, "mismatch_rate": round(rate, 6) if rate is not None else None,
+            "defects": defects[:20], "defects_total": len(defects)}
 
 
 def test_live_like(rows):
@@ -183,6 +212,10 @@ def main():
     prior = test_prior_close(rows, args.morning_csv)
     live_like = test_live_like(rows)
 
+    live_frac = live_like["value"] or 0.0
+    rate = prior.get("mismatch_rate")
+    defects = prior.get("defects") or []
+
     reasons = []
     if not ident["ok"]:
         reasons.append("the settled-session identity failed on %d of %d rows"
@@ -192,37 +225,55 @@ def main():
                        "not be run")
     elif not prior["ok"]:
         reasons.append("the scanner's close no longer matches the morning brief's prior_close "
-                       "on %d of %d common names — the session is live"
-                       % (prior["failed"], prior["checked"]))
+                       "on %d of %d common names (%.2f%% mismatching)"
+                       % (prior["failed"], prior["checked"], (rate or 0.0) * 100))
     if live_like["value"] is not None and live_like["value"] >= 0.5:
         reasons.append("%.0f%% of the rows sit within 1%% of the scanner's close — the live "
                        "price is already there" % (live_like["value"] * 100))
 
-    if ident["ok"] and prior["ok"] is True and (live_like["value"] or 0) < 0.5:
-        state = "PRE-OPEN"
-        reason = ("the scanner's close still matches the morning brief's prior_close on %d of "
-                  "%d common names, the settled-session identity holds on %d rows, and %.1f%% "
-                  "of the rows sit within 1%% of the close"
-                  % (prior["checked"] - prior["failed"], prior["checked"], ident["checked"],
-                     (live_like["value"] or 0) * 100))
-    elif not ident["ok"]:
+    # A MISMATCH IS NOT A SESSION ON ITS OWN — it has to clear the rate a live session
+    # produces, or be corroborated by the live-like fraction. See the (b) note above.
+    if not ident["ok"]:
         state = "INDETERMINATE"
         reason = "; ".join(reasons)
-    elif prior["ok"] is False or (live_like["value"] or 0) >= 0.5:
+    elif prior["ok"] is None:
+        if live_frac >= 0.5:
+            state = "OPEN"
+            reason = "; ".join(reasons)
+        else:
+            state = "INDETERMINATE"
+            reason = "; ".join(reasons)
+    elif ((rate or 0.0) >= OPEN_MISMATCH_RATE and prior["failed"] >= OPEN_MISMATCH_MIN) \
+            or live_frac >= 0.5:
         state = "OPEN"
-        reason = "; ".join(reasons) or "the live price is already in the close column"
+        reason = ("the scanner's close no longer matches the morning brief's prior_close on "
+                  "%d of %d common names (%.2f%% mismatching, at or above the %.0f%% a live "
+                  "session produces) and %.1f%% of the rows sit within 1%% of the close"
+                  % (prior["failed"], prior["checked"], (rate or 0.0) * 100,
+                     OPEN_MISMATCH_RATE * 100, live_frac * 100))
     else:
-        state = "INDETERMINATE"
-        reason = "; ".join(reasons) or "no test was decisive"
+        state = "PRE-OPEN"
+        reason = ("the scanner's close still matches the morning brief's prior_close on %d of "
+                  "%d common names (%.2f%% mismatching, below the %.0f%% a live session "
+                  "produces, and fewer than the %d names a live session moves), the "
+                  "settled-session identity holds on %d rows, and %.1f%% of the rows sit within "
+                  "1%% of the close"
+                  % (prior["checked"] - prior["failed"], prior["checked"], (rate or 0.0) * 100,
+                     OPEN_MISMATCH_RATE * 100, OPEN_MISMATCH_MIN, ident["checked"],
+                     live_frac * 100))
+        if prior["failed"]:
+            reason += (" — the %d name(s) that disagree are ISOLATED scanner `close` defects, "
+                       "not a live session: %s" % (prior["failed"], ", ".join(defects)))
 
     out = {
-        "marker": SESSION_STATE_V1,
+        "marker": SESSION_STATE_V2,
         "session_state": state,
         "rows": len(rows),
         "pulled_at_et": merged.get("pulled_at_et") or now_et().strftime("%Y-%m-%d %H:%M:%S"),
         "et_offset_hours": ET_OFFSET_HOURS,
         "tests": {"settled_session_identity": ident, "prior_close_matches_morning": prior,
                   "live_like_fraction": live_like},
+        "close_field_defects": defects,
         "verdict_reason": reason,
         "front_matter": {"market_open_at_pull": state == "OPEN",
                          "pull_late": state == "OPEN"},
@@ -237,8 +288,13 @@ def main():
               % (out["rows"], out["pulled_at_et"], ET_OFFSET_HOURS))
         print("  (a) settled-session identity: ok=%s checked=%d failed=%d"
               % (ident["ok"], ident["checked"], ident["failed"]))
-        print("  (b) close == the morning brief's prior_close: ok=%s checked=%d failed=%d"
-              % (prior["ok"], prior["checked"], prior["failed"]))
+        print("  (b) close == the morning brief's prior_close: ok=%s checked=%d failed=%d "
+              "mismatch_rate=%s"
+              % (prior["ok"], prior["checked"], prior["failed"],
+                 ("n/a" if prior.get("mismatch_rate") is None
+                  else "%.4f" % prior["mismatch_rate"])))
+        if prior.get("defects"):
+            print("      isolated close-field defects: %s" % ", ".join(prior["defects"]))
         print("  (c) rows within 1%% of the close: %s" % live_like["value"])
         print("  why: %s" % reason)
     else:

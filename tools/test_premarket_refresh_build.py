@@ -125,19 +125,66 @@ def build_fixture(tmp, mutate=None):
     return merged, mmd, mcsv, slots
 
 
-def run_builder(merged, mmd, mcsv, slots, out, state="PRE-OPEN", stall=None, snapshot="09:24:15"):
+def run_builder(merged, mmd, mcsv, slots, out, state="PRE-OPEN", stall=None, snapshot="09:24:15",
+                state_file=None, state_note=None):
     cmd = [sys.executable, BUILD, "--merged", merged, "--morning-md", mmd,
            "--morning-csv", mcsv, "--slots", slots, "--date", "2026-11-12",
            "--fire-time-et", "2026-11-12 09:20", "--snapshot-et", snapshot,
            "--session-state", state, "--out-dir", out]
     if stall is not None:
         cmd += ["--stall-min", str(stall)]
+    if state_file is not None:
+        cmd += ["--state", state_file]
+    if state_note is not None:
+        cmd += ["--state-note", state_note]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def main():
     tmp = tempfile.mkdtemp(prefix="refresh_build_test_")
     out = os.path.join(tmp, "out")
+
+    # ---------- 0. the GATE's verdict rides into the artifact ----------
+    # Measured 2026-11-18: the gate returned OPEN on ONE isolated scanner `close` defect for a
+    # pull that landed before the open, and the run published PRE-OPEN — in prose, by hand. The
+    # builder now reads the gate's verdict file: it NAMES the defects, and it publishes BOTH
+    # verdicts when the branch it was told to publish is not the gate's.
+    merged0, mmd0, mcsv0, slots0 = build_fixture(tmp)
+    gatef = os.path.join(tmp, "state.json")
+    json.dump({"marker": "session-state-v2", "session_state": "PRE-OPEN",
+               "close_field_defects": ["AUGO"],
+               "verdict_reason": "the scanner's close disagreed on one name of 703 common names"},
+              open(gatef, "w"))
+    out0 = os.path.join(tmp, "out_gate")
+    p0 = run_builder(merged0, mmd0, mcsv0, slots0, out0, state_file=gatef)
+    md0 = os.path.join(out0, "2026-11-12-pre-market-refresh.md")
+    if os.path.exists(md0):
+        t0 = open(md0, encoding="utf-8").read()
+        check("AUGO" in t0, "the isolated close-field defect is NAMED in Source health")
+        check("ISOLATED field defects" in t0,
+              "the defect line says what it is", "the defect line is missing")
+    else:
+        check(False, "the gate-verdict build wrote a file")
+
+    gatef2 = os.path.join(tmp, "state_open.json")
+    json.dump({"marker": "session-state-v2", "session_state": "OPEN",
+               "close_field_defects": [],
+               "verdict_reason": "the gate says the session is live"},
+              open(gatef2, "w"))
+    out1 = os.path.join(tmp, "out_gate_open")
+    p1 = run_builder(merged0, mmd0, mcsv0, slots0, out1, state="PRE-OPEN", state_file=gatef2,
+                     state_note="the pull landed before the 09:30 ET open")
+    md1 = os.path.join(out1, "2026-11-12-pre-market-refresh.md")
+    if os.path.exists(md1):
+        t1 = open(md1, encoding="utf-8").read()
+        check("session-state gate returned `OPEN`" in t1,
+              "a verdict disagreement publishes BOTH verdicts")
+        check("the pull landed before the 09:30 ET open" in t1,
+              "the run's reason is published")
+    else:
+        check(False, "the disagreement build wrote a file")
+    check("the session-state gate returned OPEN" in (p1.stderr or ""),
+          "the disagreement is printed on stderr", (p1.stderr or "").strip()[-120:])
 
     # ---------- 1. the happy path ----------
     merged, mmd, mcsv, slots = build_fixture(tmp)

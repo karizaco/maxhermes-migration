@@ -105,9 +105,9 @@ fetch_helper() {   # $1 = repo path, $2 = local path, $3 = capability marker
 }
 fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v2 \
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
-fetch_helper tools/session_state.py /workspace/session_state.py session-state-v1 \
+fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v2 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v3 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 
@@ -146,8 +146,16 @@ fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build
      --morning-csv daily-briefs/{date}-pre-market.csv \
      --slots /workspace/slots.json \
      --stall-min "$STALL_MIN" \
+     --state /workspace/state.json \
      --date {date} --session-state PRE-OPEN --out-dir daily-briefs
    ```
+
+   **`--state` carries the GATE's own verdict into the artifact.** The builder reads
+   `session_state.py`'s output file: it publishes the names of any isolated scanner `close`
+   defects, and it CROSS-CHECKS the branch it was told to publish against the gate's verdict —
+   a disagreement is printed on stderr AND published in Source health, with both verdicts, so
+   the reader can audit it. If the run publishes a branch other than the gate's, it passes
+   `--state-note "<the run's reason>"` and that reason is published too.
 
    **`--session-state` is NOT always PRE-OPEN.** `session_state.py` decides it from the DATA
    (the scanner's `close` against the morning brief's `prior_close`) and its exit code is the
@@ -156,6 +164,18 @@ fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build
    late-pull branch publishes `pull_late: true` and `market_open_at_pull: true`, fills the
    CSV's `live_*` columns with the regular session, and says in the intro whether those are an
    intraday price or the SETTLED close.
+
+   **A MISMATCH IS NOT A SESSION ON ITS OWN, and the gate now says so.** `session_state.py`
+   returns OPEN only when the scanner's `close` has moved off the morning brief's prior close
+   for essentially EVERY common name — a live session moves the column wholesale — or when the
+   live price is already at the pre-market print. A pull whose output carries
+   `close_field_defects` is a PRE-OPEN pull with an ISOLATED scanner `close` defect, not a live
+   session. Measured 2026-11-18: one name, AUGO, at 66.26 against the morning brief's corrected
+   prior close of 66.98 — the gate returned OPEN on that single row for a pull that landed 5
+   minutes 20 seconds BEFORE the 09:30 ET open, which would have published
+   `market_open_at_pull: true` and the settled session's volume as the live session. **Name the
+   defects in Source health**, and the morning brief's own Source health is the corroborating
+   source: it usually names the same rows it corrected.
 
    The fire time and the snapshot clock are DERIVED (the fire is this routine's 09:20 ET slot;
    the snapshot comes from the pull's own `pulled_at_et`) — **never hand-type a clock.**

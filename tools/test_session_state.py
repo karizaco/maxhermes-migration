@@ -108,6 +108,55 @@ def main():
     check(v["front_matter"]["market_open_at_pull"] is True,
           "OPEN front matter", str(v["front_matter"]))
 
+    # ---------- ISOLATED SCANNER `close` DEFECT ----------
+    # Measured 2026-11-18: the scanner served a PRE-MARKET print in the `close` column for ONE
+    # name (AUGO, 66.26) against the morning brief's corrected prior close (66.98), and the old
+    # logic read that single row as "the session is live" and returned OPEN for a pull that
+    # landed 5m20s BEFORE the 09:30 ET open. A live session moves the `close` column off the
+    # prior close for essentially EVERY name; a field defect moves it for a handful. The
+    # mismatch RATE is the discriminator, and the defects must be NAMED.
+    truth = [row("AAA", 100.0, 1.0, 105.0), row("BBB", 50.0, -2.0, 47.0),
+             row("CCC", 20.0, 0.5, 21.0), row("DDD", 10.0, -1.0, 9.5),
+             row("EEE", 30.0, 2.0, 31.0), row("FFF", 5.0, -1.0, 4.8)]
+    defect = [dict(r) for r in truth]
+    defect[0]["close"] = 99.28                       # the scanner served a pre-market print
+    defect[0]["change"] = -1.07
+    defect[0]["change_abs"] = 99.28 - 99.28 / (1 - 0.0107)
+    m4 = os.path.join(tmp, "defect_merged.json")
+    mc4 = os.path.join(tmp, "defect_morning.csv")
+    write_merged(m4, defect)
+    write_morning_csv(mc4, truth)                   # the morning baseline holds the TRUE closes
+    rc, out, err = run(["--merged", m4, "--morning-csv", mc4, "--json-only"])
+    v = json.loads(out)
+    check(rc == 0 and v["session_state"] == "PRE-OPEN",
+          "ISOLATED-DEFECT verdict", "rc=%d state=%s" % (rc, v["session_state"]))
+    check(v["close_field_defects"] == ["AAA"],
+          "ISOLATED-DEFECT named", str(v["close_field_defects"]))
+    check(v["front_matter"]["market_open_at_pull"] is False,
+          "ISOLATED-DEFECT front matter", str(v["front_matter"]))
+    check("ISOLATED scanner `close` defects" in v["verdict_reason"],
+          "ISOLATED-DEFECT reason", v["verdict_reason"][:160])
+    check(v["tests"]["prior_close_matches_morning"]["mismatch_rate"] < 0.25,
+          "ISOLATED-DEFECT rate", str(v["tests"]["prior_close_matches_morning"]))
+
+    # ---------- ISOLATED DEFECT ON A SMALL COMMON SET ----------
+    # A four-name common set with one defective row is a 25% mismatch rate — the threshold a
+    # live session produces. The COUNT floor is what stops it tipping the verdict.
+    small_truth = [row("AAA", 100.0, 1.0, 105.0), row("BBB", 50.0, -2.0, 47.0),
+                   row("CCC", 20.0, 0.5, 21.0), row("DDD", 10.0, -1.0, 9.5)]
+    small = [dict(r) for r in small_truth]
+    small[0]["close"] = 99.28
+    small[0]["change"] = -1.07
+    small[0]["change_abs"] = 99.28 - 99.28 / (1 - 0.0107)
+    m5 = os.path.join(tmp, "small_merged.json")
+    mc5 = os.path.join(tmp, "small_morning.csv")
+    write_merged(m5, small)
+    write_morning_csv(mc5, small_truth)
+    rc, out, err = run(["--merged", m5, "--morning-csv", mc5, "--json-only"])
+    v = json.loads(out)
+    check(rc == 0 and v["session_state"] == "PRE-OPEN",
+          "SMALL-SET-DEFECT verdict", "rc=%d state=%s" % (rc, v["session_state"]))
+
     # ---------- BROKEN: the settled-session identity fails ----------
     broken = [row("AAA", 100.0, 1.0, 105.0), row("BBB", 50.0, -2.0, 47.0)]
     broken[1]["change_abs"] = 999.0
