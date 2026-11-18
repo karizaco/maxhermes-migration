@@ -366,6 +366,18 @@ section 1e.
    the contents API alone — the contents API is CDN-cached, so a stale blob looks exactly like a
    commit that never happened.
 
+9. **A published LABEL that describes a method must be DERIVED from the rows it describes — and
+   a tier must be computed on the SAME predicate as the table it sits beside.** A front-matter
+   field that hardcodes a source or a status is a CLAIM; compute it from the published rows (the
+   single source if they all agree, `partial` if they do not). Measured 2026-11-18 (cron #07): the
+   front matter hardcoded `pm_source_status: measured_from_series` while 93 of 101 published rows
+   read `measured_from_nasdaq` and 8 read `not_subtracted` — the label named a source that produced
+   ZERO rows. The same fire tiered two rows `WATCH` while the artifact's own table listed them in
+   the near-miss band, because the CSV's tier used one predicate and the table used another: two
+   sections of ONE artifact disagreed, and **no checker can see a contradiction it has no clause
+   for**. When a table and a count come from two different derivations, they will eventually
+   disagree — derive both from one.
+
 ### The TradingView scanner's request shape — every scanner pull, every routine
 
 The scanner is **healthy**; what fails is the SHAPE of the request, and three of its traps
