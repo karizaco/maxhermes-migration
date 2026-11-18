@@ -218,6 +218,39 @@ helper's hands, so **no extra Yahoo request is needed**. Fetch the 5-minute seri
 the payload grows from ~5KB to ~38KB per symbol, but the per-request time is flat
 (0.11s → 0.14s measured) and the throughput ceiling is unchanged.
 
+**THE FACTOR IS MEASURED ON THIS SESSION, NOT CARRIED OVER FROM THE ARCHIVE (2026-11-18).**
+The factor converts the 5-minute series' volume into the daily bar's scale, so it must be
+measured over a COMMON WINDOW: the two series have to cover the same stretch of the session.
+The engine now fetches the 5-minute series and the daily bar **back to back for the same name**
+and divides one by the other.
+
+Measured 2026-11-18, and this is the difference between a board that is right and one that is
+not:
+
+| Basis | Median factor | What it did to the board |
+|---|---|---|
+| the archived prior-session factor (`y5m_total_prior ÷ polygon_daily_prior`) | 0.85 | the basis every earlier board used — **16% low** for today's session |
+| the session's own same-window ratio (the 5-minute series ÷ the daily bar, fetched together) | **0.99** (26 names measured simultaneously: median 0.989) | the published basis |
+
+A 16% error on every pace moved **23 names between tiers** and the published set from 333 names
+to 316 (Tier A 23→22, Soft-A 8→9, TECH_WATCH 169→130, Tier B 117→140, Tier C 16→15).
+
+Two traps, both measured on 2026-11-18:
+
+- **A mismatched window reads low.** The first version of the session's own ratio divided the
+  5-minute total *at the pull* (09:54) by the daily bar *as of its own fetch* (10:02) — two
+  windows eight minutes apart — and came out 0.81, a 20% bias against the 0.99 the same
+  session actually measures. The two fetches must be contemporaneous.
+- **A broken series must not set the pace.** Where the same-window ratio falls outside
+  0.60–1.05 (a glitching 5-minute bar — one bar carrying three million shares against a typical
+  0.4 million — or a daily bar lagging the tape), the name keeps the archived factor and is
+  flagged in the candidates CSV. 30 of the 316 published names are in that state today.
+
+The published column is `pace` (the session's own factor); `vol_basis_source` says which basis
+each row is on (`current_session_ratio` or `archived_prior_session`), and the candidates CSV
+carries the archived-basis pace beside it as `pace_archived_basis` so the pre-close slot can
+settle the basis with the session's settled volume.
+
 **A symbol whose prior session falls outside the 10-day window uses the GLOBAL MEDIAN
 factor** — and the artifact says so, because the factor is the only thing holding the
 numerator and the denominator on one basis.
@@ -994,19 +1027,34 @@ for U in \
   # no `prior_session` block, and the symptom is a silent fallback to a second,
   # per-symbol price pull that costs ~3 minutes of a 15-minute budget. The CDNs also
   # cache `main` independently, so one of them can serve stale bytes for hours.
+  #
+  # `RVOL_FETCH_V3` (2026-11-18) is the version that RETRIES a failed session and
+  # publishes a `coverage` block. Measured on 2026-11-18: two of the ten sessions came
+  # back as a truncated SSE stream and an upstream 429, and the old copy dropped them
+  # WITHOUT a retry — and because the trailing-N average needs all N sessions, ONE
+  # dropped session empties the whole `avg10` map. The empty denominator then shows up
+  # far from its cause: every name fails the pace floor and the board comes out empty.
   if [ -s "$D.tmp" ] && ! head -c 200 "$D.tmp" | grep -q '"message"' \
      && head -1 "$D.tmp" 2>/dev/null | grep -q '^#!' \
-     && grep -q 'RVOL_FETCH_V2' "$D.tmp" 2>/dev/null; then
+     && grep -q 'RVOL_FETCH_V3' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
 done
-[ -s "$D" ] || echo "rvol_fetch.py fetch FAILED (no RVOL_FETCH_V2 copy) - fall back to the caller's own denominator source"
-python3 "$RF" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
+[ -s "$D" ] || echo "rvol_fetch.py fetch FAILED (no RVOL_FETCH_V3 copy) - fall back to the caller's own denominator source"
+python3 "$D" --date <YYYY-MM-DD> --sessions 10 --out /workspace/avg10.json
 ```
 
 It is serialized internally (~13 s between calls — Massive's shared key allows 5 req/min) and
 retries on HTTP 429, so a 10-session pull takes ~2.5 minutes.
+
+**The denominator must be COMPLETE — check it before the pull.** The output carries a
+`coverage` block (`{"requested": 10, "ok": 10, "complete": true, "missing": []}`), and the
+engine now stops BEFORE the 5-minute pull if the average is empty, so a dropped session
+costs a re-fetch instead of a silent empty board. **If `coverage.complete` is false, the
+artifact says so in Source health** — the average still carries the symbols that have all
+the sessions, but the denominator is shorter than the one every published pace was measured
+against.
 
 **The session-volume numerator must be SETTLED.** A volume read from the quote bridge at
 ~16:01 ET is **not final** — the closing auction consolidates later. **`grouped_daily` may not have

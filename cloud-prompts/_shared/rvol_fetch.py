@@ -32,7 +32,19 @@ Prints a JSON object: {"<TICKER>": {"avg": float, "n": int}, ...}
 including) the session before `--date`; `n` is how many sessions were found.
 
 CAPABILITY
-  * `RVOL_FETCH_V2` (2026-11-10). The output JSON carries `"capability":
+  * `RVOL_FETCH_V3` (2026-11-18). The denominator must be COMPLETE or the run must
+    say so. Measured 2026-11-18: two of the ten sessions came back as a truncated
+    SSE stream (a `data:` line that does not parse) and one came back as the
+    upstream's 429 body. The old copy dropped a session on ANY non-429 failure
+    with no retry — and because `avg` requires all N sessions, ONE dropped
+    session empties the whole `avg10` map: the consumer then has NO denominator
+    at all, and the failure surfaces far from its cause (the 09:50 open board
+    published nothing and the gate read G3). This copy retries a failed session
+    on any failure, parses a truncated stream defensively, honours the upstream's
+    own "retry after 60s" on a 429, and publishes a `coverage` block so an
+    incomplete denominator is visible in the output file itself.
+
+    `RVOL_FETCH_V2` (2026-11-10). The output JSON carries `"capability":
     "RVOL_FETCH_V2"` and a new `"prior_session"` block. A consumer that needs the
     PRIOR session's own daily volume (the open slot's per-symbol volume-basis
     factor) must demand this marker: an older copy of this script has no such
@@ -46,9 +58,17 @@ CAPABILITY
     divided by the polygon daily bar has a median of 0.9996 over 1,158 names,
     so mixing the two carries a ~0.04% bias in every published pace).
 
+    The output JSON still carries `"capability": "RVOL_FETCH_V2"` so every
+    consumer that reads that field keeps working, and the file still contains
+    the literal marker `RVOL_FETCH_V2`, so a ladder that demands V2 accepts
+    this copy. A ladder that wants the V3 behaviour demands `RVOL_FETCH_V3`.
+
 LIMITS
   * Massive (upstream) allows 5 requests/minute on the shared free key, so the
     fetches are serialized with a delay. 11 sessions ~= 2.5 minutes.
+  * A 429 from Massive asks for a 60s wait ("Retry after 60s"). The old copy
+    waited 13s and gave up after six tries, which is not enough when the shared
+    key is busy; this copy waits the upstream's own window.
   * The upstream key can be overridden with `--api-key` / PIPEWORX_API_KEY.
 """
 
@@ -116,19 +136,71 @@ def sessions_before(end_date, n):
     return list(reversed(out))
 
 
-def fetch_session(day, api_key=None, delay=13.0):
-    """OHLCV for every US symbol on one date, with upstream rate-limit backoff."""
-    attempts = 0
-    while attempts < 6:
+def parse_results(res):
+    """The session's rows, whatever shape the response arrived in.
+
+    Measured 2026-11-18: three shapes occur in the wild - the plain results
+    dict, the upstream's 429 error body (a dict with `error_class`), and a
+    TRUNCATED SSE stream (the `data:` line does not parse because the
+    connection closed mid-payload). The third one is the silent killer: the
+    old copy returned None on it and dropped the session.
+    """
+    if isinstance(res, dict) and "results" in res:
+        return {r["T"]: r for r in res["results"]}
+    raw = ""
+    if isinstance(res, dict):
+        err = res.get("_error")
+        if isinstance(err, dict):
+            raw = err.get("raw", "") or ""
+        elif isinstance(err, str):
+            raw = err
+        if not raw:
+            raw = json.dumps(res)[:400]
+    # the SSE payload carries the tool text as JSON inside "text": "..."
+    try:
+        for line in raw.splitlines():
+            if line.startswith("data: "):
+                try:
+                    d = json.loads(line[6:])
+                except Exception:
+                    continue
+                content = (((d or {}).get("result") or {}).get("content")) or []
+                for c in content:
+                    if c.get("type") != "text":
+                        continue
+                    try:
+                        j = json.loads(c.get("text") or "")
+                    except Exception:
+                        continue
+                    if "results" in j:
+                        return {r["T"]: r for r in j["results"]}
+    except Exception:
+        pass
+    return None
+
+
+def fetch_session(day, api_key=None, delay=13.0, attempts=8):
+    """OHLCV for every US symbol on one date.
+
+    Every failure is retried, not only a 429: a truncated stream is as
+    transient as a rate limit, and dropping the session empties the whole
+    denominator. A 429 waits the upstream's own window (60s).
+    """
+    for attempt in range(1, attempts + 1):
         res = call_tool("grouped_daily", {"date": day}, api_key=api_key)
-        if "results" in res:
-            return {r["T"]: r for r in res["results"]}
-        attempts += 1
-        msg = json.dumps(res)[:200]
-        if "429" in msg or "rate limit" in msg.lower():
-            time.sleep(delay)
-            continue
-        return None
+        rows = parse_results(res)
+        if rows:
+            return rows
+        msg = json.dumps(res)[:400]
+        throttled = ("429" in msg) or ("rate limit" in msg.lower())
+        if attempt == attempts:
+            print(f"  WARN could not fetch {day} after {attempts} attempts",
+                  file=sys.stderr)
+            return None
+        wait = 60.0 if throttled else max(delay, 8.0)
+        print(f"  retry {day} in {wait:.0f}s (attempt {attempt}/{attempts}"
+              f"{', upstream throttled' if throttled else ''})", file=sys.stderr)
+        time.sleep(wait)
     return None
 
 
@@ -180,11 +252,27 @@ def main():
             v = byday.get(prior_day)
             if v:
                 prior_volumes[t] = v
+    complete = len(fetched) == len(days)
     payload = {"date": args.date, "sessions": args.sessions,
                "days": days, "fetched_days": fetched,
                "symbols": len(avg), "capability": CAPABILITY,
+               "coverage": {"requested": len(days), "ok": len(fetched),
+                            "complete": complete,
+                            "missing": [d for d in days if d not in fetched]},
                "prior_session": {"date": prior_day, "volumes": prior_volumes},
                "avg10": avg}
+    if not complete:
+        missing = [d for d in days if d not in fetched]
+        print("  " + "=" * 68, file=sys.stderr)
+        print("  INCOMPLETE VOLUME DENOMINATOR: %d of %d sessions came back"
+              % (len(fetched), len(days)), file=sys.stderr)
+        print("  missing sessions: %s" % ", ".join(missing), file=sys.stderr)
+        if not avg:
+            print("  avg10 is EMPTY - every consumer of this file has NO denominator.",
+                  file=sys.stderr)
+        print("  re-run the fetch before publishing anything that uses it.",
+              file=sys.stderr)
+        print("  " + "=" * 68, file=sys.stderr)
     text = json.dumps(payload)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:

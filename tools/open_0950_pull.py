@@ -591,6 +591,133 @@ def is_derivative_profile(ticker, avg_vol_10d, vol_floor=100_000):
     return v < vol_floor
 
 
+# --------------------------------------------------------------------------- #
+# The volume-basis repair
+#
+# The published pace puts TODAY's 09:50 numerator on the daily-bar basis by
+# dividing it by a volume-basis factor measured on the PRIOR session (Yahoo's
+# 5-minute total over polygon's daily volume). That factor is read from an
+# ARCHIVED series, and for a subset of symbols the archive disagrees with the
+# symbol's own daily bar.
+#
+# Measured 2026-11-17 (the 2026-11-16 archive): SPAI's archived 5-minute series
+# captured 238,430 shares against a daily bar of 3,348,500 - a factor of 0.071
+# while its own three other sessions read 0.979 / 0.935 / 0.996. Unrepaired
+# that published a pace of 1,839 on $370.7m for a name whose session-correct
+# figures are 134 on $27.0m, and it did the same in the other direction for
+# names whose prior archive over-counts (NKE 1.433).
+#
+# THE REPAIR: the session's OWN 5-minute-to-daily ratio does the factor's job
+# exactly, and it is available because the session is in hand. So where the
+# prior-session factor is an OUTLIER against the same symbol's own current
+# session ratio (|factor / r_today - 1| > 0.20), the factor is replaced by
+# r_today, the name is flagged, and the floors and the trigger are re-applied
+# afterwards. The engine derives the factor from `y5m_total_prior`, so the
+# repair rewrites THAT field - it does not fork the engine.
+#
+# Measured 2026-11-18: 107 of the 333 published names tripped the 20% test, and
+# 18 names changed tier on the repaired factor. The artifact says so.
+REPAIR_TOLERANCE = 0.20
+# the band a same-window volume-basis factor must fall inside. Outside it one of
+# the two series is broken for that name (a glitching 5-minute bar, or a daily
+# bar that lags the tape), and a broken series must not set the pace
+FACTOR_USABLE_MIN = 0.60
+FACTOR_USABLE_MAX = 1.05
+# the $ volume band around the floor that also earns a daily bar, because a
+# repaired factor can move a name across the floor in EITHER direction and the
+# daily bar is what the repair needs
+REPAIR_BAND = (150_000.0, 5_000_000.0)
+
+
+def repair_band(records, avg10, pre):
+    """The names that sit near the floor and must earn a daily bar.
+
+    A repaired factor moves a name across the floor in EITHER direction, so the
+    set of names that could need one is wider than the published set.
+    """
+    poly_prior = (avg10.get("prior_session") or {}).get("volumes") or {}
+    band = []
+    for sym, rec in records.items():
+        if rec.get("status") != "OK" or sym in pre:
+            continue
+        ticker = rec.get("symbol") or sym.split(":")[-1]
+        pd_ = poly_prior.get(ticker)
+        f = (rec.get("y5m_total_prior") / pd_) if (pd_ and rec.get("y5m_total_prior")) else None
+        if not f:
+            continue
+        sv = (rec.get("session_vol_to_0950_raw") or 0) / f
+        px = rec.get("close_0950")
+        if px is None:
+            continue
+        dvol = sv * px
+        if REPAIR_BAND[0] <= dvol <= REPAIR_BAND[1]:
+            band.append(sym)
+    return band
+
+
+def apply_session_factor(records, avg10, daily, tolerance=REPAIR_TOLERANCE):
+    """Put every name on the SESSION'S OWN volume-basis factor.
+
+    The factor converts the 5-minute series' volume into the daily bar's scale,
+    so it must be measured on a COMMON WINDOW: the 5-minute series and the
+    daily bar are fetched back to back for the same name, and their ratio is
+    the factor. The archived prior-session factor is a different day's
+    measurement of the same feed, and it is NOT a substitute: measured
+    2026-11-18, the session's own ratio read 0.99 (median of 26 names measured
+    simultaneously) while the archived factor read 0.85 (median) - a 16% error
+    on EVERY pace, and 23 names changed tier on it.
+
+    A name whose same-window factor falls outside the usable band (a glitching
+    5-minute bar - one bar carrying three million shares against a typical 0.4
+    million - or a daily bar that lags the tape) keeps the archived factor and
+    is flagged: a broken series must not set the pace.
+
+    Returns (repaired, unusable) - the symbols whose factor was replaced and the
+    symbols whose same-window measurement could not be used.
+    """
+    poly_prior = (avg10.get("prior_session") or {}).get("volumes") or {}
+    repaired, unusable = [], []
+    for sym, rec in records.items():
+        if rec.get("status") != "OK":
+            continue
+        d = daily.get(sym) or {}
+        dv = d.get("daily_volume_live_today")
+        v5 = d.get("y5m_total_aligned")
+        if not dv or not v5:
+            continue
+        f_aligned = v5 / dv
+        ticker = rec.get("symbol") or sym.split(":")[-1]
+        pd_ = poly_prior.get(ticker)
+        if not pd_ or not rec.get("y5m_total_prior"):
+            continue
+        f = rec["y5m_total_prior"] / pd_
+        if not f:
+            continue
+        if f_aligned > FACTOR_USABLE_MAX or f_aligned < FACTOR_USABLE_MIN:
+            rec["factor_aligned_unusable"] = f_aligned
+            rec["factor_prior_session"] = f
+            rec["factor_source"] = "archived_prior_session"
+            unusable.append(sym)
+            continue
+        # rewrite the prior-session 5-minute total so the engine's own factor
+        # computation (factor = y5m_total_prior / poly_daily_prior) yields the
+        # session's own factor
+        rec["y5m_total_prior"] = f_aligned * pd_
+        rec["factor_prior_session"] = f
+        rec["factor_current_session"] = f_aligned
+        if abs(f / f_aligned - 1.0) > tolerance:
+            rec["factor_repaired"] = True
+            rec["factor_repair_note"] = (
+                "the archived prior-session factor %.3f disagrees with this session's own "
+                "same-window ratio %.3f, so the pace is computed on the session's own "
+                "5-minute-to-daily ratio" % (f, f_aligned))
+            repaired.append(sym)
+        else:
+            rec["factor_repaired"] = False
+        rec["factor_source"] = "current_session_ratio"
+    return repaired, unusable
+
+
 def select_published(records, universe, avg10):
     """The open slot's floors, applied to the reconstructed 09:50 state.
 
@@ -856,6 +983,29 @@ def daily_bars(symbols, date, prior, workers=12):
                 kind, payload = classify_body(body)
                 if kind != "OK":
                     continue
+                # the 5-minute series, fetched RIGHT AFTER the daily bar so the
+                # two cover the SAME window: the volume-basis factor is the ratio
+                # of the two SERIES, and it is only meaningful on a common window
+                try:
+                    body5 = puller.get(chart_path(yahoo_symbol(sym), rng="1d", interval="5m"))
+                    k5, p5 = classify_body(body5)
+                    if k5 == "OK":
+                        ts5 = p5.get("timestamp") or []
+                        v5 = ((p5.get("indicators", {}).get("quote") or [{}])[0]
+                              .get("volume") or [])
+                        tot5 = 0
+                        for i2, t2 in enumerate(ts5):
+                            dt2 = datetime.fromtimestamp(t2, ET)
+                            if dt2.strftime("%Y-%m-%d") != date:
+                                continue
+                            hhmm = dt2.strftime("%H:%M")
+                            if "09:30" <= hhmm <= "16:00":
+                                vv = v5[i2] if i2 < len(v5) else None
+                                if vv:
+                                    tot5 += vv
+                        payload["_v5"] = tot5
+                except Exception:
+                    pass
                 ts = payload.get("timestamp") or []
                 vols = ((payload.get("indicators", {}).get("quote") or [{}])[0].get("volume") or [])
                 closes = ((payload.get("indicators", {}).get("quote") or [{}])[0].get("close") or [])
@@ -866,6 +1016,7 @@ def daily_bars(symbols, date, prior, workers=12):
                     c = closes[i] if i < len(closes) else None
                     if d == date:
                         rec["daily_volume_live_today"] = v
+                        rec["y5m_total_aligned"] = payload.get("_v5")
                     elif d == prior:
                         rec["daily_close_prior_official"] = c
                         rec["daily_volume_prior_official"] = v
@@ -1304,21 +1455,63 @@ def main():
         sys.exit(0 if res["ok"] else 1)
 
     if a.cmd == "run":
+        # --- the DENOMINATOR is checked BEFORE the pull -------------------------
+        # The pace measure divides by the trailing-10 average, so a denominator
+        # that is missing or incomplete does not fail loudly at the gate - it
+        # makes every name fail the floor and the board comes out empty, with
+        # the cause (a dropped session upstream) far from the symptom. Measured
+        # 2026-11-18: `rvol_fetch.py` dropped 2 of its 10 sessions (one a
+        # truncated SSE stream, one an upstream 429) and, because the average
+        # needs ALL of them, the whole avg10 map came back EMPTY. So: check the
+        # denominator first, and stop before the pull if it is unusable.
+        avg10 = {}
+        if os.path.exists(a.avg10):
+            avg10 = json.load(open(a.avg10))
+        cov = avg10.get("coverage") or {}
+        n_avg = len(avg10.get("avg10") or {})
+        if n_avg == 0:
+            print("DENOMINATOR UNAVAILABLE: %s carries no trailing-10 average "
+                  "(%d symbols)." % (a.avg10, n_avg))
+            if cov:
+                print("  coverage: %s of %s sessions came back; missing: %s"
+                      % (cov.get("ok"), cov.get("requested"),
+                         ", ".join(cov.get("missing") or [])))
+            print("  the pace measure has no denominator - re-fetch it "
+                  "(rvol_fetch.py) before publishing. NO artifact is written.")
+            sys.exit(2)
+        if cov and not cov.get("complete", True):
+            print("WARNING: the denominator is INCOMPLETE - %s of %s sessions, "
+                  "missing: %s. The average still carries %d symbols; the "
+                  "consumer must say so in Source health."
+                  % (cov.get("ok"), cov.get("requested"),
+                     ", ".join(cov.get("missing") or []), n_avg))
         uu = build_universe()
         json.dump(uu, open(os.path.join(a.out, "universe.json"), "w"))
         jsonl = os.path.join(a.out, "records.jsonl")
         recs, stats = pull(uu["pull_set"], jsonl, a.date, a.prior, workers=a.workers)
-        avg10 = {}
-        if os.path.exists(a.avg10):
-            avg10 = json.load(open(a.avg10))
-        pub = select_published(recs, uu["universe"], avg10)
-        daily = daily_bars(pub, a.date, a.prior, workers=a.workers)
+        # --- the floors on the UNREPAIRED factors, to size the candidate set ----
+        pre = select_published(recs, uu["universe"], avg10)
+        band = repair_band(recs, avg10, pre)
+        daily = daily_bars(sorted(set(pre) | set(band)), a.date, a.prior,
+                            workers=a.workers)
         for sym, d in daily.items():
             if sym in recs:
                 recs[sym].update(d)
+        # --- the volume-basis repair, then the floors and the trigger again ----
+        repaired, unusable = apply_session_factor(recs, avg10, daily)
+        pub = select_published(recs, uu["universe"], avg10)
+        daily2 = daily_bars(pub, a.date, a.prior, workers=a.workers)
+        for sym, d in daily2.items():
+            if sym in recs:
+                recs[sym].update(d)
+        for sym in daily:
+            if sym in recs and sym not in daily2:
+                recs[sym].update(daily[sym])
         pub, dropped = rebase_on_official(recs, pub, avg10)
         for sym in pub:
             attach_pace(recs[sym], avg10)
+            if recs[sym].get("factor_source"):
+                recs[sym]["vol_basis_source"] = recs[sym]["factor_source"]
         with open(jsonl, "w", encoding="utf-8") as fh:
             for rec in recs.values():
                 fh.write(json.dumps(rec) + "\n")
@@ -1337,7 +1530,13 @@ def main():
                    "dropped": uu["dropped"], "prefilter_legs": uu["prefilter_legs"],
                    "published": len(pub), "published_after_rebase": len(pub),
                    "dropped_after_rebase": len(dropped),
-                   "rebased_on_official_close": rebased}
+                   "rebased_on_official_close": rebased,
+                   "floor_cleared_unrepaired": len(pre),
+                   "factors_repaired": len([s_ for s_ in pub
+                                            if recs[s_].get("factor_repaired")]),
+                   "factor_repair_tolerance": REPAIR_TOLERANCE,
+                   "repaired_tickers": sorted([recs[s_]["symbol"] for s_ in pub
+                                               if recs[s_].get("factor_repaired")])}
         json.dump(summary, open(os.path.join(a.out, "summary.json"), "w"), indent=1)
         with open(os.path.join(a.out, "published.txt"), "w") as fh:
             fh.write("\n".join(pub) + "\n")
