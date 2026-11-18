@@ -37,16 +37,18 @@ GAINERS = [_row("GA%02d" % i, "Gain Co %d" % i, round(40.0 - i * 1.1, 4), round(
 DECLINERS = [_row("DE%02d" % i, "Dec Co %d" % i, round(30.0 - i * 1.2, 4), round(-12.0 + i, 2),
                   400000 + i, 1000000, round((400000 + i) / 1000000 * 100, 2),
                   900000000 + i, "Health Technology", "NASDAQ") for i in range(10)]
-THIN = [("TH%02d" % i, "Thin Co %d" % i, 5.0 + i, 9.0 + i, 300000, 95000000,
-         "Process Industries", "NYSE") for i in range(4)] + \
-        [("TD%02d" % i, "Thin Dec %d" % i, 4.0 - i * 0.1, -8.0 + i, 250000, 90000000,
-          "Consumer Services", "NYSE") for i in range(4)]
+THIN = [_row("TH%02d" % i, "Thin Co %d" % i, 5.0 + i, 9.0 + i, 300000 + i, 9500000,
+             round((300000 + i) / 9500000 * 100, 2), 95000000, "Process Industries",
+             "NYSE") for i in range(4)] + \
+        [_row("TD%02d" % i, "Thin Dec %d" % i, 4.0 - i * 0.1, -8.0 + i, 250000 + i, 9000000,
+              round((250000 + i) / 9000000 * 100, 2), 90000000, "Consumer Services",
+              "NYSE") for i in range(4)]
 DRIVERS = ["CASH-OUT+ANCHORED"] * 15 + ["EARNINGS-CUT+ANCHORED"] * 10
 ALL = GAINERS + DECLINERS
 
 
 def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-brief-refresh",
-             changes=40, up=15, down=10, complete="true"):
+             changes=40, up=19, down=14, complete="true"):
     L = []
     L.append("---")
     L.append("date: %s" % date)
@@ -112,9 +114,26 @@ def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-br
     L.append("")
     L.append("| Ticker | Name | Pre-market | % | Mkt cap | Pm vol | Snapshot |")
     L.append("|---|---|---|---|---|---|---|")
-    for t, n, px, gap, vol, cap, sec, ex in THIN:
+    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in THIN:
         L.append("| %s | %s | %.2f | %+.2f%% | $%.1fM | %s | %s ET |" %
                  (t, n, px, gap, cap / 1e6, "{:,}".format(vol), snapshot))
+    L.append("")
+    L.append("### Tail - refreshed")
+    L.append("")
+    L.append("The names the gates and the table cap left out, ranked by `|gap|`. `gate-fail` "
+             "failed the liquidity or quality gate, `unranked` cleared both but did not make the "
+             "headline tables.")
+    L.append("")
+    L.append("| Ticker | Cohort | Prior close | Pre-market last | Gap % | PM range | Key level "
+             "| Invalidation |")
+    L.append("|---|---|---|---|---|---|---|---|")
+    for (t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex), cohort in zip(
+            THIN, ["gate-fail", "gate-fail", "unranked", "gate-fail", "gate-fail", "unranked",
+                   "gate-fail", "unranked"]):
+        L.append("| %s | %s | %.2f | %.2f | %+.2f%% | %.2f-%.2f | prior close %.2f | %s |"
+                 % (t, cohort, pc_, px, gap, px - 0.5, px + 0.5, pc_,
+                    "back to/below prior close %.2f" % pc_ if gap >= 0
+                    else "below PM low %.2f" % (px - 0.5)))
     L.append("")
     L.append("## 2. Gap quality — can this gap hold?")
     L.append("")
@@ -148,7 +167,7 @@ def build_csv(rows=None):
                 "avg_volume_30d", "pct_of_adv", "prior_close", "prior_session_change_pct",
                 "live_close", "live_change_pct", "live_volume", "market_cap", "sector",
                 "exchange", "screen_complete"])
-    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in (rows or ALL):
+    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in (rows or (ALL + THIN)):
         w.writerow([t, n, px, gap, vol, adv, pavg, pc_, 0.5, "", "", "", cap, sec, ex, "true"])
     return buf.getvalue()
 
@@ -210,7 +229,7 @@ def main():
     THIN3 = "| TH03 |"                    # a thin-tape row
 
     mutations = [
-        ("FM-KEYS", lambda t, c: (md_mut(t, "up_3pct: 15\n", ""), c)),
+        ("FM-KEYS", lambda t, c: (md_mut(t, "up_3pct: 19\n", ""), c)),
         ("FM-CRON", lambda t, c: (md_mut(t, "cron: 26-agentic-pre-market-brief-refresh",
                                          "cron: 26b-agentic-pre-market-brief-refresh"), c)),
         ("BL-THREE-LINES", lambda t, c: (md_mut(
@@ -227,6 +246,11 @@ def main():
         ("TOPG-SORTED", lambda t, c: (mutate_line(t, TOP14, "+6.00%", "+99.00%"), c)),
         ("TOPD-10", lambda t, c: (drop_line(t, "| DE09 | Dec Co 9"), c)),
         ("THIN-COMPLETE", lambda t, c: (drop_line(t, THIN3), c)),
+        ("SKELETON", lambda t, c: (md_mut(t, "### Tail - refreshed\n", ""), c)),
+        ("TAIL-PRESENT", lambda t, c: (md_mut(
+            t, "| Ticker | Cohort | Prior close | Pre-market last | Gap % | PM range | Key level "
+              "| Invalidation |\n", ""), c)),
+        ("TAIL-ROWS", lambda t, c: (mutate_line(t, "| TH00 | gate-fail |", "+9.00%", "+91.00%"), c)),
         ("TRACE-GAP", lambda t, c: (mutate_line(t, GQ14, "+6.00%", "+61.00%"), c)),
         ("NO-PLACEHOLDER", lambda t, c: (md_mut(t, "## 4. Verdict", "## 4. Verdict\n\nTODO: write this"), c)),
         ("PRIOR-CLOSE-RECONCILES", lambda t, c: (t, md_mut(c, ",33.3333,", ",33.3000,"))),

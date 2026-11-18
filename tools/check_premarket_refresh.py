@@ -44,6 +44,7 @@ SKELETON = [
     "### Top 15 gainers",
     "### Top 10 decliners",
     "### Thin tape",
+    "### Tail - refreshed",
     "## 2. Gap quality",
     "## 3. What changed since the morning brief",
     "## 4. Verdict",
@@ -310,7 +311,10 @@ def main():
     if marks:
         start = min(marks)
         rest = text[start:]
-        nxt = re.search(r"\n## ", rest)
+        # Stop at the next heading of level 2 OR 3: the tail tier is a level-3 section that
+        # follows the thin tape, and a block that swallowed it counted 94 rows against a
+        # 64-row claim.
+        nxt = re.search(r"\n#{2,3} ", rest)
         seg = rest[:nxt.start()] if nxt else rest[:8000]
         trows = []
         for line in seg.split("\n"):
@@ -399,6 +403,29 @@ def main():
         if csv_gap is not None and md_gap is not None:
             check(abs(csv_gap - md_gap) <= 0.011, "TRACE-GAP",
                   "%s: markdown %+.2f%% vs CSV %+.2f%%" % (t, md_gap, csv_gap))
+
+    # ---------------- the tail tier (C7.4: every tail row is in the CSV) ----------------
+    tail, _ = table_rows(text, ["Cohort", "Prior close", "Pre-market last", "Gap %", "PM range"])
+    check(len(tail) > 0, "TAIL-PRESENT", "the tail tier is missing")
+    tail_bad = []
+    for r in tail:
+        if len(r) < 8:
+            tail_bad.append("%s has %d columns" % (r[0], len(r)))
+            continue
+        if r[1].strip() not in ("gate-fail", "flat-print", "unranked"):
+            tail_bad.append("%s carries the cohort %r" % (r[0], r[1]))
+        if not r[2].strip() or not r[3].strip():
+            tail_bad.append("%s carries an empty level" % r[0])
+        if any(w in r[7].lower() for w in SIDE_WORDS) is False:
+            tail_bad.append("%s's invalidation carries no side: %r" % (r[0], r[7]))
+        if r[0] not in by_tic:
+            tail_bad.append("%s is in the tail but not in the CSV" % r[0])
+            continue
+        cg = num(by_tic[r[0]][3])
+        mg = num(r[4])
+        if cg is not None and mg is not None and abs(cg - mg) > 0.011:
+            tail_bad.append("%s: tail %+.2f%% vs CSV %+.2f%%" % (r[0], mg, cg))
+    check(not tail_bad, "TAIL-ROWS", "; ".join(tail_bad[:4]))
 
     # ---------------- snapshot consistency ----------------
     snap = fm.get("snapshot_et", "")

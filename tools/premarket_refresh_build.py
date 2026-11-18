@@ -88,6 +88,8 @@ GATE_A_CAP_VOL = 10_000
 GATE_B_CAP = 100_000_000
 MOVE_EPS = 0.2               # a gap that moved by more than this counts as "changed"
 HOLD_RUNG2 = 80.0           # rung 2 of the ladder: the gap is still holding
+TAIL_GATE_FAIL = 16         # the tail tier's gate-fail slots (the brief's C7 mix)
+TAIL_UNRANKED = 14          # the tail tier's unranked slots (C7's 7 flat-print + 7 unranked)
 QUOTE_PCT, AUCTION_PCT = 2.0, 30.0
 
 WARNINGS = []
@@ -775,6 +777,39 @@ def build(args):
              "is" if len(excluded) == 1 else "are", e["ticker"], num(e["premarket_change"]),
              fmt(num(e["premarket_close"]), 4).rstrip("0").rstrip("."),
              "{:,.0f}".format(num(e["premarket_volume"]) or 0)))
+    A("")
+    # ---- the tail tier: the names the gates and the table cap left out ----
+    headline = set(r["ticker"] for r in head_up + head_dn)
+    tail_pool = [r for r in rows if r["ticker"] not in headline]
+    gate_fail = [r for r in tail_pool if not (gate_a(r) and gate_b(r))]
+    unranked = [r for r in tail_pool if gate_a(r) and gate_b(r)]
+    gf = sorted(gate_fail, key=lambda r: -abs(num(r["premarket_change"]) or 0))[:TAIL_GATE_FAIL]
+    ur = sorted(unranked, key=lambda r: -abs(num(r["premarket_change"]) or 0))[:TAIL_UNRANKED]
+    tail_rows = sorted(gf + ur, key=lambda r: -abs(num(r["premarket_change"]) or 0))
+    A("### Tail - refreshed")
+    A("")
+    A("The names the gates and the table cap left out, on this pull's print (**%s**) instead of "
+      "the 08:30 one, ranked by `|gap|` and direction-agnostic. `gate-fail` failed the liquidity "
+      "or the quality gate, `unranked` cleared both gates but did not make the headline tables. "
+      "This is a watchlist, not a second set of setups - no name here is promoted into the "
+      "top-of-book. The `flat-print` cohort (a gap inside 3%%) is absent by construction: those "
+      "names are outside the band and therefore not in this file's CSV. **%d of %d** candidates "
+      "are shown, and the cohorts are mixed on purpose - the gate-failing cohort alone is %d "
+      "names deep and would read as noise."
+      % (snap, len(tail_rows), len(tail_pool), len(gate_fail)))
+    A("")
+    A("| Ticker | Cohort | Prior close | Pre-market last | Gap % | PM range | Key level | "
+      "Invalidation |")
+    A("|---|---|---|---|---|---|---|---|")
+    for r in tail_rows:
+        pm = num(r["premarket_close"])
+        pc = pm / (1 + num(r["premarket_change"]) / 100.0)
+        lo, hi = num(r["premarket_low"]), num(r["premarket_high"])
+        A("| %s | %s | %s | %s | %+.2f%% | %s-%s | %s | %s |"
+          % (r["ticker"], "gate-fail" if r in gf else "unranked", fmt(pc, 2),
+             fmt(pm, 4).rstrip("0").rstrip("."), num(r["premarket_change"]),
+             fmt(lo, 4).rstrip("0").rstrip("."), fmt(hi, 4).rstrip("0").rstrip("."),
+             key_level(r, pc), invalidation(r, pc)))
     A("")
     A("## 2. Gap quality - can this gap hold?")
     A("")
