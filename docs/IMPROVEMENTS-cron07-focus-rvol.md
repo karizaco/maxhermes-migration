@@ -747,3 +747,51 @@ equals `pm_vol / (pm_vol + session_vol)` and that `pm_vol_source` is in the allo
 repo's own test gained the pre-market share in its fixtures and a mis-scaled share in the
 fault-injection shape - the test asserts the checker exits non-zero on it AND that C18, C19,
 C20 and C21 each trip.
+
+---
+
+## 2026-11-18 — two artifact-internal contradictions the checker cannot see
+
+The 2026-11-18 fire (`status: ok`, 1,387 of 1,734 candidates scored, 101 rows published, 19
+alerts, 65 near misses, `selectivity: broad_tape`) passed all 20 clauses of
+`tools/check_focus_rvol_artifact.py` and still carried two contradictions **inside one
+artifact**. Both were in the RENDERER, not in the data.
+
+### 1. THE NEAR-MISS TIER DISAGREED WITH THE ARTIFACT'S OWN NEAR-MISS TABLE
+
+`## Near misses` is built from the BAND (`NEAR_MISS_FLOOR <= rvol_now < ALERT_BAR`); the CSV's
+`tier` column is built by `tier_of()`, which returned `WATCH` for ANY row with no prior
+reading. So the two rows that sat in the band with an **unavailable** prior reading — **GL
+(1.4644x)** and **ADUR (1.3251x)**, both `prev_session_rvol_source: unavailable` — were listed
+in the markdown's 65-row near-miss table while the CSV tiered them `WATCH` (63 NEAR MISS rows).
+
+The band is a LEVEL rule and does not depend on the prior reading; the prior reading only
+decides whether a name is a **CROSSING**. So the fix is narrow and preserves the alert
+discipline:
+
+- at or above the bar with no prior reading ⇒ **WATCH** (a LEVEL is not a crossing — unchanged,
+  and required by clause C6);
+- inside the near-miss band with no prior reading ⇒ **NEAR MISS** (the tier the artifact's own
+  table already published).
+
+**The general lesson: a tier derived from a DIFFERENT predicate than the table it lives beside
+is an internal contradiction the checker cannot see.** The near-miss COUNT (65) came from the
+band while the tier COLUMN (63) came from `tier_of()` — two predicates, one artifact.
+
+### 2. `pm_source_status` WAS HARDCODED AND NAMED A SOURCE THAT PRODUCED NO ROW
+
+The front matter read `pm_source_status: measured_from_series` on every fire — a literal in the
+renderer. On 2026-11-18 the published rows read **`measured_from_nasdaq` on 93 of 101** and
+**`not_subtracted` on 8** (Yahoo's pre-open bars carry volume 0, and Nasdaq's pre-session
+counter had no row for those symbols: CCB, SVIX, DAKT, SVXY, AXGN, SKT, MOH, CGON). The label
+named a source that produced **zero** rows in the artifact it labelled.
+
+`pm_source_status` is now **DERIVED from the published rows** — the single source if all rows
+agree, `partial` if they do not — and `## Source health` carries a one-line coverage statement
+(`_pm_coverage`) naming how many rows carried a measured share and what the unmeasured rows
+read instead. The session volume is unaffected: Yahoo's regular-session bars exclude the
+pre-market by construction, so nothing needs subtracting — the label describes the SHARE's
+provenance, not an adjustment.
+
+**The general lesson: a front-matter field that ASSERTS a method must be computed from the
+rows it describes.** A hardcoded `status:`/`source:` line is a claim; a derived one is a fact.

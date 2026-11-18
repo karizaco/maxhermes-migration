@@ -376,12 +376,52 @@ def tier_of(now: float | None, prior: float | None) -> str:
     if now is None:
         return "-"
     if prior is None:
+        # NO PRIOR READING (the symbol has no prior-session baseline). A name AT OR ABOVE the
+        # bar with no prior reading is a LEVEL, not a crossing => WATCH (never ALERT).
+        # INSIDE the near-miss band the tier is PRIOR-INDEPENDENT: the band is a level rule
+        # (NEAR_MISS_FLOOR <= rvol_now < ALERT_BAR). Measured 2026-11-18: GL (1.4644x) and
+        # ADUR (1.3251x) sat in the band with an unavailable prior and were tiered WATCH,
+        # so the CSV carried 63 NEAR MISS rows while the artifact's own near-miss table
+        # published 65 - the two sections of one artifact disagreed.
+        if NEAR_MISS_FLOOR <= now < ALERT_BAR:
+            return "NEAR MISS"
         return "WATCH"
     if prior < ALERT_BAR <= now:
         return "ALERT"
     if NEAR_MISS_FLOOR <= now < ALERT_BAR:
         return "NEAR MISS"
     return "WATCH"
+
+
+def pm_source_status(published: list) -> str:
+    """The front matter's `pm_source_status` - DERIVED from the published rows, never asserted.
+
+    Measured 2026-11-18: the front matter hardcoded `measured_from_series` while 93 of the 101
+    published rows carried `measured_from_nasdaq` and 8 carried `not_subtracted` (Yahoo's
+    pre-open bars carry volume 0 and Nasdaq's pre-session counter had no row for those
+    symbols). The label named a source that produced NO row in the artifact.
+    """
+    srcs = [(r.get("pm_source") or "not_subtracted") for r in published]
+    if not srcs:
+        return "not_subtracted"
+    first = srcs[0]
+    if all(s == first for s in srcs):
+        return first
+    return "partial"
+
+
+def _pm_coverage(published: list) -> str:
+    """One line on how many published rows actually carried a measured pre-market share."""
+    from collections import Counter
+    c = Counter((r.get("pm_source") or "not_subtracted") for r in published)
+    parts = [f"{k} {v}" for k, v in sorted(c.items())]
+    unmeasured = c.get("not_subtracted", 0) + c.get("no_08_file", 0)
+    tail = ("" if not unmeasured else
+            f"; {unmeasured} row(s) carried NO measurable pre-market volume (Yahoo's pre-open "
+            f"bars carry volume 0 and Nasdaq's pre-session counter had no row for them), so "
+            f"their `pm_vol_source` reads `not_subtracted` and their `pm_share_pct` is `n/a` "
+            f"rather than a wrong number")
+    return f"{len(published)} published rows - " + ", ".join(parts) + tail
 
 
 def main() -> int:
@@ -734,7 +774,8 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               "RVOL_ALERT_THRESHOLD (1.5) AND whose prev_session_rvol is below "
               "RVOL_ALERT_THRESHOLD (1.5) - that is, the name crossed UP through the alert bar "
               "since the previous session's reading of the same metric.\n"
-              "pm_source_status: measured_from_series\ncross_check_source: same_series_truncated\n"
+              f"pm_source_status: {pm_source_status(published)}\n"
+              "cross_check_source: same_series_truncated\n"
               "status: ok\n"
               f"upstream: {out.get('upstream') or 'focus.md'}\nnames_unpriced: "
               f"{len(out['unscored'])}\n"
@@ -894,7 +935,8 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
               f"{out['scored']} of {out['universe_size']} candidates\n"
               f"- unpriced names: {len(out['unscored'])} of {out['universe_size']} candidates had "
               f"no usable session window (`no_session_bars`); they are reported as unpriced, "
-              f"never as a zero\n")
+              f"never as a zero\n"
+              f"- pre-market share: {_pm_coverage(published)}\n")
     md.append("\n## Degradation / caveats\n"
               f"- **{len(out['unscored'])} candidates could not be priced** - no regular-session "
               f"bars in the fetched window. They are excluded from every count rather than "
