@@ -1587,7 +1587,7 @@ A reader must not have to infer the verdict from two numbers and a caveat. Every
 | `FLAGGED` | clears the gate on the tape AND size — see 6.1 |
 | `BORDERLINE_THIN` | the bar was printed, but the market behind it is too thin to act on (`exec_shares` below `MIN_EXECUTED_SHARES`, or `pm_volume` below `MIN_PM_VOLUME_SHARES`) |
 | `BORDERLINE_TAPE_ONLY` | the live quote clears the bar but the executed tape does not — *above the bar on a quote, below it on the market* |
-| `BORDERLINE_INTRADAY` | it crossed the bar during the pre-market session and is not there at the snapshot |
+| `BORDERLINE_INTRADAY` | it crossed the bar during the pre-market session and is not there at the snapshot — published with the SIGNED extreme it reached (`the pre-market tape reached -6.98% → -0.10% at the snapshot`), because `pm_high_gap_pct` / `pm_low_gap_pct` are the CURRENT range, not the crossing fact |
 | `NO_PRINT` | no executed print at all — the quote is not a market |
 | `BELOW` | printed, and below the bar on every reading |
 

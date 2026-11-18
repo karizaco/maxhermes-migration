@@ -736,6 +736,12 @@ def _compute_gap_fields(rec: dict, primary):
             gaps.append(round((p["price"] / primary - 1) * 100, 3))
     rec["tape_print_gaps"] = gaps
     rec["max_tape_gap_pct"] = max((abs(g) for g in gaps), default=None)
+    # The SIGNED extreme. `max_tape_gap_pct` is an absolute value and loses the
+    # direction, so a name that crossed the bar DOWNWARDS and gave it back was
+    # published as "reached 6.98%" - the reader could not tell which side it
+    # crossed. Measured 2026-11-18: MOH's overnight extreme was -6.98% and the
+    # artifact's flag line could not say so.
+    rec["max_tape_gap_signed_pct"] = (max(gaps, key=abs) if gaps else None)
     for side in ("pm_high", "pm_low"):
         px = rec.get(side + "_px")
         rec[side + "_gap_pct"] = round((px / primary - 1) * 100, 3) if (px and primary) else None

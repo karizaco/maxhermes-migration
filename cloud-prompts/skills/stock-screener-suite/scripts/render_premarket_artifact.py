@@ -181,6 +181,32 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
         r["_cat"] = catalysts.get(r.get("ticker")) or {}
         return r
 
+    def intraday_extreme(r):
+        """The SIGNED extreme the pre-market tape reached - the fact behind a
+        BORDERLINE_INTRADAY verdict.
+
+        `max_tape_gap_pct` is an ABSOLUTE value and loses the direction, so a
+        name that crossed the bar DOWNWARDS and gave it back was published as
+        "reached 6.98%" and the reader could not tell which side it crossed.
+        The pull engine now publishes `max_tape_gap_signed_pct`; the tape's own
+        print list is the fallback for a pull that predates it.
+        """
+        ext = num(r.get("max_tape_gap_signed_pct"))
+        if ext is None:
+            gp = r.get("tape_print_gaps") or []
+            ext = max(gp, key=abs) if gp else None
+        return ext
+
+    def flag_reason(r):
+        """The published reason, with the intraday extreme SIGNED."""
+        base = r.get("flag_reason") or ""
+        ext = intraday_extreme(r)
+        if r.get("verdict") == "BORDERLINE_INTRADAY" and ext is not None:
+            gap = num(r.get("pm_gap_pct"))
+            return ("crossed the bar intraday (the pre-market tape reached %+.2f%%) but is not "
+                    "there at the snapshot (%+.2f%%)" % (ext, gap if gap is not None else 0.0))
+        return base
+
     rows = [enrich(rec) for rec in recs.values()]
     rows.sort(key=lambda r: -(abs(r["_gap"]) if r["_gap"] is not None else -1))
     flagged = [r for r in rows if r.get("verdict") == "FLAGGED"]
@@ -224,7 +250,7 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
             "stylists": r.get("stylists") or "",
             "origins": r.get("origins") or "",
             "verdict": r.get("verdict") or "",
-            "flag_reason": r.get("flag_reason") or "",
+            "flag_reason": flag_reason(r),
             "tape_newest_print": r.get("tape_newest_print") or "",
             "tape_lag_min": fmt(num(r.get("tape_lag_min")), 1),
             "tape_pulls": r.get("tape_pulls") if r.get("tape_pulls") is not None else "",
@@ -482,9 +508,23 @@ def render(pull: dict, manifest: dict, context: dict, out_dir: Path, fire_date: 
                         "executed tape at %s" % (pct(r["_qg"]), fmt(num(r.get("info_bid")), 2),
                                                  fmt(num(r.get("info_ask")), 2), pct(r["_gap"])))
         if r.get("verdict") == "BORDERLINE_INTRADAY":
-            bits.append("crossed the bar intraday and gave it back (pre-market high %s / low %s "
-                        "→ %s at the snapshot)" % (pct(num(r.get("pm_high_gap_pct"))),
-                                                   pct(num(r.get("pm_low_gap_pct"))), pct(r["_gap"])))
+            # The crossing EXTREME, with its sign - not the current pre-market
+            # high/low gaps. Measured 2026-11-18: the old line published
+            # "pre-market high +0.26% / low +0.26% -> +0.52% at the snapshot" for
+            # a name whose verdict was "crossed the bar intraday", because
+            # `pm_high_gap_pct` / `pm_low_gap_pct` are the CURRENT range, not the
+            # extreme that crossed the bar. The line therefore contradicted the
+            # verdict it was flagging, and the extreme itself was published
+            # nowhere in the markdown.
+            ext = intraday_extreme(r)
+            if ext is not None:
+                bits.append("crossed the bar intraday and gave it back (the pre-market tape "
+                            "reached %s → %s at the snapshot)" % (pct(ext), pct(r["_gap"])))
+            else:
+                bits.append("crossed the bar intraday and gave it back (pre-market high %s / low "
+                            "%s -> %s at the snapshot)" % (pct(num(r.get("pm_high_gap_pct"))),
+                                                           pct(num(r.get("pm_low_gap_pct"))),
+                                                           pct(r["_gap"])))
         if (r["_lag"] or 0) > STALE_TAPE_MIN:
             bits.append("**stale tape** — the newest print is %d min behind the wall clock, so "
                         "the gap is a snapshot, not a live market" % int(r["_lag"]))
