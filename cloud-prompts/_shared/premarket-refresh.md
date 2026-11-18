@@ -59,10 +59,17 @@ fi
 sh "$S" --scheduled-at-ms "$SCHEDULED_AT_MS" \
    --out daily-briefs --name agentic_pre_market_brief_refresh \
    --label "Cron #26b agentic-pre-market-brief-refresh" \
-   --nn 26b
+   --nn 26b > /workspace/_window_check.txt 2>&1
+WRC=$?
+cat /workspace/_window_check.txt
+# The platform's delay before this fire's FIRST TOOL CALL. The builder publishes it in the
+# intro, so a file that lands late says WHY it is late - a reader cannot tell a 12-hour-old
+# pull from a fresh one without it.
+STALL_MIN=$(awk '/^stall_min:/{print $2}' /workspace/_window_check.txt | tail -1)
+case "$STALL_MIN" in ''|*[!0-9]*) STALL_MIN=0 ;; esac
+```
 
-If the script exits non-zero the fire is OUT OF WINDOW: write nothing, push nothing, and
-reply:
+If `$WRC` is non-zero the fire is OUT OF WINDOW: write nothing, push nothing, and reply:
 
 ```
 out-of-window: <reason printed by the script>
@@ -70,7 +77,6 @@ file: no artifact (holiday skip — daily-briefs/$DATE-pre-market-refresh.md is 
 push: marker pushed (refs/skipped-markers/$DATE_SKIPPED_agentic_pre_market_brief_refresh.md) | marker push FAILED | marker push skipped (push script unavailable)
 errors: 0
 ```
-
 ---
 
 ## STEP 1 — ONE COMMAND, ONE PULL (the helpers do the arithmetic)
@@ -97,11 +103,11 @@ fetch_helper() {   # $1 = repo path, $2 = local path, $3 = capability marker
   done
   return 1
 }
-fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v1 \
+fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v2 \
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
 fetch_helper tools/session_state.py /workspace/session_state.py session-state-v1 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v1 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v2 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 
@@ -139,8 +145,17 @@ fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build
      --morning-md daily-briefs/{date}-pre-market.md \
      --morning-csv daily-briefs/{date}-pre-market.csv \
      --slots /workspace/slots.json \
+     --stall-min "$STALL_MIN" \
      --date {date} --session-state PRE-OPEN --out-dir daily-briefs
    ```
+
+   **`--session-state` is NOT always PRE-OPEN.** `session_state.py` decides it from the DATA
+   (the scanner's `close` against the morning brief's `prior_close`) and its exit code is the
+   answer: **0 = PRE-OPEN, 3 = OPEN (the late-pull branch), 4 = INDETERMINATE (do not guess -
+   say so once in Source health)**. Pass the answer through as `--session-state OPEN`. The
+   late-pull branch publishes `pull_late: true` and `market_open_at_pull: true`, fills the
+   CSV's `live_*` columns with the regular session, and says in the intro whether those are an
+   intraday price or the SETTLED close.
 
    The fire time and the snapshot clock are DERIVED (the fire is this routine's 09:20 ET slot;
    the snapshot comes from the pull's own `pulled_at_et`) — **never hand-type a clock.**
@@ -240,6 +255,15 @@ open and the reader needs the decision first.
      still holding (Hold 96%).
   3. **Nothing anchored at all** → say so honestly — "no name carries an anchored catalyst this
      morning — the setup is cash" — rather than promoting a name that does not.
+  **The cash case still NAMES the closest candidate, with its levels.** An empty ladder is a
+  legitimate result (measured 2026-11-16 and again on 2026-11-17), and the file has to say
+  WHAT came closest and WHY it did not take the slot: the candidate that came closest is the
+  anchored gainer (it failed only on the class or on the Hold bar; an unanchored name failed
+  on the anchor itself), with its gap, its Hold %, its print, its range, its Driver and its
+  invalidation. The 2026-11-16 refresh published CGON that way. A cash case with no name and
+  no invalidation level **fails the contract gate** — `BL-L1-DIGIT`, `BL-L1-INVALIDATION` and
+  `WATCH-THREE` all fire on it, because the "what to watch" table is built from
+  (setup, risk, watch) and the cash case still owes it three rows.
   **Never promote an unanchored name to fill the slot, and never publish "no anchored catalyst"
   when an anchored name exists.** Both errors are live: the first promotes a narrative gap, the
   second is a false statement about the tape.

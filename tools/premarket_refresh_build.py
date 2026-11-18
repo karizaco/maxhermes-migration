@@ -66,7 +66,7 @@ import os
 import re
 import sys
 
-PREMARKET_REFRESH_BUILD_V1 = "premarket-refresh-build-v1"
+PREMARKET_REFRESH_BUILD_V2 = "premarket-refresh-build-v2"
 
 CRON_VALUE = "26-agentic-pre-market-brief-refresh"
 SOURCE_VALUE = "TradingView america scanner"
@@ -232,6 +232,86 @@ def pick_setup(candidates, drivers, morning):
     return None, 0, "no name carries an anchored catalyst"
 
 
+def pull_phase(pulled_at_et):
+    """WHEN the pull landed, in ET, against the 09:30 open and the 16:00 close.
+
+    The pull's own clock is already ET (the pull writes it with its ET offset), so this
+    is a clock comparison, not a timezone conversion - a hardcoded UTC-4 offset would
+    read an hour late.
+    """
+    try:
+        hh = int(str(pulled_at_et).split(" ")[1][:2])
+        mm = int(str(pulled_at_et).split(" ")[1][3:5])
+    except Exception:
+        return "unknown"
+    t = hh + mm / 60.0
+    if t >= 16.0:
+        return "closed"
+    if t >= 9.5:
+        return "live"
+    return "pre-open"
+
+
+def closest_candidate(gap_up_candidates, drivers, morning):
+    """The cash case still has to NAME a candidate.
+
+    The setup slot is computed by the ladder, and the ladder can legitimately come back
+    EMPTY - measured on 2026-11-16 and again on 2026-11-17.  The cash case then publishes
+    the candidate that came CLOSEST to the slot: an ANCHORED name came closest, because it
+    failed only on the class or on the Hold bar, while an unanchored name failed on the
+    anchor itself.  Among equals the bigger gap is closer.
+
+    Without this the builder's own cash-case output carried no digit and no invalidation
+    level, and its watch table lost a row - and the contract checker rejects both.
+    """
+    anchored, plain = [], []
+    for r in gap_up_candidates:
+        drv, _note = driver_for(r, drivers, morning)
+        (anchored if drv.endswith("+ANCHORED") else plain).append(r)
+    pool = anchored or plain
+    if not pool:
+        return None
+    return max(pool, key=lambda x: (num(x.get("premarket_change")) or 0)).get("ticker")
+
+
+def ladder_gap_note(gap_up_candidates, drivers, morning):
+    """WHY the ladder came back empty - computed from the data, never hand-typed."""
+    five, other, unanchored, none_ct = [], [], [], 0
+    for r in gap_up_candidates:
+        drv, _note = driver_for(r, drivers, morning)
+        if drv == "NONE":
+            # no sourced catalyst at all - a FINDING, and NOT the same as a catalyst
+            # without a hard number.  Counting it as the latter asserts a catalyst the
+            # morning brief never sourced.
+            none_ct += 1
+            continue
+        if not drv.endswith("+ANCHORED"):
+            unanchored.append(r)
+            continue
+        (five if drv.replace("+ANCHORED", "") in SETUP_CLASSES else other).append(r)
+    if five:
+        return ""
+    parts = []
+    if not other:
+        parts.append("no name in the headline set carries an anchored catalyst")
+    else:
+        holds = ", ".join(
+            "%s %+.2f%% at Hold %s%%" % (r["ticker"], num(r["premarket_change"]),
+                                         hold_pct(r)) for r in other)
+        parts.append("rung 1 of the ladder is empty (no anchored name carries one of the five "
+                     "classes) and the anchored gainers are all below the 80%% Hold that rung 2 "
+                     "requires (%s)" % holds)
+    if unanchored:
+        parts.append("%s carr%s a catalyst but no hard number, so %s anchored"
+                     % (", ".join(r["ticker"] for r in unanchored),
+                        "ies" if len(unanchored) == 1 else "y",
+                        "it is not" if len(unanchored) == 1 else "none of them is"))
+    if none_ct:
+        parts.append("%d of the headline gainers carr%s no sourced catalyst at all"
+                     % (none_ct, "ies" if none_ct == 1 else "y"))
+    return "; ".join(parts)
+
+
 def parse_front_matter(path):
     if not path or not os.path.exists(path):
         return {}
@@ -337,6 +417,12 @@ def build(args):
         warn("no anchored setup — the cash case is published")
     by_ticker = {r["ticker"]: r for r in rows}
 
+    # ---- the cash case still names the candidate that came closest ----
+    cash_cand, cash_note = None, ""
+    if not setup_t:
+        cash_cand = closest_candidate(gap_up_candidates, drivers, morning)
+        cash_note = ladder_gap_note(gap_up_candidates, drivers, morning)
+
     # ---- changed since the morning brief ----
     live_gap = {r["ticker"]: num(r["premarket_change"]) for r in rows
                 if num(r["premarket_change"]) is not None}
@@ -436,6 +522,8 @@ def build(args):
     weekday = datetime.date.fromisoformat(args.date).strftime("%A")
     state = args.session_state.upper()
     market_open = state == "OPEN"
+    phase = pull_phase(merged.get("pulled_at_et"))
+    stall_min = args.stall_min or 0
 
     A("---")
     A("date: %s" % args.date)
@@ -456,10 +544,31 @@ def build(args):
     A("# Pre-market refresh - %s %s" % (weekday, args.date))
     A("")
     if market_open:
-        A("One pull of the TradingView `america` scanner at **%s**, and the regular session is "
-          "**already open** — so the `premarket_*` columns below are the completed pre-market "
-          "session and the live regular-session values are published in their own block. The "
-          "front matter carries `pull_late: true` and `market_open_at_pull: true`." % snap)
+        stall_txt = ""
+        if stall_min and stall_min > 0:
+            stall_txt = ("**The platform held this fire for %d minute%s before its first tool "
+                         "call**, so the pull landed late" % (stall_min,
+                                                             "" if stall_min == 1 else "s"))
+            if phase == "closed":
+                stall_txt += (" — after the 09:30 ET open and the 16:00 ET close, which is why "
+                              "this file is a reconstruction of the 09:20 checkpoint rather than "
+                              "a live pre-open read")
+            else:
+                stall_txt += " — after the 09:30 ET open"
+            stall_txt += "."
+        if phase == "closed":
+            A("One pull of the TradingView `america` scanner at **%s**, and the regular session "
+              "had already opened AND closed — so the `premarket_*` columns below are the "
+              "completed pre-market session (the final prints before the bell) and the "
+              "`live_*` columns in the companion CSV carry the **settled** close of the "
+              "**%s** session, not an intraday live price. The front matter carries "
+              "`pull_late: true` and `market_open_at_pull: true`. %s" % (snap, args.date,
+                                                                        stall_txt))
+        else:
+            A("One pull of the TradingView `america` scanner at **%s**, and the regular session is "
+              "**already open** — so the `premarket_*` columns below are the completed pre-market "
+              "session and the live regular-session values are published in their own block. The "
+              "front matter carries `pull_late: true` and `market_open_at_pull: true`." % snap)
     else:
         A("One pull of the TradingView `america` scanner at **%s**, before the 09:30 ET open. "
           "Both screens were pulled with the row cap at 1000 and the scanner's own "
@@ -472,9 +581,25 @@ def build(args):
     A("")
 
     # ---- line 1: the one setup ----
-    if not setup_t:
+    if not setup_t and not cash_cand:
         A("1. **The one setup** - no name carries an anchored catalyst this morning - the setup "
           "is cash, and the levels below are the watch list, not a position.")
+    elif not setup_t:
+        r = by_ticker[cash_cand]
+        pm, hi, lo = num(r["premarket_close"]), num(r["premarket_high"]), num(r["premarket_low"])
+        pc = pm / (1 + num(r["premarket_change"]) / 100.0)
+        h = hold_pct(r)
+        drv, _note = driver_for(r, drivers, morning)
+        A("1. **The one setup** - no name carries an anchored catalyst that clears the setup slot "
+          "this morning - %s - so the setup is cash, and the levels below are the watch list, not "
+          "a position: the closest candidate is **%s** at **%+.2f%%** (Hold **%s**, a print of "
+          "**%s** inside a %s-%s pre-market range, `%s`), and a trade back to/below prior close "
+          "**%s** invalidates it."
+          % (cash_note, cash_cand, num(r["premarket_change"]),
+             ("%d%%" % h) if h is not None else "an unknown share",
+             fmt(pm, 4).rstrip("0").rstrip("."),
+             fmt(lo, 4).rstrip("0").rstrip("."), fmt(hi, 4).rstrip("0").rstrip("."),
+             drv, fmt(pc, 2)))
     else:
         r = by_ticker[setup_t]
         pm, hi, lo = num(r["premarket_close"]), num(r["premarket_high"]), num(r["premarket_low"])
@@ -501,11 +626,21 @@ def build(args):
         r = by_ticker[risk_t]
         pc = num(r["premarket_close"]) / (1 + num(r["premarket_change"]) / 100.0)
         lo = num(r["premarket_low"])
+        gap = num(r["premarket_change"])
+        # The level that ends the move follows the gap's DIRECTION: on a gap-up a trade back
+        # to/below the prior close ENDS the gap, and on a gap-down a break of the pre-market
+        # low says the move is still running.  One template cannot say both.
+        if gap >= 0:
+            level_txt = ("a trade back to/below the prior close **%s** says the gap is gone"
+                         % fmt(pc, 2))
+        else:
+            level_txt = ("a break of the pre-market low **%s** says the move is still running"
+                         % fmt(lo, 4).rstrip("0").rstrip("."))
         A("2. **The one risk** - **%s** - %s: %s is **%+.2f%%** at **%s** against a prior close "
-          "of **%s**, and a break of the pre-market low **%s** says the move is still running."
+          "of **%s**, and %s."
           % (risk_t, risk.get("clause") or "the risk to this tape",
-             risk_t, num(r["premarket_change"]), fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
-             fmt(pc, 2), fmt(lo, 4).rstrip("0").rstrip(".")))
+             risk_t, gap, fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
+             fmt(pc, 2), level_txt))
     else:
         A("2. **The one risk** - no name in the screen cleared the gates on the downside, so "
           "there is no single name to name - watch the index futures and the 10-year at the open.")
@@ -514,15 +649,24 @@ def build(args):
     if watch_t and watch_t in by_ticker:
         r = by_ticker[watch_t]
         pc = num(r["premarket_close"]) / (1 + num(r["premarket_change"]) / 100.0)
+        gap = num(r["premarket_change"])
+        # Same rule as the risk line: on a gap-up an open ABOVE the last print keeps it bid,
+        # and on a gap-down an open BELOW it says the seller is still there.
+        if gap >= 0:
+            open_txt = ("an open above **%s** keeps it bid, below **%s** confirms the gap is gone"
+                        % (fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
+                           fmt(num(r["premarket_low"]), 4).rstrip("0").rstrip(".")))
+        else:
+            open_txt = ("an open below **%s** says the seller is still there, a reclaim of **%s** "
+                        "says the gap is being bought back"
+                        % (fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
+                           fmt(num(r["premarket_high"]), 4).rstrip("0").rstrip(".")))
         A("3. **The one thing to watch at the open** - **%s** - %s: %s is **%+.2f%%** at a print "
-          "of **%s** against a prior close of **%s**, inside a %s-%s pre-market range; an open "
-          "above **%s** keeps it bid, below **%s** confirms the gap is gone."
+          "of **%s** against a prior close of **%s**, inside a %s-%s pre-market range; %s."
           % (watch_t, watch.get("clause") or "the name to watch", watch_t,
-             num(r["premarket_change"]), fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
+             gap, fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
              fmt(pc, 2), fmt(num(r["premarket_low"]), 4).rstrip("0").rstrip("."),
-             fmt(num(r["premarket_high"]), 4).rstrip("0").rstrip("."),
-             fmt(num(r["premarket_close"]), 4).rstrip("0").rstrip("."),
-             fmt(num(r["premarket_low"]), 4).rstrip("0").rstrip(".")))
+             fmt(num(r["premarket_high"]), 4).rstrip("0").rstrip("."), open_txt))
     else:
         A("3. **The one thing to watch at the open** - the index futures and the 10-year - a "
           "move against the tape before the bell is the level that decides the session.")
@@ -532,7 +676,8 @@ def build(args):
     A("")
     A("| Name | Prior close | PM last | PM low | PM high | Trigger | Invalidation |")
     A("|---|---|---|---|---|---|---|")
-    for t, trig, inv in ((setup_t, None, None), (risk_t, None, None), (watch_t, None, None)):
+    for t, trig, inv in ((setup_t or cash_cand, None, None), (risk_t, None, None),
+                         (watch_t, None, None)):
         if not t or t not in by_ticker:
             continue
         r = by_ticker[t]
@@ -805,14 +950,29 @@ def build(args):
         pv = num(r.get("premarket_volume"))
         cap = cap_of(r)
         advp = (pv / adv * 100.0) if (adv and pv is not None) else None
+        # `prior_session_change_pct` is the PRIOR session's move.  In a pre-open pull the
+        # scanner's `change` IS that move; in a LATE pull the scanner's `change` is TODAY's
+        # move, so the number comes from the morning CSV (pulled pre-open) and is EMPTY for
+        # a name the morning CSV never carried - never today's move under the wrong header,
+        # and never 0.  The three `live_*` columns carry the regular session once the pull
+        # has landed after the open; before it they are EMPTY, never 0.
+        if market_open:
+            psc_raw = (morning.get(r["ticker"]) or {}).get("prior_session_change_pct")
+            psc_val = ("%.2f" % num(psc_raw)) if num(psc_raw) is not None else ""
+            live_close = ("%.4f" % num(r["close"])) if num(r.get("close")) is not None else ""
+            live_chg = ("%.2f" % num(r["change"])) if num(r.get("change")) is not None else ""
+            live_vol = ("%d" % num(r["volume"])) if num(r.get("volume")) is not None else ""
+        else:
+            psc_val = ("%.2f" % num(r["change"])) if num(r.get("change")) is not None else ""
+            live_close, live_chg, live_vol = "", "", ""
         csv_rows.append([
             r["ticker"], r.get("description") or "", "%.4f" % pm, "%.2f" % chg,
             "{:,.0f}".format(pv or 0).replace(",", ""),
             ("%d" % int(adv)) if adv is not None else "",
             ("%.2f" % advp) if advp is not None else "",
             "%.4f" % prior,
-            ("%.2f" % num(r["change"])) if num(r.get("change")) is not None else "",
-            "", "", "",
+            psc_val,
+            live_close, live_chg, live_vol,
             ("%.0f" % cap) if cap is not None else "",
             r.get("sector") or "", r.get("exchange") or "",
             "true" if merged.get("band", {}).get("complete", True) else "false"])
@@ -907,6 +1067,9 @@ def main():
     ap.add_argument("--snapshot-et", default=None,
                     help="the pull's ET clock (default: taken from the merged file's pulled_at_et)")
     ap.add_argument("--session-state", default="PRE-OPEN", choices=["PRE-OPEN", "OPEN"])
+    ap.add_argument("--stall-min", type=int, default=0,
+                    help="the platform's delay before this fire's first tool call, in minutes "
+                         "(from the window check's stall_min) - published in the intro")
     ap.add_argument("--out-dir", default="daily-briefs")
     args = ap.parse_args()
     if not args.fire_time_et:

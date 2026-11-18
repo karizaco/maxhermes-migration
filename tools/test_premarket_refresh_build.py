@@ -96,12 +96,14 @@ def build_fixture(tmp, mutate=None):
     mcsv = os.path.join(tmp, "morning.csv")
     with open(mcsv, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["ticker", "name", "prior_close", "gap_pct", "has_news", "market_cap",
+        w.writerow(["ticker", "name", "prior_close", "gap_pct", "prior_session_change_pct",
+                    "has_news", "market_cap",
                     "setup_theme", "setup_published"])
         for r in rows:
             if r["ticker"] == "NOPM":
                 continue
             w.writerow([r["ticker"], r["name"], "%.4f" % r["close"], "%.2f" % r["premarket_change"],
+                        "-1.23",
                         "yes" if r["ticker"].startswith("G") else "no",
                         ("%d" % r["market_cap_basic"]) if r["market_cap_basic"] else "",
                         "C1 - a theme" if r["ticker"] == "G00" else "", "yes" if r["ticker"] == "G00" else "no"])
@@ -123,12 +125,14 @@ def build_fixture(tmp, mutate=None):
     return merged, mmd, mcsv, slots
 
 
-def run_builder(merged, mmd, mcsv, slots, out):
-    return subprocess.run([sys.executable, BUILD, "--merged", merged, "--morning-md", mmd,
-                           "--morning-csv", mcsv, "--slots", slots, "--date", "2026-11-12",
-                           "--fire-time-et", "2026-11-12 09:20", "--snapshot-et", "09:24:15",
-                           "--session-state", "PRE-OPEN", "--out-dir", out],
-                          capture_output=True, text=True)
+def run_builder(merged, mmd, mcsv, slots, out, state="PRE-OPEN", stall=None, snapshot="09:24:15"):
+    cmd = [sys.executable, BUILD, "--merged", merged, "--morning-md", mmd,
+           "--morning-csv", mcsv, "--slots", slots, "--date", "2026-11-12",
+           "--fire-time-et", "2026-11-12 09:20", "--snapshot-et", snapshot,
+           "--session-state", state, "--out-dir", out]
+    if stall is not None:
+        cmd += ["--stall-min", str(stall)]
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def main():
@@ -195,6 +199,19 @@ def main():
     check("no name carries an anchored catalyst" in md2,
           "the cash case is published honestly", p2.stderr.strip().split("\n")[-1])
 
+    # The cash case must ALSO satisfy the REAL contract gate.  It did not: line 1 carried
+    # no digit and no invalidation level, and the watch table carried two rows instead of
+    # three - the gate had never been run on this branch, and the 2026-11-17 fire found it.
+    md2_path = os.path.join(out2, "2026-11-12-pre-market-refresh.md")
+    csv2_path = os.path.join(out2, "2026-11-12-pre-market-refresh.csv")
+    if os.path.exists(md2_path) and os.path.exists(csv2_path):
+        c2 = subprocess.run([sys.executable, CHECKER, "--md", md2_path, "--csv", csv2_path,
+                             "--morning-csv", mcsv2], capture_output=True, text=True)
+        fails2 = [l for l in (c2.stdout + c2.stderr).split("\n") if l.startswith("FAIL")]
+        check(c2.returncode == 0 and not fails2,
+              "the REAL contract checker passes on the CASH CASE too",
+              (c2.stdout.strip().split("\n")[-1] if c2.stdout else ""))
+
     # ---------- 5. an unknown driver class is refused, not published ----------
     tmp3 = tempfile.mkdtemp(prefix="refresh_build_test_drv_")
     merged3, mmd3, mcsv3, slots3 = build_fixture(tmp3)
@@ -222,10 +239,77 @@ def main():
     check("screen_complete: false" in md4, "a truncated band publishes screen_complete: false")
     check("FLOOR" in md4.upper() or "floor" in md4, "a truncated band says its counts are floors")
 
+    # ---------- 7. the risk and watch lines follow the gap's DIRECTION ----------
+    # The default fixture puts a gap-DOWN in the risk slot and a gap-UP in the watch slot,
+    # which is the only combination the old direction-blind templates happened to fit.
+    # Swap them: a gap-UP risk and a gap-DOWN watch must publish the OTHER level, or the
+    # prose contradicts the watch table two sections below it.
+    tmp5 = tempfile.mkdtemp(prefix="refresh_build_test_dir_")
+    merged5, mmd5, mcsv5, slots5 = build_fixture(tmp5)
+    s5 = json.load(open(slots5))
+    s5["risk"] = {"ticker": "G01", "clause": "the policy relief is fading"}
+    s5["watch"] = {"ticker": "D00", "clause": "the seller is still there"}
+    json.dump(s5, open(slots5, "w"))
+    out5 = os.path.join(tmp5, "out")
+    p5 = run_builder(merged5, mmd5, mcsv5, slots5, out5)
+    md5 = open(os.path.join(out5, "2026-11-12-pre-market-refresh.md")).read() \
+        if os.path.exists(os.path.join(out5, "2026-11-12-pre-market-refresh.md")) else ""
+    risk_line = ""
+    watch_line = ""
+    for l in md5.split("\n"):
+        if l.strip().startswith("2. **The one risk**"):
+            risk_line = l
+        if l.strip().startswith("3. **The one thing to watch"):
+            watch_line = l
+    check("a trade back to/below the prior close" in risk_line,
+          "a gap-UP risk publishes the gap-fill level", risk_line[-120:])
+    check("a break of the pre-market low" not in risk_line,
+          "a gap-UP risk does NOT publish the PM-low level", risk_line[-120:])
+    check("an open below" in watch_line and "a reclaim of" in watch_line,
+          "a gap-DOWN watch publishes the seller/reclaim wording", watch_line[-120:])
+    check("keeps it bid" not in watch_line,
+          "a gap-DOWN watch does NOT publish the bid wording", watch_line[-120:])
+
+    # ---------- 8. the LATE-PULL branch must be publishable ----------
+    # It advertised `pull_late: true` / `market_open_at_pull: true` but the CSV writer always
+    # wrote the three live columns empty, so its own internal gate refused to write the file:
+    # "market_open_at_pull is true but live_* are blank".  The branch was unreachable.
+    tmp6 = tempfile.mkdtemp(prefix="refresh_build_test_late_")
+    merged6, mmd6, mcsv6, slots6 = build_fixture(tmp6)
+    m6 = json.load(open(merged6))
+    m6["pulled_at_et"] = "2026-11-12 21:24:08"      # after the 16:00 close
+    json.dump(m6, open(merged6, "w"))
+    out6 = os.path.join(tmp6, "out")
+    p6 = run_builder(merged6, mmd6, mcsv6, slots6, out6, state="OPEN", stall=722,
+                     snapshot="21:24")
+    md6_path = os.path.join(out6, "2026-11-12-pre-market-refresh.md")
+    csv6_path = os.path.join(out6, "2026-11-12-pre-market-refresh.csv")
+    check(p6.returncode == 0 and os.path.exists(md6_path) and os.path.exists(csv6_path),
+          "the LATE-PULL branch publishes a file", (p6.stderr or "").strip().split("\n")[-1])
+    if os.path.exists(md6_path) and os.path.exists(csv6_path):
+        md6 = open(md6_path).read()
+        rows6 = list(csv.DictReader(open(csv6_path)))
+        check("market_open_at_pull: true" in md6 and "pull_late: true" in md6,
+              "the late pull carries pull_late and market_open_at_pull")
+        check("settled" in md6, "the intro says the live columns are the SETTLED close")
+        check("722 minute" in md6, "the intro states the stall")
+        check(all(r["live_close"].strip() for r in rows6),
+              "the live columns carry the regular session")
+        check(all(r["prior_session_change_pct"].strip() for r in rows6),
+              "prior_session_change_pct comes from the morning CSV in a late pull")
+        c6 = subprocess.run([sys.executable, CHECKER, "--md", md6_path, "--csv", csv6_path,
+                             "--morning-csv", mcsv6], capture_output=True, text=True)
+        fails6 = [l for l in (c6.stdout + c6.stderr).split("\n") if l.startswith("FAIL")]
+        check(c6.returncode == 0 and not fails6,
+              "the REAL contract checker passes on the LATE-PULL branch",
+              (c6.stdout.strip().split("\n")[-1] if c6.stdout else ""))
+
     shutil.rmtree(tmp, ignore_errors=True)
     shutil.rmtree(tmp2, ignore_errors=True)
     shutil.rmtree(tmp3, ignore_errors=True)
     shutil.rmtree(tmp4, ignore_errors=True)
+    shutil.rmtree(tmp5, ignore_errors=True)
+    shutil.rmtree(tmp6, ignore_errors=True)
 
     failed = [n for ok, n, _ in RESULTS if not ok]
     print("\n%d tests, %d passed, %d failed" % (len(RESULTS), len(RESULTS) - len(failed), len(failed)))
