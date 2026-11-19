@@ -317,6 +317,34 @@ Group Ltd Sponsored American Depositary Receipt Repr 2 Shs" against the AU line'
 Ltd", so strip the depositary/class suffix and compare the issuer name. A name that matches no
 US line is `none`.
 
+**The issuer key must be built on punctuation-CLEAN tokens, or the matcher matches nothing
+(2026-11-19).** The America scanner appends " Ltd." **with a trailing period**, and a key built
+by dropping the corporate-form words from the end of the token list does not strip it: "Ltd." is
+not "ltd", so the key comes out `accorsaltd` and never matches the local `accor`. Measured on the
+2026-11-19 fire, **186 issuers that DO have a US line were published as `none`** - Accor, Ampol,
+Asics, Air Water, ASX Limited, Amotiv - and the archive had carried that false absence for every
+session. **So: strip the trailing period from every token before the form-word pop, split the
+token list on ALL punctuation (not only on spaces and dots), and hold the minimum key length at 2,
+not 3** - the shorter key is the correct one ("T&D Holdings, Inc." -> `td`, "M3, Inc." -> `m3`,
+"Sumitomo Pharma Co.Ltd." -> `sumitomopharma`).
+
+**And the matcher must not pair two DIFFERENT companies that share a name.** The same fire's
+twelve `us_listing` losses were all corrections of false matches - `Aegean Airlines SA` was paired
+with `Aegon Ltd`, `Challenger Limited` with `Challenger Gold`, `Endeavour Group` with `Endeavour
+Silver`, `Perpetual Limited` with `Perpetuals.com`, `Banco Santander, S.A.` with `Banco
+Santander - Chile`, `Capital B` with `Capital Bancorp`, `Iren S.p.A.` with `IREN Limited`,
+`Mitsubishi Corporation` with `Mitsubishi Chemical`, `Sumitomo Corporation` with `Sumitomo
+Chemical`, `Black Diamond Group` with `Black Diamond Therapeutics`, `Integral Group` with
+`Integra LifeSciences`. **The America scanner's `country` column is the issuer's home country on
+a foreign line** (`NYSE:BHP` -> Australia, `NYSE:SA` -> Canada, `OTC:DEUZF` -> Germany) and is a
+far stronger discriminator than the name - but a country guard on its own is too strict: measured
+on 2026-11-19 it published ~50 false negatives (Canada Goose, Wienerberger, UniCredit and a dozen
+genuinely ADR-listed Japanese names came out `none`). **The next step is a country guard paired
+with an issuer-token-subset guard** (the US line's distinctive tokens must be a subset of the
+local line's, so "Endeavour Silver Corporation" fails against "Endeavour Group Ltd"); until both
+are in place, the false pairs are disclosed in the report's caveats rather than silently
+published.
+
 ## The venue-collapse rule — the PRIMARY venue's line wins, and the change field must reconcile (2026-11-13)
 
 **The collapse picks the issuer's PRIMARY listing venue's line, not the busiest venue's.**
@@ -417,6 +445,18 @@ prior close), so the stale-print test passes it and the row looks clean.
    report's caveats. A fabricated +54% in a mover table is worse than a missing row.
 4. The `open` column is the tell: on 2026-11-16 `TWSE:3714` opened at NT$101 against a NT$87.40
    close, a range that no session on the adjusted basis could produce.
+
+**A second instance, and the clearest one yet: `ASX:CMW` (Cromwell Property Group) returned
++422.86% on its first session after a 5-FOR-1 CONSOLIDATION of its stapled securities** (approved
+at the AGM on 17 November 2026 with 99.71% of votes cast, effective 17 November; pre-consolidation
+securities last traded on 18 November and post-consolidation trading opened on a deferred
+settlement basis on 19 November; securities on issue go from 2,618,866,699 to 523,773,340). The
+source computed its own `change` on the SAME unadjusted basis, so the implied prior equals the
+unadjusted prior close and **the stale-print test passes it** - the row looks clean to every
+reconciliation. The `open` column is the tell again: A$1.74 open against an A$1.83 close on a row
+whose prior close was A$0.35. On the adjusted basis (A$0.35 x 5 = A$1.75) the real move is about
+**+4.6%**. The row stays in the CSV with the source's own field and is excluded from every
+published table, with the artefact disclosed in the caveats.
 
 ## The close of record — a SETTLEMENT STAMP is not a PRICE (2026-11-05)
 
@@ -1347,6 +1387,17 @@ datelines (Heidelberg Materials' 4 Nov Q3, Pandora's Q3, Wolters Kluwer's nine-m
 on the TSX and the gold move, Irish Times on Glanbia), and analyst actions (Morgan Stanley's
 Soitec downgrade) — with "no company-specific release found" wherever the move was purely the
 sector's.
+
+**On Cloud there is no `run_intl_cron.py` - the build is a REFERENCE implementation published
+with this spec.** `scripts/build_intl_eod.py` (capability marker **`INTL_EOD_V1`**) is the Cloud
+stage-2 build: it takes the per-country scanner pulls and the FX table and writes the 16 per-region
+CSVs, the issuer groups, the cap carrier, the venue collapse, the floors and the carry-over
+detection. It is parameterised (`--date --work --out --prior-dir --prior-history-dir
+--prior-dates`) and it reproduces the 2026-11-19 artifact **byte-for-byte** on all 16 CSVs, so a
+run that uses it can be checked against the published file rather than re-derived by eye. **It is a
+reference, not a mandate**: a run that re-derives the build must still apply every rule in this
+spec - the matcher rules above, the cap carrier, the venue collapse, the contract-adjustment rule -
+because the script implements them, it does not define them.
 
 The cron prompt is intentionally short (~1.5KB). All orchestration logic lives in `run_intl_cron.py` with two CLI subcommands:
 

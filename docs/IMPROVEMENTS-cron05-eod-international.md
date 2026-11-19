@@ -549,3 +549,89 @@ formatter regression test reproduced **34,074 of 34,074** numeric cells byte-for
 2026-11-16 artifact also ran with **zero off-official rows** (the 13 November file dropped 48), so
 the stale-print path stayed dormant - which is exactly why the contract-adjustment artefact had to
 be caught by a different test.
+
+---
+
+## 15. The `us_listing` matcher was matching nothing (2026-11-19)
+
+**Finding 1 - the America scanner appends " Ltd." WITH a trailing period, and the matcher did not
+strip it, so every issuer with a " Ltd." US line was published as `us_listing=none`.** The
+matcher reduced a description to an issuer key by dropping the corporate-form words from the END
+of the token list; "Ltd." was not in the form-word list (only "ltd" was), so the trailing period
+kept it alive and the key came out `accorsaltd` against the local `accor`. The key never matched,
+the exact lookup missed, and the prefix bucket could not rescue it either. Measured on the
+2026-11-19 fire: **186 issuers that DO have a US line were published as `none`** - Accor, Ampol,
+Asics, Air Water, Amotiv, ASX Limited itself, Amundi-type funds, ChiNext-style small caps, all of
+them. The archive has carried this false absence for every session so far.
+
+The fix is one-directional, which is why it was safe to take: strip the trailing period from every
+token before the form-word pop, and split the token list on ALL punctuation rather than only on
+spaces and dots ("Co.Ltd." -> `Co`, `Ltd`; "T&D Holdings, Inc." -> `td`; "M3, Inc." -> `m3`). The
+minimum-key-length guard came down from 3 to 2, because the shorter key is now the CORRECT one.
+
+**Finding 2 - the same matcher paired DIFFERENT companies, and the fix's cost is now visible.**
+Twelve rows lost a US listing, and in every case the old match was wrong: `Aegean Airlines SA`
+(ATHEX) was paired with `Aegon Ltd` (Netherlands), `Challenger Limited` with `Challenger Gold`,
+`Endeavour Group` with `Endeavour Silver`, `Perpetual Limited` with `Perpetuals.com`, `Banco
+Santander, S.A.` with `Banco Santander - Chile`, `Capital B` with `Capital Bancorp`, `Iren S.p.A.`
+with `IREN Limited` (an Australian issuer), `Mitsubishi Corporation` with `Mitsubishi Chemical`,
+`Sumitomo Corporation` with `Sumitomo Chemical`, `Black Diamond Group` with `Black Diamond
+Therapeutics` and `Integral Group` with `Integra LifeSciences`. No US line exists for any of the
+twelve, so `none` is the correct answer and the loss is a correction.
+
+**The remaining limitation is stated rather than hidden.** The matcher still compares NAMES, so two
+same-named issuers in the same country can be paired - the cross-venue cap check is where that
+shows up. On 2026-11-19 it flagged 47 pairs above 10%, of which the large ones are genuine cap
+disagreements (Seabridge Gold C$2.76bn primary against US$1.95bn on its NYSE American line;
+DEUTZ EUR2.01bn against US$2.71bn; GMO Internet US$0.74bn against US$1.89bn; freee US$1.23bn
+against US$1.81bn) and the rest pair a local line with an unrelated same-named company. The
+America scanner's `country` column IS the issuer's home country on a foreign line
+(`NYSE:BHP` -> Australia, `NYSE:SA` -> Canada, `OTC:DEUZF` -> Germany) and is a far stronger
+discriminator than the name; a country-guarded matcher was built and measured on this fire, and it
+published correct `none` values for the twelve false matches - but it also produced about 50 false
+NEGATIVES (Canada Goose, Wienerberger, UniCredit and a dozen genuinely ADR-listed Japanese names
+came out `none`), because the guard is strict enough to reject a legitimate line whose country is
+stamped differently. **The country guard is therefore NOT in the shipped matcher**; it is the next
+step, and it needs a guard of its own (the issuer's distinctive-token subset) before it can be
+trusted.
+
+**Finding 3 - the contract-adjustment rule fired for real on 2026-11-19, and it fired on a row the
+stale-print test cannot see.** `ASX:CMW` (Cromwell Property Group) returned **+422.86%** on its
+first session after a **5-for-1 consolidation** of its stapled securities, approved by securityholders
+at the AGM on 17 November (99.71% of votes cast), effective 17 November, with pre-consolidation
+securities last trading on 18 November and post-consolidation trading opening on a deferred
+settlement basis on 19 November. Securities on issue go from 2,618,866,699 to 523,773,340. The
+source computed its own `change` on the SAME unadjusted basis, so the implied prior equals the
+unadjusted prior close and **the stale-print test passes it** - exactly the blind spot the rule was
+written for. The `open` column is the tell: A$1.74 open against an A$1.83 close, on a row whose
+prior close was A$0.35. On the adjusted basis (A$0.35 x 5 = A$1.75) the real move is about
+**+4.6%**. The row stays in `au.csv` with the source's own `change_pct`, and it is excluded from
+every published table with the artefact disclosed in the caveats.
+
+**Finding 4 - the contract gate is live, and it was proved by fault injection.** The
+`intl_assert.py` reconciliation is not vacuous: a copy of the 2026-11-19 artifact with one mover
+ticker replaced by a ticker the CSV does not contain FAILS ("a published row the CSV does not
+contain is fabricated"), a tampered `mover_rows` counter FAILS ("ca publishes 14 names, the
+manifest says 99"), and an `_excluded.json` row with an empty reason FAILS twice. The artifact
+itself passes with **0 failures and 97 warnings**, the same 97 as every prior session, and all 97
+are the one `cap-provenance` heuristic on Canadian preferred lines whose descriptions do not
+reduce to the issuer name (the carrier IS the same issuer by venue-qualified ticker root).
+The numeric formatter regression test reproduced **33,813 of 33,813** numeric strings of the
+previous published file byte-for-byte.
+
+**Finding 5 - the Dow Jones European close table carries the PREVIOUS session's level for seven
+indices.** The 19 November close table lists CAC 40 at 8,147, AEX at 1,099, BEL 20 at 5,953, ATX
+at 6,395, PSI 20 at 9,500, IBEX 35 at 19,373, OMX Helsinki at 6,109 and OMX Copenhagen at 1,637 -
+every one of them is the **18 November** close from the previous session's archive, while the
+change column on the same row is the 19 November change. The DAX row on the same table carries the
+19 November close. A second source (elfolio's 19 November European close table) agrees with the
+TradingView venue index on all eight (CAC 8,080.74, AEX 1,091.94, BEL 20 5,885.51, ATX 6,379.10,
+PSI 20 9,410.29, IBEX 19,186.20, OMXH 6,090.06, OMXC 1,614.03), so the venue index was published and
+the disagreement was noted rather than mixing the two.
+
+**What the cross-session check caught this time.** The per-region written row counts landed within
+1% of the 2026-11-18 archive in every region (au 297 vs 298, jp 1,368 vs 1,375, tw 849 vs 853, ca
+610 vs 613, de 122 vs 123, fr 260 vs 260, it 178 vs 179, es 135 vs 136, nl 56 vs 56, be 76 vs 76, at
+50 vs 51, pt 27 vs 27, ie 17 vs 17, fi 101 vs 101, dk 75 vs 75, gr 83 vs 83). The session was the
+violent one: the TAIEX fell 4.40% with 128 limit-downs and the OTC board fell 7.22%, so Taiwan's
+published set carried 144 liquid names down more than 5% against 6 the day before.
