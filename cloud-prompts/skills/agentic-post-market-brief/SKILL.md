@@ -55,8 +55,37 @@ runtime. Do not call them and do not improvise their names. The three working pa
 |---|---|---|
 | Index / ETF / futures / cross-asset closes, movers, **daily history** | the MCP-over-HTTP bridge, pack `market-recap` (`_shared/mcp_bridge.py`) — tools `get_quotes`, `price_history`, `top_movers`, `market_snapshot` | keyless, Yahoo-sourced, not rate-limited. `price_history` takes up to 40 symbols and returns each session's close, previous close and `daily_return_pct` — that is the source for §5.6. |
 | Breadth, universe, extended-hours prints | the **TradingView public scanner**, `POST https://scanner.tradingview.com/america/scan` | no auth. `market_cap_basic` is **USD** here. The `postmarket_*` columns carry the after-hours session: `postmarket_close`, `postmarket_high`, `postmarket_low`, `postmarket_volume`, `postmarket_change`. |
-| The EOD universe (one population for the participation metrics) | cron #20's published CSV `us-eod/{fire_date}.csv` in `karizaco/minimax-cloud-outputs` (`main`) | 4,896 names with `change_pct`, `market_cap`, `sector`. Fetch it at run time. |
+| The EOD universe (one population for the participation metrics) | cron #20's published CSV `us-eod/{fire_date}.csv` in `karizaco/minimax-cloud-outputs` (`main`) | 4,896 names with `change_pct`, `market_cap`, `sector`. Fetch it at run time. **It may not exist yet — see the fallback below.** |
 | Catalysts, economic calendar, earnings calendar, Asia/overnight | `web_search` / `web_fetch` | issuer IR and press first. |
+
+### The EOD universe may be MISSING at the fire — the fallback (measured 2026-11-18)
+
+Cron #20 is a late publisher: on the 2026-11-18 22:30 ET fire its `us-eod/2026-11-18.csv` was **not
+on the outputs repo** — the newest file was `2026-11-17`. The participation read (§5.5) and the
+sector rotation (§5.3 step 3) both need a universe, so a missing file is NOT a reason to publish a
+degraded brief with no breadth numbers. Use this fallback, and disclose it:
+
+1. **Pull the universe from the TradingView scanner instead** — one page, no paging:
+   `type in ["stock","dr"]`, `exchange in ["NASDAQ","NYSE","AMEX"]`, columns `name,description,close,
+   change,volume,market_cap_basic,sector,exchange`, `sort {"sortBy":"name","sortOrder":"asc"}`,
+   `range [0,20000]`. Measured 2026-11-18: **totalCount 6,086 = rows 6,086 = unique 6,086** in ONE
+   page — the set test passes outright, so no paging is needed at this size. (Run it through
+   `_shared/tv_scan.py pull --body` and let the client assert it.)
+2. **Carry the SECTOR TAXONOMY and the de-duplication FLAGS from cron #20's PRIOR day's file**
+   (`us-eod/{fire_date - 1}.csv`): its `sector` column (GICS), its `cap_source_symbol` (the
+   de-duplication key), and its `data_quality` flags (`CAP_CARRIED`, `NO_CAP`, `NO_SECTOR`,
+   `EX_DISTRIBUTION`). The taxonomy is a classification, not a price — carrying yesterday's label
+   for a name that still exists is sound; today's MOVE and CAP come from the scanner.
+3. **Report the coverage honestly.** Measured 2026-11-18: cron #20's prior-day file mapped
+   **4,167 of 6,086** scanner names (the unmapped ~1,900 are mostly newer listings and non-US
+   listings), and after the flag exclusions the cap-weighted sector columns covered **4,021 names**.
+   A sector table covering 66% of the universe must say so in the coverage note.
+4. **Count ONE degraded source** and say exactly what it changed: the breadth counts come from a
+   different population than the prior session's published breadth, so they are **not comparable**
+   day over day. The reply's `errors:` then equals `degraded_sources:` (§5.8).
+5. **Do not silently widen the universe.** If cron #20's file is missing AND the scanner pull fails
+   its completeness test, publish the brief with the participation metrics marked `n/a` and the gap
+   stated — never a guessed breadth number.
 
 The `## RUNTIME DATA-SOURCE CONTRACT` in `_shared/PROMPT-BLOCKS.md` is authoritative for the
 ladder, the per-egress Yahoo caveat, and the seven standing rules. **Do not change the ladder.**
@@ -344,6 +373,13 @@ row labels:
 Use **one population** for the first four and the sixth — the cron #20 universe — and say which
 one in the front matter (`universe:`). The liquid set is the names with `market_cap` above the
 floor stated in the table (the 2026-11-03 brief used $2B; name whatever floor you used).
+
+**If the universe was substituted (the cron #20 file was missing), the front matter's `universe:`
+must name the substitute population, its size and the number of priced names — not just the
+source.** Measured 2026-11-18, the front matter read
+`universe: TradingView US scanner, NYSE/NASDAQ/AMEX type stock+dr - 6,086 names, 6,084 priced`.
+A front matter that still says "cron #20's universe" when the file was never fetched is a false
+provenance claim, and the §5.5 counts stop being comparable with the prior session's.
 
 **The TL;DR must name these metrics too.** The TL;DR carries a participation line that contains
 the literal tokens `cap_weight_penalty_bp`, `liquid_adv_dec_ratio`, `median_name_move_pct`, and

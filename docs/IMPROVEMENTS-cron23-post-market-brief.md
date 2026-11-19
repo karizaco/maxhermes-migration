@@ -712,3 +712,86 @@ reaction. One extra scanner pull without the floor is the whole cost.
 Carried forward: the same run also showed the after-hours tape moving between vendors (RCAT
 -24.65% at 18:01 ET against the scanner's -26.19% at ~22:30 ET) — §5.7's "publish the scanner's
 print as the source of record and NAME the other" rule is the right call and was applied.
+
+---
+
+## 8.0 The 2026-11-18 fire — the EOD universe was MISSING, and a clean checker run was not evidence
+
+- **Date:** 2026-11-18 (the 22:30 ET fire, session `2026-11-18`)
+- **Found by:** the routine's own fire. The contract checker passed on the **first** run — which is
+  exactly the case in which a *missing input* must not be mistaken for a clean run.
+
+### 8.1 Cron #20's fire-date CSV was not on the outputs repo
+
+Cron #20 is a known late publisher, and on this fire `us-eod/2026-11-18.csv` was **absent** — the
+newest file present was `us-eod/2026-11-17.csv`. The skill spec names that CSV as *the* EOD
+universe, and §5.5 requires the participation read and the sector rotation to share one
+population, so a missing file blocks two sections of the brief.
+
+The danger is not a crash. It is a brief that publishes **breadth numbers from a population nobody
+declared**, with a front matter that still claims "cron #20's universe" for a file that was never
+fetched. The checker validates structure, not provenance, so both would have shipped clean.
+
+### 8.2 The fallback, and the measurements that justify it
+
+The fallback now lives in the skill spec (a new subsection under *The data path*, and a
+provenance paragraph in §5.5). Measured on this fire:
+
+| item | measurement on 2026-11-18 |
+|---|---|
+| scanner universe pull | `totalCount 6,086 = rows 6,086 = unique 6,086`, **one page**, `sort` on the stable key `name` |
+| priced names | 6,084 (2 rows carried no change) |
+| advancers / decliners / unchanged | 2,657 / 3,227 / 200 |
+| `median_name_move_pct` | -0.13% |
+| `liquid_adv_dec_ratio` ($2bn floor, n=2,247) | 0.95 (1,081 : 1,143) |
+| cron #20's prior-day file mapped | 4,167 of 6,086 scanner names |
+| rows left in the cap-weighted sector columns | 4,021 (after `EX_DISTRIBUTION` ×125, `NO_CAP` ×1, `NO_SECTOR` ×1 inside the mapped set) |
+
+The recipe:
+
+1. Pull the universe from the TradingView scanner — `type in ["stock","dr"]`,
+   `exchange in ["NASDAQ","NYSE","AMEX"]`, `sort {"sortBy":"name","sortOrder":"asc"}`, one page —
+   and assert the **SET** test (`rows == totalCount == unique`). At this size it passes outright,
+   so no paging is needed.
+2. Carry the **GICS taxonomy and the de-duplication flags** from cron #20's **prior day's** file
+   (`sector`, `cap_source_symbol`, `data_quality`). A classification is not a price: yesterday's
+   label for a name that still exists is sound, while today's move and cap come from the scanner.
+3. Publish the **coverage** (4,021 of 6,084 in the cap-weighted columns) in the coverage note — a
+   sector table covering two thirds of the universe that does not say so is its own defect.
+4. Count **one** degraded source and state that the breadth counts are **not comparable** with the
+   prior session's published breadth (different population), with `errors:` equal to
+   `degraded_sources:` (§5.8).
+5. If cron #20's file is missing AND the scanner pull fails its completeness test, publish the
+   metrics as `n/a` and say so. Never a guessed breadth number.
+
+### 8.3 The guards that held on this fire
+
+Worth recording, because these are the traps the spec already names and the run did not fall into:
+
+- **The futures were live, not a settlement.** Every futures row carried `as_of` 22:25 ET — five
+  minutes before the fire — so the overnight print was genuine Globex, not the 16:59:59 settlement
+  (§4.2's trap). A Wednesday fire has no weekend-closure caveat.
+- **The volatility indices were dated twice.** VIX 24.56 (-3.535%) and VXN 33.12 (-3.833%) came
+  from `price_history` and agreed to the cent with Cboe's own dated close files (§5.1's trap).
+- **The put/call payload carried the session date.** `selectedDate` = 2026-11-18, total **1.05**,
+  with index 1.14, equity 0.72, ETP 1.42, SPX 1.19, XSP 1.07, VIX 0.88 — all from ONE payload and
+  reconciling with the total (§7.3).
+- **The $1B after-hours floor hid the session's real leaders again** (§7.6): the no-floor pull
+  surfaced INHD +75.23% ($5.8M cap), SPRC +38.90%, INLF +16.85%, MAGN +15.03% ($426M — it reports
+  the next morning) and, on the downside, FCHL -37.82%, VWAV -18.74%, IMCC -17.85%,
+  **RRGB -17.48%** ($150M). Published in `## Source health` so the table is not read as the tape.
+- **The after-hours tape moved between vendors**, and the rule held: PANW +9.08% at 22:35 ET
+  against Benzinga's +8.11% at 16:26 and Investing.com's +7.43% at ~17:36; CRWD +6.01% at 22:35
+  against Yahoo's +4.42% at 16:50. The scanner is the source of record; the others are named, not
+  blended.
+
+### 8.4 One published-number bug caught by re-reading the rule, not by the checker
+
+All ten after-hours rows passed the identity check and the contract checker, but the **prose**
+around UTI contradicted the table: it said the close was "untouched" and that the fill level was the
+after-hours midpoint, when the row's own high of 22.09 had traded through the 22.04 close, so the
+rule's first branch applied and the fill level is the prior close. The table was right and the
+sentence was wrong; the paragraph was rewritten, and it now states the general fact — **every one of
+the ten rows traded through its 16:00 close inside the after-hours range, so all ten gap fill
+levels are the prior close and the midpoint branch never fired.** A machine gate cannot catch a
+sentence that misdescribes its own table; that one is on the writer.
