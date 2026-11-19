@@ -395,3 +395,73 @@ procedure snippet builds the per-market list as two direction-sorted legs (up an
 an invitation to concatenate rather than merge. The selection cap (15 up + 15 down) and the
 presentation order (one descending stream) are two different operations, and the snippet only
 shows the first.
+
+---
+
+Date: 2026-11-19. Scope: cron #02's skill spec (`cloud-prompts/skills/asia-pre-market-reactions/SKILL.md`),
+found while running the 2026-11-19 fire. The defect is in the **data the skill publishes**, so it is
+fixed in the skill spec, which is fetched at RUN time — the change lands on the next fire with no
+`cron_update` and no prompt drift.
+
+## The Hong Kong corporate-action (ex-date) artefact is a CLASS, not an incident
+
+On 2026-11-18 one Hong Kong row printed a fake crash (`HKEX:2331` Li Ning **-20.21%** against a
+real move of **-3.22%**). On 2026-11-19 there were **two**, and they were the two largest numbers
+in the artifact:
+
+| Row | Raw scanner | Real move | Action |
+|---|---|---|---|
+| `HKEX:6656` Sigenergy | **-65.80%** | **+2.60%** | 20-for-10 capitalisation issue, ex-entitlement 19 Nov |
+| `HKEX:659` CTF Services | **-18.58%** | **-6.93%** | HK$0.33 final dividend + 1-for-10 bonus issue, ex-all 19 Nov |
+
+**Three artefact rows in two consecutive sessions.** The cause is mechanical: the scanner's
+`change` is computed off the **unadjusted** prior close, so on an ex-date it manufactures a crash
+that is larger than anything else on the board. Because the artefact numbers sit at the top of the
+Hong Kong board, they displace the real movers and become the numbers a reader quotes.
+
+### The adjustment formulas (HKEX participant circular's own text)
+
+- bonus issue only: `Adjusted Previous Closing Price = (C x Y) / (X + Y)`
+- dividend AND bonus: `Adjusted = ((C - D) x Y) / (X + Y)` with `D` = dividend per share
+- the published move is `(close_today / Adjusted - 1)`
+
+Measured on 2026-11-19: Sigenergy `C`=205.40, `D`=0, 20-for-10 -> `Adjusted` = 68.47, close 70.25 ->
+**+2.60%**. CTF Services `C`=8.745, `D`=0.33, 1-for-10 -> `Adjusted` = 7.65, close 7.12 ->
+**-6.93%**.
+
+### The register cannot be fetched — where the answer actually comes from
+
+The HKEX participant circular PDFs (`.../SEHK/2026/SMD2026189_e.pdf`) are **not reachable from this
+egress**: `curl` returns an HTML block page and `web_fetch` returns "file load failed". A systematic
+register screen is therefore impossible here, and pretending otherwise would be the defect. Three
+things still resolve the ex-date:
+
+1. **A press lookup naming the company and the session date** surfaces the circular's subject line
+   (its text is indexed) together with the adjustment.
+2. **Yahoo's quote already uses the ADJUSTED previous close** — its `previous close` and percentage
+   reconcile the adjusted move. FT's `Previous close` is the **unadjusted** one (205.40 for
+   Sigenergy), so FT reproduces the artefact rather than the truth.
+3. **etnet prints the move against the ADJUSTED base** (Sigenergy: "Nominal 70.250 +1.783
+   (+2.604%)") while the scanner prints the unadjusted percentage. When they disagree, **etnet and
+   Yahoo are right**.
+
+### What landed in the skill spec
+
+1. A new rule section, *THE HK CORPORATE-ACTION (EX-DATE) RULE*, with the formulas, the
+   discovery path, and the ordering: **correct BEFORE the 15-per-direction cap** — a corrected row
+   can leave the board entirely, and Sigenergy does.
+2. A new hard rule: *never publish an unadjusted corporate-action percentage*; the raw value goes
+   to `## Flags`.
+3. A new machine assertion **7**: every published Hong Kong row with `|Chg| >= 15%` must carry a
+   corporate-action note or an explicit "not covered by the Hong Kong corporate-action screen"
+   note. It is **not vacuous** — on 2026-11-19 it covers `HKEX:9903` -17.45%, and the assertion
+   fails loudly if no row ever reaches the threshold.
+4. Every run now discloses that **Japan, Taiwan and Korea rows are not screened for ex-dividend
+   at all** — the 2026-11-18 run disclosed the same gap for three of the four markets.
+
+### A trap worth recording
+
+The etnet and Yahoo quotes disagree with the scanner by 20-60 percentage points on the SAME row
+(Sigenergy: etnet +2.60%, scanner -65.80%). That is not a source conflict to be papered over — it
+is the signal. When a third-party quote disagrees with the scanner by that much on one Hong Kong
+name, check the ex-date before concluding anything about the company.

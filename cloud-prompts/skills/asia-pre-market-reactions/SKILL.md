@@ -171,6 +171,54 @@ displaces a real mover.
 5. **Euronext / LSE / OTC ADRs are dropped** for Asian companies — primary always wins.
 6. **HK dual-ticker dedupe.** Some HK-listed names (e.g., Alibaba) render with 5-digit tickers like `HKEX:89988` alongside the 4-digit primary `HKEX:9988`. Dedupe by underlying company (same `market_cap_basic` and same `name` → keep the 4-digit version when both present). Validate that approximately 5-10% of HK rows are dual-ticker duplicates.
 
+### THE HK CORPORATE-ACTION (EX-DATE) RULE (measured 2026-11-19 -- read this before publishing a large HK move)
+
+**The scanner's `change` is computed off the UNADJUSTED prior close. Any Hong Kong row whose
+ex-date is the session date prints a FAKE CRASH.** This is not a one-off: the class produced
+`HKEX:2331` Li Ning **-20.21%** (real move **-3.22%**, 2026-11-18) and then TWO rows on
+2026-11-19 -- `HKEX:6656` Sigenergy **-65.80%** (real move **+2.60%**) and `HKEX:659` CTF
+Services **-18.58%** (real move **-6.93%**). Three artefact rows in two consecutive sessions,
+both of them the two largest numbers in the artifact.
+
+**The adjustment formula (from the HKEX participant circular's own text):**
+
+- bonus issue only: `Adjusted Previous Closing Price = (C x Y) / (X + Y)`
+  where `X` = new shares per `Y` existing shares, `C` = the last cum-entitlement close.
+- dividend AND bonus: `Adjusted = ((C - D) x Y) / (X + Y)` where `D` = dividend per share.
+- the corrected move is `(close_today / Adjusted - 1)`, and THAT is the published number.
+
+Measured: Sigenergy 20-for-10, `C` = 205.40, `D` = 0 -> `Adjusted` = 68.47, close 70.25 ->
+**+2.60%**. CTF Services HK$0.33 dividend + 1-for-10 bonus, `C` = 8.745, `D` = 0.33 ->
+`Adjusted` = 7.65, close 7.12 -> **-6.93%**.
+
+**How to find the ex-date when the circular is not fetchable:** the HKEX participant circular PDFs
+(`.../SEHK/2026/SMD2026189_e.pdf`) are **NOT reachable from this egress** -- `curl` returns an HTML
+block page and `web_fetch` returns "file load failed" -- so you cannot screen the register by
+fetching it. Three sources DO resolve it:
+
+1. **A press lookup naming the company and the session date** surfaces the circular's subject line
+   (its text is indexed) and the adjustment.
+2. **Yahoo's own quote already uses the ADJUSTED previous close.** Its `previous close` and its
+   percentage reconcile the adjusted move (CTF: Yahoo showed 7.200 / -5.88% intraday against the
+   7.65 adjusted base). FT's `Previous close` is the UNADJUSTED one (205.40 for Sigenergy), so FT
+   reproduces the artefact rather than the truth.
+3. **etnet prints the move against the ADJUSTED base** (Sigenergy: "Nominal 70.250 +1.783
+   (+2.604%)") while the scanner prints the unadjusted percentage. When the two disagree, **etnet
+   and Yahoo are right** and the scanner is the artefact.
+
+**Procedure:**
+
+1. For every published Hong Kong row with `|raw change| >= 15%`, look for a same-day ex-date
+   before publishing it.
+2. If one exists: **replace** the published percentage with the adjusted move, **carry the raw
+   scanner value in `## Flags`**, and apply the 15-per-direction cap **AFTER** the correction --
+   a corrected row can leave the board entirely (Sigenergy does: +2.60% is out of the HK top 15).
+3. If a systematic register screen could not be run, say so in `## Flags` and mark every large
+   unsourced Hong Kong row with "not covered by the Hong Kong corporate-action screen".
+   **Japan, Taiwan and Korea rows were not screened for ex-dividend at all** -- disclose that too.
+4. Never publish an unadjusted corporate-action percentage, and never publish the raw value in a
+   country table; it belongs in `## Flags` as the artefact it is.
+
 ## Earnings calendar data — coverage
 
 **Same gap as EU/AU.** No structured earnings calendar tool exists for Asian stocks in the available MCPs. Detection is best-effort via news headlines.
@@ -731,6 +779,42 @@ print("backdrop 5-session column OK")
 PY
 ```
 
+```bash
+# 7 - the HK corporate-action screen: every published Hong Kong row with |Chg| >= 15%
+#     must either carry a corporate-action note (it was corrected) or an explicit
+#     "not covered by the Hong Kong corporate-action screen" note (it was checked and
+#     found clean, or the register could not be screened). This gate is NOT vacuous:
+#     on 2026-11-19 it covers HKEX:9903 -17.45%.
+python3 - /workspace/_asia_body.md <<'PY'
+import re, sys
+body = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r"^## Hong Kong[^\n]*$(.*?)^## ", body, re.M | re.S)
+assert m, "no Hong Kong section"
+big = []
+for ln in m.group(1).splitlines():
+    if not ln.startswith("| "):
+        continue
+    if re.fullmatch(r"\|[\s\-:|]+\|?", ln.strip()):
+        continue
+    cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+    if len(cells) < 7:
+        continue
+    pm = re.search(r"([+-]\d+\.\d+)%", cells[3])
+    if not pm:
+        continue
+    if abs(float(pm.group(1))) < 15.0:
+        continue
+    big.append((cells[0], cells[3], cells[-2]))
+assert big, "no HK row reached the 15% threshold - the gate is vacuous, widen it"
+for tick, chg, cat in big:
+    assert "corporate" in cat.lower() or "capitalisation" in cat.lower() \
+        or "ex-all" in cat.lower() or "ex-entitlement" in cat.lower(), \
+        "%s %s has no corporate-action note" % (tick, chg)
+    print("HK corporate-action note OK:", tick, chg)
+print("HK CORPORATE-ACTION GATE OK")
+PY
+```
+
 - **1 — Name uniqueness.** `count(names in the published rows) == count(distinct names)`. The
   count is scoped to the **four country sections** (tables + NOTABLE one-liners): a name that
   appears in two countries' blocks, or twice in one, is a copy-paste error and a wrong row count.
@@ -782,6 +866,7 @@ PY
 - Read-only. No trade ideas.
 - Don't fabricate catalyst headlines — if combined_analysis returns nothing, write "no fresh catalyst found" and move on.
 - **Never publish a prior session's prices for a market that did not trade.** A market judged closed gets a "no data — closed" section — never a table, never a price, never a movers list, even when it is labelled as context.
+- **Never publish an unadjusted corporate-action percentage.** Any Hong Kong row whose ex-date is the session date (dividend, bonus issue, capitalisation issue) must carry the exchange's ADJUSTED move; the raw scanner value belongs in `## Flags`. See *THE HK CORPORATE-ACTION (EX-DATE) RULE*.
 - **Every name appears exactly once in the artifact.** Assert it (`count(names) == count(distinct names)`); a name in two country blocks is a copy-paste error.
 - **Every published row carries a catalyst** — a sourced one, or the explicit "no company-specific catalyst identified in the sources checked". An empty catalyst cell is a defect.
 - **The chat reply's country blocks are contiguous** and in the order Japan, Korea, Taiwan, Hong Kong, each with its session date. Never interleave countries.
@@ -1023,6 +1108,24 @@ prices as today's — which is exactly the 2026-11-03 failure.
 - Structured Asian earnings calendar — see earnings calendar section above; documented gap.
 
 ## Change history
+- **v1.8 - 2026-11-19.** The Hong Kong corporate-action (ex-date) artefact was promoted from an
+  ad-hoc correction to a RULE with a machine gate. Measured on the 2026-11-19 fire: **two** Hong
+  Kong rows in one session were fake crashes - `HKEX:6656` Sigenergy printed **-65.80%** against a
+  real move of **+2.60%** (a 20-for-10 capitalisation issue went ex on 19 Nov) and `HKEX:659` CTF
+  Services printed **-18.58%** against a real move of **-6.93%** (a HK$0.33 final dividend plus a
+  1-for-10 bonus issue went ex-all the same day) - on top of `HKEX:2331` Li Ning's -20.21% on
+  2026-11-18, so **three artefact rows in two consecutive sessions**. The rule carries the HKEX
+  adjustment formulas (`(C x Y)/(X+Y)` for a bonus issue, `((C - D) x Y)/(X+Y)` for a dividend plus
+  a bonus), the correction-before-the-cap ordering (Sigenergy leaves the board entirely once
+  corrected), and the discovery path: the HKEX participant circular PDFs are **not fetchable from
+  this egress** (curl returns an HTML block page, web_fetch returns "file load failed"), so the
+  ex-date must be resolved from a press lookup, from Yahoo's quote (which already uses the
+  adjusted previous close) or from etnet (which prints the move against the adjusted base) - while
+  FT's `Previous close` and the scanner's `change` are both UNADJUSTED and reproduce the artefact.
+  New assertion **7** gates it: every published Hong Kong row with `|Chg| >= 15%` must carry a
+  corporate-action note or an explicit "not covered by the Hong Kong corporate-action screen" note
+  (the gate is not vacuous - on 2026-11-19 it covers `HKEX:9903` -17.45%). The run also discloses
+  that Japan, Taiwan and Korea rows are not screened for ex-dividend at all.
 - **v1.7 - 2026-11-13.** Two silent scanner-truncation defects closed, both measured on the
   2026-11-13 fire. (1) **The `country` filter truncated two of the four markets.** With
   `{"left":"country","operation":"equal"}` in the step-2 body, the Korea leg returned **0 rows**
