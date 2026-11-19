@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Stage 2 - assemble cron #05's international EOD artifact for 2026-11-18.
+"""Stage 2 - assemble cron #05's international EOD artifact (Cloud reference implementation).
+
+INTL_EOD_V1 - capability marker (2026-11-19).  Parameterised by --date; the session's own
+scanner pulls live in --work and the prior sessions' CSVs in --prior-dir/--prior-history-dir.
+Reproduces the 2026-11-19 artifact byte-for-byte on all 16 per-region CSVs.
 
 Implements the skill contract:
   * universe = the per-country scanner's ISSUER-country filtered rows, type == stock
@@ -9,7 +13,9 @@ Implements the skill contract:
   * market-cap carrier: the cap is resolved to the issuer's PRIMARY (common) line,
     converted ONCE (local cap / FX-per-USD), and every line of that issuer carries it
   * floors in USD applied AFTER conversion; volume gate on company liquidity
-  * us_listing from the America scanner (stock + dr), matched on the issuer name
+  * us_listing from the America scanner (stock + dr), matched on the issuer name with the
+    punctuation-clean key (strip the trailing period, split on all punctuation) - see the
+    SKILL.md section on `us_listing` for why the period matters
   * carry-over detection on EXACT close equality against the prior session's file
 """
 import csv, json, os, re, sys
