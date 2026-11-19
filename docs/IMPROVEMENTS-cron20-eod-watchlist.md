@@ -679,3 +679,53 @@ so the row is data, not prose.
 **What did NOT change:** the CSV. No close, no volume, no derived column was edited; the
 cross-check confirmed the published close and explained the volume basis. The 34 assertions
 passed before and after the rebuild.
+
+---
+
+## 2026-11-18 — the probe's drift is the VENDOR'S BAR, not the published close; the max-rounds bound is a SERIES bound
+
+The 2026-11-18 fire published the 32-column file (4,887 rows, 4,850 settled closes) on the standard
+path, and the settle probe loop hit its `--max-rounds` cap again — **12 rounds, 773 symbols changed
+after pass 1, the loop stopped at 17:01 ET with 158 symbols still moving.** The 2026-11-17 entry
+already called this "the known thin-name wall"; this run measures WHAT was still moving, and the
+answer changes how the bound should be read.
+
+**The new measurement: `venue_moved` was 0 in every one of the 12 rounds, while `bar_moved` ran
+41-104 per round throughout.**
+
+| round | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `bar_moved` | 1 | 104 | 79 | 86 | 67 | 72 | 69 | 75 | 55 | 58 | 41 | 50 |
+| `venue_moved` | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `still_moving` | 125 | 228 | 187 | 194 | 175 | 180 | 177 | 183 | 163 | 166 | 149 | 158 |
+| `no_close` | 124 | 108 | 108 | 108 | 108 | 108 | 108 | 108 | 108 | 108 | 108 | 108 |
+
+The rounds run 16:11 ET -> 17:01 ET on a 4-5 minute cadence, with the venue polled on 7 of the 12
+rounds (the back-off cadence the 2026-11-16 change introduced).
+
+The published close is the **venue's settled print** (`secondaryData`, stamped "Closed at 4:00 PM
+ET"), and that value did not move once in 55 minutes. What was still moving at the bound was
+**Yahoo's daily-bar series** — the source of the derived columns (SMA, ATR, 52-week extremes),
+and the input the probe uses to DETECT drift.
+
+**So the `--max-rounds` bound is a SERIES bound, not a CLOSE bound.** Two consequences:
+
+1. **The published close was never at risk from the bound.** The 4,742 rows whose close came from
+   the venue were read from a value that was already stable; the probe's exit condition governs
+   the vendor's series, which is a different quantity.
+2. **"158 symbols still moving" is a statement about the bar, not about 158 unsettled closes.**
+   The artifact's `## Source health` row says exactly that ("the residue is published as it stands",
+   "the published close source moved 0 times across all 12 rounds"), because a reader who reads
+   "still moving" as "still provisional" would distrust 158 closes that were already final.
+
+**What changed:** the `## Source health` row for the probe loop now names the residue AND the
+`venue_moved = 0` fact, measured from the run's own settle log. Nothing else moved: the CSV is the
+standard 32-column file, 34/34 assertions pass, and the settle contract's 8 fault-injection cases
+and the probe contract's cases all pass.
+
+**A note on this run's delivery latency.** The build itself took ~1h20m of wall clock (16:03 ET
+start, venue stage finished 17:14 ET). The session then sat **idle for ~8 hours** between the venue
+stage and the build stage, and the push landed at **01:21 ET — 9h20m after the 16:00 ET fire.**
+The artifact is unaffected (every source was read inside the session's own window), but a latency
+figure of "9h20m" describes a PLATFORM HOLD, not a slow routine — the same distinction cron #90's
+audit makes between a dispatch record and the real delivery time.
