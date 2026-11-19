@@ -107,7 +107,7 @@ fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py br
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
 fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v4 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v5 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 

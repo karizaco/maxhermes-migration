@@ -351,6 +351,36 @@ def main():
               "the REAL contract checker passes on the LATE-PULL branch",
               (c6.stdout.strip().split("\n")[-1] if c6.stdout else ""))
 
+    # The LIVE late pull (the session is open but the close has not happened) is a DIFFERENT
+    # branch from the CLOSED one above, and it had NO test: it computed the stall sentence and
+    # then DROPPED it, so a replayed file never said WHY it was late. Measured 2026-11-19: the
+    # 09:20 ET fire was held 44 minutes and the published artifact's intro named no stall at all.
+    tmp7 = tempfile.mkdtemp(prefix="refresh_build_test_late_live_")
+    merged7, mmd7, mcsv7, slots7 = build_fixture(tmp7)
+    m7 = json.load(open(merged7))
+    m7["pulled_at_et"] = "2026-11-12 10:06:17"      # inside the session
+    json.dump(m7, open(merged7, "w"))
+    out7 = os.path.join(tmp7, "out")
+    p7 = run_builder(merged7, mmd7, mcsv7, slots7, out7, state="OPEN", stall=44,
+                     snapshot="10:06")
+    md7_path = os.path.join(out7, "2026-11-12-pre-market-refresh.md")
+    csv7_path = os.path.join(out7, "2026-11-12-pre-market-refresh.csv")
+    check(p7.returncode == 0 and os.path.exists(md7_path),
+          "the LIVE late-pull branch publishes a file", (p7.stderr or "").strip().split("\n")[-1])
+    if os.path.exists(md7_path):
+        md7 = open(md7_path).read()
+        check("held this fire for 44 minutes" in md7,
+              "the LIVE late pull STATES THE STALL", "the stall is missing from the intro")
+        check("after the 09:30 ET open" in md7,
+              "the LIVE late pull states the open time", "the open time is missing")
+        check("10:06" in md7, "the LIVE late pull states the pull time")
+        c7 = subprocess.run([sys.executable, CHECKER, "--md", md7_path, "--csv", csv7_path,
+                             "--morning-csv", mcsv7], capture_output=True, text=True)
+        fails7 = [l for l in (c7.stdout + c7.stderr).split("\n") if l.startswith("FAIL")]
+        check(c7.returncode == 0 and not fails7,
+              "the contract checker passes on the LIVE late-pull branch",
+              "; ".join(fails7)[:200])
+
     # ---------- 2. the 2026-11-19 fixes: the three defects that fire measured ----------
     # (a) The morning brief's own v2 contract puts its TITLE and intro paragraph BEFORE the
     #     `---` block. The builder's front-matter parser used to demand that the file START
@@ -447,6 +477,7 @@ def main():
     shutil.rmtree(tmp4, ignore_errors=True)
     shutil.rmtree(tmp5, ignore_errors=True)
     shutil.rmtree(tmp6, ignore_errors=True)
+    shutil.rmtree(tmp7, ignore_errors=True)
 
     failed = [n for ok, n, _ in RESULTS if not ok]
     print("\n%d tests, %d passed, %d failed" % (len(RESULTS), len(RESULTS) - len(failed), len(failed)))

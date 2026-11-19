@@ -74,6 +74,13 @@ import sys
 # "extended its gap" when it had NARROWED; and the band-membership sentence claimed the band
 # "grew" when it shrank. It SUPERSEDES premarket-refresh-build-v3, which is still named here
 # so a procedure copy that asks for v3 still fetches a WORKING file rather than nothing.
+# Capability marker. v5 (2026-11-19) adds the FIFTH defect measured on the same fire: the LIVE
+# late-pull branch computed the stall sentence and then DROPPED it, so a replayed file never said
+# WHY it was late - the procedure requires the intro to state the stall, the pull time and the
+# open time. v4 fixed the front-matter parser, the late-pull Source health, the gap-direction verb
+# and the "?" holes. It SUPERSEDES premarket-refresh-build-v3 and v4, which are still named here so
+# a procedure copy that asks for either still fetches a WORKING file rather than nothing.
+PREMARKET_REFRESH_BUILD_V5 = "premarket-refresh-build-v5"
 PREMARKET_REFRESH_BUILD_V4 = "premarket-refresh-build-v4"
 PREMARKET_REFRESH_BUILD_V3 = "premarket-refresh-build-v3"
 
@@ -626,9 +633,11 @@ def build(args):
                                                                         stall_txt))
         else:
             A("One pull of the TradingView `america` scanner at **%s**, and the regular session is "
-              "**already open** — so the `premarket_*` columns below are the completed pre-market "
-              "session and the live regular-session values are published in their own block. The "
-              "front matter carries `pull_late: true` and `market_open_at_pull: true`." % snap)
+              "**already open** (the 09:30 ET open has happened) — so the `premarket_*` columns "
+              "below are the completed pre-market session and the live regular-session values are "
+              "published in their own block. The front matter carries `pull_late: true` and "
+              "`market_open_at_pull: true`.%s"
+              % (snap, (" " + stall_txt) if stall_txt else ""))
     else:
         A("One pull of the TradingView `america` scanner at **%s**, before the 09:30 ET open. "
           "Both screens were pulled with the row cap at 1000 and the scanner's own "
