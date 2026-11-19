@@ -863,10 +863,13 @@ for U in \
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$P.tmp" "$U" 2>/dev/null
   # The FETCH marker (not the artifact contract marker) is what the ladder
-  # demands: SWEEP_PIPELINE_V2 carries the cron #10 path-ownership guard,
-  # and an OLD copy served from a CDN would fail every fire on the cron #10
-  # path check. The artifact's own `contract:` marker is still V1.
-  if [ -s "$P.tmp" ] && grep -q 'SWEEP_PIPELINE_V2' "$P.tmp" 2>/dev/null; then
+  # demands: SWEEP_PIPELINE_V3 carries the cron #10 path-ownership guard AND
+  # the volatility-pair fallback (the Cboe delayed-quote CDN answered HTTP 403
+  # from the Cloud egress on 2026-11-19, and the V2 copy died at the breadth
+  # stage and published NOTHING). An OLD copy served from a CDN would fail
+  # every fire on the cron #10 path check or on the missing fallback. The
+  # artifact's own `contract:` marker is still V1.
+  if [ -s "$P.tmp" ] && grep -q 'SWEEP_PIPELINE_V3' "$P.tmp" 2>/dev/null; then
     mv -f "$P.tmp" "$P"; break
   fi
   rm -f "$P.tmp"
@@ -970,6 +973,28 @@ python3 scripts/screen.py consume \
   ENRICHMENT's value wins over a branch's own: the enrichment query rounds in
   SQL (`ROUND(..., 2)`) and so is the uniform 2dp value every row publishes,
   while a branch's own ADR% is a raw float.
+
+#### 4.5.6 The volatility pair when the Cboe CDN is blocked (2026-11-19)
+
+`fetch_vix_pair()` reads **one** VIX/VIX3M pair and publishes it everywhere. The primary
+source is the Cboe delayed-quote CDN, pulled twice 5 s apart. Measured 2026-11-19: that CDN
+answered **HTTP 403** (a Cloudflare interstitial) from the Cloud egress, for every User-Agent
+— and because the exception was unhandled, the pipeline **died at the breadth stage and
+published no artifact at all**. The pipeline now falls back to Yahoo's chart API (`^VIX`,
+`^VIX3M`), with **both symbols read from the same session bar** and pinned to the cron day
+(a replay on a later day is refused, not faked), and the published `source` string names the
+source that actually served the numbers.
+
+**One more trap on that fallback:** Yahoo throttles (HTTP 429) the Chrome-like User-Agent
+every fleet routine shares — the aggregate rate limit rides on it — while a plain
+`"Mozilla/5.0"` answers. The fallback therefore sends its own UA and retries with backoff.
+
+**The regime cells are computed, never printed.** The size-cut cell used to carry the literal
+"breadth {x}% is far above the 40% trigger"; on a session with breadth 21.20% (BELOW the
+trigger, index below its 20-DMA, size cut ON) that literal contradicted the `size_cut_pct: 50`
+in the same cell. `_size_cut_note()` now derives the sentence from the flag, and the
+`uncertainty` rule cell states the "> 1.0" direction it actually tests. Regression test:
+`tools/test_sweep_pipeline_vix.py` (17 checks, offline).
 
 ### 4.6 The extension label — which names are ALREADY EXTENDED
 

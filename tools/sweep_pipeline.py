@@ -2,7 +2,8 @@
 """Cron #09 daily-sweep pipeline — the ONE command that produces the artifact.
 
 CAPABILITY MARKER: SWEEP_PIPELINE_V1
-FETCH MARKER: SWEEP_PIPELINE_V2 (the cron #10 path-ownership guard, fixed)
+FETCH MARKER: SWEEP_PIPELINE_V3 (V2 = the cron #10 path-ownership guard;
+             V3 = the volatility-pair fallback + the computed regime cells)
 
 WHY THIS EXISTS
 ---------------
@@ -79,7 +80,12 @@ CAPABILITY_MARKER = "SWEEP_PIPELINE_V1"
 # on purpose — the published files and their shapes did not change — but the
 # FETCH ladder in the skill spec now demands this string, so a CDN-cached copy
 # of the OLD script (with the broken cron #10 guard) cannot win the race.
-FETCH_MARKER = "SWEEP_PIPELINE_V2"
+FETCH_MARKER = "SWEEP_PIPELINE_V3"
+# V3 (2026-11-19): the volatility pair has a Yahoo fallback (the Cboe CDN
+# answers 403 from the Cloud egress), and the regime cells are computed
+# from the data instead of printed as literals. The fetch ladder demands
+# V3 so a CDN-cached V2 copy cannot win the race and die at the breadth
+# stage.
 
 # Cron #10 writes the SAME dated directory 4.5 hours earlier (its 14:00 ET
 # intraday read: `breadth-snapshot.{md,csv,json}` and `_regime-intraday.json`).
@@ -482,7 +488,103 @@ def scan_theme_etfs() -> list[dict]:
     return out
 
 
-def fetch_vix_pair(pulls: int = 2, gap_seconds: float = 5.0) -> dict:
+def _vix_from_yahoo(session_date=None):
+    """FALLBACK volatility pair: Yahoo's chart API for ^VIX and ^VIX3M.
+
+    WHY THIS EXISTS (measured 2026-11-19): the Cboe delayed-quote CDN
+    (`cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json`) answered
+    HTTP 403 - a Cloudflare "Attention Required" interstitial - from this
+    egress, for BOTH the browser-like User-Agent and the default one. That is
+    a source-level block, not a transient error, and the 18:30 ET fire must
+    still publish a volatility pair (the regime's `uncertainty` flag reads the
+    VIX/VIX3M ratio).
+
+    ONE source for BOTH symbols, and BOTH must resolve to the SAME session bar
+    as `session_date` - otherwise a replay on a later day would publish a
+    stale pair as the cron day's close. Yahoo's chart API carries the
+    settlement stamp in `meta.regularMarketTime` (the VIX settles 16:15 ET)
+    and the settled daily close in the bar.
+    """
+    def one(sym):
+        url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
+               + sym.replace("^", "%5E") + "?interval=1d&range=10d")
+        # The engine's Chrome-like UA is throttled (HTTP 429) by Yahoo from
+        # this egress - it is the UA every fleet routine uses, so it carries
+        # their aggregate rate limit. A plain "Mozilla/5.0" answers.
+        last = None
+        for attempt in range(4):
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    res = json.loads(resp.read().decode())["chart"]["result"][0]
+                break
+            except Exception as exc:
+                last = exc
+                time.sleep(2 * (attempt + 1))
+        else:
+            raise last
+        meta = res["meta"]
+        ts = res["timestamp"]
+        closes = res["indicators"]["quote"][0]["close"]
+        bars = []
+        for i, t in enumerate(ts):
+            c = closes[i]
+            if c is None:
+                continue
+            day = datetime.datetime.fromtimestamp(
+                t, datetime.timezone(datetime.timedelta(hours=-5))
+            ).date().isoformat()
+            bars.append({"date": day, "close": float(c), "ts": int(t)})
+        if not bars:
+            raise ValueError("no bars for " + sym)
+        if session_date:
+            hit = [b for b in bars if b["date"] == session_date]
+            if not hit:
+                raise ValueError(sym + ": no daily bar for " + str(session_date)
+                                 + " (have " + bars[0]["date"] + ".."
+                                 + bars[-1]["date"] + ")")
+            bar = hit[-1]
+        else:
+            bar = bars[-1]
+        idx = bars.index(bar)
+        prev = bars[idx - 1]["close"] if idx > 0 else None
+        return {"date": bar["date"], "close": bar["close"], "prev": prev,
+                "meta": meta}
+
+    vix, vix3m = one("^VIX"), one("^VIX3M")
+    if vix["date"] != vix3m["date"]:
+        raise ValueError("VIX/VIX3M session mismatch: " + vix["date"] + " vs "
+                         + vix3m["date"])
+    meta = vix["meta"]
+    rt = meta.get("regularMarketTime")
+    quote_time = (datetime.datetime.fromtimestamp(
+        rt, datetime.timezone(datetime.timedelta(hours=-5))
+    ).strftime("%Y-%m-%dT%H:%M:%S") if rt else vix["date"] + "T16:15:00")
+
+    def pct(c, p):
+        return round((c / p - 1) * 100, 2) if p else None
+
+    return {
+        "vix": round(vix["close"], 2),
+        "vix3m": round(vix3m["close"], 2),
+        "vix_prev_close": round(vix["prev"], 2) if vix["prev"] else None,
+        "vix3m_prev_close": round(vix3m["prev"], 2) if vix3m["prev"] else None,
+        "quote_time": quote_time,
+        "vix_change_pct": pct(vix["close"], vix["prev"]),
+        "vix3m_change_pct": pct(vix3m["close"], vix3m["prev"]),
+        "pulls": 1,
+        "gap_seconds": 0.0,
+        "stable": True,
+        "source": ("Yahoo chart API (^VIX / ^VIX3M) - FALLBACK: the Cboe "
+                   "delayed-quote CDN returned HTTP 403 (Cloudflare) from "
+                   "this egress on 2026-11-19; both symbols read from the "
+                   "same session bar"),
+        "session_bar_date": vix["date"],
+    }
+
+
+def fetch_vix_pair(pulls: int = 2, gap_seconds: float = 5.0,
+                   session_date: str | None = None) -> dict:
     """The VIX/VIX3M pair, pulled TWICE from the Cboe delayed-quote CDN.
 
     Two pulls 5 s apart are enough to catch the observed failure mode (the CDN
@@ -505,11 +607,18 @@ def fetch_vix_pair(pulls: int = 2, gap_seconds: float = 5.0) -> dict:
             }
         return out
 
-    readings = []
-    for i in range(pulls):
-        readings.append(once())
-        if i < pulls - 1:
-            time.sleep(gap_seconds)
+    try:
+        readings = []
+        for i in range(pulls):
+            readings.append(once())
+            if i < pulls - 1:
+                time.sleep(gap_seconds)
+    except Exception as exc:
+        print("[sweep-pipeline] Cboe VIX CDN failed (" + str(exc)
+              + "); using the Yahoo chart-API fallback")
+        fb = _vix_from_yahoo(session_date)
+        fb["cboe_fallback_reason"] = str(exc)[:200]
+        return fb
     first, last = readings[0], readings[-1]
     stable = all(
         first[s]["close"] == last[s]["close"] for s in ("_VIX", "_VIX3M")
@@ -528,6 +637,23 @@ def fetch_vix_pair(pulls: int = 2, gap_seconds: float = 5.0) -> dict:
         "source": "Cboe delayed-quote CDN (_VIX.json / _VIX3M.json)",
     }
 
+
+def _size_cut_note(regime: dict, breadth_pct: float) -> str:
+    """The size-cut fact, stated from the DATA - never from a hardcoded side.
+
+    WHY (measured 2026-11-19): the renderer printed "breadth {x}% is far above
+    the 40% trigger" as a literal. On a session with breadth 21.20% - BELOW
+    the 40% trigger, with the index below its 20-DMA, so the size cut IS on
+    (`size_cut_pct: 50`) - that literal told the reader the opposite of what
+    the published flag said, in the same cell. A flag that contradicts its own
+    explanation is worse than no flag.
+    """
+    triggered = bool(regime.get("size_cut_pct")) and regime.get("size_cut_pct") >= 50
+    if triggered:
+        return ("size cut is ON - the index is below its 20-DMA and breadth "
+                f"{breadth_pct:.2f}% is UNDER the 40% trigger")
+    return (f"size cut is off - breadth {breadth_pct:.2f}% is not under the "
+            "40% trigger")
 
 # ------------------------------------------------------------- the collectors
 
@@ -699,7 +825,8 @@ ORDER BY h.ticker
     return out
 
 
-def collect_breadth(bridge: str, t1_date: str, workers: int) -> dict:
+def collect_breadth(bridge: str, t1_date: str, workers: int,
+                    cron_date: str | None = None) -> dict:
     """The cron day's SETTLED breadth read, plus the shibui T+1 cross-check.
 
     An 18:30 ET end-of-day artifact must describe the close the trader just
@@ -709,7 +836,7 @@ def collect_breadth(bridge: str, t1_date: str, workers: int) -> dict:
     """
     universe_rows, total = scan_breadth_universe()
     etf_rows = scan_index_etfs()
-    vix = fetch_vix_pair()
+    vix = fetch_vix_pair(session_date=cron_date)
 
     above20 = above50 = above200 = 0
     adv = dec = unch = 0
@@ -1188,7 +1315,7 @@ def render_breadth_md(path: Path, breadth: dict, results: dict, live: dict,
         f'fire_time_et: "{live.get("fire_time_et") or "<!-- FILL: fire_time_et -->"}"',
         f'data_date: "{cron_date} — the settled close of the cron day; this breadth read is NOT T+1 (the SCREEN metrics in daily-sweep.md are shibui T+1 = {t1_date})"',
         f"breadth_universe: \"{b['universe']['filter']} (TradingView scanner, USD) — {b['universe']['count']} names; totalCount {b['universe']['total_count']} = rows fetched, no truncation\"",
-        f"vix_quote_time: \"{vix['quote_time'].replace('T', ' ')} ET (Cboe delayed-quote CDN, {vix['pulls']} pulls {vix['gap_seconds']:g} s apart — {'identical' if vix['stable'] else 'DIFFERENT'})\"",
+        f"vix_quote_time: \"{vix['quote_time'].replace('T', ' ')} ET ({vix['source']}, {vix['pulls']} pull(s) {vix['gap_seconds']:g} s apart — {'identical' if vix['stable'] else 'DIFFERENT'})\"",
         f"vix_pair: \"VIX {vix['vix']} / VIX3M {vix['vix3m']} — single pair, used everywhere in this document\"",
         f"cross_reference: \"intraday counterpart: daily-screens/{cron_date}/breadth-snapshot.md (cron #10, 14:00 ET)\"",
         f"size_cut_pct: {regime['size_cut_pct']}",
@@ -1271,7 +1398,7 @@ def render_breadth_md(path: Path, breadth: dict, results: dict, live: dict,
         f"{vix['vix3m'] - vix['vix3m_prev_close']:+.2f} ({(vix['vix3m'] / vix['vix3m_prev_close'] - 1) * 100:+.1f}%) | "
         f"{vix['quote_time'].replace('T', ' ')} ET |",
         "",
-        f"Source: Cboe delayed-quote CDN. Pulled {vix['pulls']} times, {vix['gap_seconds']:g} s apart — "
+        f"Source: {vix['source']}. Pulled {vix['pulls']} time(s), {vix['gap_seconds']:g} s apart — "
         f"**{'identical both times' if vix['stable'] else 'DIFFERENT — see the flags'}** (`vix_stable: "
         f"{str(vix['stable']).lower()}`). Ratio VIX/VIX3M = **{vix['vix'] / vix['vix3m']:.4f}** → "
         f"`uncertainty: {str(regime['uncertainty']).lower()}` (the flag fires above 1.0).",
@@ -1280,10 +1407,9 @@ def render_breadth_md(path: Path, breadth: dict, results: dict, live: dict,
         "",
         "| Flag | Value | Rule |",
         "|---|---|---|",
-        f"| `size_cut_pct` | **{regime['size_cut_pct']}** | size cut only when the index is below its "
-        f"20-DMA **and** breadth < 40% — breadth is {b['breadth_pct_20dma']:.2f}% |",
-        f"| `uncertainty` | **{str(regime['uncertainty']).lower()}** | VIX/VIX3M = "
-        f"{vix['vix'] / vix['vix3m']:.4f} ≤ 1 |",
+        f"| `size_cut_pct` | **{regime['size_cut_pct']}** | {_size_cut_note(regime, b['breadth_pct_20dma'])} |",
+        f"| `uncertainty` | **{str(regime['uncertainty']).lower()}** | the flag fires when "
+        f"VIX/VIX3M > 1.0; the ratio is {vix['vix'] / vix['vix3m']:.4f} |",
         f"| `late_cycle` | **{str(regime['late_cycle']).lower()}** | no index ETF is > 6% above its 50-DMA "
         f"(max {etfs['RSP']['vs_sma50_pct']:+.2f}%, RSP) |",
         f"| `index_below_20sma` | **{str(regime['index_below_20sma']).lower()}** | only "
@@ -1391,7 +1517,7 @@ def render_daily_sweep_md(path: Path, results: dict, breadth: dict, live: dict,
         "",
         "| Flag | Value |",
         "|---|---|",
-        f"| `size_cut_pct` | **{regime['size_cut_pct']}** (breadth {b['breadth_pct_20dma']:.2f}% is far above the 40% trigger) |",
+        f"| `size_cut_pct` | **{regime['size_cut_pct']}** ({_size_cut_note(regime, b['breadth_pct_20dma'])}) |",
         f"| `uncertainty` | **{str(regime['uncertainty']).lower()}** (VIX {vix['vix']} / VIX3M {vix['vix3m']} = {vix['vix'] / vix['vix3m']:.4f}) |",
         f"| `late_cycle` | **{str(regime['late_cycle']).lower()}** (no index ETF > 6% above its 50-DMA; extreme is RSP at {etfs['RSP']['vs_sma50_pct']:+.2f}%) |",
         f"| `index_below_20sma` | **{str(regime['index_below_20sma']).lower()}** ({sum(1 for s in ('SPY','RSP','QQQ','QQQE','IWM') if etfs[s]['above_sma20'])} of 5 index ETFs above their 20-DMA) |",
@@ -2048,7 +2174,7 @@ def cmd_run(args) -> int:
         breadth = json.loads(Path(args.breadth_json).read_text())
     else:
         log("collecting the breadth read (TV settled close + VIX pair + shibui cross-check) ...")
-        breadth = collect_breadth(bridge, t1_date, workers)
+        breadth = collect_breadth(bridge, t1_date, workers, cron_date)
     breadth["data_date"] = cron_date
 
     # 8. the theme -> group -> leaders branch
