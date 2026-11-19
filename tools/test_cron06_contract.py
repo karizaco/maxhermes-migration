@@ -123,7 +123,7 @@ PRIOR_STATE = {
     "universe_liquidity": {}, "universe_close": {},
 }
 
-MASTER_CSV = "symbol,stylists\nAAAA,jeff_sun\nCCCC,stockbee\n"
+MASTER_CSV = "symbol,stylists,data_date\nAAAA,jeff_sun,2026-11-06\nCCCC,stockbee,2026-11-06\n"
 
 # an INDEPENDENT short-interest source (shares), for the cross-check
 SI_XCHECK = [
@@ -151,7 +151,11 @@ def write_inputs(d: Path):
     (d / "si_xcheck.json").write_text(json.dumps(SI_XCHECK, indent=1))
 
 
-def run_engine(d: Path):
+def run_engine(d: Path, count_override: dict | None = None):
+    """count_override lets a fault-injection case pass a WRONG count and require the
+    engine to REFUSE to publish (the truncation guard is a real gate, not a claim)."""
+    counts = {"ipo": 3, "sf": 4, "scan": 3}
+    counts.update(count_override or {})
     md = d / "daily-screens" / FIRE
     cmd = [sys.executable, str(ENGINE),
            "--fire-date", FIRE, "--data-date", DATA,
@@ -163,6 +167,9 @@ def run_engine(d: Path):
            "--backlog-md", str(d / "prior_backlog.md"),
            "--prior-state", str(d / "prior_state.json"),
            "--master-csv", str(d / "master.csv"),
+           "--ipo-rows-passing", str(counts["ipo"]),
+           "--sf-rows-passing", str(counts["sf"]),
+           "--scan-rows-passing", str(counts["scan"]),
            "--out-md-dir", str(md),
            "--out-json", str(md / "cron06-refresh.json"),
            "--out-state", str(d / "pattern-study" / "cron06-state" / f"short-float-{FIRE}.json")]
@@ -340,6 +347,62 @@ def main():
                 r["short_float_delta_pp"] = "NO_PRIOR_SNAPSHOT"
         mut("C15 the week-over-week short-float delta is silently empty", "C15",
             lambda: edit_json(blank_delta))
+
+        # ---- 3. the ENGINE refuses a truncated branch ----------------------------
+        # The truncation guard is only a gate if it can fail: the count comes from a
+        # SEPARATE COUNT(*) query, so passing a wrong count must stop the engine.
+        bad_dir = tmp / "bad"
+        bad_dir.mkdir(exist_ok=True)
+        cmd = [sys.executable, str(ENGINE),
+               "--fire-date", FIRE, "--data-date", DATA,
+               "--ipo-json", str(tmp / "ipo.json"), "--sf-json", str(tmp / "sf.json"),
+               "--ipo-enrich-json", str(tmp / "ipo_enrich.json"),
+               "--sf-enrich-json", str(tmp / "sf_enrich.json"),
+               "--scan-json", str(tmp / "scan.json"), "--shape-json", str(tmp / "shape.json"),
+               "--si-crosscheck-json", str(tmp / "si_xcheck.json"),
+               "--backlog-md", str(tmp / "prior_backlog.md"),
+               "--prior-state", str(tmp / "prior_state.json"),
+               "--master-csv", str(tmp / "master.csv"),
+               "--ipo-rows-passing", "99", "--sf-rows-passing", "4", "--scan-rows-passing", "3",
+               "--out-md-dir", str(bad_dir),
+               "--out-json", str(bad_dir / "cron06-refresh.json"),
+               "--out-state", str(bad_dir / "state.json")]
+        rr = subprocess.run(cmd, capture_output=True, text=True)
+        if rr.returncode == 0:
+            print("FAIL: the engine PUBLISHED an artifact whose screen count did not match "
+                  "the collected rows — the truncation guard is vacuous")
+            sys.exit(1)
+        print("ok  the engine refuses to publish a truncated branch")
+
+        # ---- 3b. the TRUNCATION case: the rows say there are more than arrived -----
+        trunc_dir = tmp / "trunc"
+        trunc_dir.mkdir(exist_ok=True)
+        bad_rows = json.loads((tmp / "ipo.json").read_text())
+        for r in bad_rows:
+            r["rows_passing"] = 99
+        (tmp / "ipo_trunc.json").write_text(json.dumps(bad_rows, indent=1))
+        cmd2 = list(cmd)
+        cmd2[cmd2.index("--ipo-json") + 1] = str(tmp / "ipo_trunc.json")
+        cmd2[cmd2.index("--ipo-rows-passing") + 1] = "99"
+        cmd2[cmd2.index("--out-md-dir") + 1] = str(trunc_dir)
+        cmd2[cmd2.index("--out-json") + 1] = str(trunc_dir / "cron06-refresh.json")
+        cmd2[cmd2.index("--out-state") + 1] = str(trunc_dir / "state.json")
+        rr2 = subprocess.run(cmd2, capture_output=True, text=True)
+        if rr2.returncode == 0:
+            print("FAIL: the engine PUBLISHED a branch whose own count says more rows "
+                  "arrived than were collected — the truncation guard is vacuous")
+            sys.exit(1)
+        print("ok  the engine refuses to publish a TRUNCATED branch (rows_passing > collected)")
+
+        def bad_qualifier(j):
+            for r in j["backlog_live_rescore"]:
+                r["ten_year_qualifier"] = "MAYBE"
+                break
+        mut("C17 a 10-year qualifier is outside the closed set", "C17",
+            lambda: edit_json(bad_qualifier))
+
+        mut("C18 the sweep basis date is missing", "C18",
+            lambda: edit_json(lambda j: j.__setitem__("sweep_basis_data_date", "")))
 
         failures = []
         for label, clause, fn in mutations:

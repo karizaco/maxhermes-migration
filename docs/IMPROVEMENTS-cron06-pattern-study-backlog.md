@@ -396,3 +396,105 @@ the reader can attribute it.
 * **Section 5's attribution is superseded.** The float was right; the short position was the
   disputed side. The text is left in place as the record of what was measured then and what
   the wider measurement showed.
+
+---
+
+## 7. An adversarial pass over cron #06: three defects of the same kind (2026-11-19)
+
+The cross-check work (sections 5 and 6) produced the habit worth repeating: **ask what each
+published field and each gate actually proves.** Four things did not survive the question.
+
+### 7.1 The truncation guard was vacuous
+
+The contract's C3 asserts `rows_passing == rows_kept` and the artifact publishes the line
+"rows_passing N = rows_kept N". But **the same agent that fetched the rows wrote
+`rows_passing = len(rows)`** — so the comparison was a number against itself and could
+never fail. A truncated branch (a per-branch `LIMIT` that silently drops rows) would have
+passed the gate and shipped an artifact claiming completeness.
+
+*Fix:* the row count is now measured by a **separate `COUNT(*)` query with the same
+filters** and passed to the engine as `--ipo-rows-passing` / `--sf-rows-passing` /
+`--scan-rows-passing`; the engine **refuses to publish** when the paged rows do not equal
+the counted rows. C3 additionally checks the coverage against the rows the artifact itself
+carries. The fault-injection test now includes an **engine-level case**: pass a wrong count
+and require a non-zero exit — a gate that cannot be observed failing is a claim.
+
+### 7.2 The "1000%-in-10-years" claim was not earned
+
+The scan's gate is `rows_10y >= 1260` — about **five** years of bars, not ten. A name listed
+in 2021 passes it, and its published "10y Low" is a **since-IPO low**. Measured on the
+2026-11-16 data date: **225 of the 318 passing names have a full ~10 years of bars
+(2,513), 76 have less than 9.5 years, and the thinnest has 1,276 bars (5.1 years)** — all
+published under a 10-year claim.
+
+*Fix:* every scanned name now publishes `bars_10y`, `history_years` and a
+`ten_year_qualifier` (`YES` only with 2,500+ bars — 2,520 is unreachable, the densest name
+has 2,513, so the floor is 2,500 and the reachability arithmetic is in the spec). The
+backlog's coverage line states how many of the tagged names EARN the claim, the subtitle
+says "the trough of their available history", and C17 checks the qualifier is a closed set,
+agrees with the bar count, and matches between the markdown and the JSON.
+
+### 7.3 `mcap_verified` could only ever be YES
+
+The spec says a market cap is "verified" when the valuation row is **within 14 days**; the
+engine checked only "a market cap exists". Because the IPO screen INNER-JOINS valuation,
+the "no valuation row" case the notes describe ("passes the $1B floor BY DEFAULT") was
+unreachable — the field had exactly one possible value, and the note described a branch
+that could not run.
+
+*Fix:* the IPO screen carries the valuation row's **date** (`v.date AS valuation_date`), the
+engine computes `valuation_age_days` and sets `mcap_verified` on the 14-day rule, and both
+are published. (Measured 2026-11-17: every IPO name's valuation row is dated on the
+resolved date, so the field does not change today's values — it changes what the field
+*means* if the vendor's table ever goes stale.)
+
+### 7.4 The sweep intersection was computed against an unstated session
+
+`crowded_sweep` is the short-float names that are also in the daily sweep's master list.
+The master CSV's `data_date` on the 2026-11-17 test run was **2026-11-12** — four sessions
+older than the resolved date (2026-11-16) — and the artifact published the intersection as
+if it were current. An intersection against a different session is a different claim.
+
+*Fix:* the engine reads the master CSV's `data_date` and publishes it as
+`sweep_basis_data_date`; the spec requires using the master CSV whose `data_date` matches
+the resolved date; C18 refuses a missing basis or a basis later than the artifact's own
+data date.
+
+### 7.5 The fault-injection test is now 20 mutations, each caught by its own clause
+
+The C17 mutation ("a 10-year qualifier is outside the closed set") initially SLIPPED
+THROUGH — it changed the JSON companion's field while the checker's C17 read the markdown
+table. That is the same defect class as the Verdict column found on 2026-11-16: a check
+that reads one copy of a field instead of both. C17 now compares the table against the JSON
+row for row, and the mutation is caught by C17.
+
+### 7.6 The count must come from the SAME execution as the rows
+
+The first cut of the truncation fix asked the run to measure the row count with a separate
+`COUNT(*)` query. Measuring it exposed something worse: **the screen's universe is not
+stable within hours.** The same short-float query, the same data date (2026-11-16), run
+40 minutes apart:
+
+| | names |
+|---|---|
+| pulled 2026-11-17 00:28 ET | 138 |
+| pulled 2026-11-17 01:08 ET | **132** |
+
+11 names had fallen below the 20% gate and 5 had risen above it — and their **volume and
+market cap were unchanged**; only `short_percent_float` moved. `ownership_stats` is a live
+vendor snapshot with no date column, and the vendor refreshed it under the run.
+
+That kills the separate-COUNT design: a count taken minutes before the rows is a count of
+a different universe, and the gate would either fire spuriously or (worse) be satisfied by
+a count that was never measured against these rows.
+
+*Fix:* the screen query carries **`COUNT(*) OVER () AS rows_passing`** — a window count
+measured by the same execution that produced the rows, so it cannot race the snapshot. The
+engine refuses to publish when the collected rows do not equal that count, and refuses when
+an independently measured count disagrees with it. The fault-injection test carries TWO
+engine-level cases (a wrong override, and a branch whose own count exceeds the rows
+collected) and both must exit non-zero.
+
+The artifact now also publishes **`snapshot_pulled_at`** — the UTC instant of the pull —
+because a published short-float number is a fact about that instant, not about the week,
+and C12 refuses an artifact that does not say when it was pulled.

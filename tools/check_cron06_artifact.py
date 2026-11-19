@@ -37,7 +37,7 @@ REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-bac
                    "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
-CHECKS = 16
+CHECKS = 18
 
 
 def fail(clause: str, msg: str) -> None:
@@ -143,6 +143,17 @@ def main():
             if f"rows_passing {rp} = rows_kept {rk}" not in docs[owner]:
                 fail("C3", f"{owner} does not publish the coverage line for '{key}' "
                            f"(rows_passing {rp} = rows_kept {rk})")
+    # The coverage must also agree with the rows the artifact ITSELF carries — a
+    # coverage line that is not backed by the rows is a claim, not a measurement.
+    _got = {"ipo": len(data.get("ipo_rows") or []),
+            "short_float": len(data.get("short_float_rows") or []),
+            "scan": len((json.loads(read(os.path.join(args.md_dir, "peoplewish-backlog-run-full.json")))
+                         .get("rows_full") or []))}
+    for key, n_got in _got.items():
+        c = cov.get(key) or {}
+        if c.get("rows_kept") is not None and c["rows_kept"] != n_got:
+            fail("C3", f"coverage for '{key}' claims rows_kept {c['rows_kept']} but the artifact "
+                       f"carries {n_got} rows")
 
     # ---------------------------------------------------------------- C4 IPO fields
     ipo_rows = table_rows(docs["weekly-ipo.md"], docs["weekly-ipo.md"].splitlines()[0])
@@ -318,6 +329,9 @@ def main():
             fail("C12", f"{f} does not publish data_date {data.get('data_date')}")
         if f"fire_date: {data.get('fire_date')}" not in txt:
             fail("C12", f"{f} does not publish fire_date {data.get('fire_date')}")
+        if "snapshot_pulled_at:" not in txt:
+            fail("C12", f"{f} does not publish the instant the snapshot was pulled — the "
+                        "short-interest numbers are a fact about that instant, not about the week")
 
     # ---------------------------------------------------------------- C13 source health
     for f, txt in docs.items():
@@ -449,6 +463,64 @@ def main():
             fail("C15", f"weekly-high-short-float.md row {cells[1]}: the published delta "
                         f"{cells[5]!r} does not match the JSON companion's "
                         f"{r.get('short_float_delta_pp')!r}")
+
+    # ---------------------------------------------------------------- C17 the 10-year claim
+    # The scan's gate is 1,260 bars (~5 years), so a name can be published as a
+    # "1000%-in-10-years" name while its trough is a since-IPO low. The claim is
+    # earned by a published field: `ten_year_qualifier` = YES only with 2,500+ bars.
+    run_full = json.loads(read(os.path.join(args.md_dir, "peoplewish-backlog-run-full.json")))
+    rf_rows = run_full.get("rows_full") or []
+    if not rf_rows:
+        fail("C17", "the run-full scan publishes no rows")
+    for r in rf_rows:
+        bars = r.get("bars_10y")
+        if num(bars) is None:
+            fail("C17", f"scan row {r.get('symbol')}: no bars_10y — the 10-year claim cannot be checked")
+            continue
+        q = r.get("ten_year_qualifier")
+        if q not in ("YES", "NO"):
+            fail("C17", f"scan row {r.get('symbol')}: ten_year_qualifier {q!r} is outside ['NO', 'YES']")
+        elif (q == "YES") != (float(bars) >= 2500):
+            fail("C17", f"scan row {r.get('symbol')}: ten_year_qualifier {q} contradicts "
+                        f"bars_10y {bars} (YES needs 2500+)")
+        hy = r.get("history_years")
+        if num(hy) is None or abs(float(hy) - float(bars) / 252.0) > 0.15:
+            fail("C17", f"scan row {r.get('symbol')}: history_years {hy!r} does not match "
+                        f"bars_10y {bars}")
+    _bl_rows = [r for r in table_rows(docs["peoplewish-backlog.md"],
+                                      "## Live re-score of the tagged window") if r and r[0] != "Ticker"]
+    _rs = {r.get("ticker"): r for r in (data.get("backlog_live_rescore") or [])}
+    for cells in _bl_rows:
+        if len(cells) < 12:
+            continue
+        if cells[11] not in ("YES", "NO"):
+            fail("C17", f"the live re-score row {cells[0]} carries the 10y flag {cells[11]!r}, "
+                        f"which is outside ['NO', 'YES']")
+        if num(cells[10]) is None:
+            fail("C17", f"the live re-score row {cells[0]} carries no numeric history "
+                        f"({cells[10]!r}) — the 10-year claim must be checkable per name")
+        # the table and the JSON companion must agree, or one of them is a copy
+        j = _rs.get(cells[0])
+        if not j:
+            fail("C17", f"the live re-score row {cells[0]} is not in the JSON companion")
+            continue
+        if j.get("ten_year_qualifier") != cells[11]:
+            fail("C17", f"the live re-score row {cells[0]}: the table says {cells[11]!r} and the "
+                        f"JSON says {j.get('ten_year_qualifier')!r}")
+        if num(j.get("history_years")) is not None and num(cells[10]) is not None \
+                and abs(float(cells[10]) - float(j["history_years"])) > 0.11:
+            fail("C17", f"the live re-score row {cells[0]}: the table says {cells[10]!r} years "
+                        f"and the JSON says {j.get('history_years')!r}")
+
+    # ---------------------------------------------------------------- C18 the sweep basis
+    basis = data.get("sweep_basis_data_date")
+    if not basis:
+        fail("C18", "the artifact publishes no sweep_basis_data_date — the daily-sweep "
+                    "intersection is computed against a master.csv whose session is unknown")
+    elif re.match(r"^\d{4}-\d{2}-\d{2}$", str(basis)):
+        if str(basis) > str(data.get("data_date")):
+            fail("C18", f"the sweep basis date {basis} is AFTER the artifact's data date "
+                        f"{data.get('data_date')} — the intersection is computed against the future")
 
     report()
 

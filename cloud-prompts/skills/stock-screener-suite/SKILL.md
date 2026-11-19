@@ -2542,12 +2542,28 @@ markdown. A hand-typed price is a defect, not a style choice.
    `references/filters.md`), **paging every branch**: shibui's ceiling is 200 rows PER
    QUERY, so a query that returns exactly 200 rows is TRUNCATED, not complete. Page with
    `LIMIT 200 OFFSET <n>` until the collected rows equal `rows_passing`.
+   **Put `COUNT(*) OVER () AS rows_passing` in the screen query itself.** The count then
+   comes from the SAME execution that produced the rows — a window count, not a second
+   query — so it cannot race the data. Page until the collected rows equal it; the engine
+   REFUSES to publish when they do not (`rows_passing` in the rows vs the rows collected),
+   and it also refuses when an independently measured count (`--ipo-rows-passing` and
+   friends) disagrees with the rows' own count.
+   **A coverage line written by the same agent that fetched the rows
+   (`rows_passing = len(rows)`) is a CLAIM, not a measurement:** it can never disagree
+   with itself, so the truncation guard it appears to provide is vacuous.
+   **Do NOT measure the count with a separate `COUNT(*)` query and expect it to hold:**
+   `ownership_stats` is a LIVE snapshot, and measured 2026-11-19 **16 names crossed the
+   20% short-float gate in 40 minutes** on the same data date. If the collected rows and
+   the count disagree, the snapshot moved — RE-PULL, never publish.
 3. `python3 cron06_refresh.py --intersections-only ...` → the enrichment symbol list. The
    intersection names are needed BEFORE the enrichment query can be built.
 4. Enrich those symbols (30-bar average dollar volume, close, close 30 bars ago, market
    cap) in ONE query, plus the IPO names' liquidity — **and every remaining name in the
    short-float universe**, so that no published row carries a `NO_QUOTE` verdict that only
    means "this run did not measure it". `NO_QUOTE` must mean NO VOLUME HISTORY.
+   **The IPO screen must also carry the valuation row's DATE** (`v.date AS
+   valuation_date` on the valuation sub-select): `mcap_verified` means "a valuation row
+   within 14 days", and without the date the field had exactly one possible value.
 5. **Cross-check the short interest against an INDEPENDENT source — EVERY name the screen
    publishes, not just the top of the table.** shibui's `short_percent_float` is a fraction of
    a float definition nobody else shares, and measured 2026-11-16 it disagreed with an
@@ -2582,6 +2598,10 @@ markdown. A hand-typed price is a defect, not a style choice.
    fire_date earlier than this one) from the outputs repo. Both are needed: the ledger
    for continuity, the state for the change in short float.
 7. Run the engine → the three `.md` artifacts, `cron06-refresh.json` and the state file.
+   The daily-sweep intersection (`crowded_sweep`) is computed from the sweep's
+   `master.csv`: **use the one whose `data_date` matches the resolved date**, and the
+   artifact publishes that basis date — an intersection computed against an older session
+   is a different claim, and it used to be silent about which session it used.
 8. Run the checker: `python3 tools/check_cron06_artifact.py --md-dir <dir> --json <json>
    --state <state> --prior-backlog <ledger> --prior-state <prior state file>`
    `--reply <the reply you are about to send>`. **A non-zero exit means the run FAILS** —
@@ -2600,6 +2620,10 @@ markdown. A hand-typed price is a defect, not a style choice.
 | `mcap_verified` | `YES` when a `shibui.valuation` row exists within 14 days; `NO` means the name passed the $1B floor BY DEFAULT, not on a stamped number. |
 | `days_since_ipo` / `post_lockup` | days since the IPO date; `post_lockup = YES` past 180 days (the standard lockup length, used as a calendar marker, not a filing fact). |
 | `tag_change` | `NEW` / `UNCHANGED` / `ADDED` / `REMOVED` / `MIXED` — the live tag set against the ledger's frozen tags. |
+| `bars_10y` / `history_years` | the trading bars the scan actually had in its 10-year window, and the years that is. The scan's gate is 1,260 bars (~5 years), so a name can have a since-IPO trough and still pass. |
+| `ten_year_qualifier` | `YES` only with 2,500+ bars (~10 years) — a name may be read as a 10-year compounder only when this is YES. 2,520 is unreachable (the densest name in the universe has 2,513), so the floor is 2,500. |
+| `valuation_age_days` | the age of the valuation row behind `mcap_verified`; `mcap_verified` is YES only when it is <= 14 days. |
+| `sweep_basis_data_date` | the `data_date` of the sweep's `master.csv` the `crowded_sweep` intersection was computed against. |
 | `short_interest_crosscheck` | per name: `shibui_si_shares`, `nasdaq_si_shares`, `ratio`, `settlement_date`, `days_to_cover` and a verdict `AGREE` (ratio 0.67–1.50) / `DIVERGES` / `NO_DATA`. The block's `status` is `ok` / `no_rows` / `not_supplied` — **the section is published even when the source failed**. |
 
 A placeholder `—` in one of these fields is a SILENT FAILURE, not a missing value. The
@@ -2628,6 +2652,22 @@ checker rejects it.
   published `NO_PRIOR_SNAPSHOT` — an artifact that looks complete and reports no change at
   all (fixed 2026-11-14; `tools/check_cron06_artifact.py` clause C15 now recomputes the
   delta from the prior snapshot and refuses that artifact).
+* **The "1000%-in-10-years" claim is only earned by names that HAVE ten years.** The scan's
+  gate is `rows_10y >= 1260` — ~5 years of bars — so a name listed in 2021 passes it and
+  its "10y Low" is really its since-IPO low. Measured 2026-11-17: of the 318 passing names,
+  **225 have a full ~10 years of bars and 76 have less than 9.5 years** (the thinnest: 1,276
+  bars, 5.1 years). The claim is therefore a published FIELD (`bars_10y`, `history_years`,
+  `ten_year_qualifier`), not a word in the title.
+* **The short-float universe moves INTRADAY, because the threshold is applied to a live
+  snapshot.** Measured 2026-11-19: the same screen query, the same data date, run 40
+  minutes apart, returned **132 names instead of 138** — 11 dropped below the 20% gate and
+  5 rose above it, with their volume and market cap unchanged (only `short_percent_float`
+  moved). The artifact therefore publishes `snapshot_pulled_at`: a published short-float
+  number is a fact about that instant, not about the week.
+* **A coverage line the fetcher writes itself is not a gate.** `rows_passing = len(rows)`
+  cannot disagree with itself, so the "rows_passing == rows_kept" check was vacuous: it
+  would have passed a truncated branch happily. The count has to come from a SEPARATE
+  `COUNT(*)` query and the engine must refuse to publish when the two disagree.
 * **`ownership_stats` is a LIVE SNAPSHOT that refreshes between runs.** Measured 2026-11-16,
   two days after the 2026-11-14 fire: **20 of the 134 published names had moved** and MMED
   went from 72.6% to 34.4% of float with an UNCHANGED share count (281,265,526) — a 38pp

@@ -65,7 +65,7 @@ import csv
 import json
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 CONTRACT_VERSION = "cron06-refresh-v2"
 CAPABILITY_MARKER = "CRON06_REFRESH_V1"
@@ -86,6 +86,16 @@ SI_AGREE_LO = 0.67          # ratio band inside which the two sources agree
 SI_AGREE_HI = 1.50
 SI_VERDICTS = {"AGREE", "DIVERGES", "NO_DATA"}
 SI_STATUSES = {"ok", "no_rows", "not_supplied"}
+# A name may only be published under the "1000%-in-10-years" claim when it actually
+# HAS ten years of bars. 2,520 is unreachable (the densest name in the universe has
+# 2,513), so the floor is 2,500 — and every row publishes its own bar count, so the
+# claim is checkable rather than asserted.
+TEN_YEAR_BARS = 2500
+TEN_YEAR_QUALIFIED = "YES"
+# The instant the screens were pulled. `ownership_stats` is a LIVE snapshot with no
+# date column, so a published number is a fact about THIS instant, and the artifact
+# says so.
+SNAPSHOT_PULLED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 FAILURES: list[str] = []
 
@@ -295,6 +305,13 @@ def main():
     ap.add_argument("--sf-enrich-json")
     ap.add_argument("--scan-json")
     ap.add_argument("--shape-json")
+    ap.add_argument("--ipo-rows-passing", type=int, default=None,
+                    help="optional independent count of the IPO screen; when given it must "
+                         "equal the count carried by the rows themselves")
+    ap.add_argument("--sf-rows-passing", type=int, default=None,
+                    help="optional independent count of the short-float screen")
+    ap.add_argument("--scan-rows-passing", type=int, default=None,
+                    help="optional independent count of the 10-year scan")
     ap.add_argument("--si-crosscheck-json",
                     help="independent short-interest rows: [{ticker, interest_shares, "
                          "settlement_date, days_to_cover}] — the cross-check source")
@@ -339,6 +356,33 @@ def main():
 
     if not ipo or not sf or not scan:
         fail("one of the three screens returned no rows (ipo/sf/scan) — refusing to publish")
+    # A truncation guard that compares the collected rows with a number THE COLLECTOR
+    # wrote cannot fail — it is vacuous. The count has to come from a SEPARATE
+    # COUNT(*) query with the same filters, and the engine refuses to publish when
+    # the paged rows do not match it (a per-branch LIMIT is a SILENT TRUNCATION).
+    for label, rows_got, override in (("ipo", ipo, args.ipo_rows_passing),
+                                       ("short_float", sf, args.sf_rows_passing),
+                                       ("scan", scan, args.scan_rows_passing)):
+        # The count comes from the ROWS themselves: the screen query carries
+        # `COUNT(*) OVER () AS rows_passing`, so the total is measured by the SAME
+        # execution that produced the rows. A separate COUNT(*) query is a RACE
+        # against a live snapshot — measured 2026-11-19, 16 names crossed the 20%
+        # short-float gate in 40 minutes on the same data date.
+        counted = rows_got[0].get("rows_passing") if rows_got else None
+        if override is not None and counted is not None and override != counted:
+            fail(f"the {label} screen: the independent count ({override}) does not match the "
+                 f"count carried by the rows ({counted}) — the two were measured against "
+                 "different snapshots, refusing to publish")
+        counted = counted if counted is not None else override
+        if counted is None or counted < 0:
+            fail(f"the {label} screen carries no row count (rows_passing) — refusing to publish")
+        elif len(rows_got) != counted:
+            fail(f"the {label} screen returned {len(rows_got)} rows but the screen's own count "
+                 f"says {counted} — the branch is TRUNCATED (a per-branch LIMIT is a silent "
+                 "truncation), refusing to publish")
+    if FAILURES:
+        print("cron06_refresh: FAILED\n  - " + "\n  - ".join(FAILURES))
+        sys.exit(1)
     below = [r["ticker"] for r in sf if (r.get("short_percent_float") or 0) * 100 <= 20.0]
     if below:
         fail(f"the short-float universe carries {len(below)} rows at or below the 20% gate "
@@ -369,6 +413,14 @@ def main():
         live_rows[sym] = row
         live_rows[sym]["tags_live"] = tags
         live_rows[sym]["contraction_live"] = round(cont, 2) if cont is not None else None
+        # The scan's gate is `rows_10y >= 1260` — FIVE years of bars, not ten. A name
+        # with 1,276 bars has no 10-year low; its "10y Low" is its since-IPO low, and
+        # publishing it as a "1000%-in-10-years" name overstates the claim. The bars are
+        # published per name so the claim is checkable, and the qualifier is a field.
+        bars = r.get("cnt10")
+        live_rows[sym]["bars_10y"] = bars
+        live_rows[sym]["history_years"] = round(bars / 252.0, 1) if bars else None
+        live_rows[sym]["ten_year_qualifier"] = TEN_YEAR_QUALIFIED if (bars and bars >= TEN_YEAR_BARS) else "NO"
     tagged = sorted(live_rows.values(), key=lambda r: -r["gain_pct"])[:100]
     tagged_tickers = {r["symbol"].split(".")[0] for r in tagged}
 
@@ -381,11 +433,14 @@ def main():
         "ipo_ledger": sorted(set(ipo_u) & set(ledger)),
     }
     sweep_u = set()
+    sweep_basis = "NO_MASTER_CSV"
     if args.master_csv and os.path.exists(args.master_csv):
         with open(args.master_csv, newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
                 k = list(row.keys())[0]
                 sweep_u.add(str(row[k]).strip())
+                if sweep_basis == "NO_MASTER_CSV":
+                    sweep_basis = str(row.get("data_date") or "").strip() or "UNKNOWN (no data_date column)"
         inter["crowded_sweep"] = sorted(set(sf_u) & sweep_u)
     else:
         inter["crowded_sweep"] = []
@@ -452,7 +507,18 @@ def main():
         adv = e.get("adv30")
         ipo_date = d(r["ipo_date"])
         lockup_end = ipo_date + timedelta(days=LOCKUP_DAYS) if ipo_date else None
-        verified = r.get("market_cap") is not None
+        # The spec says a market cap is "verified" when the valuation row is within
+        # 14 days. A row of any age used to pass, so the field had exactly one
+        # possible value. The valuation row's date is carried in and the age is
+        # checked; an un-dated row falls back to the old behaviour.
+        v_date = r.get("valuation_date")
+        v_age = None
+        if v_date:
+            try:
+                v_age = (data - d(v_date)).days
+            except Exception:
+                v_age = None
+        verified = r.get("market_cap") is not None and (v_age is None or v_age <= 14)
         ipo_rows.append({
             "ticker": t, "name": r.get("name"), "exchange": r.get("exchange"),
             "ipo_date": r.get("ipo_date"), "market_cap": r.get("market_cap"),
@@ -461,6 +527,8 @@ def main():
             "lockup_end": lockup_end.isoformat() if lockup_end else None,
             "post_lockup": "YES" if (lockup_end and data > lockup_end) else "NO",
             "mcap_verified": "YES" if verified else "NO",
+            "valuation_date": v_date,
+            "valuation_age_days": v_age,
             "adv30": adv, "tradeable_verdict": tradeable_verdict(None, adv),
             "in_intersection": t in set(inter["union"]),
         })
@@ -479,6 +547,9 @@ def main():
             "tag_change": tag_change(ftags, r["tags_live"], known),
             "live_close": r["cur_close"], "live_gain_pct": round(r["gain_pct"], 1),
             "high_60d": shape.get(r["symbol"], {}).get("hi60"),
+            "bars_10y": r.get("bars_10y"),
+            "history_years": r.get("history_years"),
+            "ten_year_qualifier": r.get("ten_year_qualifier"),
             "contraction_live": r["contraction_live"],
             "ytd_low": r.get("ytd_low"), "last_day_pct": r.get("last_day_pct"),
         })
@@ -534,6 +605,8 @@ def main():
         "ledger_size": len(ledger) + len(newly_common),
         "prior_ledger_size": len(ledger),
         "prior_state_fire_date": prior_fire,
+        "sweep_basis_data_date": sweep_basis,
+        "snapshot_pulled_at": SNAPSHOT_PULLED_AT,
         "verdict_vocabulary": sorted(TRADEABLE_VERDICTS),
         "tag_change_vocabulary": sorted(TAG_CHANGES),
         "short_interest_crosscheck": {
@@ -586,6 +659,9 @@ def main():
             "gics_sector": row.get("gics_sector"),
             "security_type": row.get("type"),
             "current_close": row.get("cur_close"),
+            "bars_10y": row.get("bars_10y"),
+            "history_years": row.get("history_years"),
+            "ten_year_qualifier": row.get("ten_year_qualifier"),
             "min_close_10y": row.get("min10"),
             "max_close_10y": row.get("max10"),
             "gain_pct": round(row.get("gain_pct"), 1) if row.get("gain_pct") is not None else None,
@@ -630,7 +706,8 @@ def main():
 # ------------------------------------------------------------------ markdown
 def _hdr(title, fire, data, extra=""):
     return (f"# {title} — {fire}\n\n"
-            f"<!-- contract: {CONTRACT_VERSION} | fire_date: {fire} | data_date: {data} -->\n\n"
+            f"<!-- contract: {CONTRACT_VERSION} | fire_date: {fire} | data_date: {data} | "
+            f"snapshot_pulled_at: {SNAPSHOT_PULLED_AT} -->\n\n"
             f"_Generated by cron #6 stock-screener-pattern-study-backlog "
             f"(engine {CAPABILITY_MARKER}). Source: shibui-finance MCP._\n\n{extra}\n\n")
 
@@ -803,16 +880,23 @@ def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
                      ledger, prior_meta, inter, live_by_ticker, type_by_ticker, sf_rows):
     fire, data = args.fire_date, args.data_date
     head = _hdr("peoplewish 1000%-in-10-years — Pattern-Study Backlog", fire, data)
-    cov = (f"_Long-lived log of US equities that have compounded 1000%+ from their 10-year low to the most "
-           f"recent close. Maintained by cron #6 stock-screener-pattern-study-backlog (weekly). The durable "
-           f"ledger is `pattern-study/peoplewish-1000pct-backlog.md` in the outputs repo._\n\n")
+    cov = (f"_Long-lived log of US equities that have compounded 1000%+ from the trough of their available "
+           f"history to the most recent close — a 10-year low where the name has 10 years of bars, otherwise a "
+           f"since-IPO low (the `Hist (y)` column says which). Maintained by cron #6 "
+           f"stock-screener-pattern-study-backlog (weekly). The durable ledger is "
+           f"`pattern-study/peoplewish-1000pct-backlog.md` in the outputs repo._\n\n")
     cov += f"**Latest shibui data:** {data} (T+1 lag vs cron date {fire}). "
     cov += f"**Scan:** {len(live_by_ticker)} rows (rows_passing {len(live_by_ticker)} = rows_kept {len(live_by_ticker)} — complete, paged at the 200-row ceiling); top {len(tagged)} shape-tagged. "
     cov += f"**Newly tagged this run:** {len(newly_common)} common stocks. **Cumulative backlog size:** {len(ledger)+len(newly_common)}.\n\n"
+    qual = sum(1 for r in tagged if r.get("ten_year_qualifier") == "YES")
+    cov += (f"**The 10-year claim, checked:** {qual} of the {len(tagged)} tagged names have 10 full years of "
+            f"bars ({TEN_YEAR_BARS}+); the other {len(tagged)-qual} have less history, so their trough is a "
+            f"since-IPO low rather than a 10-year low. The `Hist (y)` column and the `10y` flag carry it per "
+            f"name — a name may only be read as a 10-year compounder when its `10y` flag is YES.\n\n")
 
     meth = (
         "## Methodology\n\n"
-        "- **Universe:** all symbols in shibui.stock_quotes with at least 1,260 trading days in the trailing 10-year window.\n"
+        f"- **Universe:** all symbols in shibui.stock_quotes with at least 1,260 trading days (~5 years) in the trailing 10-year window. **The 10-year claim is earned, not assumed:** a name carries `10y = YES` only when it has {TEN_YEAR_BARS}+ bars (~10 years), and its `Hist (y)` column publishes the history it actually has.\n"
         "- **Trigger:** `(current_close / 10y_min_close) - 1 >= 10.0` (1000%+ from trough).\n"
         "- **Min close filter:** `min_close_10y >= $0.50`.\n"
         "- **Security type:** newly-tagged names are restricted to `type = 'Common Stock'`; leveraged ETNs and ETFs inflate a 10-year return mechanically and are excluded from the tag list (the raw scan still records them in the run JSON).\n"
@@ -820,8 +904,8 @@ def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
         "- **The scan is PAGED, never capped.** shibui's ceiling is 200 rows PER QUERY, so a query that returns exactly 200 rows is truncated, not complete. Page until the collected rows equal `rows_passing`.\n"
         "- **The ledger rows are frozen** at the values they carried when first tagged — it is a discovery ledger, not a quote sheet. The live re-score below carries this week's tags.\n\n")
 
-    nrows = ["| # | Ticker | Name | Type | Exchange | Sector | Current | 10y Low | Peak Gain | Gain | 60d High | Contraction | YTD Low | Last Day | Tags |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    nrows = ["| # | Ticker | Name | Type | Exchange | Sector | Current | 10y Low | Peak Gain | Gain | 60d High | Contraction | YTD Low | Last Day | Tags | Hist (y) | 10y |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for i, r in enumerate(newly_common, 1):
         s = live_by_ticker.get(r["ticker"], {})
         tags = ", ".join(r["live_tags"]) if r["live_tags"] else "—"
@@ -833,15 +917,19 @@ def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
                      f"{s.get('exchange','—')} | {s.get('gics_sector','—')} | {money(r['live_close'])} | "
                      f"{money(min10)} | {pct0(peak)} | {pct0(r['live_gain_pct'])} | {money(r['high_60d'])} | "
                      f"{r['contraction_live']} | {money(r['ytd_low'])} | "
-                     f"{('+' if (ldp or 0) >= 0 else '')}{pct(ldp,2)} | {tags} |")
+                     f"{('+' if (ldp or 0) >= 0 else '')}{pct(ldp,2)} | {tags} | "
+                     f"{s.get('history_years') if s.get('history_years') is not None else '—'} | "
+                     f"{s.get('ten_year_qualifier') or '—'} |")
 
-    rrows = ["| Ticker | Name | Frozen Tags | Live Tags | Tag Change | Live Close | Live Gain % | 60d High | Contraction | Last Day |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+    rrows = ["| Ticker | Name | Frozen Tags | Live Tags | Tag Change | Live Close | Live Gain % | 60d High | Contraction | Last Day | Hist (y) | 10y |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rescore:
         rrows.append(f"| {r['ticker']} | {r['name']} | {', '.join(r['frozen_tags']) or '—'} | "
                      f"{', '.join(r['live_tags']) or '—'} | {r['tag_change']} | {money(r['live_close'])} | "
                      f"{pct0(r['live_gain_pct'])} | {money(r['high_60d'])} | {r['contraction_live']} | "
-                     f"{pct(r['last_day_pct'],2)} |")
+                     f"{pct(r['last_day_pct'],2)} | "
+                     f"{r.get('history_years') if r.get('history_years') is not None else '—'} | "
+                     f"{r.get('ten_year_qualifier') or '—'} |")
 
     car = ["| Ticker | Name | Type | Exchange | Sector | Current | 10y Low | Peak Gain | Gain | 60d High | Contraction | YTD Low | Last Day | Tags | First Tagged |",
            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
