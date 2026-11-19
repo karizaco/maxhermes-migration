@@ -107,7 +107,7 @@ fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py br
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
 fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v3 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v4 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 
@@ -650,6 +650,19 @@ screen_complete: true
     states the stall, the pull time and the open time;
   - **Rule 1 cannot be applied** (the open has happened); publish the pre-market prints and the
     live session separately.
+  - **The GATE WINS — a late pull's `close` disagreement is NOT an isolated defect.** When the
+    session is open, the scanner's `close` column carries the LIVE price and it disagrees with
+    the morning brief's prior close on essentially every common name. That wholesale movement IS
+    the live session, and Source health must say so — it must never call it "isolated field
+    defects, not a live session" while the front matter carries `market_open_at_pull: true`.
+    Measured 2026-11-19: the gate returned OPEN with 581 of 747 common names off their prior
+    close and the artifact published the opposite of its own verdict.
+- **A MISSING COUNT is never a `?` and never a `0`.** The baseline's band counts come from the
+  morning brief's own front matter, and the morning brief's v2 contract puts its title and intro
+  BEFORE the `---` block — so the reader of this baseline must find the FIRST fenced block, not
+  assume it is at offset 0. Measured 2026-11-19: the refresh published `? gainers / ? decliners`
+  and "a band the brief counted at 0 names" because its parser demanded the file START with
+  `---`. A missing count is published as a missing count.
 - **When the upstream brief lands AFTER this file — AMEND, do not rewrite.** The 08:30 fire can
   be quota-killed and then resumed in place, hours later (2026-11-05: it was resumed and the
   brief published the next morning at 05:52 ET). This file is then the **baseline** the brief
@@ -683,7 +696,7 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_refresh.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v1' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v2' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"

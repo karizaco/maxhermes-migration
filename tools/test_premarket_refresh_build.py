@@ -351,6 +351,96 @@ def main():
               "the REAL contract checker passes on the LATE-PULL branch",
               (c6.stdout.strip().split("\n")[-1] if c6.stdout else ""))
 
+    # ---------- 2. the 2026-11-19 fixes: the three defects that fire measured ----------
+    # (a) The morning brief's own v2 contract puts its TITLE and intro paragraph BEFORE the
+    #     `---` block. The builder's front-matter parser used to demand that the file START
+    #     with `---`, so it read nothing and the artifact published a literal "?" where the
+    #     baseline's band counts belong - and the checker's placeholder list held only "???",
+    #     so the gate passed it.
+    merged2, mmd2, mcsv2, slots2 = build_fixture(tmp)
+    mrows2 = json.load(open(merged2))["rows"]
+    ug = sum(1 for r in mrows2 if num(r["premarket_change"] or 0) > 0)
+    ud = sum(1 for r in mrows2 if num(r["premarket_change"] or 0) < 0)
+    with open(mmd2, "w") as fh:
+        fh.write("# Agentic pre-market brief - 2026-11-12\n\nOne pull of the tape at 08:34 ET.\n\n"
+                 "---\ndate: 2026-11-12\ncron: 26-agentic-pre-market-brief\n"
+                 "up_3pct: %d\ndown_3pct: %d\nscreen_complete: true\n---\n\n# morning\n" % (ug, ud))
+    out2 = os.path.join(tmp, "out_titled_baseline")
+    p2 = run_builder(merged2, mmd2, mcsv2, slots2, out2)
+    md2 = os.path.join(out2, "2026-11-12-pre-market-refresh.md")
+    csv2 = os.path.join(out2, "2026-11-12-pre-market-refresh.csv")
+    if os.path.exists(md2):
+        t2 = open(md2, encoding="utf-8").read()
+        nonheading2 = "\n".join(ln for ln in t2.split("\n") if "can this gap hold" not in ln)
+        check("?" not in nonheading2,
+              "a TITLED baseline publishes no bare '?'")
+        check(("%d gainers / %d decliners" % (ug, ud)) in t2,
+              "the baseline's band counts are read from a TITLED file",
+              "the band-membership sentence lost the counts")
+        c2 = subprocess.run([sys.executable, CHECKER, "--md", md2, "--csv", csv2,
+                             "--morning-csv", mcsv2], capture_output=True, text=True)
+        fails2 = [l for l in (c2.stdout + c2.stderr).split("\n") if l.startswith("FAIL")]
+        check(c2.returncode == 0 and not fails2,
+              "the contract checker passes on a TITLED baseline",
+              "; ".join(fails2)[:200])
+    else:
+        check(False, "the titled-baseline build wrote a file")
+
+    # (b) The GATE WINS. Measured 2026-11-19: the gate returned OPEN (581 of 747 common
+    #     names off their prior close) and the artifact published "These are ISOLATED field
+    #     defects, not a live session" directly beside `market_open_at_pull: true`.
+    gatef3 = os.path.join(tmp, "state_live.json")
+    json.dump({"marker": "session-state-v2", "session_state": "OPEN",
+               "close_field_defects": ["AUGO", "NVDA", "SLS"],
+               "tests": {"prior_close_matches_morning": {"checked": 747, "failed": 581}},
+               "verdict_reason": "the scanner's close moved off the prior close on 581 of 747 names"},
+              open(gatef3, "w"))
+    out3 = os.path.join(tmp, "out_live_gate")
+    p3 = run_builder(merged2, mmd2, mcsv2, slots2, out3, state="OPEN", state_file=gatef3,
+                     snapshot="10:06:17")
+    md3 = os.path.join(out3, "2026-11-12-pre-market-refresh.md")
+    csv3 = os.path.join(out3, "2026-11-12-pre-market-refresh.csv")
+    if os.path.exists(md3):
+        t3 = open(md3, encoding="utf-8").read()
+        check("not a live session" not in t3,
+              "a LIVE pull never claims the session is not live")
+        check("LIVE regular-session price" in t3 and "market_open_at_pull: true" in t3,
+              "a LIVE pull says the close column IS the live price")
+        check("581" in t3, "a LIVE pull publishes the gate's OWN count")
+        c3 = subprocess.run([sys.executable, CHECKER, "--md", md3, "--csv", csv3,
+                             "--morning-csv", mcsv2], capture_output=True, text=True)
+        fails3 = [l for l in (c3.stdout + c3.stderr).split("\n") if l.startswith("FAIL")]
+        check(c3.returncode == 0 and not fails3,
+              "the contract checker passes on the LIVE branch",
+              "; ".join(fails3)[:200])
+    else:
+        check(False, "the live-gate build wrote a file")
+
+    # (c) The verb follows the gap's DIRECTION. Measured 2026-11-19: SLS moved from -20.61%
+    #     to -14.15% and the artifact published "extended its gap 6.46pp" - on a gap-DOWN name
+    #     a POSITIVE change is the decline NARROWING.
+    merged4, mmd4, mcsv4, slots4 = build_fixture(tmp)
+    rows4 = list(csv.DictReader(open(mcsv4)))
+    with open(mcsv4, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows4[0].keys()))
+        w.writeheader()
+        for r in rows4:
+            if r["ticker"] == "D00":
+                r["gap_pct"] = "-12.00"          # the pull says -8.00: the decline NARROWED
+                r["setup_theme"] = "C1 - a theme"
+            w.writerow(r)
+    out4 = os.path.join(tmp, "out_gap_direction")
+    p4 = run_builder(merged4, mmd4, mcsv4, slots4, out4)
+    md4 = os.path.join(out4, "2026-11-12-pre-market-refresh.md")
+    if os.path.exists(md4):
+        t4 = open(md4, encoding="utf-8").read()
+        check("narrowed its decline **4.00pp**" in t4,
+              "a gap-DOWN name that moved toward zero NARROWED its decline")
+        check("extended its gap **4.00pp**" not in t4,
+              "a gap-DOWN name is never published as extending its gap")
+    else:
+        check(False, "the gap-direction build wrote a file")
+
     shutil.rmtree(tmp, ignore_errors=True)
     shutil.rmtree(tmp2, ignore_errors=True)
     shutil.rmtree(tmp3, ignore_errors=True)

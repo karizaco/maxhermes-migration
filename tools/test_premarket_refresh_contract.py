@@ -254,6 +254,24 @@ def main():
         ("TRACE-GAP", lambda t, c: (mutate_line(t, GQ14, "+6.00%", "+61.00%"), c)),
         ("NO-PLACEHOLDER", lambda t, c: (md_mut(t, "## 4. Verdict", "## 4. Verdict\n\nTODO: write this"), c)),
         ("PRIOR-CLOSE-RECONCILES", lambda t, c: (t, md_mut(c, ",33.3333,", ",33.3000,"))),
+        # --- the three assertions added on 2026-11-19, each proven to BITE ---
+        # (a) a single "?" where a published number belongs. The placeholder list held only
+        #     "???", so the gate passed an artifact with a hole in it.
+        ("NO-MISSING-NUMBER", lambda t, c: (md_mut(t, "Both screens asserted",
+                                                   "? screens asserted"), c)),
+        # (b) the GATE WINS: the artifact may not call the session not live while its own front
+        #     matter says it was open at the pull.
+        ("LIVE-SESSION-CONSISTENT", lambda t, c: (
+            md_mut(md_mut(t, "screen_complete: true\n",
+                          "screen_complete: true\nmarket_open_at_pull: true\n"),
+                   "- **The companion CSV's `live_*` columns are empty by construction.**",
+                   "- **These are ISOLATED field defects, not a live session.**"), c)),
+        # (c) a gap-DOWN name that moved toward zero NARROWED its decline.
+        ("GAP-DIRECTION", lambda t, c: (md_mut(
+            t, "The morning brief's CSV is the reference.",
+            "The morning brief's CSV is the reference.\n\n**Two facts behind those numbers.** DE00 - "
+            "one of the morning brief's setups - extended its gap **4.00pp**, from -12.00% to "
+            "-8.00%."), c)),
     ]
 
     # the CSV mutations need their own file handling

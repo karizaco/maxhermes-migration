@@ -66,6 +66,15 @@ import os
 import re
 import sys
 
+# Capability marker. v4 (2026-11-19) fixes four defects measured on the 2026-11-19 fire:
+# the front-matter parser rejected the morning brief's own v2 layout (title and intro BEFORE
+# the `---` block) and published a literal "?"; the late-pull branch published the live
+# session's `close` disagreement as "ISOLATED field defects, NOT a live session" while its own
+# front matter said `market_open_at_pull: true`; a gap-DOWN name was published as having
+# "extended its gap" when it had NARROWED; and the band-membership sentence claimed the band
+# "grew" when it shrank. It SUPERSEDES premarket-refresh-build-v3, which is still named here
+# so a procedure copy that asks for v3 still fetches a WORKING file rather than nothing.
+PREMARKET_REFRESH_BUILD_V4 = "premarket-refresh-build-v4"
 PREMARKET_REFRESH_BUILD_V3 = "premarket-refresh-build-v3"
 
 CRON_VALUE = "26-agentic-pre-market-brief-refresh"
@@ -315,20 +324,50 @@ def ladder_gap_note(gap_up_candidates, drivers, morning):
 
 
 def parse_front_matter(path):
+    """The machine-readable block, as a dict.
+
+    It is a `---` fenced block and it is NOT always the FIRST thing in the file. The morning
+    brief's own v2 contract puts its title and intro paragraph BEFORE the block (measured
+    2026-11-19: the 08:30 brief opens with `# Agentic pre-market brief - 2026-11-19` and a
+    summary paragraph, and the `---` block comes after them). The old `txt.startswith("---")`
+    guard therefore returned {} for the real baseline, and this artifact published a literal
+    "?" where the baseline's band counts belong and "a band the brief counted at 0 names" in
+    Source health. Find the FIRST fence - exactly what the brief's own checker does in
+    `tools/check_premarket_brief.py`'s `front_matter()`.
+    """
     if not path or not os.path.exists(path):
         return {}
     txt = open(path, encoding="utf-8", errors="replace").read()
-    if not txt.startswith("---"):
-        return {}
-    end = txt.find("\n---", 3)
-    if end < 0:
+    lines = txt.split("\n")
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "---":
+            start = i
+            break
+    if start is None:
         return {}
     fm = {}
-    for line in txt[3:end].strip("\n").split("\n"):
-        if ":" in line:
-            k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
+    for line in lines[start + 1:]:
+        if line.strip() == "---":
+            break
+        if ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        fm[k.strip()] = v.strip()
     return fm
+
+
+def fm_band_text(fm):
+    """The baseline band as one phrase. NEVER a literal "?" and NEVER a 0.
+
+    A missing count is a missing count: the old template published `?` where the morning
+    brief's own published band counts belong, and the checker had no placeholder rule that
+    caught a single `?` (its list held `???`). "an unpublished band" says what is true.
+    """
+    g, d = num(fm.get("up_3pct")), num(fm.get("down_3pct"))
+    if g is None or d is None:
+        return "an unpublished band"
+    return "%d gainers / %d decliners" % (int(g), int(d))
 
 
 def read_morning_csv(path):
@@ -896,8 +935,16 @@ def build(args):
         # +13.08% to +20.56%" — a sentence that contradicts the two numbers in it.
         # Measured 2026-11-18 (BRBR, +7.48pp).
         delta = big_setup[1]
-        verb = ("gave back **%.2fpp**" % abs(delta)) if delta < 0 else \
-               ("extended its gap **%.2fpp**" % abs(delta))
+        # The verb follows the DIRECTION of the gap, not just the sign of the change. Measured
+        # 2026-11-19: SLS moved from -20.61% to -14.15% and the artifact published "extended its
+        # gap 6.46pp" - on a gap-DOWN name a POSITIVE change is the decline NARROWING, so the
+        # sentence contradicted the two numbers in it.
+        if (num(mg) or 0) < 0:
+            verb = ("widened its decline **%.2fpp**" % abs(delta)) if delta < 0 else \
+                   ("narrowed its decline **%.2fpp**" % abs(delta))
+        else:
+            verb = ("gave back **%.2fpp**" % abs(delta)) if delta < 0 else \
+                   ("extended its gap **%.2fpp**" % abs(delta))
         A("**Two facts behind those numbers.** %s - one of the morning brief's setups - %s, "
           "from %+.2f%% to %+.2f%%.%s"
           % (t, verb, mg, g,
@@ -908,10 +955,10 @@ def build(args):
         A("On the other side the decliners widened: %s."
           % ", ".join("%s %+.2f%% to %+.2f%%" % (x[2], x[3], x[4]) for x in wid))
     A("")
-    A("**Band membership.** The band grew from the brief's %s gainers / %s decliners to %d / %d. "
+    A("**Band membership.** The band went from the brief's %s to %d / %d. "
       "Of the %d band names the morning brief published in its CSV, **%d no longer clear the "
       "+/-3%% band**%s and **%d published name%s entered it**.%s"
-      % (fm_morning.get("up_3pct", "?"), fm_morning.get("down_3pct", "?"), now_gain, now_dec,
+      % (fm_band_text(fm_morning), now_gain, now_dec,
          len(mband), len(faded),
          (" (%s)" % ", ".join(faded)) if faded else "", len(entered),
          "" if len(entered) == 1 else "s",
@@ -925,11 +972,12 @@ def build(args):
     A("**%s directional, and to the %s.** %s"
       % (direction.capitalize(), side,
          v.get("clause") or
-         ("The decliner side moved from %s names to %d, of the %d names in common that are on the "
+         ("The decliner side moved from %s to %d, of the %d names in common that are on the "
           "downside **%d widened their gap and %d narrowed it**, and on the long side %d gaps "
           "extended while %d gave their gaps back. %d of the %d names in common repriced by more "
           "than 0.2pp."
-          % (fm_morning.get("down_3pct", "?"), now_dec, widened + narrowed, widened, narrowed,
+          % (("%d names" % int(then_dec)) if then_dec is not None else "an unpublished count",
+             now_dec, widened + narrowed, widened, narrowed,
              ext, fad, changes_since, len(both)))))
     A("")
     A("## 5. Source health")
@@ -944,13 +992,31 @@ def build(args):
         A("- **The regular session had not opened at the pull.** The scanner's `close` column is "
           "the last completed regular session's close, and the companion CSV's `live_close`, "
           "`live_change_pct` and `live_volume` columns are **blank, never 0**.")
-    if defects:
+    # The gate's OWN totals. `close_field_defects` is the SAMPLE the gate prints (it names the
+    # first 20 rows); `failed` and `checked` are the totals. Measured 2026-11-19: the gate
+    # returned OPEN with 581 of 747 common names off their prior close, and the artifact
+    # published "disagreed ... on 20 name(s) ... These are ISOLATED field defects, NOT a live
+    # session" - which contradicted its own front matter (`market_open_at_pull: true`) and the
+    # gate's verdict. The GATE WINS: when the gate says the session is live, the wholesale
+    # `close` movement IS the live session, and the artifact says so.
+    pt = (gate.get("tests") or {}).get("prior_close_matches_morning") or {}
+    gate_failed = num(pt.get("failed"))
+    gate_checked = num(pt.get("checked"))
+    defect_ct = int(gate_failed) if gate_failed is not None else len(defects)
+    if market_open:
+        A("- **The scanner's `close` column is the LIVE regular-session price, not the prior "
+          "close.** It disagreed with the morning brief on %d of the %d common names — that "
+          "wholesale move IS the live session the gate reads, and it is why the front matter "
+          "carries `market_open_at_pull: true`. The published prior close for every name is the "
+          "DERIVED one (from the pre-market print), never the scanner's `close`."
+          % (defect_ct, int(gate_checked) if gate_checked is not None else defect_ct))
+    elif defects:
         A("- **The scanner's `close` column disagreed with the morning brief on %d name(s): %s.** "
           "These are ISOLATED field defects, not a live session — the gate reads a live session "
           "as the `close` column moving off the prior close for essentially every common name. "
           "The morning brief's own Source health usually names the same rows it corrected, and "
           "the published prior close for each of these names is the derived one, not the "
-          "scanner's `close`." % (len(defects), ", ".join(defects)))
+          "scanner's `close`." % (defect_ct, ", ".join(defects)))
     if gate_state and gate_state != args.session_state.upper():
         A("- **The session-state gate returned `%s` and this file is published as `%s`.**%s The "
           "gate's own reason: %s"

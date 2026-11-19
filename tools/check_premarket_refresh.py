@@ -28,7 +28,12 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "premarket-refresh-v1"
+# v2 (2026-11-19) adds three assertions the 2026-11-19 artifact needed and did not have:
+# NO-MISSING-NUMBER (a bare "?" is a hole - the placeholder list held only "???"), 
+# LIVE-SESSION-CONSISTENT (the GATE WINS: an artifact may not call the session not live
+# beside `market_open_at_pull: true`) and GAP-DIRECTION (a gap-DOWN name that moved toward
+# zero narrowed its decline, it did not "extend its gap").
+CONTRACT_VERSION = "premarket-refresh-v2"
 
 # ---- the pinned front matter, in order (the spec's "The artifact skeleton — PINNED") ----
 REQUIRED_FM = ["date", "cron", "fire_time_et", "snapshot_et", "source", "status",
@@ -445,6 +450,31 @@ def main():
         if ph in ("<", ">"):
             continue
         check(ph not in text, "NO-PLACEHOLDER", "the file contains %r" % ph)
+
+    # A SINGLE "?" is a missing number. The one legitimate "?" in this file is the question mark
+    # in the gap-quality heading, so that one line is excluded from the scan. Measured
+    # 2026-11-19: the builder's front-matter parser rejected the morning brief's own v2 layout
+    # (a title and an intro paragraph BEFORE the `---` block) and published "? gainers / ?
+    # decliners" and "from ? names to" - and the placeholder list held only "???", so the gate
+    # passed an artifact with a hole in it.
+    _nonheading = "\n".join(ln for ln in text.split("\n") if "can this gap hold" not in ln)
+    check("?" not in _nonheading, "NO-MISSING-NUMBER",
+          "the file contains a bare '?' where a published number belongs")
+
+    # ---------------- the gate's verdict and the artifact's own claim ----------------
+    # The GATE WINS: if the front matter says the session was open at the pull, the artifact may
+    # not claim the opposite. Measured 2026-11-19: the artifact published "These are ISOLATED
+    # field defects, not a live session" directly beside `market_open_at_pull: true`.
+    if (fm.get("market_open_at_pull") or "").strip().lower() == "true":
+        check("not a live session" not in text, "LIVE-SESSION-CONSISTENT",
+              "the file calls the session not live while the front matter says it was open")
+
+    # ---------------- the gap's DIRECTION and its verb ----------------
+    # A gap-DOWN name that moved toward zero NARROWED its decline. Measured 2026-11-19: SLS
+    # published "extended its gap 6.46pp, from -20.61% to -14.15%" - the sentence contradicted
+    # the two numbers in it.
+    check(re.search(r"extended its gap[^\n]*from -\d", text) is None, "GAP-DIRECTION",
+          "a gap-DOWN name is published as having extended its gap")
 
     # ---------------- the changes count, recomputed from the two CSVs ----------------
     if args.morning_csv:
