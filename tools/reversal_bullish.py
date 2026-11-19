@@ -301,16 +301,29 @@ def nasdaq_history(ticker, date_str, sessions=30, include=False):
 def fetch_history(tickers, date_str, bridge, sessions=30, prefer_shibui=True):
     """Settled history for a set of tickers. shibui first (batched), Nasdaq second.
 
-    Returns (history_dict, source_name).
+    Returns (history_dict, source_map) where source_map[ticker] is the source that
+    actually served THAT ticker's history ("shibui" or "nasdaq").
+
+    A single run-level label is NOT honest. Measured 2026-11-19: shibui does not
+    carry the scanner's dotted class-share symbols (`BRK.B`), so ONE name fell back
+    to Nasdaq and the whole run was labelled "nasdaq" — the artifact then claimed
+    "the bridge call failed" and published `degraded_sources: 1`, while every
+    PUBLISHED candidate's history had in fact come from shibui. The per-ticker map
+    lets the caller report what actually happened, per name.
     """
+    src_map = {}
     if prefer_shibui:
         try:
             hist = shibui_history(tickers, date_str, bridge, sessions=sessions)
-            if all(t in hist and hist[t] for t in tickers):
-                return hist, "shibui"
             missing = [t for t in tickers if not hist.get(t)]
-            print(f"note: shibui returned no history for {len(missing)} ticker(s); "
-                  f"falling back to Nasdaq for those", file=sys.stderr)
+            for t in tickers:
+                if t not in missing:
+                    src_map[t] = "shibui"
+            if not missing:
+                return hist, src_map
+            print(f"note: shibui returned no history for {len(missing)} ticker(s) "
+                  f"({', '.join(missing[:6])}); falling back to Nasdaq for those",
+                  file=sys.stderr)
         except Exception as exc:                       # noqa: BLE001
             print(f"note: shibui history unavailable ({str(exc)[:120]}); using Nasdaq",
                   file=sys.stderr)
@@ -325,8 +338,23 @@ def fetch_history(tickers, date_str, bridge, sessions=30, prefer_shibui=True):
                     lambda tk: (tk, nasdaq_history(tk, date_str, sessions)), missing):
                 if bars:
                     hist[t] = bars
-    src = "shibui" if (prefer_shibui and len(hist) == len(tickers) and not missing) else "nasdaq"
-    return hist, src
+                    src_map[t] = "nasdaq"
+    return hist, src_map
+
+
+def shibui_symbol(ticker):
+    """The symbol shibui stores a US class share under.
+
+    Measured 2026-11-19: shibui carries Berkshire as `BRK-A` / `BRK-B` (HYPHEN)
+    while the TradingView scanner carries `BRK.A` / `BRK.B` (DOT). The same holds
+    for Brown-Forman (`BF-B` vs `BF.B`). A dotted scanner symbol therefore looks
+    like "shibui has no history for this ticker" and forces a Nasdaq fallback for
+    a name shibui actually had. Map the dot to the hyphen and the lookup resolves.
+
+    Only the DOT form is remapped. A scanner symbol that already uses a hyphen is
+    left alone, and a name with neither form is passed through unchanged.
+    """
+    return ticker.replace(".", "-") if "." in ticker else ticker
 
 
 def shibui_history(tickers, date_str, bridge, sessions=30):
@@ -340,7 +368,10 @@ def shibui_history(tickers, date_str, bridge, sessions=30):
     chunk = 6                       # 6 x 30 = 180 rows < the 200-row server cap
     for i in range(0, len(tickers), chunk):
         part = tickers[i:i + chunk]
-        lst = ", ".join("'%s'" % t for t in part)
+        # Query under shibui's own symbol form, but key the result by the SCANNER's
+        # symbol, so the caller never sees a renamed ticker.
+        sym = {t: shibui_symbol(t) for t in part}
+        lst = ", ".join("'%s'" % sym[t] for t in part)
         sql = (f"SELECT ticker, date, open, high, low, close, volume FROM shibui.stock_quotes "
                f"WHERE ticker IN ({lst}) AND date < '{date_str}' "
                f"QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) <= {sessions} "
@@ -348,18 +379,19 @@ def shibui_history(tickers, date_str, bridge, sessions=30):
         rows = shibui_query(sql, bridge)
         got = set()
         for r in rows:
-            out.setdefault(r["ticker"], []).append(r)
-            got.add(r["ticker"])
+            key = next((t for t in part if sym[t] == r["ticker"]), r["ticker"])
+            out.setdefault(key, []).append(r)
+            got.add(key)
         missing = [t for t in part if t not in got]
         if missing:
             # never let a truncated chunk look like a short history
             for t in missing:
                 sql1 = (f"SELECT ticker, date, open, high, low, close, volume FROM shibui.stock_quotes "
-                        f"WHERE ticker = '{t}' AND date < '{date_str}' "
+                        f"WHERE ticker = '{sym[t]}' AND date < '{date_str}' "
                         f"QUALIFY ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) <= {sessions} "
                         f"ORDER BY date LIMIT 200")
                 for r in shibui_query(sql1, bridge):
-                    out.setdefault(r["ticker"], []).append(r)
+                    out.setdefault(t, []).append(r)
     return out
 
 
@@ -678,12 +710,13 @@ def run(date_str, bridge, out_dir, dry_run=False):
 
     # ---- 2. shibui's latest settled close (the alignment reference) ----------
     by_ticker = {r["name"]: r for r in rows}
-    ref_hist, hist_src = fetch_history(ALIGNMENT_TICKERS, date_str, bridge, sessions=2)
+    ref_hist, ref_src_map = fetch_history(ALIGNMENT_TICKERS, date_str, bridge, sessions=2)
     latest = {}
     for t, bars in ref_hist.items():
         if bars:
             latest[t] = bars[-1]
-    report["history_source"] = hist_src
+    report["history_source"] = ("shibui" if ref_src_map and all(
+        v == "shibui" for v in ref_src_map.values()) else "mixed/nasdaq")
     report["shibui_latest_sessions"] = sorted({str(r["date"]) for r in latest.values()})
 
     # ---- 3. DAY-ALIGNMENT ASSERTION -----------------------------------------
@@ -800,8 +833,10 @@ def run(date_str, bridge, out_dir, dry_run=False):
 
     # ---- 5. history-side gates ------------------------------------------------
     tickers = [r["name"] for r, _ in prelim]
-    hist, hist_src2 = fetch_history(tickers, date_str, bridge, sessions=G["hist_sessions"])
-    report["history_source"] = hist_src2
+    hist, cand_src_map = fetch_history(tickers, date_str, bridge, sessions=G["hist_sessions"])
+    # The SOURCE that matters for the artifact is the one that served the PUBLISHED
+    # candidates' history. A fallback used only for a name that later failed a gate
+    # never reached the artifact and must not label the run degraded.
     results = []
     for r, m in prelim:
         bars = hist.get(r["name"], [])
@@ -819,6 +854,13 @@ def run(date_str, bridge, out_dir, dry_run=False):
     report["history_gate_survivors"] = sum(1 for x in results if x["passes"])
     results = [x for x in results if x["passes"]]
     results.sort(key=lambda x: (-x["m"]["dcr"], -x["h"]["adr"]))
+    pub_srcs = {cand_src_map.get(x["ticker"], "unknown") for x in results}
+    report["history_source"] = ("shibui" if pub_srcs == {"shibui"}
+                                else ("nasdaq" if pub_srcs == {"nasdaq"} else "mixed"))
+    report["history_fallback_tickers"] = sorted(
+        t for t, v in cand_src_map.items() if v != "shibui")
+    report["published_from_fallback"] = sorted(
+        x["ticker"] for x in results if cand_src_map.get(x["ticker"]) != "shibui")
 
     # ---- 6. tiering + stops ---------------------------------------------------
     for x in results:
@@ -1146,18 +1188,31 @@ def write_md(path, results, report, bridge):
     A(f"| TradingView public scanner | live session OHLC for the universe | ok "
       f"({report.get('universe_rows', 0)} names) |")
     hist_src = report.get("history_source", "shibui")
+    fb_tickers = report.get("history_fallback_tickers", []) or []
+    pub_fb = report.get("published_from_fallback", []) or []
     if hist_src == "shibui":
         A(f"| shibui-finance (bridge) | settled history, latest close | ok "
           f"(latest session {report.get('shibui_latest_sessions', ['n/a'])[:1]}) |")
+    elif pub_fb:
+        A(f"| shibui-finance (bridge) | settled history, latest close | **degraded** — settled "
+          f"history for {len(pub_fb)} PUBLISHED candidate(s) ({', '.join(pub_fb)}) came from the "
+          f"documented **nasdaq** fallback, not the bridge |")
     else:
-        A(f"| shibui-finance (bridge) | settled history, latest close | **degraded** — the bridge "
-          f"call failed on this run, so settled history came from the documented **{hist_src}** "
-          f"fallback; the day-alignment check still resolved against those closes |")
+        A(f"| shibui-finance (bridge) | settled history, latest close | ok for every PUBLISHED "
+          f"candidate (the day-alignment check resolved against shibui's latest settled close) |")
     A("| market-recap (bridge) | market state / index backdrop | see caveats |")
-    if hist_src != "shibui":
+    if fb_tickers:
         A("")
-        A(f"degraded_sources: 1 (shibui-finance settled history — the documented {hist_src} "
-          f"fallback was used)")
+        A(f"_history note: {len(fb_tickers)} ticker(s) had no shibui history and were served by the "
+          f"documented nasdaq fallback ({', '.join(fb_tickers[:10])}"
+          f"{'…' if len(fb_tickers) > 10 else ''}); "
+          + ("none of them was published, so no published row's history was degraded."
+             if not pub_fb else
+             f"{len(pub_fb)} of them reached the artifact."))
+    if pub_fb:
+        A("")
+        A(f"degraded_sources: 1 (shibui-finance settled history — the documented nasdaq fallback "
+          f"served {len(pub_fb)} published candidate(s))")
     A("")
     A(f"_Generated by cron #4 `reversal-bullish-3:55` · tool `tools/reversal_bullish.py` · "
       f"session {a} · contract `{CONTRACT_VERSION}` · `_source=mcp`_")
