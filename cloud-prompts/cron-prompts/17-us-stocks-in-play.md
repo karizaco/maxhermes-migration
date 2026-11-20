@@ -184,6 +184,13 @@ It contains, and you must follow, all of these:
   broken source, why the local Windows helpers do not exist, and why there is no audit log.
 - `## DELIVERY` — the reply format your final chat message must use.
 
+**THE REPLY IS TOAST-SIZED, AND THE SKILL SPEC SAYS SO.** The shared block's "top ~8 per
+tier" reading is a FLOOR on attention, not a quota: for this routine it would put ~30 names
+in a reply the client cannot surface. The skill spec's `## Chat reply — TOAST-SIZED` section
+is the binding rule for this routine — **at most 8 NAMES in the whole Signal block, the whole
+reply ≤ 25 lines**, one clause per name, the artifact carrying the rest. Fetch the skill spec
+FIRST (it is a required first tool call anyway) and follow that section exactly.
+
 **If that fetch fails**, write a stub artifact with `_source=prompt_blocks_fetch_failed` and reply
 with the failure. Do NOT improvise the source ladder, the fallback chain or the reply format from
 memory — those are what keep a degraded run honest.
@@ -301,6 +308,10 @@ exists, and why the push script must never be run with `git push … | head -3`.
    or `preclose`, its `artifact` field is the slot-qualified path, and its `name` stays
    `us stocks in play preclose`/`open` so the series stays queryable. Two fires a day means TWO
    lines a day — one per slot — and they must not be confused with each other.
+   **One line per FIRE.** If you republish or CORRECT an EARLIER board, do NOT append a fuel-log
+   line for it — the log records fires, not republications, and a correction line creates a
+   duplicate `(date, slot)` pair (measured 2026-11-15: a correction session appended three, and
+   the log carried three duplicates for fires that had already logged themselves).
 5. **Never write the open board to `{date}.md`, and never write the preclose board to
    `{date}-open.md`.** The two slots share one task and one output directory.
 6. If the cron fires outside its intended window (a US market holiday — the scheduler owns the day-of-week, so a weekend fire cannot happen), exit cleanly with "out-of-window: <reason>". Do NOT run a degraded version.

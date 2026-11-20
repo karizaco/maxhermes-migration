@@ -178,6 +178,15 @@ Per routine, deliberately, **not** one shared file:
   fuel log is published with **no prompt change**;
 - two routines firing in the same minute cannot race each other's lines.
 
+**ONE LINE PER FIRE — and a republication is NOT a fire (measured 2026-11-15).** The fuel log
+records FIRES, not file writes. A session that republishes or CORRECTS an **earlier** board (e.g.
+the 2026-11-13 23:02 ET correction that re-published the 2026-11-10/11/12 **open** boards with a
+fixed reference price) **must NOT append a fuel-log line for them** — it appended three, and the
+log ended up with **three duplicate `(date, slot)` pairs** for fires that had already logged
+themselves. The check that catches this: **one `(date, slot)` per line, one line per fire.** If
+a correction session needs to record what it did, say so in its reply and in the commit subject;
+the run history stays one-line-per-fire.
+
 **How to append (Cloud):**
 
 1. Fetch the existing file from the remote output repo — `git fetch origin main` then

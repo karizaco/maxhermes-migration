@@ -904,6 +904,53 @@ Save every run to:
   re-tell last night's reactions — the post-market brief owns those.
 - **Chat only if** any Tier A or Soft-A, material TECH_WATCH, or material Tier C
 
+## Chat reply — TOAST-SIZED (required, both slots)
+
+**The chat reply is what the client surfaces.** Measured 2026-11-15 (user-reported): the
+2026-11-13 preclose fire posted a ~80-line reply and **no desktop notification appeared** — the
+conversation only surfaced in the sidebar days later. The platform exposes no
+notification-delivery field, so that cannot be proved from the server side; what this routine
+controls is the reply's SIZE. **Cap the reply — the artifact carries the rest.**
+
+- **At most 8 NAMES in the whole `### Signal` block — not 8 per tier.** Pick them by |move|
+  within each tier, biggest first: Tier A, then Soft-A, then Tier C.
+- **The whole reply ≤ 25 lines**, including the prose opener, `### Method & caveats`,
+  `### Files` and the `### Push / errors` lines.
+- **One clause per name, ≤ ~110 characters**, and the clause carries the CATALYST, not the
+  price: `- CBRS +11.22% — record Q3 revenue $210.8m, outlook raised; the gap held into the bell`.
+- Keep the tier headers and the `Audit:` line. Drop the tier's full count from the chat — the
+  artifact carries it.
+- **Say how many names are in the artifact and where it is** — one line. That is the whole
+  handoff: the reader gets the board's finding in the toast and the detail in the file.
+- The push line and the `errors:` line stay: they are machine-read.
+
+**This cap overrides the shared `## DELIVERY` block's "top ~8 per tier" guidance for this
+routine.** The shared block's per-tier reading would put ~30 names in a reply that the client
+cannot surface; the tighter per-routine cap wins.
+
+## Run-time budget (required)
+
+**The delivery latency is published in the reply, and the auditor reads it.** Over the routine's
+allowance (45 min by default) the fire is reported as `delivered_late` with a `stalled` gap and
+cause `slow_run` — which reads to the operator as *"the fire never delivered"* when it did.
+Measured 2026-11-13: this routine took **56.2 min**, all of it lost to a Yahoo chart endpoint
+answering HTTP 429, and the audit flagged it for that. **The fix is the routine, not the
+threshold.**
+
+- **One pull per source, and never re-try a 429.** A rate limit is a DEGRADED SOURCE, not a
+  clock to burn: publish without it and name it in `## Source health`.
+- **The gap path is optional.** The verdict is the session's own open gap against the settled
+  close (the bridge's post-bell print). If the 5-minute series will not come, publish the annex
+  with Open → Bell and disclose the missing path points. Do not spend the budget on it.
+- **Batch the bridge in 40s.** `market-recap get_quotes` caps a call at 40 symbols; a full
+  universe (≈2,500 names) is ≈63 calls in ≈60 s.
+- **Pull Yahoo SERIALLY, never in threads.** Measured 2026-11-13: 594 serial requests ran at
+  ≈10 req/s with zero failures, while a 28-thread pull hung with no CPU and a 4-way parallel
+  curl burst tripped the 429 immediately.
+- **Degrade the source, not the clock.** If a source is still failing at the 40-minute mark,
+  drop it, publish the board, and name it in `## Source health`. A board delivered on time with
+  one disclosed gap beats a late board.
+
 ## Source stack
 
 For each source: try HTTP fetch / API first; **if fetch blocked → open that URL only in the headed desktop browser**, scrape what you need, continue.
