@@ -1343,3 +1343,106 @@ Result: **33/33 cases, every one of them a real test.** New cases: no band call,
   green for the wrong reason, and the fix is in the test's own mechanics.
 
 ---
+
+---
+
+# Round 3 (2026-11-20) — the delta pull is STRUCTURALLY DEAD after the open, and a stalled fire publishes the next morning
+
+Two findings from the **2026-11-19** fire of cron #25, which was blocked by the platform and
+published on the morning of 2026-11-20. Both are measured, and both change what a run may claim.
+
+## 1. After the open, the screener's pre-market columns FREEZE — so the §12 delta pull cannot see a late window
+
+**The mechanism.** §12 takes a second pull "at ~09:27 ET" to flag names that moved ≥3 points or
+crossed the 3% band between the published pull and the delta. That mechanism only works while
+the pre-market session is still running. Once the regular session opens at 09:30 ET, the
+screener's `premarket_close` / `premarket_change` / `premarket_volume` columns **stop
+updating** and hold their final pre-market values.
+
+Measured on this fire (published pull 10:05 ET, delta pull 10:15 ET — both post-open):
+
+| measurement | result |
+|---|---|
+| rows returned, published pull (gainers / losers) | 460 / 181 |
+| rows returned, delta pull (gainers / losers) | 460 / 181 |
+| names with \|gap\| moved ≥3.0 points | **0** |
+| names crossing the 3% band in either direction | **0** |
+| names dropped off / appeared on the screen | **0 / 0** |
+
+The two pulls were **byte-identical**. A delta pull taken after the open therefore returns a
+**vacuous zero**, and a run that reports "no movement flags" without saying the tape was frozen
+is claiming a clean bill of health it never tested. Worse, the flags it *would* have raised are
+exactly the ones a reader most needs: whether a name gapped further into the open.
+
+**The rule this exposes.** *The delta pull is a pre-open instrument, not a general second pull.*
+Its window is bounded by the open, not by the routine's own latency. A run whose published pull
+lands after 09:30 ET cannot produce movement flags at all, and must say so rather than publish a
+zero it did not measure.
+
+**Do-not list.**
+- Do NOT report "no movement flags" from a post-open delta pull — say the columns were frozen and
+  the window was missed (the skill's §12 already requires the actual pull time to be stated).
+- Do NOT treat a zero-movement delta pull as evidence the tape was stable.
+- Do NOT pull the delta from a different source and present it as the screener's delta.
+
+## 2. A fire blocked by the platform can publish on the NEXT calendar day — and the artifact must say so
+
+**What happened.** The 2026-11-19 08:45 ET fire was dispatched on time but the platform **held
+the turn for 79 minutes** before the first tool call (`window_check.sh` → `stall_min: 79`), so
+the published pull landed at 10:05 ET, 35 minutes after the open. The turn was then **cut by a
+Token Plan limit** — `42212: Token Plan usage limit reached … (2056)` — and the conversation was
+resumed the following morning. The brief was finally pushed on **2026-11-20 at 01:06 ET**, i.e.
+**980 minutes (16.3 h) after its own fire**.
+
+**Why it matters.** The artifact's numbers were all correct for the 2026-11-19 session — the
+pre-market tape is the settled 09:30 ET print and the derived `prev_close` matched Yahoo's
+18 Nov close **exactly on all 15 names checked**. But a reader opening `ntrt/2026-11-19.md` on
+20 Nov is reading a **reconstruction of a settled session**, not a pre-open signal, and the
+gaps in it have since been arbitraged by a full trading session. The mode banner said only that
+"the pull landed 35 min after the open" — true of the pull, but it understated the publication
+delay by a factor of ten, because the banner was written before the turn was cut.
+
+**The rule this exposes.** *The banner's disclosure must describe PUBLICATION lateness, not only
+pull lateness* — and the reply must carry the delivery latency the shared `## DELIVERY` block
+asks for (`delivered HH:MM ET, N min after the 08:45 fire`), because that latency is the number
+the reader cannot see anywhere in the artifact.
+
+**Do-not list.**
+- Do NOT write the mode banner before the turn's fate is known and leave it describing only the
+  pull's lateness: if the run is later resumed, the banner must be re-read to describe when the
+  brief was actually published.
+- Do NOT rebuild the brief for the publication date. The artifact belongs to its **fire date**
+  (the window check's `fire-date:` line, judged against the scheduled instant) — a late fire is a
+  late *publication* of that date's brief, not a brief for today.
+- Do NOT let the `stalled:` line and the artifact's `degraded_sources:` count disagree: the
+  shared `## DELIVERY` block requires the reply's `errors:` to equal the artifact's
+  `degraded_sources:`, and a stall counts as ONE error.
+
+**Verification performed (2026-11-20).**
+- Derived `prev_close` matched Yahoo's 18 Nov close exactly on 15 names (SLS 17.95, PCT 1.82,
+  SA 25.55, COHR 212.84, AMBA 54.64, TU 9.51, PANW 339.92, SNDK 776.22, WMG 32.96, IREN 15.24,
+  SEAT 1.28, CHSN 0.102, AGIG 0.58, NCPL 2.89, LICN 0.0155 split-adjusted).
+- The pre-open tape and the published pull agree in sign on 165 of 167 shared names; 2 rows
+  flipped sign outright (CHSN, LABT), the signature of a settled close on the tape row.
+- `check_ntrt_artifact.py` re-run after the disclosure edits: `CONTRACT OK — contract: 17/17`.
+- Push verified by the commit diff, not by the exit code: `git diff --name-status
+  origin/main~1 origin/main` → `A ntrt/2026-11-19.csv`, `A ntrt/2026-11-19.md`, **0 deletions**,
+  and both files byte-identical to the local artifact.
+
+## 3. The 2026-11-19 fire's own data quality, for the next fire's baseline
+
+Screen: 641 names (460 up / 181 down). Gate: 17 actionable (12 up / 5 down). The %ADV reality
+check: 129 cleared the 4.8788% bar, 224 printed 25,000+ shares, 19 cleared gap+ADV+cap, **17
+cleared all four legs**. Asymmetry: 16 tradeable / 1 no driver / 16 missed / 4 noise. The
+cap-deciding names were SKYA ($208.7M), QNC ($226.0M), NKLR ($258.7M), LAES ($291.1M) and RZLV
+($423.1M) — i.e. **four of the seventeen sit within 30% of the $200M floor**, so the floor leg
+remains the fragile one on a normal tape day, exactly as §25/§28/§29 predicted.
+
+**One gate outcome was basis-dependent and is flagged in the artifact:** SKYA's implied 52.58M
+share count predates the 17 Nov tender offer that retired 92.9% of common and left ~3.6M shares
+outstanding, so on the company's own count the print-time cap is ~$14M and SKYA **fails** the
+floor, while the provider convention every vendor quotes ($208M, on that same stale count)
+clears it. Published on the provider basis and flagged in `## Flags` as the one gate outcome that
+depends on which count is right — the correct treatment when a corporate action has invalidated
+the screener's share count inside the session being screened.
+
