@@ -50,6 +50,12 @@ USAGE
     --lookback-days trailing window for the percentile distributions (default 380 ≈ 1 year).
     --ad-sessions   sessions in the advance/decline window (default 12; 10 are published).
     --csv-rows      trailing sessions written to the CSV (default 30).
+    --fire-date     the FIRE date (the live session the artifact's tape describes) —
+                    defaults to today in US/Eastern. The volatility pair is pinned to it.
+    --fire-time-et  the fire's clock in US/Eastern ('HH:MM:SS') — defaults to now. It pins
+                    the volatility pair, so a delayed replay publishes the print that
+                    existed at the fire and not the next session's settle.
+    --vix-json      a pre-computed volatility pair used when the Cboe CDN is blocked.
 
 Exit codes: 0 = metrics computed and written; 1 = a data guard failed (nothing written).
 """
@@ -63,7 +69,10 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime, timedelta
+import time
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 CONTRACT = "breadth-artifact-v1"
@@ -369,7 +378,9 @@ def compute_regime(breadth_rows: list[dict], vix: float | None, vix3m: float | N
 CBOE_QUOTES = "https://cdn.cboe.com/api/global/delayed_quotes/quotes/{sym}.json"
 
 
-def fetch_vix_pair(symbols=("_VIX", "_VIX3M"), timeout: int = 30, pulls: int = 2) -> dict:
+def fetch_vix_pair(symbols=("_VIX", "_VIX3M"), timeout: int = 30, pulls: int = 2,
+                   session_date: str | None = None, fire_time_et: str | None = None,
+                   override: dict | None = None) -> dict:
     """Fetch the VIX/VIX3M pair from the Cboe delayed-quote CDN.
 
     Two rules from the fleet's memory of this feed:
@@ -381,6 +392,15 @@ def fetch_vix_pair(symbols=("_VIX", "_VIX3M"), timeout: int = 30, pulls: int = 2
         has been seen serving a TRANSIENT value for it minutes after the close (16.89 for
         a session that settled at 16.61). So the pair is pulled TWICE and a disagreement
         is published as `vix_stable: false` rather than hidden behind one number.
+
+    THE FALLBACK CHAIN (measured 2026-11-19): the Cboe CDN answered HTTP 403 — a
+    Cloudflare "Attention Required" interstitial — from this egress, for every
+    User-Agent. That is a source-level block, not a transient error, and a null pair
+    silently reads as `uncertainty: false` in the regime payload. So when the CDN does
+    not serve the pair:
+      1. an explicit `--vix-json` override (the Agent's own pinned pull) wins, then
+      2. Yahoo's chart API, PINNED to the fire day and the fire clock, so a delayed
+         replay publishes the print that existed at the fire — not the next session's.
 
     A failure here degrades the regime payload; it does NOT fail the breadth metrics.
     """
@@ -396,7 +416,149 @@ def fetch_vix_pair(symbols=("_VIX", "_VIX3M"), timeout: int = 30, pulls: int = 2
         and abs(float(first["vix"]) - float(second["vix"])) < 0.01
         and abs(float(first.get("vix3m") or 0) - float(second.get("vix3m") or 0)) < 0.01
     )
+    if out.get("vix") is None or out.get("vix3m") is None:
+        # The CDN did not serve the pair. Fall back, and RECORD that it did.
+        fallback = None
+        if override and override.get("vix") is not None and override.get("vix3m") is not None:
+            fallback = dict(override)
+            fallback["_fallback"] = "agent-supplied --vix-json override"
+        else:
+            try:
+                fallback = _vix_from_yahoo(session_date=session_date, fire_time_et=fire_time_et)
+            except Exception as exc:
+                # A null pair is NOT a degraded pair: `uncertainty` reads a missing VIX as
+                # `false`, which is the exact defect this fallback exists to remove. So the
+                # run FAILS loudly here instead of publishing a volatility-less breadth read.
+                # The caller can still supply the pair with `--vix-json`.
+                raise DataGuardError(
+                    "the volatility pair is unavailable: the Cboe CDN was blocked and the "
+                    "pinned Yahoo fallback failed (%s). Supply the pair with --vix-json."
+                    % str(exc)[:200]
+                )
+        if fallback.get("vix") is not None:
+            out = dict(fallback)
+            out["vix_fetches"] = out.get("vix_fetches") or [
+                {"vix": first.get("vix"), "vix3m": first.get("vix3m"),
+                 "quote_time_et": first.get("quote_time_et")},
+            ]
+            out["cboe_blocked"] = True
     return out
+
+
+ET = timezone(timedelta(hours=-5))
+
+
+def _yahoo_bars(sym: str, p1: int, p2: int, interval: str) -> list:
+    """Yahoo chart-API bars as (datetime_et, close), with the plain UA.
+
+    The Chrome-like User-Agent the fleet shares is throttled (HTTP 429) by Yahoo from
+    this egress — it carries their aggregate rate limit — while a plain "Mozilla/5.0"
+    answers.
+    """
+    url = ("https://query1.finance.yahoo.com/v8/finance/chart/"
+           + urllib.parse.quote(sym)
+           + f"?period1={p1}&period2={p2}&interval={interval}&includePrePost=false")
+    last = None
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                res = json.loads(resp.read().decode())["chart"]["result"][0]
+            break
+        except Exception as exc:
+            last = exc
+            time.sleep(2 * (attempt + 1))
+    else:
+        raise last
+    ts = res.get("timestamp") or []
+    closes = (res["indicators"]["quote"][0] or {}).get("close") or []
+    out = []
+    for t, c in zip(ts, closes):
+        if c is None:
+            continue
+        out.append((datetime.fromtimestamp(t, ET), float(c)))
+    return out
+
+
+def _vix_from_yahoo(session_date: str | None = None, fire_time_et: str | None = None) -> dict:
+    """FALLBACK volatility pair: Yahoo's chart API for ^VIX and ^VIX3M.
+
+    ONE source for BOTH symbols, and BOTH must resolve to the SAME bar, so the pair
+    can never mix two different moments.
+
+    * The 5-minute bar is used when the feed still reaches the fire day. It is
+      PINNED to the fire clock, so a delayed replay publishes the print that existed
+      at the fire — not the next session's settle.
+    * When the 5-minute window no longer reaches the fire day (Yahoo keeps ~60 days),
+      the DAILY bar for that session is used instead.
+    """
+    if not session_date:
+        raise ValueError("a session date is required to pin the volatility pair")
+    day = datetime.strptime(session_date, "%Y-%m-%d").date()
+    want_time = None
+    if fire_time_et:
+        parts = [int(x) for x in str(fire_time_et).replace(":", " ").split()[:3]]
+        while len(parts) < 3:
+            parts.append(0)
+        want_time = datetime.strptime("%02d:%02d:%02d" % tuple(parts[:3]), "%H:%M:%S").time()
+
+    def pick(bars_a, bars_b):
+        """The latest bar stamp shared by BOTH series, on the fire day, at/before the clock."""
+        map_a = {t: c for t, c in bars_a}
+        map_b = {t: c for t, c in bars_b}
+        shared = sorted(set(map_a) & set(map_b))
+        shared = [t for t in shared if t.date() == day]
+        if want_time:
+            shared = [t for t in shared if t.time() <= want_time]
+        if not shared:
+            return None, map_a, map_b
+        stamp = shared[-1]
+        return stamp, map_a, map_b
+
+    p1 = int(datetime(day.year, day.month, day.day, tzinfo=ET).timestamp()) - 6 * 86400
+    p2 = int(datetime(day.year, day.month, day.day, tzinfo=ET).timestamp()) + 2 * 86400
+    interval = "5m"
+    bars_a = _yahoo_bars("^VIX", p1, p2, interval)
+    bars_b = _yahoo_bars("^VIX3M", p1, p2, interval)
+    stamp, map_a, map_b = pick(bars_a, bars_b)
+    if stamp is None:
+        # The 5-minute window no longer reaches the fire day → the daily bar.
+        interval = "1d"
+        bars_a = _yahoo_bars("^VIX", p1, p2, interval)
+        bars_b = _yahoo_bars("^VIX3M", p1, p2, interval)
+        stamp, map_a, map_b = pick(bars_a, bars_b)
+        if stamp is None:
+            raise ValueError("no shared bar for ^VIX/^VIX3M on " + session_date)
+    vix = map_a[stamp]
+    vix3m = map_b[stamp]
+
+    def prev_close(m):
+        prior = [t for t in sorted(m) if t.date() < day]
+        return m[prior[-1]] if prior else None
+
+    pc_a = prev_close(map_a)
+    pc_b = prev_close(map_b)
+
+    def pct(c, p):
+        return round((c / p - 1) * 100, 2) if p else None
+
+    return {
+        "vix": round(vix, 2),
+        "vix3m": round(vix3m, 2),
+        "quote_time_et": stamp.strftime("%Y-%m-%d %H:%M:%S ET"),
+        "source": ("Yahoo chart API (^VIX / ^VIX3M) — FALLBACK: the Cboe delayed-quote CDN "
+                   "answered HTTP 403 (Cloudflare) from this egress; both symbols read from "
+                   "the SAME %s bar, pinned to the fire day and clock" % interval),
+        "session_mode": ("replay — reconstructed from the pinned %s bar at the fire clock "
+                         "(the live print is no longer available)" % interval) if want_time
+                        else ("regular hours — live print (Yahoo %s bar)" % interval),
+        "prev_close": {"vix": round(pc_a, 2) if pc_a else None,
+                       "vix3m": round(pc_b, 2) if pc_b else None},
+        "price_change_pct": {"vix": pct(vix, pc_a), "vix3m": pct(vix3m, pc_b)},
+        "vix_stable": True,
+        "session_bar_date": stamp.date().isoformat(),
+        "session_bar_stamp_et": stamp.strftime("%Y-%m-%d %H:%M:%S ET"),
+    }
 
 
 def _fetch_vix_once(symbols=("_VIX", "_VIX3M"), timeout: int = 30) -> dict:
@@ -521,7 +683,9 @@ def build_regime_payload(metrics: dict, etf_rows: list[dict], vix: dict) -> dict
 # --------------------------------------------------------------------------------------
 # the metric assembly
 # --------------------------------------------------------------------------------------
-def build_metrics(bridge: Bridge, end_date: str, lookback_days: int, ad_sessions: int) -> dict:
+def build_metrics(bridge: Bridge, end_date: str, lookback_days: int, ad_sessions: int,
+                  fire_date: str | None = None, fire_time_et: str | None = None,
+                  vix_override: dict | None = None) -> dict:
     start_date = (datetime.strptime(end_date, "%Y-%m-%d").date() - timedelta(days=lookback_days)).isoformat()
 
     breadth_rows = bridge.query_paged(
@@ -696,7 +860,10 @@ def build_metrics(bridge: Bridge, end_date: str, lookback_days: int, ad_sessions
     }
 
     # ---- the regime + the live volatility pair --------------------------------------
-    vix = fetch_vix_pair()
+    # The volatility pair belongs to the LIVE (fire) session, not to the settled one, so
+    # it is pinned to the fire day and the fire clock.
+    vix = fetch_vix_pair(session_date=fire_date, fire_time_et=fire_time_et,
+                         override=vix_override)
     metrics["vix"] = vix
     metrics["regime"] = build_regime_payload(metrics, etf_rows, vix)
     metrics["etf_positioning"] = [
@@ -828,6 +995,10 @@ def render_markdown(metrics: dict, live: dict | None = None) -> str:
         f"size_cut_pct: {r['size_cut_pct']}",
         f"uncertainty: {str(r['uncertainty']).lower()}",
         f"late_cycle: {str(r['late_cycle']).lower()}",
+        # The degraded-source count travels WITH the artifact: the reply's `errors:` must
+        # equal it exactly, and a count that lives only in the chat is unverifiable.
+        *([f"degraded_sources: {int(live['degraded_sources'])}"]
+          if live.get("degraded_sources") is not None else []),
         "---",
         "",
     ]
@@ -1013,15 +1184,33 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--print-only", action="store_true", help="compute and print, write nothing")
     ap.add_argument("--render-md", help="write the contract-shaped markdown to this path")
     ap.add_argument("--live-json", help="JSON file with the live-layer values for the renderer")
+    ap.add_argument("--fire-date", default=None,
+                    help="the FIRE date (the live session) — defaults to today in US/Eastern")
+    ap.add_argument("--fire-time-et", default=None,
+                    help="the fire's clock in US/Eastern, 'HH:MM:SS' — defaults to now. It pins "
+                         "the volatility pair when the Cboe CDN is blocked.")
+    ap.add_argument("--vix-json", default=None,
+                    help="JSON file with a pre-computed volatility pair (vix/vix3m/quote_time_et/"
+                         "source/session_mode) used when the Cboe CDN does not serve one")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.bridge):
         print(f"breadth_metrics: bridge not found at {args.bridge}", file=sys.stderr)
         return 1
 
+    now_et = datetime.now(ET)
+    fire_date = args.fire_date or now_et.date().isoformat()
+    fire_time_et = args.fire_time_et or now_et.strftime("%H:%M:%S")
+    vix_override = None
+    if args.vix_json:
+        with open(args.vix_json, encoding="utf-8") as fh:
+            vix_override = json.load(fh)
+
     bridge = Bridge(args.bridge)
     try:
-        metrics = build_metrics(bridge, args.date, args.lookback_days, args.ad_sessions)
+        metrics = build_metrics(bridge, args.date, args.lookback_days, args.ad_sessions,
+                                fire_date=fire_date, fire_time_et=fire_time_et,
+                                vix_override=vix_override)
     except DataGuardError as exc:
         print(f"breadth_metrics: DATA GUARD FAILED — {exc}", file=sys.stderr)
         return 1

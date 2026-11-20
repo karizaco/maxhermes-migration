@@ -408,10 +408,27 @@ python3 "$S" --date "$FIRE_DATE" --out-dir /workspace/daily-screens/$FIRE_DATE \
     --live-json /workspace/live.json
 ```
 
+**The `--date` argument is the SETTLED session, and on a replay it is NOT the fire date.**
+shibui is T+1, so at a 14:00 ET fire on 2026-11-19 the newest settled session is 2026-11-18:
+the helper resolves `data_date` as the newest session available on or before `--date`, so
+**pass `--date 2026-11-18` for a 2026-11-19 fire**. Passing the fire date itself publishes
+breadth from a session that had not closed yet when the fire fired, and blends the fire-day
+close into a 14:00 ET read.
+
+**The volatility pair needs three more arguments** (added 2026-11-20):
+
+| argument | what it is | default |
+|---|---|---|
+| `--fire-date` | the FIRE date — the live session the tape describes | today in US/Eastern |
+| `--fire-time-et` | the fire's clock (`HH:MM:SS`) — it PINS the volatility pair | now |
+| `--vix-json` | a pre-computed pair the Agent pulled itself, used when the Cboe CDN is blocked | none |
+
 The live-layer JSON carries the keys the renderer cannot know: `fire_time_et`, `live_date`,
 `vix_quote_time`, `vix_pair`, `banner`, `tldr`, `tape_block`, `volatility_block`, `flags_block`,
 `method_block`. **Any key you do not supply is rendered as a `<!-- FILL: ... -->` marker, and the
-checker REJECTS an artifact that still carries one.** A stub cannot ship.
+checker REJECTS an artifact that still carries one.** A stub cannot ship. Add
+`degraded_sources: <n>` to the live layer as well: the renderer writes it into the front matter,
+and the reply's `errors:` must equal it exactly.
 
 **If you re-implement the logic inline instead of running the helper, the artifact must carry
 exactly the same fields — the checker verifies the artifact, not the route you took.**
@@ -489,6 +506,29 @@ value for it minutes after the close (16.89 for a session that settled at 16.61)
 is pulled **twice**, and a disagreement is published as `vix_stable: false` and flagged, rather
 than hidden behind one number.
 
+**⚠ THE CDN IS BLOCKED FROM THIS EGRESS (measured 2026-11-19).**
+`cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json` answers **HTTP 403** — a Cloudflare
+"Attention Required" interstitial — for every User-Agent. `_fetch_vix_once()` swallows the
+failure, so the pair came back **NULL**: the regime's `uncertainty` flag silently read
+`false` and the artifact published a volatility-less breadth read. Cron #09's pipeline got a
+fallback on the same day; cron #10 did not, until 2026-11-20.
+
+The pair now has a chain: **Cboe CDN → the `--vix-json` override the Agent supplies → Yahoo's
+chart API, PINNED to the fire day and the fire clock.** The Yahoo fallback reads `^VIX` and
+`^VIX3M` from the **same bar** (a pair that mixes two moments is not a pair), and the pin means
+a delayed replay publishes the print that existed at the fire rather than the next session's
+settle. **If none of the three can serve the pair the run FAILS loudly** — a null pair is not a
+degraded pair, because `uncertainty` reads a missing VIX as `false`. Supply `--vix-json` in
+that case. The published `source` names the source that actually served the numbers.
+
+> **The replay case, measured.** The 2026-11-19 fire was blocked by a platform token-plan limit
+> for 664 minutes and resumed in place. The live layer was then reconstructed from Yahoo's
+> 5-minute bars pinned to `2026-11-19 14:00:46 ET` — the index proxies, the five index ETFs,
+> the eleven sector ETFs, SMH, and the VIX pair — and the settled layer was pinned to the
+> 2026-11-18 close with `--date 2026-11-18`. The bridge's `market-recap` was NOT used: on a
+> replay it serves the next session's quotes, not the fire's tape.
+
+
 #### 3.5.6 THE FRONT MATTER — structured, never a concatenated string
 
 ```yaml
@@ -506,6 +546,7 @@ cross_reference: "end-of-day counterpart: daily-screens/2026-11-04/breadth.md (c
 size_cut_pct: 0                  # STRUCTURED fields — one per line, machine-readable
 uncertainty: false
 late_cycle: false
+degraded_sources: 2              # the count of DEGRADED sources; the reply's `errors:` must equal it
 ---
 ```
 
