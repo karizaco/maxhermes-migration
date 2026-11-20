@@ -31,6 +31,21 @@ USAGE
   check_preopen_checkpoint.py --repo <repo-root>
       [--tape <tape.jsonl>] [--digest <board.md>] [--skipped <marker.md>] [--slot 0830]
 """
+
+# CHECKER_VERSION: 2026-11-20.1
+#
+# THE VERSION MARKER. Every other run-time dependency in this fleet carries one -
+# CAPTURE_SCRIPT_VERSION (capture), PREOPEN_DIGEST_V2 / PREOPEN_EDGAR_DATE_V1
+# (renderer), PUSH_ARTIFACT_VERSION (push helper), WINDOW_CHECK_V2 (window check) -
+# so a fetch ladder can demand it and a STALE COPY CANNOT WIN. The checker was the
+# ONE exception: the procedure referenced it three times and never fetched it, and it
+# carried no marker, so a copy from any earlier day could be run in its place
+# silently. Measured 2026-11-19: the sandbox carried the 2026-11-16 gate, which
+# failed a CORRECT board and, worse, demanded the 2026-11-15.1 capture script - the
+# build with NO SEC EDGAR leg, the one that cannot clear the mover-coverage floor.
+# The marker is what makes that failure impossible to repeat.
+CHECKER_VERSION = "2026-11-20.1"
+
 import argparse
 import datetime
 import json
@@ -69,6 +84,17 @@ DATE_RULE_EFFECTIVE = "2026-11-17"
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
 CAPTURE_VERSION = "2026-11-17.2"
+# THE REPO CONTEXT the gate reads its static sources from. The gate is not hermetic:
+# it checks the procedure, the capture script, the renderer AND the two cron prompts
+# the fleet deploys. A missing one is a PRECONDITION failure, not a check failure -
+# see main().
+REPO_CONTEXT = (
+    ("cloud-prompts", "_shared", "preopen-capture.md"),
+    ("cloud-prompts", "_shared", "preopen_capture.py"),
+    ("cloud-prompts", "_shared", "preopen_digest.py"),
+    ("cloud-prompts", "cron-prompts", "92a-preopen-catalyst-capture-0830.md"),
+    ("cloud-prompts", "cron-prompts", "92b-preopen-catalyst-capture-0950.md"),
+)
 # THE MOVER COVERAGE FLOOR - the share of the MOVERS THE BOARD PUBLISHES that must
 # carry a cause for the board to be doing its job.
 #
@@ -252,6 +278,21 @@ def check_procedure(path):
     check(re.search(rf"CAPTURE_SCRIPT_VERSION:\s*{re.escape(CAPTURE_VERSION)}", t) is not None,
           f"the procedure demands the {CAPTURE_VERSION} capture script (the one that "
           f"measures the MOVER coverage and publishes it)")
+    # 8b. THE PROCEDURE MUST FETCH THE GATE ITSELF (2026-11-20).
+    #
+    # The checker was the ONE run-time dependency in this routine that the procedure
+    # referenced but never fetched - and it carried no version marker, so a copy from
+    # any earlier day could be run in its place silently. Measured 2026-11-19: the
+    # sandbox carried the 2026-11-16 gate, whose `_fmt_et` has no `dates` branch, so
+    # it computed "00:00:00" for a date-only EDGAR stamp and failed a CORRECT board
+    # that printed "2026-11-18" - and because that gate also demanded the
+    # 2026-11-15.1 capture script, obeying it would have forced the pre-EDGAR capture
+    # (ZERO edgar references against the current build's 52) and turned a passing
+    # checkpoint into a degraded one. The procedure must demand the CURRENT gate, or
+    # this hole reopens the next time the sandbox's tools/ directory is re-seeded.
+    check(re.search(rf"CHECKER_VERSION:\s*{re.escape(CHECKER_VERSION)}", t) is not None,
+          f"the procedure demands the {CHECKER_VERSION} gate - a gate older than the "
+          f"date contract fails a CORRECT board")
     # THE CANDIDATE SOURCE. The tape used to be built from Yahoo's `top_movers`, which
     # is a screener over the LAST COMPLETED session - so before the open it named
     # YESTERDAY's movers. Measured 2026-11-10: the 08:30 tape carried 49 rows and
@@ -933,8 +974,24 @@ def check_digest(tape_path, digest_path, slot):
     # a DATE; a board that carries NO marker was written before that rule existed and is
     # checked against the LEGACY rule (every stamp as a clock time), so a pre-fix board
     # is not failed by a rule it was never written under.
-    has_date_contract = re.search(r"preopen-dates-v\d+", t) is not None
+    # THE MARKER MUST BE THE CURRENT CONTRACT, NOT "ANY VERSION OF IT".
+    #
+    # Measured 2026-11-20 by this file's own fault-injection case
+    # (`a board that drops the date contract marker is caught`): the check read
+    # `re.search(r"preopen-dates-v\d+", t)`, so a board carrying
+    # `preopen-dates-v0` - a contract this gate does NOT implement - was accepted as
+    # if it carried the current one, and was then checked against the current rule.
+    # A gate that accepts a contract it cannot implement is a gate that checks
+    # nothing. So the CURRENT contract is matched EXACTLY, and an UNKNOWN version is
+    # its own failure: the gate must refuse to check such a board, not wave it
+    # through under a rule it never wrote.
+    has_date_contract = DATE_CONTRACT in t
+    unknown_contract = sorted({m for m in re.findall(r"preopen-dates-v\d+", t)
+                               if m != DATE_CONTRACT})
     dates = has_date_contract
+    check(not unknown_contract,
+          f"the board carries no UNKNOWN date-contract marker - this gate implements "
+          f"{DATE_CONTRACT} only (got {unknown_contract})")
     for cells in body:
         if len(cells) < 5:
             continue
@@ -1173,6 +1230,41 @@ def main():
     a = ap.parse_args()
 
     repo = os.path.abspath(a.repo)
+    # ------------------------------------------------------------------
+    # THE REPO CONTEXT IS A PRECONDITION, NOT A CHECK (2026-11-20).
+    #
+    # Measured 2026-11-19: this gate was run WITHOUT --repo against a workspace that
+    # has no cloud-prompts/ tree. Each of the four static sections then hit its
+    # `bad(...); return` and skipped EVERY check it owns - so the gate ran 52 of its
+    # 151 checks and printed "FAILED 6 of 52 checks", which reads exactly like an
+    # ordinary failure report about the artifact. NINETY-NINE CHECKS OF COVERAGE
+    # VANISHED SILENTLY, and the five "missing file" lines looked like defects in
+    # the tape. A gate that can lose two thirds of its checks and still look like it
+    # ran is not a gate.
+    #
+    # So the context is now a PRECONDITION: if any of the five files is missing the
+    # gate REFUSES to run, names the exact paths, and exits 2. Exit 1 still means
+    # "the artifact failed"; exit 2 means "the gate could not be set up" - two
+    # different things, and a caller can tell them apart.
+    # ------------------------------------------------------------------
+    missing = [os.path.join(*parts) for parts in REPO_CONTEXT
+               if not os.path.isfile(os.path.join(repo, *parts))]
+    if missing:
+        print("PRECONDITION FAILED - the repo context is incomplete.")
+        print("This gate reads its static sources from the repo root; these are missing:")
+        for _m in missing:
+            print(f"  - {_m}")
+        print()
+        print("Fetch them from karizaco/maxhermes-migration@main, then re-run with --repo:")
+        print("  R=<dir>; mkdir -p \"$R/cloud-prompts/_shared\" \"$R/cloud-prompts/cron-prompts\"")
+        for _parts in REPO_CONTEXT:
+            _p = "/".join(_parts)
+            print("  curl -sL -H 'Accept: application/vnd.github.raw' \\")
+            print(f"    -H \"Authorization: Bearer $GITHUB_TOKEN\" -o \"$R/{_p}\" \\")
+            print(f"    \"https://api.github.com/repos/karizaco/maxhermes-migration/contents/{_p}?ref=main\"")
+        print()
+        print("A PARTIAL CHECK SET IS NOT A RESULT. The gate refuses to run one.")
+        return 2
     check_procedure(os.path.join(repo, "cloud-prompts", "_shared", "preopen-capture.md"))
     check_script(os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py"))
     check_digest_script(os.path.join(repo, "cloud-prompts", "_shared", "preopen_digest.py"))

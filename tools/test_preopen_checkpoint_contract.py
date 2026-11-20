@@ -60,11 +60,18 @@ def run_checker(repo, tape=None, digest=None, skipped=None, slot="0830"):
     return r.returncode, r.stdout
 
 
-def record(name, expect_pass, rc, out):
-    ok = (rc == 0) if expect_pass else (rc != 0)
+def record(name, expect_pass, rc, out, expect_rc=None):
+    # An EXPECTED EXIT CODE is stronger than "non-zero": the gate now distinguishes
+    # 1 (the artifact failed a check) from 2 (the gate could not be set up), and a
+    # case that must see 2 must not be satisfied by a 1.
+    if expect_rc is not None:
+        ok = (rc == expect_rc)
+    else:
+        ok = (rc == 0) if expect_pass else (rc != 0)
     RESULTS.append((name, ok, rc, out))
     tag = "PASS" if ok else "FAIL"
-    print(f"  {tag}  {name}  (checker exit {rc}, expected {'0' if expect_pass else 'non-zero'})")
+    want = expect_rc if expect_rc is not None else ("0" if expect_pass else "non-zero")
+    print(f"  {tag}  {name}  (checker exit {rc}, expected {want})")
     if not ok:
         for line in out.splitlines():
             if line.strip().startswith("FAIL"):
@@ -166,6 +173,30 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
     return tape, digest
 
 
+def build_date_only(tmp, date="2026-11-18", slot="0830"):
+    """A CONFORMING tape whose catalysts carry DATE-ONLY news_date values.
+
+    SEC EDGAR hands back a FILING DATE with no time on it, so a tape built from
+    EDGAR carries "2026-11-18" where a wire story carries a full timestamp. This
+    fixture is dated ON OR AFTER the date rule's effective date (2026-11-17), so it
+    is NOT grandfathered and the CURRENT rule applies to it - which is the whole
+    point of the `preopen-dates-v1` contract.
+    """
+    tape, digest = build_conforming(tmp, date=date, slot=slot)
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        r["ts"] = f"{date}T08:47:31-05:00"
+        if r.get("news_date"):
+            r["news_date"] = date          # DATE ONLY - no clock time
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    # Re-render from the tape, so the board and the tape always agree.
+    subprocess.run([sys.executable, DIGEST, "--tape", tape, "--out", digest,
+                    "--date", date, "--slot", slot], capture_output=True, text=True, check=True)
+    return tape, digest
+
+
 def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
     """A CONFORMING tape whose MOVER COVERAGE is BELOW the 30% floor.
 
@@ -203,6 +234,59 @@ def rewrite_rows(path, fn):
 
 # ---- the breach cases ---------------------------------------------------------
 # Each case returns True if the mutation was applied.
+
+
+def m_board_prints_date_only_as_midnight(tape, digest, repo):
+    """The board prints a DATE-ONLY catalyst as a bare clock time.
+
+    This is the defect the 2026-11-17.3 renderer exists to stop. EDGAR hands back a
+    FILING DATE with no time on it, and the old renderer formatted every stamp as a
+    clock time, so a filing dated 2026-11-16 printed "00:00:00" - a bare midnight
+    that reads like an intraday print and carries no date at all. Measured on the
+    2026-11-17 08:30 board: 6 of the 9 dated catalysts rendered "00:00:00", and on
+    three rows (FRTT, FGL, GLAS) there was NO date anywhere - so a reader could not
+    tell whether the news broke today or yesterday.
+
+    It is ALSO the defect that let a 2026-11-16 GATE fail a CORRECT 2026-11-19
+    board: that gate's `_fmt_et` had no `dates` branch, so it computed "00:00:00"
+    and demanded exactly this mutation. The case exists so the CURRENT gate is
+    observed to catch it - a check nobody has seen fail is a claim, not a guard.
+    """
+    if "| 2026-11-18 |" not in open(digest, encoding="utf-8").read():
+        raise AssertionError("the board carries no date-only cell to corrupt")
+    mutate(digest, "| 2026-11-18 |", "| 00:00:00 |", replace_all=True)
+    return True
+
+
+def m_board_drops_the_date_contract_marker(tape, digest, repo):
+    """A board published on or after the rule's effective date stops carrying the
+    date contract marker.
+
+    The marker is what tells the gate which rule the board was written under. A
+    board that silently loses it would fall back to the legacy rule and be checked
+    against a rule it never saw - so the gate must demand the marker by date.
+    """
+    if "preopen-dates-v1" not in open(digest, encoding="utf-8").read():
+        raise AssertionError("the board carries no date contract marker to drop")
+    mutate(digest, "preopen-dates-v1", "preopen-dates-v0")
+    return True
+
+
+def m_repo_context_incomplete(tape, digest, repo):
+    """The repo context the gate reads is missing one of its five files.
+
+    Measured 2026-11-19: run without a complete context, every static section hit
+    its `bad(...); return` and skipped EVERY check it owns - so the gate executed
+    52 of its 151 checks and still printed "FAILED 6 of 52 checks", which reads
+    exactly like an ordinary verdict on the artifact. Ninety-nine checks of coverage
+    vanished silently. The gate must REFUSE (exit 2) instead of running a partial
+    check set, and it must say which file is missing.
+    """
+    victim = os.path.join(repo, "cloud-prompts", "_shared", "preopen_capture.py")
+    if not os.path.isfile(victim):
+        raise AssertionError("the repo context has no capture script to remove")
+    os.remove(victim)
+    return True
 
 def m_double_ticker(tape, digest, repo):
     """Two runs of the same slot wrote 100 rows for 53 tickers (2026-11-09)."""
@@ -966,6 +1050,12 @@ CASES = [
     ("a capture script with no absolute pre-market share floor is caught", False,
      m_no_share_floor),
     ("a capture script with no slot guard is caught", False, m_slot_guard_removed),
+    ("a board that prints a DATE-ONLY catalyst as a bare clock time is caught", False,
+     m_board_prints_date_only_as_midnight, build_date_only),
+    ("a board that drops the date contract marker is caught", False,
+     m_board_drops_the_date_contract_marker, build_date_only),
+    ("an incomplete repo context makes the gate REFUSE (exit 2) instead of running a "
+     "partial check set", False, m_repo_context_incomplete, build_conforming, 2),
     ("a catalyst dated outside the window is caught", False, m_stale_news_date),
     ("an undated catalyst published as high confidence is caught", False, m_undated_confident),
     ("a row with no news_date field is caught", False, m_missing_news_date_key),
@@ -1055,6 +1145,7 @@ def main():
     for case in CASES:
         name, expect_pass, mutator = case[0], case[1], case[2]
         builder = case[3] if len(case) > 3 else build_conforming
+        expect_rc = case[4] if len(case) > 4 else None
         tmp = tempfile.mkdtemp(prefix="preopen-contract-")
         try:
             repo = make_repo(os.path.join(tmp, "repo"))
@@ -1063,7 +1154,7 @@ def main():
                 if not mutator(tape, digest, repo):
                     raise AssertionError(f"mutation not applied for {name}")
             rc, out = run_checker(repo, tape=tape, digest=digest, slot="0830")
-            record(name, expect_pass, rc, out)
+            record(name, expect_pass, rc, out, expect_rc)
         except Exception as exc:
             # A mutation that could not be APPLIED is not a checker verdict - it is a
             # broken test. Recording it as "caught" (rc=1 against an expected catch)

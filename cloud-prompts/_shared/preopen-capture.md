@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-17.3
+PROCEDURE_VERSION: 2026-11-20.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -152,7 +152,84 @@ whole-tape coverage as context, the top 15 movers by |%| with
 their catalyst, their `conf` token and when the news broke, and the halt state —
 `not measurable`, because the `halted` column is null on every row (never `0`).
 
-### 4. Push
+### 4. GATE the artifact — fetch the CHECKER, or you are running a stale one
+
+The gate is a run-time dependency exactly like the capture script and the renderer, so
+it is FETCHED like them — and it is the one that was forgotten.
+
+**Measured 2026-11-19:** this sandbox carried the **2026-11-16** gate. Run against a
+**correct** board it failed 6 of 52 checks: five were "the repo file is missing" and one
+was the date column — because that build's `_fmt_et` has no `dates` branch, so it
+computed `00:00:00` for a date-only EDGAR stamp and demanded the bare midnight that the
+2026-11-17.3 rule exists to remove. Worse, that gate also demanded the **2026-11-15.1
+capture script** — the build with **zero** SEC EDGAR references (against the current
+build's 52) — so *obeying* it would have forced a capture that cannot clear the
+mover-coverage floor and turned a passing checkpoint into a degraded one.
+
+**A gate older than the artifact it gates always finds a fault, and that fault will be a
+real rule the artifact obeys.** So the gate is fetched with a capability marker, and the
+marker is what makes a stale copy impossible to run.
+
+```bash
+K=/workspace/check_preopen_checkpoint.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_preopen_checkpoint.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_preopen_checkpoint.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_preopen_checkpoint.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$K.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$K.tmp" "$U" 2>/dev/null
+  fi
+  # The CAPABILITY MARKER, not a non-empty body: an older gate silently ignores the
+  # date contract and fails a CORRECT board.
+  if grep -q 'CHECKER_VERSION: 2026-11-20.1' "$K.tmp" 2>/dev/null; then
+    mv -f "$K.tmp" "$K"; break
+  fi
+  rm -f "$K.tmp"
+done
+[ -s "$K" ] || { echo "gate fetch FAILED — do not publish an ungated artifact"; exit 1; }
+
+# THE REPO CONTEXT. The gate is not hermetic: it reads the procedure, the capture
+# script, the renderer and the two cron prompts out of the repo root, so it can check
+# that what it is gating is what the fleet actually deploys. Check the BODY - a 404
+# page is a non-empty JSON blob, not a file.
+R=/workspace/_repo_ctx
+mkdir -p "$R/cloud-prompts/_shared" "$R/cloud-prompts/cron-prompts"
+for p in cloud-prompts/_shared/preopen-capture.md \
+         cloud-prompts/_shared/preopen_capture.py \
+         cloud-prompts/_shared/preopen_digest.py \
+         cloud-prompts/cron-prompts/92a-preopen-catalyst-capture-0830.md \
+         cloud-prompts/cron-prompts/92b-preopen-catalyst-capture-0950.md ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$R/$p" \
+      "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$p?ref=main" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$R/$p" \
+      "https://api.github.com/repos/karizaco/maxhermes-migration/contents/$p?ref=main" 2>/dev/null
+  fi
+done
+
+python3 "$K" --repo "$R" \
+   --tape /workspace/preopen-feed/${DATE}-${CP}.jsonl \
+   --digest /workspace/preopen-feed/${DATE}-${CP}.md --slot "$CP"
+```
+
+**The gate's exit code is a decision, not a note.**
+
+- `0` — every check passed. Push.
+- `1` — **the artifact** failed a check. Do **not** push it, and do **not** "fix" the
+  artifact to satisfy a check you believe is wrong: read the failure, and if the
+  checker is the thing that is wrong, fix the CHECKER in the repo (bumping its marker)
+  and re-run. A gate you argued with is not a gate.
+- `2` — **the gate could not be set up** (the repo context is incomplete). Fetch the
+  files it names and re-run. Never treat this as a pass: the gate refuses to run a
+  partial check set, because a run that silently executes 52 of its 151 checks looks
+  exactly like a clean one.
+
+### 5. Push
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared

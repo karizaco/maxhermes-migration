@@ -912,3 +912,104 @@ provider calls stubbed, and the **real** renderer:
 - Do NOT let the floor suppress the checkpoint, and do NOT count the degradation twice.
 - Do NOT widen the catalyst pool to make the number look better. That is a SPEND
   decision for the fleet, and it has not been taken.
+
+---
+
+# Improvements — cron #92 `preopen-catalyst-capture` (the gate that gates the gate)
+
+- **Date:** 2026-11-20 (found while verifying the 2026-11-19 08:30 ET checkpoint)
+- **Scope:** `tools/check_preopen_checkpoint.py`, `tools/test_preopen_checkpoint_contract.py`
+  and `cloud-prompts/_shared/preopen-capture.md`.
+- **Found by:** running the 2026-11-19 checkpoint against the checker that happened to be
+  sitting in the sandbox - which failed a board that was **correct**.
+
+## The finding
+
+**The checker was the one run-time dependency in this routine that the procedure
+referenced but never fetched - and it carried no capability marker.** Every other
+run-time dependency the fleet fetches carries one (`CAPTURE_SCRIPT_VERSION`,
+`PREOPEN_DIGEST_V2` / `PREOPEN_EDGAR_DATE_V1`, `PUSH_ARTIFACT_VERSION`,
+`WINDOW_CHECK_V2`), so a stale copy cannot win a fetch ladder. The checker had neither a
+ladder nor a marker: the procedure names `tools/check_preopen_checkpoint.py` three times
+(the staleness rule, the board's "When it broke", the date contract) and never says where
+to get it. So a copy from any earlier day could be run in its place SILENTLY.
+
+Measured 2026-11-19: the sandbox carried the **2026-11-16** build (53,415 B, blob
+`9feab37622f6`), seeded from a stale checkout on 11-16 and left in place for three days.
+It reported **6 of 52 checks failed** against a board that was **correct**. The six were
+two unrelated things under one label:
+
+| # | failure | what it actually was |
+|---|---|---|
+| 5 | "`<path>` is missing or empty" | the gate was run with no `--repo`, so each of the four static sections hit `bad(); return` |
+| 1 | "'When it broke' shows the capture clock" | the 2026-11-16 `_fmt_et(v)` has no `dates` branch |
+
+### 1. A MISSING INPUT MUST BE A PRECONDITION, NOT A CHECK
+
+Each static section did `bad(...); return`, so one absent repo file skipped **every check
+that section owns**: the gate ran **52 of its 151 checks** and still printed an ordinary
+failure report. **99 checks of coverage vanished and the report looked normal.** The five
+"missing file" lines read like defects in the tape. A gate that can lose two thirds of its
+checks and still look like it ran is not a gate.
+
+**Now:** the repo context is a precondition. A missing file means the gate **refuses**,
+names the exact five paths and the fetch commands, and exits **2**. Exit 1 still means
+"the artifact failed a check"; exit 2 means "the gate could not be set up". A partial
+check set is never run.
+
+### 2. THE STALE GATE WOULD HAVE FORCED A DOWNGRADE, NOT JUST A DATE FIX
+
+The 2026-11-16 build also demanded `CAPTURE_VERSION = "2026-11-15.1"`. That build (from
+`c76b7fd3`) has **zero** EDGAR references against the current build's 52, and no EDGAR leg
+in its pipeline at all - so *obeying* the stale gate meant staging the pre-EDGAR procedure
+AND capture, discarding the source of record that carried 8 of the 10 dated catalysts. The
+2026-11-16 checkpoints measured **2 of 15 (13%)** mover coverage on that build, against
+**8 of 15 (53%)** on 2026-11-19. Satisfying the stale gate would have turned a passing
+checkpoint into a **degraded** one *and* corrupted the date column.
+
+### 3. A GATE'S NEWEST RULE NEEDS FAULT INJECTION, OR IT IS A CLAIM
+
+The date-only rule (a date-only EDGAR stamp must print as a DATE) existed in the gate with
+**no** mutation case - while the **renderer** side already had one. Adding the case found a
+**live bug in the current upstream gate**: it matched `preopen-dates-v\d+`, so a board
+carrying `preopen-dates-v0` - a contract the gate does not implement - was accepted as if it
+carried the current one, and was then checked against the current rule. The current contract
+is now matched **exactly**, and an unknown version is its own failure.
+
+### The fix
+
+- `tools/check_preopen_checkpoint.py` - **`CHECKER_VERSION: 2026-11-20.1`**; the repo
+  context is a precondition (exit 2); the date contract is matched exactly and an unknown
+  version is its own failure; the procedure must demand this gate, so the hole cannot
+  reopen. **151 -> 179 checks.**
+- `tools/test_preopen_checkpoint_contract.py` - **+3 fault-injection cases** (a date-only
+  catalyst printed as a bare clock time; a board that drops the date contract marker; an
+  incomplete repo context asserting exit **2** rather than merely "non-zero"), plus a
+  `build_date_only` fixture dated on/after the rule's effective date so it is not
+  grandfathered. **58 -> 61 cases.**
+- `cloud-prompts/_shared/preopen-capture.md` - a new **step 4** that fetches the gate over
+  the house ladder demanding the marker, stages the five-file repo context, and runs the
+  gate **before** the push (now step 5); the gate's exit code is a decision (0 push / 1 the
+  artifact failed / 2 the gate could not be set up). `PROCEDURE_VERSION` bumped to
+  **2026-11-20.1** so a same-version stale CDN copy cannot win the ladder.
+
+### Verification
+
+- fault injection **61/61** - and the new "marker dropped" case was observed **failing**
+  against the pre-fix gate, which is how the live bug was found;
+- the gate against the real **2026-11-19** board: **179/179, exit 0**;
+- the gate against the real **2026-11-18** board (published before the rule, so
+  grandfathered): **179/179, exit 0**;
+- the gate with no repo context: **exit 2, refuses** and names the five paths.
+
+### Do-not list
+
+- Do NOT treat a missing input as a check. A gate that skips its own coverage when an
+  input is absent will report a normal-looking verdict over a fraction of its checks.
+- Do NOT accept a contract marker by prefix. `preopen-dates-v\d+` accepts a version the
+  gate does not implement, and then checks the board against a rule it never wrote.
+- Do NOT obey a gate older than the artifact it gates. It will find a fault, and that
+  fault will be a real rule the artifact obeys - fixing the artifact to satisfy it
+  corrupts the artifact.
+- Do NOT fetch a checker without a capability marker. A markerless checker is the one
+  dependency in the fleet that a stale copy can replace without anyone noticing.
