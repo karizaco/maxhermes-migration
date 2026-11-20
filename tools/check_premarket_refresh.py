@@ -28,6 +28,10 @@ import os
 import re
 import sys
 
+# v4 (2026-11-20) adds GQ-NONE-COUNT: the published "NONE is a finding: N of the M headline
+# names" must be the gap-quality table's own count and the table's own size. Measured on the
+# 2026-11-20 fire: the sentence read "17 of the 25 headline names" while the table carried 21
+# rows - a hardcoded denominator that a green gate passed.
 # v3 (2026-11-20) replaces the v2 row quotas with what the screen actually supplies: the
 # headline tables carry the TOP 15 / TOP 10 of the gate-passing set - a CAP, not a quota. On
 # the 2026-11-20 fire only 11 of the 181 band gainers cleared Gate A + Gate B, so the honest
@@ -42,7 +46,7 @@ import sys
 # LIVE-SESSION-CONSISTENT (the GATE WINS: an artifact may not call the session not live
 # beside `market_open_at_pull: true`) and GAP-DIRECTION (a gap-DOWN name that moved toward
 # zero narrowed its decline, it did not "extend its gap").
-CONTRACT_VERSION = "premarket-refresh-v3"
+CONTRACT_VERSION = "premarket-refresh-v4"
 
 # ---- the pinned front matter, in order (the spec's "The artifact skeleton — PINNED") ----
 REQUIRED_FM = ["date", "cron", "fire_time_et", "snapshot_et", "source", "status",
@@ -329,6 +333,16 @@ def main():
               "%s's invalidation carries no side: %r" % (r[0], r[9]))
         check(num(r[2]) is not None, "GQ-GAP", "%s has no gap %%" % r[0])
     check(len(set(gq_tickers)) == len(gq_tickers), "GQ-UNIQUE", "duplicate ticker in gap quality")
+    # The published "NONE is a finding" count must be the TABLE's count and the TABLE's size.
+    # Measured 2026-11-20: the sentence read "17 of the 25 headline names" while the gap-quality
+    # table carried 21 rows - the denominator was hardcoded, and a green gate passed it.
+    m_none = re.search(r"`NONE` is a finding: (\d+) of the (\d+) headline names", text)
+    gq_none = sum(1 for r in gq if len(r) > 7 and r[7].strip() == "NONE")
+    check(m_none is not None and int(m_none.group(1)) == gq_none
+          and int(m_none.group(2)) == len(gq),
+          "GQ-NONE-COUNT",
+          "the published NONE count does not match the gap-quality table (%d NONE of %d rows)"
+          % (gq_none, len(gq)))
 
     # ---------------- top of book ----------------
     g_rows, _ = table_rows(text, ["Ticker", "Pre-market", "%", "Mkt cap", "Snapshot"])

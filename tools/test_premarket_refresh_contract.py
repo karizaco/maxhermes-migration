@@ -199,6 +199,10 @@ def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-br
     L.append("")
     L.append("- **One pull.** %s ET. Both screens asserted `len(rows) == totalCount`." % snapshot)
     L.append("- **The companion CSV's `live_*` columns are empty by construction.**")
+    L.append("- **The Driver is read from the morning brief's OWN sourced catalysts**, per name - "
+             "`has_news = no` is `NONE`. `NONE` is a finding: %d of the %d headline names have no "
+             "sourced catalyst."
+             % (sum(1 for d in DRIVERS[:len(hg) + len(hd)] if d == "NONE"), len(hg) + len(hd)))
     return "\n".join(L) + "\n"
 
 
@@ -328,6 +332,10 @@ def main():
         ("GQ-ROWS", lambda t, c: (drop_line(t, GQ14), c)),
         ("TOP-CLEARING-COUNTS", lambda t, c: (md_mut(
             t, "**15 of the 19 band gainers", "**14 of the 19 band gainers"), c)),
+        # the published NONE count must be the gap-quality table's own count and size
+        ("GQ-NONE-COUNT", lambda t, c: (md_mut(
+            t, "`NONE` is a finding: 0 of the 25 headline names",
+            "`NONE` is a finding: 3 of the 25 headline names"), c)),
         ("THIN-COMPLETE", lambda t, c: (drop_line(t, THIN3), c)),
         ("SKELETON", lambda t, c: (md_mut(t, "### Tail - refreshed\n", ""), c)),
         ("TAIL-PRESENT", lambda t, c: (md_mut(

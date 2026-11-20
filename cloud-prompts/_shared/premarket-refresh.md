@@ -107,7 +107,7 @@ fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py br
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
 fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v6 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v7 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 
@@ -712,7 +712,7 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_refresh.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v3' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v4' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"

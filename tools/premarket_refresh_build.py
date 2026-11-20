@@ -88,6 +88,14 @@ import sys
 # idiom ("showing N of M"), for BOTH tables and on EVERY fire, so a short table can never read
 # as a full one. It SUPERSEDES v3, v4 and v5, which are still named here so a procedure copy
 # that asks for any of them still fetches a WORKING file rather than nothing.
+# Capability marker. v7 (2026-11-20) fixes two more prose defects measured on the same fire:
+# Source health published "17 of the 25 headline names have no sourced catalyst" while the
+# gap-quality table carried 21 rows - the denominator was hardcoded - and the Rule 1 / Rule 2
+# bullets told the reader to "apply it at 09:31" on a file published after the 09:30 open. The
+# denominator is now the table's own size, and the rules say what is true of the file that
+# carries them. It SUPERSEDES v3, v4, v5 and v6, which are still named here so a procedure
+# copy that asks for any of them still fetches a WORKING file rather than nothing.
+PREMARKET_REFRESH_BUILD_V7 = "premarket-refresh-build-v7"
 PREMARKET_REFRESH_BUILD_V6 = "premarket-refresh-build-v6"
 PREMARKET_REFRESH_BUILD_V5 = "premarket-refresh-build-v5"
 PREMARKET_REFRESH_BUILD_V4 = "premarket-refresh-build-v4"
@@ -780,14 +788,25 @@ def build(args):
              fmt(num(r["premarket_high"]), 4).rstrip("0").rstrip("."),
              trig, inv))
     A("")
-    A("- **Rule 1 - the open is the verdict on the gap.** An open BELOW the last pre-market print "
-      "means the gap is being sold, not bought. This refresh fires at 09:20, so it cannot apply "
-      "Rule 1 - it publishes the last pre-market print and the PM low so the reader can apply it "
-      "at 09:31.")
-    A("- **Rule 2 - the 30-minute candle is the breakout test.** If, thirty minutes after the "
-      "open, the session high is STILL the opening-range high, the gap is a fade, not a "
-      "breakout; the levels in this file are then exit levels, not entry levels. This is a 10:00 "
-      "check, not a 09:45 one.")
+    if market_open:
+        A("- **Rule 1 - the open is the verdict on the gap.** An open BELOW the last pre-market "
+          "print means the gap is being sold, not bought. **This file's pull landed at %s, after "
+          "the 09:30 ET open, so the open has already happened** - the live regular-session price "
+          "is published in the companion CSV's `live_close` column, and a live price below the "
+          "last pre-market print is Rule 1's verdict already rendered." % snap)
+        A("- **Rule 2 - the 30-minute candle is the breakout test.** If, thirty minutes after the "
+          "open, the session high is STILL the opening-range high, the gap is a fade, not a "
+          "breakout. **That 30-minute check has already printed** on this file - the levels in "
+          "it are exit levels, not entry levels.")
+    else:
+        A("- **Rule 1 - the open is the verdict on the gap.** An open BELOW the last pre-market print "
+          "means the gap is being sold, not bought. This refresh fires at 09:20, so it cannot apply "
+          "Rule 1 - it publishes the last pre-market print and the PM low so the reader can apply it "
+          "at 09:31.")
+        A("- **Rule 2 - the 30-minute candle is the breakout test.** If, thirty minutes after the "
+          "open, the session high is STILL the opening-range high, the gap is a fade, not a "
+          "breakout; the levels in this file are then exit levels, not entry levels. This is a 10:00 "
+          "check, not a 09:45 one.")
     A("")
     A("## 1. Refreshed top-of-book")
     A("")
@@ -1071,10 +1090,11 @@ def build(args):
           % ("rung-1" if rung == 1 else "rung-2"))
     none_ct = sum(1 for r in head_up + head_dn
                   if driver_for(r, drivers, morning)[0] == "NONE")
+    head_ct = len(head_up) + len(head_dn)
     A("- **The Driver is read from the morning brief's OWN sourced catalysts**, per name - "
       "`has_news = no` is `NONE`, and so is a name whose cluster carried the news but whose own "
-      "catalyst was not sourced. `NONE` is a finding: %d of the 25 headline names have no "
-      "sourced catalyst." % none_ct)
+      "catalyst was not sourced. `NONE` is a finding: %d of the %d headline names have no "
+      "sourced catalyst." % (none_ct, head_ct))
     A("- **The morning brief's CSV is a published-name subset, not the whole band.** It holds %d "
       "rows (%d of them in the +/-3%% band) against a band the brief counted at %s names, so "
       "band-level fade and entrant counts cannot be derived from it: a name absent from the CSV "
