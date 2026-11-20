@@ -260,16 +260,37 @@ read that section and follow it exactly. In short:
 before this cron fires, and the reader needs that distinction. A roster row inside the $50B floor
 by less than $0.5B carries `boundary_case` in its `Flag` cell.
 
-**Check the artifact against the contract BEFORE pushing.** The checker exits 1 and names every
+**Check the artifact against the contract BEFORE pushing.** The checker is fetched over the
+three-URL ladder (contents API, raw.githubusercontent, jsDelivr) and MUST carry the
+`EARNINGS_REMINDER_V4` marker — a copy without it is not a gate. The checker exits 1 and names every
 violation — a missing column, a roster that is not sorted by reaction score, a score that does not
 match its inputs, an empty `us_peer`, a name published in two tables, a band row that is not
 actually below the floor, a missing `boundary_case` flag:
 
 ```bash
 mkdir -p /workspace/tools
-curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_earnings_reminder_artifact.py \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_earnings_reminder_artifact.py"
-python3 /workspace/tools/check_earnings_reminder_artifact.py /workspace/earnings/{date}-reminders.md
+C=/workspace/tools/check_earnings_reminder_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_earnings_reminder_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_earnings_reminder_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_earnings_reminder_artifact.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'EARNINGS_REMINDER_V4' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'EARNINGS_REMINDER_V4' "$C" 2>/dev/null; then
+  echo "check_earnings_reminder_artifact.py: UNAVAILABLE (no copy carrying EARNINGS_REMINDER_V4) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
+python3 "$C" /workspace/earnings/{date}-reminders.md || { echo "CONTRACT CHECK FAILED - fix the artifact before pushing; publish NOTHING"; exit 1; }
 ```
 
 Do not push an artifact the checker rejects.

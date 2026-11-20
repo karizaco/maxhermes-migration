@@ -31,6 +31,9 @@ Usage:
 
 Exit codes: 0 = conforms, 1 = a check failed, 2 = the artifact could not be read.
 """
+
+# CHECKER_VERSION: reaction-checker-2026-11-20.1
+CHECKER_VERSION = "reaction-checker-2026-11-20.1"
 import argparse
 import datetime
 import os

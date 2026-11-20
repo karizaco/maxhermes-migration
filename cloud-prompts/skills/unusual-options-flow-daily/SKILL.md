@@ -389,23 +389,34 @@ ratio). The reply may show fewer ROWS than the artifact — it shows the leaders
 
 **The checker is not in the sandbox by default — fetch it first.** A checker that is only *called*
 is not on disk, and a checker nobody runs is decoration. It lives in the repo under `tools/`, so
-it is fetched at run time with the standard ladder:
+it is fetched at run time with the standard ladder, and the fetched copy is **demanded by its
+capability marker** `CHECKER_VERSION: options-flow-2026-11-20.1` — the CDNs cache `main` independently, so a
+copy without that marker is a stale gate that checks fewer rules. If no copy carries it, the
+run fails closed: the reply is not published.
 
 ```bash
-C=/workspace/check_options_flow_artifact.py
+mkdir -p /workspace/tools
+C=/workspace/tools/check_options_flow_artifact.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_options_flow_artifact.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_options_flow_artifact.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_options_flow_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
   if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
-     && head -1 "$C.tmp" 2>/dev/null | grep -q '^#!'; then
+     && grep -q 'CHECKER_VERSION: options-flow-2026-11-20.1' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
-[ -s "$C" ] || echo "check_options_flow_artifact.py fetch FAILED - the reply cannot be checked"
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: options-flow-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_options_flow_artifact.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: options-flow-2026-11-20.1) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 ```
 
 **Then write the reply you are about to send to a file and check THAT** — the reply is the thing
@@ -426,8 +437,9 @@ relative screen leading the artifact, and — since 2026-11-12 — **the column 
 that packs side + strike + date. A reply that has been checked and passes is worth more than a
 reply that merely looks right.
 
-If the checker cannot be fetched, say so in `### Push / errors` as one degraded source. Do not
-publish a reply that fails the contract without saying why.
+If the checker cannot be fetched, the fetch ladder above **exits 1** — the run fails closed and
+nothing is published. Say so in `### Push / errors` as one degraded source. Do not publish a
+reply that fails the contract without saying why.
 
 
 ### The front matter names the population of every ratio

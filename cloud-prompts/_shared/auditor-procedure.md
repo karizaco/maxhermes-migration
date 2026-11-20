@@ -689,12 +689,14 @@ rebuilt from `migration-state.json` (the original local cron list).
 #   auditor_roster_check.py     - the live-vs-ground-truth roster detector (STEP 4e)
 #   gen_roster.py               - the roster GENERATOR's ARTIFACTS map (STEP 4e-2)
 #   deploy_prompts.py           - the deploy harness's task map (STEP 4e-2)
-#   check_auditor_contract.py   - the gate on THIS run's own output (STEP 6b)
 #   auditor_metrics.py          - the MEASUREMENT engine (STEP 4z)
 # They are fetched at RUN time, so a fix to any of them lands on the next fire with no
 # redeploy and no prompt drift.
+#
+# The GATE (`check_auditor_contract.py`) is NOT one of those six: it is fetched
+# separately, under its own marker, below.
 for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.py \
-         check_auditor_contract.py gen_roster.py deploy_prompts.py auditor_metrics.py; do
+         gen_roster.py deploy_prompts.py auditor_metrics.py; do
   D=/workspace/$F
   for U in \
     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/$F?ref=main" \
@@ -709,6 +711,42 @@ for F in schedule-ground-truth.json auditor-contract.json auditor_roster_check.p
   done
   [ -s "$D" ] || echo "fetch FAILED: $F"
 done
+
+# --- fetch the GATE on this run's own output, under its capability marker ---
+# `check_auditor_contract.py` is the gate on THIS run's own output (STEP 6b), and it is
+# fetched SEPARATELY from the loop above on purpose: a bare download can hand back an
+# OLDER gate that checks fewer rules and reports a broken digest clean. The CDNs cache
+# `main` independently (measured 2026-11-04: raw.githubusercontent served a stale blob for
+# >17 minutes after a push while the contents API was fresh). So the gate is demanded by
+# its marker and a copy that does not carry it is REJECTED - the same rule every other
+# gate in this fleet is fetched under.
+C=/workspace/check_auditor_contract.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_auditor_contract.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_auditor_contract.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_auditor_contract.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'CHECKER_VERSION: auditor-contract-2026-11-20.1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: auditor-contract-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_auditor_contract.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: auditor-contract-2026-11-20.1)"
+  # THIS audit is the fleet's observer: a run that publishes nothing leaves the operator
+  # blind, and this procedure's own contract says to publish anyway and report errors: 1.
+  # So the gate is NOT run from a stale copy - the copy is REMOVED here, and STEP 6b
+  # skips the gate instead. The difference that matters: a stale gate reports a broken
+  # digest CLEAN, which is the failure this whole pass exists to stop.
+  rm -f "$C" "$C.tmp"
+  echo "contract-check: NOT RUN - publish the audit anyway and report errors: 1"
+fi
 
 # `auditor_metrics.py` IMPORTS `auditor_roster_check.py` - the cron semantics live in
 # ONE place, so "when does this schedule fire" cannot mean two different things in two
@@ -1177,7 +1215,9 @@ be reproduced.
 ## STEP 6b — RUN THE CONTRACT GATE (before you push)
 
 This audit's own output is checked by a gate that lives in the repo. Run it before the push: a
-digest that breaks the contract must never be published as if it were clean.
+digest that breaks the contract must never be published as if it were clean. The gate is fetched
+over the same ladder as the rest of the tool set, but by its own block (STEP 4c-0): only a copy
+carrying `CHECKER_VERSION: auditor-contract-2026-11-20.1` is accepted, and a stale gate is refused.
 
 **Write the EXACT text you are going to reply with to `/workspace/digest.txt` FIRST**, then gate
 that file — so the gate checks the very bytes that get published.
@@ -1189,7 +1229,14 @@ causes, the labels and the reply templates; the gate prints one `FAIL <id> <mess
 violation. Run it and fix what it names.
 
 ```bash
-python3 /workspace/check_auditor_contract.py \
+# A gate that is not the CURRENT build is not a gate: run it only if the copy on disk
+# carries this run's marker. A missing or stale gate is SKIPPED (never run from an
+# older copy) and reported as errors: 1 - see the policy below.
+if [ ! -s /workspace/check_auditor_contract.py ] \
+   || ! grep -q 'CHECKER_VERSION: auditor-contract-2026-11-20.1' /workspace/check_auditor_contract.py 2>/dev/null; then
+  echo "contract-check: NOT RUN (no current gate available) - publish the audit anyway and report errors: 1"
+else
+  python3 /workspace/check_auditor_contract.py \
         --status /workspace/_audit/status.json \
         --reply  /workspace/digest.txt \
         --tasks  /workspace/.audit-tasks.json \
@@ -1197,6 +1244,7 @@ python3 /workspace/check_auditor_contract.py \
         --contract /workspace/auditor-contract.json \
         --procedure /workspace/auditor-procedure.md \
         --metrics /workspace/_audit/metrics.json
+fi
 ```
 
 It exits 0 when the audit satisfies the contract, and 1 with one `FAIL <id> <message>` line per
@@ -1205,7 +1253,9 @@ violation.
 - **If it fails, FIX the status file and the digest and run it again** (at most twice).
 - **If it still fails, publish anyway** and report `errors: <the number of failures>` — the audit
   trail is worth more than a clean-looking run. Say which checks failed.
-- **If the gate itself could not be fetched or run**, publish anyway and report `errors: 1`.
+- **If the gate itself could not be fetched or run**, publish anyway and report `errors: 1`. The
+  gate is SKIPPED in that case — it is never run from an older copy, because a stale gate checks
+  fewer rules and reports a broken digest clean.
 
 The gate checks, among other things: that every gap carries a cause from the vocabulary and an age
 in hours; that a `skipped_by_design` routine is never `missing` and never a gap; that the digest's

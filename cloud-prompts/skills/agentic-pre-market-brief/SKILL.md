@@ -638,7 +638,32 @@ markdown took the earlier bulk screen, so AEHR read +18.5% in a table and +18.8%
 There is a linter for this. Run it and fix what it reports:
 
 ```bash
-python3 https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py \
+mkdir -p /workspace/tools
+C=/workspace/tools/check_brief_consistency.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_brief_consistency.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_brief_consistency.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  # Accept ONLY a copy that carries THIS checker's capability marker. The marker was
+  # named `2026-11-20.1` and is now `brief-consistency-2026-11-20.1`; accept either
+  # spelling so a ladder can never fail closed against the build that actually lands.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'CHECKER_VERSION: brief-consistency-2026-11-20.1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: brief-consistency-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_brief_consistency.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: brief-consistency-2026-11-20.1) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
+python3 "$C" \
   --md /workspace/daily-briefs/{date}-pre-market.md \
   --csv /workspace/daily-briefs/{date}-pre-market.csv
 ```
@@ -649,21 +674,48 @@ names is false** — a universal claim whose floor one name in the set is under,
 inside a band it falls outside of. A claim whose set the screen's own columns cannot resolve is
 printed as a `note:` and does not fail the run; name your set (a `sector` value, or a count that
 identifies one set) and it becomes checkable. **A non-zero exit means the artifact is not ready to
-push.** (Fetch it to a file first; `python3 <url>` does not work.)
+push.** (The checker is fetched to a file first and run from there — `python3 <url>` does not work —
+and the copy that runs must carry the checker's own `CHECKER_VERSION` marker — `brief-consistency-2026-11-20.1`,
+now spelled `brief-consistency-2026-11-20.1`; either spelling is accepted — so a STALE gate that
+checks fewer rules can never report the artifact clean.)
 
 **Then run the CONTRACT gate** — the one that asserts §C1–§C5 of this spec:
 
 ```bash
 mkdir -p /workspace/tools
-curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_premarket_brief.py \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py"
+C=/workspace/tools/check_premarket_brief.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_brief.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_brief.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  # Accept ONLY a copy that carries the CONTRACT gate's capability marker.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'premarket-brief-artifact-v2' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'premarket-brief-artifact-v2' "$C" 2>/dev/null; then
+  echo "check_premarket_brief.py: UNAVAILABLE (no copy carrying premarket-brief-artifact-v2) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 python3 /workspace/tools/check_premarket_brief.py \
   --md /workspace/daily-briefs/{date}-pre-market.md \
   --csv /workspace/daily-briefs/{date}-pre-market.csv
 ```
 
 **Both checkers must exit 0 before the push.** A non-zero exit from either means the artifact is
-not ready to push.
+not ready to push. Both gates are fetched at RUN time through the three-URL ladder (contents API,
+then raw, then jsDelivr) and a copy is accepted ONLY if it carries that checker's capability
+marker — the CDNs cache `main` independently, so a bare download can hand back an OLDER gate that
+checks fewer rules and reports the artifact clean that it never checked. If no copy carries the
+marker the run fails closed: no artifact is published.
 
 ### Step 10 — Audit + chat summary
 

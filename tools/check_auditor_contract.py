@@ -45,6 +45,9 @@ EXIT CODES
   1  at least one contract violation - every violation is printed
   2  usage / input error
 """
+
+# CHECKER_VERSION: auditor-contract-2026-11-20.1
+CHECKER_VERSION = "auditor-contract-2026-11-20.1"
 import argparse
 import json
 import os

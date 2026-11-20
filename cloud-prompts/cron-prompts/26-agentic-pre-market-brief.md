@@ -189,14 +189,61 @@ The skill ships TWO outputs and both are required:
                                                      the markdown.
 
 **Both outputs are gated before the push.** The skill spec's `## ARTIFACT FORMAT CONTRACT v2` is
-the contract; run BOTH checkers and do not push unless both exit 0:
+the contract; run BOTH checkers and do not push unless both exit 0. Both checkers are fetched at
+RUN time through the three-URL ladder (contents API, then raw, then jsDelivr) and each copy is
+accepted ONLY if it carries that checker's capability marker — the CDNs cache `main`
+independently, so a bare download can hand back an OLDER gate that checks fewer rules and reports
+an artifact clean that it never checked. If no copy carries the marker the run fails closed: no
+artifact is published.
 
 ```bash
 mkdir -p /workspace/tools
-curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_brief_consistency.py \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py"
-curl -sL --max-time 30 -A "Mozilla/5.0" -o /workspace/tools/check_premarket_brief.py \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py"
+C=/workspace/tools/check_brief_consistency.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_brief_consistency.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_brief_consistency.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_brief_consistency.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  # Accept ONLY a copy that carries THIS checker's capability marker. The marker was
+  # named `2026-11-20.1` and is now `brief-consistency-2026-11-20.1`; accept either
+  # spelling so a ladder can never fail closed against the build that actually lands.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'CHECKER_VERSION: brief-consistency-2026-11-20.1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: brief-consistency-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_brief_consistency.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: brief-consistency-2026-11-20.1) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
+C=/workspace/tools/check_premarket_brief.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_brief.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_brief.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_brief.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  # Accept ONLY a copy that carries the CONTRACT gate's capability marker.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'premarket-brief-artifact-v2' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'premarket-brief-artifact-v2' "$C" 2>/dev/null; then
+  echo "check_premarket_brief.py: UNAVAILABLE (no copy carrying premarket-brief-artifact-v2) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 python3 /workspace/tools/check_brief_consistency.py \
   --md /workspace/daily-briefs/{date}-pre-market.md --csv /workspace/daily-briefs/{date}-pre-market.csv
 python3 /workspace/tools/check_premarket_brief.py \

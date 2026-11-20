@@ -150,20 +150,31 @@ for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_reaction_artifact.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_reaction_artifact.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_reaction_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && grep -q 'REACTION_ARTIFACT_V2' "$C.tmp" 2>/dev/null; then
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'CHECKER_VERSION: reaction-checker-2026-11-20.1' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
-if [ -s "$C" ]; then
-  python3 "$C" /workspace/earnings/${DATE}-reactions-settled.md || echo "CONTRACT CHECK FAILED - fix the artifact before pushing"
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: reaction-checker-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_reaction_artifact.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: reaction-checker-2026-11-20.1) - do NOT publish an artifact that was not gated"
+  exit 1
 fi
+python3 "$C" /workspace/earnings/${DATE}-reactions-settled.md || { echo "CONTRACT CHECK FAILED - fix the artifact before pushing; publish NOTHING"; exit 1; }
 ```
 
-If the checker cannot be fetched, say so in `### Method & caveats` and carry on. If it RUNS and
-fails, fix the artifact and run it again. **Do not push an artifact the checker rejected.**
+**If the checker cannot be fetched, the run FAILS CLOSED — publish nothing.** The ladder demands
+`CHECKER_VERSION: reaction-checker-2026-11-20.1`, so a copy left over from an earlier day is
+REFUSED rather than run: an older checker checks fewer rules and would report an artifact clean
+that it never really checked (the cron #92 failure of 2026-11-20). If the gate cannot be set up,
+say so in `### Method & caveats` and push NOTHING. If it RUNS and fails, fix the artifact and run
+it again. **Do not push an artifact the checker rejected.**
 
 ## GIT PUSH
 

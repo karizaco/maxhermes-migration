@@ -1054,6 +1054,13 @@ done
 after the fleet has started reading `rel_volume` and `data_quality` is worse than
 publishing nothing: the consumer cannot tell which shape it is holding.
 
+**The GATE is fetched at run time too.** `tools/check_eod_artifact.py` lives in the repo,
+and the cron sandbox's cwd is **not** a repo checkout — so it is never run from
+`tools/check_eod_artifact.py`. It is downloaded over the same three-URL ladder and
+demanded by its capability marker `CHECKER_VERSION: eod-artifact-2026-11-20.1`: the CDNs cache `main`
+independently, so a copy without that marker is a stale gate that checks fewer rules. If no
+copy carries it, the run stops — it does not publish an ungated artifact.
+
 Then, in order:
 
 ```bash
@@ -1110,8 +1117,33 @@ python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<YYYY-MM-DD>.csv
     --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json> \
     --prior-csv <PRIOR-CSV>
 
-# 7. the assertions — the artifact is not finished until they pass
-python3 tools/check_eod_artifact.py --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md \
+# 7. the GATE - fetched at run time, demanded by its capability marker, then run.
+#    The cron sandbox's cwd is not a repo checkout, so tools/check_eod_artifact.py
+#    is NOT on disk: fetch it over the ladder and refuse any copy without the marker.
+mkdir -p /workspace/tools
+C=/workspace/tools/check_eod_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_eod_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_eod_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_eod_artifact.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'CHECKER_VERSION: eod-artifact-2026-11-20.1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: eod-artifact-2026-11-20.1' "$C" 2>/dev/null; then
+  echo "check_eod_artifact.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: eod-artifact-2026-11-20.1) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
+
+python3 "$C" --csv us-eod/<YYYY-MM-DD>.csv --md us-eod/<YYYY-MM-DD>.md \
     --prior-csv <PRIOR-CSV>
 ```
 

@@ -40,6 +40,9 @@ EXIT CODES
 """
 from __future__ import annotations
 
+# CHECKER_VERSION: brief-consistency-2026-11-20.1
+CHECKER_VERSION = "brief-consistency-2026-11-20.1"
+
 import argparse
 import csv
 import re

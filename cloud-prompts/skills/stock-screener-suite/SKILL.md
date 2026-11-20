@@ -610,18 +610,28 @@ session from the start of the window to that row).
 #### 3.5.9 VERIFY THE ARTIFACT BEFORE YOU REPORT IT
 
 ```bash
+mkdir -p /workspace/tools
 C=/workspace/tools/check_breadth_artifact.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_breadth_artifact.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_breadth_artifact.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_breadth_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_breadth_artifact.py'; then
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'breadth-artifact-v1' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
+if [ ! -s "$C" ] || ! grep -q 'breadth-artifact-v1' "$C" 2>/dev/null; then
+  echo "check_breadth_artifact.py: UNAVAILABLE (no copy carrying breadth-artifact-v1) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 python3 "$C" \
   --md     /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.md \
   --csv    /workspace/daily-screens/$FIRE_DATE/breadth-snapshot.csv \
@@ -1371,8 +1381,9 @@ than today rebuilds that past session from settled bars and flags it as a recons
 **The markdown the script writes is the ARTIFACT FORMAT CONTRACT's skeleton, with the
 mechanical parts already filled in and three markers for your discretionary review** — see
 the contract below. The sequence is: run the script → fill `## Promoted ideas` and
-`## Not promoted` and set the TL;DR's promoted count → run `tools/check_bonde_artifact.py`
-→ push. Do not restructure the file by hand; fill the slots the script left.
+`## Not promoted` and set the TL;DR's promoted count → run the gate
+(`check_bonde_artifact.py`, fetched at run time — see §7) → push. Do not restructure the
+file by hand; fill the slots the script left.
 
 **The Finviz fallback cannot serve this scan.** `finviz_reversal_bullish` encodes "today down +
 above SMA50 + liquid + large-cap" and none of Bonde's candle gates; it also returns no candle
@@ -1571,17 +1582,28 @@ and not the other.
 ##### 7. Verify the artifact before you report it
 
 ```bash
+mkdir -p /workspace/tools
 C=/workspace/tools/check_bonde_artifact.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_bonde_artifact.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_bonde_artifact.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_bonde_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
-  if [ -s "$C.tmp" ] && head -5 "$C.tmp" | grep -q 'check_bonde_artifact.py'; then
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'bonde-artifact-v4' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
+if [ ! -s "$C" ] || ! grep -q 'bonde-artifact-v4' "$C" 2>/dev/null; then
+  echo "check_bonde_artifact.py: UNAVAILABLE (no copy carrying bonde-artifact-v4) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 python3 "$C" \
   --md /workspace/daily-screens/{date}/reversal-bullish-3_55.md \
   --csv /workspace/daily-screens/{date}/reversal-bullish-3_55.csv
@@ -2674,9 +2696,40 @@ markdown. A hand-typed price is a defect, not a style choice.
    `master.csv`: **use the one whose `data_date` matches the resolved date**, and the
    artifact publishes that basis date — an intersection computed against an older session
    is a different claim, and it used to be silent about which session it used.
-8. Run the checker: `python3 tools/check_cron06_artifact.py --md-dir <dir> --json <json>
-   --state <state> --prior-backlog <ledger> --prior-state <prior state file>`
-   `--reply <the reply you are about to send>`. **A non-zero exit means the run FAILS** —
+8. Run the checker. **The gate is fetched at run time** — the cron sandbox's cwd is not a
+   repo checkout, so `tools/check_cron06_artifact.py` is NOT on disk and must be fetched
+   over the standard ladder and demanded by its capability marker `cron06-refresh-v2`:
+
+   ```bash
+   mkdir -p /workspace/tools
+   C=/workspace/tools/check_cron06_artifact.py
+   for U in \
+     "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_cron06_artifact.py?ref=main" \
+     "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_cron06_artifact.py" \
+     "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_cron06_artifact.py" ; do
+     if [ -n "${GITHUB_TOKEN:-}" ]; then
+       curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+         -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+     else
+       curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+     fi
+     if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+        && grep -q 'cron06-refresh-v2' "$C.tmp" 2>/dev/null; then
+       mv -f "$C.tmp" "$C"; break
+     fi
+     rm -f "$C.tmp"
+   done
+   if [ ! -s "$C" ] || ! grep -q 'cron06-refresh-v2' "$C" 2>/dev/null; then
+     echo "check_cron06_artifact.py: UNAVAILABLE (no copy carrying cron06-refresh-v2) - do NOT publish an artifact that was not gated"
+     exit 1
+   fi
+
+   python3 "$C" --md-dir <dir> --json <json> \
+     --state <state> --prior-backlog <ledger> --prior-state <prior state file> \
+     --reply <the reply you are about to send>
+   ```
+
+   **A non-zero exit means the run FAILS** —
    fix the artifact, do not publish it.
 9. Push the `daily-screens` tree AND the `pattern-study` ledger + state file, then verify
    each path with `verify_delivery.sh`.

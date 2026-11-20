@@ -124,6 +124,67 @@ it or the run silently degrades.
 
 ---
 
+## FETCHING A GATE (a checker) — THE MARKER IS THE GATE
+
+Every routine that publishes an artifact verifies it with a CHECKER. The checker is a run-time
+dependency, so it is fetched at run time — and **a fetch that does not demand a capability
+marker can hand back an OLDER checker that checks fewer rules and still exits 0 on an artifact it
+never really checked.** The CDNs cache `main` independently (measured 2026-11-04:
+`raw.githubusercontent` served a stale blob for >17 minutes after a push while the contents API was
+fresh). Cron #92 hit exactly this: a three-day-old gate reported a correct board as broken and
+would have demanded a build with no EDGAR leg at all.
+
+**Four rules. They are not decoration.**
+
+1. **All three mirrors, the contents API first.** It is authoritative and is not CDN-cached.
+2. **The acceptance test must demand the marker** — a string that literally occurs in
+   `tools/<checker>.py`. Grepping for the FILENAME is not a marker check: every copy contains its
+   own name, so a stale build walks straight in.
+3. **Fail closed.** If no copy carries the marker, publish nothing. An ungated artifact is not a
+   deliverable.
+4. **Never run a gate from a local relative path** (`python3 tools/check_x.py` — the cron
+   sandbox's cwd is not a repo checkout) and never straight from a URL
+   (`python3 https://…`).
+
+```bash
+C=/workspace/tools/CHECKER_NAME.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/CHECKER_NAME.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/CHECKER_NAME.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/CHECKER_NAME.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'MARKER_STRING' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'MARKER_STRING' "$C" 2>/dev/null; then
+  echo "CHECKER_NAME.py: UNAVAILABLE (no copy carrying MARKER_STRING)"
+  echo "no artifact; no push"
+  exit 1
+fi
+python3 "$C" --md "$MD_PATH" --csv "$CSV_PATH"   # the same arguments the checker took before
+```
+
+**The marker must identify the CHECKER, not the artifact.** An artifact-contract marker (e.g.
+`REACTION_ARTIFACT_V2`) does not tell two checker builds apart — the checker can gain rules while
+the artifact format stays the same, which is exactly how a stale gate passes a ladder.
+
+**The fleet gate for this rule is `tools/audit_checker_ladders.py`** (it fails on a missing
+ladder, a missing marker, a filename-grep, a gate that does not fail closed, a gate run from a
+local path or from a URL, and a checker no procedure fetches). Its fault-injection suite is
+`tools/test_checker_ladder.py`. If you add a gate, add it to that audit's world: a checker that
+no procedure fetches runs from nowhere, and that is how cron #07 published an unguarded artifact
+for a week.
+
+---
+
 ## CONVERSATION TITLE (do this FIRST, before anything else)
 
 Every scheduled run gets its own conversation — one conversation per fire, never appended to an

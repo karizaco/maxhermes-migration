@@ -32,6 +32,9 @@ printed on its own line.
 
 from __future__ import annotations
 
+# CHECKER_VERSION: eod-artifact-2026-11-20.1
+CHECKER_VERSION = "eod-artifact-2026-11-20.1"
+
 import argparse
 import csv
 import math

@@ -290,20 +290,34 @@ you spot it.
 assertions, not a reading exercise: the 2026-11-04 artifact looked fine and would have
 failed several of them.
 
+The gate is **fetched at run time** and is demanded by its capability marker
+`cross-asset-v4`: the CDNs cache `main` independently, so a copy without that marker is a
+stale gate that checks fewer rules. If no copy carries it, the run stops — it does not
+publish an ungated artifact.
+
 ```bash
+mkdir -p /workspace/tools
 C=/workspace/tools/check_cross_asset_artifact.py
 for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_cross_asset_artifact.py?ref=main" \
-  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_cross_asset_artifact.py" \
-  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_cross_asset_artifact.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
-  if head -1 "$C.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'check_cross_asset_artifact' "$C.tmp" 2>/dev/null; then
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_cross_asset_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_cross_asset_artifact.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'cross-asset-v4' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
-[ -s "$C" ] || { echo "checker unavailable — do not publish an unchecked artifact"; exit 1; }
+if [ ! -s "$C" ] || ! grep -q 'cross-asset-v4' "$C" 2>/dev/null; then
+  echo "check_cross_asset_artifact.py: UNAVAILABLE (no copy carrying cross-asset-v4) - do NOT publish an artifact that was not gated"
+  exit 1
+fi
 
 python3 "$C" \
   --md  /workspace/cross-asset/{date}.md \

@@ -41,6 +41,9 @@ predates it is REPORTED, not failed - a contract change must not retroactively f
 that was legal when it was written.
 """
 
+# CHECKER_VERSION: options-flow-2026-11-20.1
+CHECKER_VERSION = "options-flow-2026-11-20.1"
+
 import argparse
 import os
 import re

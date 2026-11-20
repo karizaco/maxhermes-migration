@@ -710,13 +710,28 @@ for U in \
   "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_premarket_refresh.py?ref=main" \
   "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_premarket_refresh.py" \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_refresh.py" ; do
-  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
-    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v4' "$S.tmp" 2>/dev/null; then
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  fi
+  # The marker is mandatory: an OLDER copy of this checker checks fewer rules and would
+  # report the artifact clean on rules it never ran. The CDNs cache `main` independently,
+  # so one of them CAN serve stale bytes - the contents API is not CDN-cached, so it is
+  # tried FIRST. (Marker v4 - the checker gained the table's-own-counts and the
+  # thin-tape-cap clauses on 2026-11-20.)
+  if [ -s "$S.tmp" ] && ! head -c 200 "$S.tmp" | grep -q '"message"' \
+     && grep -q 'premarket-refresh-v4' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
 done
+if [ ! -s "$S" ] || ! grep -q 'premarket-refresh-v4' "$S" 2>/dev/null; then
+  echo "check_premarket_refresh.py: UNAVAILABLE (no copy carrying premarket-refresh-v4)"
+  echo "no artifact; no push"
+  exit 1
+fi
 python3 "$S" --md daily-briefs/{date}-pre-market-refresh.md \
   --csv daily-briefs/{date}-pre-market-refresh.csv \
   --morning-csv daily-briefs/{date}-pre-market.csv
