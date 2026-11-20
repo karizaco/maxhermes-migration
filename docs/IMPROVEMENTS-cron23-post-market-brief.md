@@ -795,3 +795,169 @@ sentence was wrong; the paragraph was rewritten, and it now states the general f
 the ten rows traded through its 16:00 close inside the after-hours range, so all ten gap fill
 levels are the prior close and the midpoint branch never fired.** A machine gate cannot catch a
 sentence that misdescribes its own table; that one is on the writer.
+
+## 9.0 The 2026-11-19 fire — a FRESH futures quote that still misdescribed the overnight, and an ETF's after-hours book that never marked the move
+
+Thursday 19 November 2026 was the sixth-straight-down day for the S&P 500: **-2.02% to 7,175.83**,
+the Dow **-1,101.11** to 49,097.06, the VIX **+15.80% to 28.44**. Anthropic's Nasdaq debut at midday
+turned the tape; Hunterbrook's short report on AMD and a hawkish Fed repricing compounded it. The
+participation read was broad — **816 advancers against 3,861 decliners**, median name **-1.54%** —
+and the cap-weight penalty was **-20bp**, i.e. the equal-weight index *outperformed*.
+
+### 9.1 A futures quote can be FRESH and still misdescribe the overnight — it is measured against the PRIOR SETTLEMENT
+
+§4.2 and §6.2 both handle the *stale* futures quote: the row still reads the 16:59:59 settlement
+hours after the close, so it is not the overnight. This fire is the **complement** of that trap, and
+it is harder to see, because the guard the spec already asks for — read `as_of`, reject anything more
+than ~30 minutes older than the fire — **passed**. Every futures row carried `as_of` 22:21 ET, nine
+minutes before the 22:30 fire, `market_state: open`. It was a genuine live Globex print on a Thursday
+night, and no amount of `as_of` checking would have caught the problem.
+
+The problem is the **denominator**. The bridge reports a futures `change_pct` against the contract's
+quoted **prior settlement**, and that is not the number a reader needs in order to know whether the
+overnight extended the selloff:
+
+| instrument | last | quoted prior settle | change vs settle | cash close | **vs cash close** |
+|---|---|---|---|---|---|
+| ES=F | 7,178.75 | 7,197.25 | **-0.26%** | 7,175.83 (^GSPC) | **+0.04%** |
+| NQ=F | 26,460.25 | 26,600.25 | -0.53% | 26,517.05 (^NDX) | -0.21% |
+| YM=F | 49,152 | 49,180 | -0.06% | 49,097.06 (^DJI) | +0.11% |
+| RTY=F | 2,656.20 | 2,663.30 | -0.27% | 2,655.11 (^RUT) | +0.04% |
+
+Read against its own settlement the ES future looks like *another small down-day* and the natural
+sentence is "futures are lower again". Read against the **cash close** the overnight is **flat**: ES
+at 7,178.75 against a cash close of 7,175.83. The Globex range makes the same point from the other
+side — 7,160.75 low to 7,199.25 high, i.e. the session faded about 0.5% off the settle and then
+recovered most of it. The published artifact therefore carries **both** denominators in the futures
+table, and the setup reads as "flat to the cash close".
+
+**The rule:** a futures `change_pct` is a statement about the futures, not about the overnight. To
+answer the question the brief actually asks — *did the overnight extend the session's move?* — the
+futures level must be compared with the **cash index close**, and the futures' own
+`change_pct`/`previous_close` must be published alongside it. **A fresh `as_of` is necessary and not
+sufficient.** (Worth noting for the same fire: a third denominator circulated in the press — one
+live blog had "S&P 500 futures down 2.28%" — which is a different comparison against a different
+base and cannot be reconciled with the bridge's two. Publishing the two bridge denominators with
+their inputs makes the artifact self-contained instead of dependent on a vendor's base.)
+
+### 9.2 The gold ETF's after-hours print did not mark the underlying's overnight move — and both were published
+
+GLD closed **-1.76%**, which matches the Thursday session in the metals (Reuters: spot gold -1.3%
+at 14:05 ET, December futures settling **1.5% lower at 3,685.50**). Overnight, the December future
+went to **3,525.70, -4.34%** against that 3,685.50 settlement (Reuters: spot 3,551.68 at 0257 GMT,
+"the lowest since September 2025"; about -8.9% on the week). But GLD's own extended-hours print at
+22:35 ET was **329.48, -1.70%** — a quote that does **not** mark a 4.3% move in the underlying.
+
+This is not a broken source; it is a **thin ETF after-hours book repricing lazily while the futures
+traded continuously**. The handling that was published, and the rule for the next fire:
+
+- publish **both** numbers, each with its own instrument, source and timestamp — never blend them
+  into one "gold is down X%" figure;
+- treat the **futures** as the overnight signal and the **ETF** as the session leg, and say which is
+  which;
+- do not call either one wrong. The identity check does not apply to an ETF's extended-hours quote,
+  and "the ETF disagrees with spot" is a statement about the ETF's market, not about the data.
+
+### 9.3 The Asia leg of the overnight is part of "Tomorrow's setup" — and a live Asia number must be stamped
+
+The overnight had two legs and they disagreed. The US futures were flat to the cash close (9.1);
+the **cash** markets in Asia were being sold hard — the Nikkei 225 **-4.49%** live (bridge, stamped
+21:35 ET) after Japan's core inflation printed **2.2%**, the highest this year, raising December
+rate-hike expectations; the Kospi about **-4.3%**; the Hang Seng **-1.79%** and the Shanghai
+Composite **-1.54%** live. A setup section that carries only the US futures leg describes half of
+the overnight, and the half that happens to look calmer.
+
+Two traps inside that:
+
+1. **A live Asia number must be stamped.** The *same* session reads -1.46% in one live blog
+   snapshot and -4.49% two hours later. Publishing a live Asian index without its `as_of` turns a
+   moving number into a fixed claim.
+2. **The Kospi level was not read.** The bridge does not carry the Korean index, so the published
+   cell is `n/a` with the change attributed to CNBC's live blog — the field was unavailable, so it
+   says so rather than inventing a level.
+
+### 9.4 The earnings-calendar vendors disagree on the COUNT, and the roster must be the intersection
+
+For Friday 20 November the counts were **Yahoo 14 (and 34 on its wider page), EarningsWhispers 12,
+Market Chameleon 8, Nexqual 9**. They also disagree on names. The published roster is the
+**intersection of two or more sources**, and the disagreement is disclosed in `## Source health`
+rather than resolved by silently preferring one vendor.
+
+Two entries carried weight beyond the numbers: **Bending Spoons** reports Friday morning as the
+**buyer of Intuit's Mailchimp**, so its own print lands in the same session that opens on Intuit's
+guidance cut; and **WeRide** fell 11.04% on Thursday and reports before the open, so it arrives
+pre-sold — no sourced catalyst for the Thursday decline was found, so the move is published without
+an explanation.
+
+And the §7.4 blocked-token rule cost a subject twice on this fire, for the same mechanical reason:
+**BJ** (BJ's Wholesale Club, reporting before the open) and **GAP** (Gap Inc., which reported after
+Thursday's close and cut its full-year profit forecast to $2.29-2.34) are both on the checker's
+`NON_TICKERS` blocklist, so neither can be a "Tomorrow's three things to watch" subject. The three
+published were **INTU, AMD and INSM**.
+
+### 9.5 The participation read and the sector column, for the next run's baseline
+
+From `us-eod/2026-11-19.csv` (4,884 rows, 4,845 priced, 4,736 carrying a market cap), liquid set
+`market_cap` above $2B (1,769 names):
+
+| Metric | 2026-11-19 | 2026-11-16 | 2026-11-18 |
+|---|---|---|---|
+| advancers | 816 | 1,086 | — |
+| decliners | 3,861 | 3,594 | — |
+| unchanged | 168 | 164 | — |
+| median_name_move_pct | -1.54% | -1.17% | — |
+| liquid_adv_dec_ratio | 0.13 (197 : 1,552) | 0.37 | — |
+| cap_weight_penalty_bp | -20 | -90 | -15 |
+
+The cap-weight penalty's five-session window: 11-13 **-56**, 11-16 **-90**, 11-17 **+43**, 11-18
+**-15**, 11-19 **-20**. It has flipped sign three times in five sessions, so the cap-weighted and
+equal-weight tapes have been trading inside a band all month rather than diverging — on a day the
+market fell 2%, a -20bp penalty means the selloff was **not** a mega-cap story.
+
+The cap-weighted sector column (de-duplicated on `cap_source_symbol`, `CAP_CARRIED` carrier rows
+dropped, `EX_DISTRIBUTION` / `NO_CAP` / `NO_SECTOR` excluded — 18 `NO_SECTOR` rows left out, every
+cap-weighted return asserted inside ±20%) ran **Energy -0.74%** to **Consumer Discretionary -3.07%**,
+with the median column from Utilities -1.19% to Consumer Discretionary -3.50%. **Every sector's gap
+to its own ETF was under 0.5pp** (the widest, Industrials, was 0.37pp), so no sector row was
+carrying a single-name concentration effect and none of them is a rotation rather than a decline.
+The 0.33pp spread between the best and worst sector, against a 2.02% index move, is the signature of
+a de-risking tape: nothing worked.
+
+### 9.6 The guards that held on this fire
+
+- **Cron #20's file WAS on the outputs repo** (`us-eod/2026-11-19.csv`, HTTP 200, 4,884 rows), so
+  §8's scanner-universe fallback did not run and the participation counts **are** comparable with
+  the prior session's published breadth. The fallback stays in the spec; it was simply not needed.
+- **All ten after-hours rows passed both after-hours checks** — the identity
+  (`postmarket_change == (postmarket_close - close) / close × 100`) and the **venue** check. Every
+  prior close was confirmed against the primary listing through the bridge: no `OTC:` row, no
+  suspiciously round prior close, no single-print row. All ten traded through their 16:00 close
+  inside the after-hours range, so **all ten gap fill levels are the prior close** — the midpoint
+  branch has now not fired on three consecutive fires.
+- **The volatility indices were dated twice** and agreed to the cent with CBOE's own dated close
+  files: VIX **28.44** (+15.80%, intraday high 29.13) and VXN **36.48** (+10.14%) for 11/19/2026.
+- **The put/call payload carried the session date**: `selectedDate` **2026-11-19** and
+  `prevTradingDay` **2026-11-19**, both equal to the fire date, with total **1.01**, index 1.20,
+  equity 0.62, ETP 1.09 — all from ONE payload and reconciling with the total (§7.3's rule held).
+- **The $1B after-hours floor hid the session's real leaders again** (§4.3, §7.6, §8.3): the
+  no-floor pull surfaced **MEDS +55.28%**, WAST +34.37% (over-the-counter, excluded), **VIVS
+  +21.10%**, CIGL +20.49%, CALC +17.95% on the upside and **ONFO -16.80%**, CODX -16.20%, INLF
+  -14.45%, GRSD -13.52% on the downside. Published in `## Source health` so the table is never read
+  as the tape.
+- **The after-hours tape moved between vendors** and the rule held: INTU **-9.77%** (TradingView,
+  ~22:35 ET) against -9.79% (18:30 ET), -11% and -13% on two evening snapshots; ROST **-5.16%**
+  against -5.6% and -8.6% to -9% earlier. The scanner is the source of record; the others are
+  named, not blended.
+- **The MCP availability probe** printed `catalog_ok total=135 finance_tools=0`, and the bridge
+  answered every call. No `mcp__*` finance tool was called.
+
+### 9.7 One thing the checker could not see
+
+The contract checker passed the artifact and the reply on the first run. It could not see the
+**denominator** problem in 9.1 either: the futures table published both the settle-based and the
+cash-close-based figures correctly, and the checker has no clause about which one the prose
+interprets. The sentence "futures are lower again" would have passed every gate in the fleet and
+would have inverted the setup. The same is true of 9.2: the gold ETF's -1.70% and the futures'
+-4.34% are both internally consistent, both passable, and only a human comparing them against the
+underlying catches that they disagree. **The gates cover the shape; the reasoning is still the
+writer's.**

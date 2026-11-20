@@ -194,6 +194,32 @@ four.
      as such, say explicitly that the post-18:00 ET Globex/Asia move is not in the data, and count
      it in `degraded_sources:`. A stale settlement presented as the overnight setup is a
      fabricated setup, not a caveat.
+   - **A FRESH futures quote can still misdescribe the overnight — it is measured against the PRIOR
+     SETTLEMENT, not against the cash close.** Measured 2026-11-19 (every row `as_of` 22:21 ET, nine
+     minutes before the fire, so the timestamp guard above PASSED): ES=F read 7,178.75 against a
+     quoted prior settlement of 7,197.25 — **-0.26%**, which reads as "another small down-day" —
+     while the cash close of 7,175.83 made the overnight **+0.04%, i.e. flat**. The Globex range
+     (7,160.75 low, 7,199.25 high) showed the session fading 0.5% and recovering most of it.
+     **Publish the futures change against the prior settle AND against the cash index close, and
+     judge the overnight on the cash-close comparison** — that is the only number that answers
+     "did the overnight extend the session's move?". A fresh `as_of` is necessary and not
+     sufficient; a third denominator may be circulating in the press against a different base, so
+     publish your own inputs rather than adopting a vendor's.
+   - **The overnight has TWO legs — publish the Asia cash leg too, and stamp it.** Measured
+     2026-11-19: the US futures were flat to the cash close while the Nikkei 225 was **-4.49%** live
+     (Japan core inflation 2.2%, the highest this year, lifting December hike odds) and the Kospi
+     about -4.3%. A setup section carrying only the futures leg describes half the overnight — and
+     the half that looks calmer. **A live Asian index must carry its `as_of`**: the same session
+     read -1.46% in one live-blog snapshot and -4.49% two hours later, so an unstamped live number
+     turns a moving print into a fixed claim. Where the bridge does not carry an index (the Kospi),
+     publish the level as `n/a` and attribute the change to the source you did read.
+   - **An ETF's after-hours print can fail to mark the underlying's move — publish both, never
+     blend them.** Measured 2026-11-19: GLD closed -1.76% (matching the session) but its
+     extended-hours print at 22:35 ET was only -1.70% while the December gold future was **-4.34%**
+     against the 3,685.50 settlement Reuters confirms — a thin ETF after-hours book repricing lazily
+     while the futures traded continuously. Publish each number with its own instrument, source and
+     timestamp; treat the **futures** as the overnight signal and the ETF as the session leg; and
+     do not call either one wrong.
    - **On a Friday fire there is NO overnight print to find — and the futures scanner will still
      offer you one.** CME equity-index futures trade Sunday 18:00 ET to Friday 17:00 ET and are
      then closed for the weekend. Measured 2026-11-13 (a Friday fire): the bridge and Yahoo both
@@ -207,7 +233,10 @@ four.
      Count the futures source in `degraded_sources:` either way — on a Friday it is always
      degraded, because the overnight move genuinely does not exist yet.
    - Tomorrow's earnings: `web_search` `earnings calendar tomorrow <day>` against the watchlist
-     and the top movers.
+     and the top movers. **The calendar vendors disagree on the COUNT and on the names** — measured
+     2026-11-19 for Friday 20 November: Yahoo 14, EarningsWhispers 12, Market Chameleon 8, Nexqual
+     9. **Publish the roster as the intersection of two or more sources and disclose the
+     disagreement** in `## Source health` rather than silently preferring one vendor.
    - Tomorrow's economic releases: `web_search` `economic calendar <tomorrow-iso-date>` (payrolls,
      CPI, PPI, jobless claims, Fed speakers, Treasury auctions).
    - News to watch for the top movers: `web_search` `<TICKER> news <date>` for the top 3 by day's
