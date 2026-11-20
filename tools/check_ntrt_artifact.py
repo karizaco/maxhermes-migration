@@ -2,18 +2,18 @@
 """
 check_ntrt_artifact.py — the machine gate for cron #25's NTRT gap brief.
 
-MARKER: NTRT_CONTRACT_CHECK_V2
+MARKER: NTRT_CONTRACT_CHECK_V4
 
 The ARTIFACT FORMAT CONTRACT in `cloud-prompts/skills/ntrt-gap-brief/SKILL.md`
 used to be prose, and prose is what four briefs read three different ways.
 This script turns the contract into a GATE: it reads the published markdown and
-its CSV companion and asserts the sixteen rules the contract states. A run
+its CSV companion and asserts the eighteen rules the contract states. A run
 that breaks the contract FAILS here instead of shipping.
 
 It is deliberately a SEPARATE implementation of the contract — the routine
 renders the artifact, this verifies it, and neither imports the other.
 
-THE SIXTEEN CHECKS
+THE EIGHTEEN CHECKS
 
    1 SECTIONS       the section skeleton is present, in order, none missing,
                     with the title line and the mode banner
@@ -44,6 +44,10 @@ THE SIXTEEN CHECKS
   16 ALSO_CLEARED  every gate-passing name that is not in the actionable table
                     is listed under `Also cleared the gate` — a cap may
                     shorten the table, never silently drop a name
+  17 YESTERDAY     yesterday's Tier-A board was looked up and every status is
+                    one of the three words
+  18 PULL_CLOCK    the mode banner STATES the published pull's clock, that clock
+                    is a PRE-market minute, and no delta pull precedes it
 
 USAGE
     python3 tools/check_ntrt_artifact.py --md ntrt/2026-11-05.md \
@@ -59,8 +63,8 @@ import os
 import re
 import sys
 
-CONTRACT_VERSION = "ntrt-artifact-v5"
-CONTRACT_CHECKS = 17
+CONTRACT_VERSION = "ntrt-artifact-v6"
+CONTRACT_CHECKS = 18
 
 # The capability marker the run-time fetch demands. An OLDER copy of this script
 # is still published on the mirrors, and it checks fewer rules - so a fetch that
@@ -69,7 +73,11 @@ CONTRACT_CHECKS = 17
 # v3 = the v5 contract: a FOURTH gate leg (the absolute pre-market share floor)
 # and a SESSION-NORMALISED ADV denominator. A v2 checker would clear an artifact
 # that breaks either of them, so the marker must move with the contract.
-MARKER = "NTRT_CONTRACT_CHECK_V3"
+# v4 = the v6 contract: the pull clock is NO LONGER a schedule (§7) and the
+# banner must state the minute the published pull actually ran - which is the
+# only way a reader can judge how live the numbers are. A v3 checker cannot
+# see a missing, a post-open or an incoherent pull clock, so the marker moves.
+MARKER = "NTRT_CONTRACT_CHECK_V4"
 
 # ---- the published constants (they live in the skill spec; keep them in sync) ----
 GATE_GAP_PCT = 3.0        # |gap| >= 3%
@@ -1070,6 +1078,62 @@ def check_also_cleared(tables, idx, act_names, wide_names, lines, subsections, s
            f"({len(names)} listed, {len(expected)} expected)")
 
 
+# ------------------------------------------------------------------ pull clock
+# The pull clock is NOT a schedule any more (§7): the run takes the published
+# pull when its work is done and publishes THAT minute. Two things follow, and
+# both are machine-checkable:
+#
+#   - the mode banner must STATE the published pull's clock, because a reader
+#     cannot judge how live the numbers are without it, and
+#   - that clock must be a PRE-market minute: the artifact's numbers have to be
+#     a pre-market pull, not an open-or-later print.
+#
+# The delta pull (§12) is flags-only and may be taken at any point after the
+# published pull - but a delta pull EARLIER than the published pull is
+# incoherent (the delta pull is the LAST pull), and that is checked too.
+CLOCK_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\s*ET\b")
+OPEN_MIN = 9 * 60 + 30          # 09:30 ET - the bell
+
+
+def _clocks(text, window=40):
+    """Every `HH:MM ET` in the text, tagged with whether it reads as a DELTA pull."""
+    out = []
+    for m in CLOCK_RE.finditer(text):
+        h, mi = int(m.group(1)), int(m.group(2))
+        pre = text[max(0, m.start() - window):m.start()].lower()
+        out.append({"h": h, "m": mi, "min": h * 60 + mi,
+                    "delta": "delta" in pre, "text": m.group(0)})
+    return out
+
+
+def check_pull_clock(lines):
+    problems = []
+    banner = "\n".join(lines[:8])
+    body = "\n".join(lines)
+    bclocks = _clocks(banner)
+    published = next((c for c in bclocks if not c["delta"]), None)
+    if published is None:
+        problems.append("the mode banner states no published pull clock (HH:MM ET) - the reader "
+                        "must be able to judge how live the numbers are")
+    else:
+        if published["min"] < PM_SESSION_START_MIN or published["min"] >= OPEN_MIN:
+            problems.append(f"the published pull's clock is {published['text']}, which is not "
+                            f"inside the pre-market session (04:00-09:29 ET) - the artifact's "
+                            f"numbers must be a PRE-market pull")
+    deltas = [c for c in _clocks(body) if c["delta"]]
+    if published is not None and deltas:
+        earliest = min(c["min"] for c in deltas)
+        if earliest < published["min"]:
+            problems.append(f"a delta pull ({earliest // 60:02d}:{earliest % 60:02d}) is EARLIER "
+                            f"than the published pull ({published['min'] // 60:02d}:"
+                            f"{published['min'] % 60:02d}) - the delta pull is the LAST pull")
+    record("PULL_CLOCK", problems,
+           f"the banner states the published pull's clock "
+           f"({published['text'] if published else 'none'}), it is a pre-market pull, and no "
+           f"delta pull precedes it")
+    return published
+
+
 def check_reply(path, total):
     with open(path, encoding="utf-8", errors="replace") as fh:
         raw = fh.read()
@@ -1123,6 +1187,7 @@ def main():
     check_also_cleared(tables, idx, act_names, wide_names, lines, subsections, subfloor_names)
     check_fourcell(tables, idx, act_names, wide_names, lines, subsections)
     check_yesterday(lines, sections, tables)
+    check_pull_clock(lines)
 
     print()
     failed = [n for n, good in RESULTS if not good]

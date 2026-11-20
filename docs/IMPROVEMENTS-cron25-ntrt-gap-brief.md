@@ -12,6 +12,13 @@ most recent briefs on the outputs repo (`ntrt/2026-10-29.md`, `ntrt/2026-10-30.m
 Base for every revert: commit `d2562b1d64cf1ae0742fabf8a1807f3dafa6e76a`, tag
 `pre-ntrt-format-v2-2026-11-04`.
 
+**2026-11-20, after the 2026-11-16 fire — round 3 (sections 30-34).** The 16 Nov fire published a
+**takeover** as a data-centre withdrawal, and spent ~40 of its 47 minutes asleep. Round 3 lands:
+contract **v6** (the pull clock is no longer a schedule), the **identity step** before every
+catalyst lookup, the **mandatory second search** when the move is bigger than the story, and the
+**18th check** (`PULL_CLOCK`). The deployed cron prompt was **not** touched — every rule lives in
+the run-time-fetched skill spec, so the next fire picks this up with no `cron_update`.
+
 **What changed in the v2/v3 work:** `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` only. The
 deployed cron prompt was **not** touched — it already points at the skill spec URL and re-fetches
 it at run time, so the new layout takes effect on the next fire with no prompt deployment and no
@@ -1446,3 +1453,165 @@ clears it. Published on the provider basis and flagged in `## Flags` as the one 
 depends on which count is right — the correct treatment when a corporate action has invalidated
 the screener's share count inside the session being screened.
 
+---
+
+# ROUND 3 — 2026-11-20: the takeover that was 79 minutes old, and the 40 minutes of sleep
+
+Round 3 exists because of one run. The **2026-11-16** fire was mechanically clean — 17/17 on the
+contract, a complete screen (183 up / 576 down, rows equal to `totalCount` on both sides), a
+verified push — and it got two things wrong that the checker could not see:
+
+1. it published **TELUS's data-centre withdrawal** as the driver for a stock that was actually
+   **+22.6% on an unsolicited takeover proposal**, and
+2. it spent **~40 of its 47 minutes asleep**, waiting for a pinned clock it did not need.
+
+## 30. The catalyst was published under the wrong story — and the right story was 79 minutes old
+
+TELUS confirmed an unsolicited proposal from **Québecor** at **07:30 ET on 2026-11-16** (PR
+Newswire; Reuters brief 07:42; MT Newswires 07:46): C$6.35 cash + 0.17 Québecor Class B shares
+per TELUS share, ~C$19.45 per share, ~C$31B equity, a ~60% premium to Friday's C$12.14 close;
+the board formed a special committee, called the consideration inadequate, and said Québecor had
+yet to explain how the deal could clear Canadian telecom regulation. The brief published
+"pulled out of two Westbank Vancouver AI data-centre projects" instead.
+
+**The information was available.** It was public 75 minutes before the 08:45 fire and 79 minutes
+before the run's first correct-identity search. The pre-open tape carried **nothing** about it —
+its TU row is a bare scanner row (`why: null`, `conf: low`) and no tape row mentions a proposal,
+a takeover or a merger — so §11 could not have saved it. This was a **query failure, not a source
+failure**, and it was three failures stacked:
+
+- **Two lookups against the wrong company.** `TU` was searched as AT&T (it is TELUS) and then as
+  Texas United. The ticker→company mapping was never read from the data before searching.
+- **The first correct query was capped.** "TELUS stock surge November 16 2026 announcement" was
+  run with `count=4`; the PR Newswire release was not in the top 4 — a weaker story was — and the
+  run anchored on it.
+- **The retry was a bad query.** `"TELUS" stock jumps Monday buyout takeover premium November 16
+  2026 shares soar` returned **0 results**. A run that cannot tell "no results" from "bad query"
+  reads it as an absence.
+
+A short, entity-named query — **"TELUS takeover proposal"**, `count=4` — returns the story in the
+top 4. Re-verified 2026-11-20.
+
+**The same failure hit seven other names.** The research sub-agents guessed: `FAC` (Factorial
+Energy, not First Advantage), `BRUN` (Boost Run, not Bruin Technology Partners), `ASST` (Strive,
+not AssetMark), `POWW` (Outdoor Holding, not Powell Industries), `OCS` (Oculis, not Oramed), `IMC`
+(IMC Rare Earths, not IMC Financial). Each of those names was published with a driver that
+belonged to a different company, and the run only noticed at 09:10 — by pulling the screener's
+`description` column, which it had never pulled before.
+
+**Fix (skill §14).**
+- **§14a — the identity step.** ONE targeted pull resolves every published name's identity
+  before any lookup (`tv_scan.py pull --names "…" --columns "name,description,sector,exchange"`),
+  and the **company name** goes into the query. A lookup whose query names a company the identity
+  pull did not confirm is a **failed lookup**, not a catalyst.
+- **§14b — the second search.** A move of **≥10%**, or a driver that cannot plausibly explain
+  the size of the move, forces **one** more search, short and entity-named and carrying event
+  vocabulary (`<Company> takeover proposal`, `<Company> FDA`, `<Company> guidance`, …), read at
+  **≥6 results**. If the second search finds a stronger dated driver, that is the published
+  driver — and the CSV's `catalyst` cell changes with it, because §8's counts come from that
+  column. If it finds nothing, the best dated driver is published **with the mismatch flagged**,
+  or the `Why` cell stays blank.
+
+The contract's existing flag machinery DID work here — the 16 Nov brief flagged "a capex
+withdrawal does not obviously explain a fifth of TELUS's market cap". The missing step was the
+re-search that the flag implies.
+
+## 31. The run was 84% asleep — the pull clock was a schedule, and the schedule was the cost
+
+Measured from the session's own message timeline (08:46:39 → 09:33:58, 47.4 min):
+
+| window | length | what |
+|---|---|---|
+| 08:46:39–08:50:14 | 3.6 min | setup + all data acquisition (fetches, window check, both screen pulls, tape, prior board, bridge, 5 searches, 2 agents spawned) |
+| 08:50:14–09:15:12 | **25.0 min** | **idle** — sleeps 120+240+200, a failed 420, agent turnarounds |
+| 09:15:12–09:20:17 | **5.1 min** | **idle** — sleep 300 waiting for the pinned 09:20 published pull |
+| 09:20:17–09:20:44 | 0.5 min | the published pull (183 + 576 rows) + the selection build |
+| 09:20:44–09:30:34 | **9.8 min** | **idle** — sleeps 240+200 (late-names agent + the 09:30 delta pull) |
+| 09:30:34–09:33:58 | 3.4 min | delta pull, emit, 2 checker failures + patches, push, blob verify, reply |
+
+**~40 of 47 minutes were waiting.** The lookups were never the bottleneck: 14 searches were ~2
+minutes of wall time and the three research agents' 37 tickers ran inside the idle windows. The
+cost was the contract's own pinned clock: fire 08:45 → published pull 09:22 → delta 09:27, with
+the research finished at 08:56.
+
+The freshness invariant was also wrong. The 16 Nov run published a 09:20 pull and pushed at
+09:32 — numbers 12 minutes old, delivered **two minutes after the open**. A run that pulls at
+09:05, writes until 09:10 and pushes at 09:12 publishes numbers **2 minutes old, 18 minutes
+before the bell**: better on both counts.
+
+**Fix (skill §7).** The pull clock is **unpinned**; the ORDER is pinned:
+
+> research pull → identity (§14a) → catalyst lookups (§14b) → **published pull** → the tables →
+> delta pull (§12) → check → push
+
+- **Never sleep to reach a clock.** The published pull is taken when the research is done, and
+  its **actual minute** is published. The bar does not move with it.
+- **The non-numeric work moves into the idle window**: the narrative, the backdrop, the
+  yesterday's-board lookup, the identity step and every catalyst lookup are independent of the
+  pull's minute. Doing them first is the whole of the time saving.
+- **The delta pull follows the write** and is taken as late as the push deadline allows — never
+  at the cost of a late push. Its actual time is stated in Flags.
+- **The gate's bar stays the constant 4.8788%.** It was derived from the canonical 09:22 ET pull
+  and it STAYS that constant: it is what makes every published `pct_of_adv` comparable with every
+  earlier brief. The clock moved; the bar did not. A run must never recompute the bar from
+  whatever minute it happened to pull.
+
+## 32. The 18th check: `PULL_CLOCK`
+
+The pull clock is no longer a schedule, so the artifact has to PROVE when its numbers were pulled.
+`PULL_CLOCK` asserts three things about the artifact: the mode banner **states** the published
+pull's clock (`HH:MM ET`), that clock is a **pre-market minute** (04:00–09:29 ET), and **no delta
+pull precedes it** (the delta pull is the LAST pull).
+
+The checker marker moves `NTRT_CONTRACT_CHECK_V3` → **`NTRT_CONTRACT_CHECK_V4`**, `CONTRACT_CHECKS`
+17 → **18**, `CONTRACT_VERSION` `ntrt-artifact-v5` → **`ntrt-artifact-v6`**. A v3 checker cannot
+see a missing, a post-open or an incoherent pull clock, so the skill's fetch ladder now demands
+the V4 marker — otherwise a stale copy could win the ladder and report a clean artifact it never
+checked.
+
+**This check bites on a REAL artifact, not only on a synthetic one.** The 2026-11-05 fixture
+fails it:
+
+> `FAIL [PULL_CLOCK] the published pull's clock is 10:12 ET, which is not inside the pre-market
+> session (04:00-09:29 ET) — the artifact's numbers must be a PRE-market pull`
+
+That is the 05 Nov fire, which §16 of round 2 already recorded as publishing the pre-open screen
+at **10:12 ET, 72 minutes after the open** — a defect no earlier check could see, because before
+v6 a brief could publish any pull time it liked and nothing asked.
+
+## 33. What changed, in one place
+
+| file | change |
+|---|---|
+| `cloud-prompts/skills/ntrt-gap-brief/SKILL.md` | contract **v5 → v6**; §7 the unpinned pull clock and the fixed order; §12 the delta pull moves after the write; §14 the identity step and the second search (new); §2's bar wording (the bar is a constant, not a function of the pull minute); §9 the 18 checks and the V4 marker; the mode-banner example; the failure modes and the hard rules |
+| `tools/check_ntrt_artifact.py` | `PULL_CLOCK` (new check); `CONTRACT_CHECKS` 17 → 18; `CONTRACT_VERSION` v5 → v6; `MARKER` V3 → V4 |
+| `tools/test_ntrt_contract.py` | 3 new fault-injection cases (no clock in the banner, a post-open clock, a delta pull before the published pull); the reply fixture and the assertions 17/17 → 18/18 |
+| `cloud-prompts/cron-prompts/25-ntrt-gap-brief-daily.md` | **NOT TOUCHED** — every rule lives in the run-time-fetched skill spec, so the next fire inherits it with no `cron_update` and no prompt drift |
+| the outputs repo | **NOT TOUCHED** — the delivered artifacts are records. The 16 Nov brief keeps its TU row (see the do-not list) |
+
+**Verification performed (2026-11-20).**
+- `tools/test_ntrt_contract.py` → **28/28** (the conforming fixture, the reply line, 24 mutations
+  and the missing-file case). The three new `PULL_CLOCK` mutations were each observed **failing**
+  against the checker — a mutation that cannot apply must fail, and a check never observed failing
+  is a claim.
+- The delivered **2026-11-16** artifact → `CONTRACT OK — contract: 18/18`. The new check does not
+  retroactively break the record: its banner states `Snapshot 09:20 ET` and its delta pull 09:30.
+- The delivered **2026-11-12** artifact → the same **2 of 18** failures it already failed under v5
+  (`GATE` on SMHI, `ALSO_CLEARED` on AXTI) — the known v4→v5 changes, and `PULL_CLOCK` passes.
+- The **2026-11-05** fixture → 6 of 18, of which `PULL_CLOCK` is new (see §32).
+
+## 34. Do-not list (round 3)
+
+- Do NOT publish a driver that cannot explain the move. A ≥10% move, or a driver that does not
+  explain the size, gets a second search (§14b) before it is published.
+- Do NOT look a ticker up under a guessed company name. The identity comes from the screener's
+  `description` column (§14a), and the query carries the company name.
+- Do NOT treat a query that returned nothing as an absence — a long quoted query returns nothing
+  by construction. Re-query short.
+- Do NOT sleep to reach a clock, and do NOT recompute the 4.8788% bar from the minute you pulled.
+  The bar is a constant; the clock is the pull's actual minute.
+- Do NOT rewrite a delivered artifact to satisfy a newer contract. The 16 Nov brief keeps its TU
+  row and its Flags entry: it is the record of what the routine published. A future brief carries
+  the corrected rule.
+- Do NOT `cron_update` for this work — the prompt was not changed and the skill is fetched at run
+  time.

@@ -6,15 +6,15 @@ Three parts:
 
   A. THE CHECKER ACCEPTS A CONFORMING ARTIFACT
      A synthetic brief that follows the ARTIFACT FORMAT CONTRACT must pass
-     every check and print `contract: 17/17`.
+     every check and print `contract: 18/18`.
 
   B. FAULT INJECTION — THE CHECKER MUST BITE
-     Every one of the seventeen checks has at least one fixture that fails it.
+     Every one of the eighteen checks has at least one fixture that fails it.
      A mutation that does not change the file is itself a FAILURE (a no-op
      mutation silently "passes" and reports a false NOT CAUGHT).
 
   C. THE REPLY LINE
-     The reply must publish `contract: 17/17`; a wrong count is caught.
+     The reply must publish `contract: 18/18`; a wrong count is caught.
 
 Offline and dependency-free: the Cloud sandbox has no PyPI access.
 
@@ -166,7 +166,7 @@ REPLY = """Pre-market gap brief for 06 Nov is written and pushed.
 ### Files
 - /workspace/ntrt/2026-11-06.md
 - /workspace/ntrt/2026-11-06.csv
-contract: 17/17
+contract: 18/18
 
 ### Push / errors
 push: ok (verified)
@@ -218,22 +218,22 @@ def main():
 
         # --- A. the checker accepts a conforming artifact --------------------
         code, out, failed = run_checker(md, csv_path)
-        if code == 0 and not failed and "contract: 17/17" in out:
-            ok("A. a conforming artifact passes every check and prints contract: 17/17")
+        if code == 0 and not failed and "contract: 18/18" in out:
+            ok("A. a conforming artifact passes every check and prints contract: 18/18")
         else:
-            bad("A. a conforming artifact passes every check (16/16)",
+            bad("A. a conforming artifact passes every check (18/18)",
                 f"exit={code} failing={failed}\n{out}")
 
         # the reply line
         code, out, failed = run_checker(md, csv_path, reply)
-        if code == 0 and "[REPLY] the reply publishes contract: 17/17" in out:
-            ok("C1. a reply publishing contract: 17/17 is accepted")
+        if code == 0 and "[REPLY] the reply publishes contract: 18/18" in out:
+            ok("C1. a reply publishing contract: 18/18 is accepted")
         else:
-            bad("C1. a reply publishing contract: 17/17 is accepted", f"exit={code}\n{out}")
+            bad("C1. a reply publishing contract: 18/18 is accepted", f"exit={code}\n{out}")
 
         wrong = os.path.join(tmp, "wrong.txt")
         with open(wrong, "w", encoding="utf-8") as fh:
-            fh.write(REPLY.replace("contract: 17/17", "contract: 12/12"))
+            fh.write(REPLY.replace("contract: 18/18", "contract: 12/12"))
         code, out, failed = run_checker(md, csv_path, wrong)
         if code != 0 and "[REPLY]" in out:
             ok("C2. a reply publishing the wrong count is rejected")
@@ -350,6 +350,19 @@ def main():
                  "Gate-passing names not in the table above: 2."), csv)),
             ("YESTERDAY", "a yesterday-list status is not one of the three words",
              lambda md, csv: (replace_once(md, "| not in the feed |", "| unknown |"), csv)),
+            ("PULL_CLOCK", "the mode banner states no pull clock",
+             lambda md, csv: (replace_once(
+                 md, "Snapshot 09:22 ET, 8 min before the open.",
+                 "Snapshot taken shortly before the open."), csv)),
+            ("PULL_CLOCK", "the published pull's clock is after the open",
+             lambda md, csv: (replace_once(
+                 md, "Snapshot 09:22 ET, 8 min before the open.",
+                 "Snapshot 09:45 ET, 15 min after the open."), csv)),
+            ("PULL_CLOCK", "a delta pull is stated earlier than the published pull",
+             lambda md, csv: (replace_once(
+                 md, "Snapshot 09:22 ET, 8 min before the open.",
+                 "Snapshot 09:22 ET, 8 min before the open; delta pull 09:10 ET, flags only."),
+                 csv)),
         ]
 
         for name, why, mutate in MUTATIONS:
