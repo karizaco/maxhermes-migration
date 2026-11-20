@@ -271,6 +271,32 @@ stamp of the SAME session moves by an hour across a DST boundary (a US bar:
 the NEWEST ones — it rolled the base back to the prior-prior session and cost
 66 US rows + 21 ASX rows on 2026-11-03 and 24 of 25 ASX rows on 2026-11-04.
 
+**THE NULL-CLOSE REPAIR.** Yahoo nulls the LAST daily bar's close once the
+venue's session has ENDED and before its next session opens — measured
+2026-11-20 at 01:08 ET: SOI.PA, CTEC.L, KEOC.ST and ATS.VI all carried a null
+Nov 19 close, while `meta.regularMarketPrice` held the settled close (109.25 /
+268.20 / 5.86) and `meta.regularMarketTime` held that session's last tick.
+Dropping that bar leaves the series ONE SESSION SHORT: every reference close
+is one session stale, so the hard gate above rejects the rows as stale
+references. Measured on the 2026-11-19 settlement: **27 of 29 EU rows were
+dropped**, and the two survivors published a `Session asof` of 2026-11-18
+inside a 2026-11-19 artifact — a fabricated session date that the checker
+passed, because the artifact was internally consistent.
+
+The pipeline therefore grafts the settled price back onto the bar it belongs
+to, from the SAME response, and the repair is deliberately narrow: it fires
+ONLY when the LAST bar's close is null AND `meta.regularMarketTime` falls on
+the SAME ET date as that bar. Every normal path — a session in progress, a
+session closed and finalized, a halted name with no prints — is unchanged.
+**The null window is roughly [18:00 ET, the venue's next open]**, so the 08:00
+ET scan and the 12:15 ET settlement never see it; only a LATE replay does.
+
+**A settlement row settles the session of the artifact's OWN date.** The
+checker enforces it (`REFCLOSE`), because the settlement pass republishes the
+session that closed on that date; a row whose `Session asof` is an earlier
+date means its reference close is one session stale. The one legitimate
+exception is a venue that did not trade on the artifact's date.
+
 ### `## Actionable read` — the actionable layer, above the tables
 
 Three things, in this order:
@@ -499,6 +525,24 @@ how many rows matched the morning scan, the median and maximum drift between
 the scan move and the settled move, and how many moved more than 1pp. That is
 the routine's own measurement of how much a mid-session snapshot can be
 trusted.
+
+**A BLOCKED FIRE IS PUBLISHED, NOT NARRATED.** When the platform blocks the
+fire (the Token Plan window) and the routine runs hours later for the SAME
+session, the artifact's `- Fire time (ET):` line names the session's own
+scheduled fire AND the moment the replay ran ("REPLAY - … this run executed
+…, 785 min after the fire"), and the stall is published as a degraded source
+(`platform.fire_blocked`), so the artifact's `degraded_sources:` count
+INCLUDES it and the reply's `errors:` stays equal to it. A replay of the
+settlement pass must therefore be run with the session's own date (the
+replay hook `SCAN_DATE_ET=<date>` sets it) — never with the wall clock, which
+would label the artifact with the wrong session.
+
+**THE LATE-REPLAY WINDOW.** The screener carries a venue's session until that
+venue's next open: the EU/UK cash session opens at 03:00 ET, so a replay of
+the settlement pass must read the screener BEFORE then. After the open the
+screen rolls to the new session and a replay would publish the new session's
+LIVE movers under the old session's label — the `Session asof` gate would
+then catch the date, but the rows themselves would already be wrong.
 
 ### The checker
 
