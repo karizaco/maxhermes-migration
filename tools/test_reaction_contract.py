@@ -622,6 +622,15 @@ def test_settlement_and_verdict_gates():
              "| KNO4 | uk | LSE | 1084.49 | -11.83 |"
              "| KNO5 | uk | LSE | 1084.49 | -11.83 |"),
          "one market took more rows than the per-market cap allows"),
+        ("C-settlement-one-session-stale",
+         lambda t: t.replace("| 2026-11-10 | 2026-11-11 | settled | ADR (OTC:TMVWY) |",
+                             "| 2026-11-09 | 2026-11-10 | settled | ADR (OTC:TMVWY) |"),
+         "a settlement row settled the PREVIOUS session inside an artifact dated for "
+         "the session that just closed - the artifact is internally consistent, but "
+         "its reference close is one session stale (measured 2026-11-20: Yahoo nulls "
+         "a venue's last close after the session ends, the daily series came back "
+         "one session short, and the two surviving rows published 2026-11-18 inside "
+         "a 2026-11-19 artifact)"),
         ("C-settlement-with-us-section",
          lambda t: t.replace("## EU/UK — Settled table",
                              "## US — Headline table\n\n"

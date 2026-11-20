@@ -622,6 +622,27 @@ def check(path, reply_text=None):
                                 f"its base cannot be checked")
                 continue
             mk = market_of(header, cells)
+            # THE SETTLEMENT PASS SETTLES THE SESSION OF ITS OWN DATE. The
+            # 08:00 ET scan may carry a venue whose feed lags a session, but the
+            # 12:15 ET settlement republishes the session that closed on the
+            # artifact's own date - so a row whose `Session asof` is an EARLIER
+            # date means its reference close is one session stale. That is the
+            # defect measured 2026-11-20: Yahoo nulls a venue's last close
+            # after the session ends, the daily series came back ONE SESSION
+            # SHORT, 27 of 29 rows were dropped as stale references, and the two
+            # survivors published 2026-11-18 inside a 2026-11-19 artifact - and
+            # this checker PASSED it, because the artifact was internally
+            # consistent. A venue that did not trade on the artifact's date is
+            # the one legitimate exception.
+            if is_settlement and scan_d and sess != scan_d:
+                mk_l = (mk or "").strip().lower()
+                if not (mk_l and scan_d in VENUE_HOLIDAYS.get(mk_l, set())):
+                    failures.append(
+                        f"REFCLOSE: {title} row {ri} — the settlement artifact is dated "
+                        f"{scan_d} but the row reports session {sess}; a settlement row "
+                        f"must settle the session of the artifact's own date (its "
+                        f"reference close would otherwise be one session stale)")
+                    continue
             if mk and mk.lower() in VENUE_HOLIDAYS \
                     and sess in VENUE_HOLIDAYS[mk.lower()]:
                 failures.append(
