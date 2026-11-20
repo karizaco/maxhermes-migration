@@ -2553,6 +2553,57 @@ Weekdays at 09:45, 10:15, 10:45, 11:15 ET — of those, only 09:45 ET is a deplo
     properties of the WHOLE scored set and are not computable from a truncated list - with the
     old default `--top-n 25`, all 56 near misses of 2026-11-12 sat BELOW the cut.
 
+### 7b. Cron #07 — the focus-rvol artifact contract (gate it BEFORE the push)
+
+**This routine had a contract checker in the repo and NOTHING ever fetched it.**
+`tools/check_focus_rvol_artifact.py` was written for this artifact — it asserts the RVol
+definitions (C18), the cross-check (C19), the trend (C20), where each prior reading came from,
+the near-miss ordering and the alert tier — but no step of the procedure ever fetched it, so
+the checker ran from nowhere while the artifact it guards was published every session. The
+alert tier was structurally dead for five consecutive sessions (2026-11-05 .. 2026-11-11) and
+**nothing raised a failure, because nothing was watching**. A gate that is never fetched is not
+a gate.
+
+Fetch it over the ladder, demanding its capability marker, and run it BEFORE the push:
+
+```bash
+C=/workspace/tools/check_focus_rvol_artifact.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/check_focus_rvol_artifact.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/check_focus_rvol_artifact.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_focus_rvol_artifact.py" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$C.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
+  fi
+  # The marker is mandatory: an OLDER copy of this checker checks fewer rules and would
+  # report the artifact clean on rules it never ran. The CDNs cache `main` independently,
+  # so one of them CAN serve stale bytes - the contents API is not CDN-cached, so it is
+  # tried FIRST.
+  if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
+     && grep -q 'focus-rvol-alert-v1' "$C.tmp" 2>/dev/null; then
+    mv -f "$C.tmp" "$C"; break
+  fi
+  rm -f "$C.tmp"
+done
+if [ ! -s "$C" ] || ! grep -q 'focus-rvol-alert-v1' "$C" 2>/dev/null; then
+  echo "check_focus_rvol_artifact.py: UNAVAILABLE (no copy carrying focus-rvol-alert-v1)"
+  echo "no artifact; no push"
+  exit 1
+fi
+python3 "$C" --md /workspace/focus-rvol-snapshot.md --csv /workspace/focus-rvol-snapshot.csv
+```
+
+**The gate's exit code is the decision: 0 → push; 1 → the artifact broke the contract, fix it
+and re-run; the run publishes nothing.** Do not push an artifact the checker rejected.
+
+The gate's reply-level clauses (C15/C16 — the reply must name the crossing tickers and carry
+an `universe:` line) are **not** exercised in this slot: the chat reply is composed AFTER the
+push, so the gate is run on the artifact alone. Say so in `### Method & caveats` if the alert
+tier is empty, and name the clause if the gate failed.
+
 ### 8. Hook into existing briefs
 
 - 08:30 ET pre-market brief: prepend yesterday's `tier-a.md` + `regime.json`.
