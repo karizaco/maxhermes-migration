@@ -107,7 +107,7 @@ fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py br
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
 fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
-fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v5 \
+fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v6 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"
 ```
 
@@ -228,6 +228,18 @@ fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build
    |---|---|---|---|---|---|---|---|
 
    Top 15 gainers and top 10 decliners, with a note of the snapshot time on every row.
+
+   **The two tables are a CAP, not a quota.** They carry the top 15 gainers and the top 10
+   decliners **of the gate-passing set**, so on a thin tape they are SHORTER — and the section
+   publishes what it actually carries, in the "showing N of M" idiom, on every fire:
+   `**gainers: showing 11 of 15, decliners: showing 10 of 10**`. A table that shows 11 rows
+   under a heading that says "top 15" reads as a complete one, so the count travels with it.
+   **Never publish a name that FAILS Gate A or Gate B in a headline table to fill the quota** —
+   a gate-failing name belongs in the tail tier. Measured 2026-11-20: only 11 of the 181 band
+   gainers cleared both gates, and the v2 gate (`== 15`) rejected the correct artifact — a rule
+   that could only be satisfied by publishing names that fail the gates. The v3 gate recomputes
+   the qualifying set from the published CSV, so the row counts are the screen's, not the
+   artifact's.
 
 3. **What changed since the morning brief** — the names whose pre-market gap moved most, read
    against the morning brief's own CSV (`daily-briefs/{date}-pre-market.csv` on the outputs
@@ -594,6 +606,10 @@ screen_complete: true
   line has to say "showing N of M".
 - **Never invent a number.** Every price and percentage comes from the screen or from the
   morning CSV.
+- **The headline tables are a cap, not a quota.** They carry the top 15 gainers and top 10
+  decliners of the gate-passing set; on a thin tape they are shorter and the section says so
+  ("showing N of M"). Publishing a gate-failing name to reach 15 rows is a defect, and the
+  v3 gate catches it: the expected row count is recomputed from the published CSV.
 - **No catalyst SEARCH.** This file does not look for news and does not write a reason. It
   **carries** the catalyst the 08:30 brief already sourced and labels it with the fixed Driver
   vocabulary. A name with no sourced catalyst is `NONE`, and `NONE` is a finding.
@@ -696,7 +712,7 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/check_premarket_refresh.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
-  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v2' "$S.tmp" 2>/dev/null; then
+  if [ -s "$S.tmp" ] && grep -q 'premarket-refresh-v3' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"

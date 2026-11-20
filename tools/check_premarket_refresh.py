@@ -28,12 +28,21 @@ import os
 import re
 import sys
 
+# v3 (2026-11-20) replaces the v2 row quotas with what the screen actually supplies: the
+# headline tables carry the TOP 15 / TOP 10 of the gate-passing set - a CAP, not a quota. On
+# the 2026-11-20 fire only 11 of the 181 band gainers cleared Gate A + Gate B, so the honest
+# artifact published 11 gainer rows and v2's `== 15` rejected it - a rule that could only be
+# satisfied by publishing names that FAIL the gates. v3 recomputes the qualifying set from the
+# published CSV and adds three assertions: TOPG-ROWS / TOPD-ROWS (the row counts are the
+# screen's, not the artifact's), TOPG-SHOWS-N-OF-M / TOPD-SHOWS-N-OF-M (the section publishes
+# what it carries, so a short table cannot read as a complete one) and TOP-CLEARING-COUNTS (the
+# counts the section publishes are the screen's).
 # v2 (2026-11-19) adds three assertions the 2026-11-19 artifact needed and did not have:
-# NO-MISSING-NUMBER (a bare "?" is a hole - the placeholder list held only "???"), 
+# NO-MISSING-NUMBER (a bare "?" is a hole - the placeholder list held only "???"),
 # LIVE-SESSION-CONSISTENT (the GATE WINS: an artifact may not call the session not live
 # beside `market_open_at_pull: true`) and GAP-DIRECTION (a gap-DOWN name that moved toward
 # zero narrowed its decline, it did not "extend its gap").
-CONTRACT_VERSION = "premarket-refresh-v2"
+CONTRACT_VERSION = "premarket-refresh-v3"
 
 # ---- the pinned front matter, in order (the spec's "The artifact skeleton — PINNED") ----
 REQUIRED_FM = ["date", "cron", "fire_time_et", "snapshot_et", "source", "status",
@@ -147,6 +156,42 @@ def num(s):
         return None
 
 
+# ---- the gates (the morning brief's skill spec, Step 2b) ----
+GATE_A_VOL = 100_000          # pre-market volume, shares
+GATE_A_CAP = 200_000_000     # ... or a >= $200m cap with >= 10,000 pre-market shares
+GATE_A_CAP_VOL = 10_000
+GATE_B_CAP = 100_000_000     # the $100m quality floor
+
+
+def qualifying(rows):
+    """(gainers, decliners, band_gainers, band_decliners) computed from the PUBLISHED CSV.
+
+    Gate A: pre-market volume >= 100,000 shares, OR a >= $200m cap with >= 10,000 pre-market
+    shares. Gate B: a >= $100m market cap. The CSV publishes the reconciled cap; an empty cap
+    fails Gate B here exactly as it fails in the builder (a missing cap is never 0).
+    """
+    up = dn = b_up = b_dn = 0
+    for r in rows:
+        if len(r) < 13:
+            continue
+        ch = num(r[3])
+        if ch is None:
+            continue
+        pv = num(r[4]) or 0
+        cap = num(r[12]) or 0
+        gate_a = pv >= GATE_A_VOL or (cap >= GATE_A_CAP and pv >= GATE_A_CAP_VOL)
+        gate_b = cap >= GATE_B_CAP
+        if ch > 0:
+            b_up += 1
+            if gate_a and gate_b:
+                up += 1
+        elif ch < 0:
+            b_dn += 1
+            if gate_a and gate_b:
+                dn += 1
+    return up, dn, b_up, b_dn
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--md", required=True)
@@ -159,6 +204,24 @@ def main():
     if text is None:
         print("FAIL MD-READ — %s is missing" % args.md)
         return 1
+
+    # The companion CSV is read FIRST: the headline tables' expected row counts are computed from
+    # it (the gate-passing set), so a table that publishes fewer rows than the screen supplies
+    # is a FAILURE and a table that publishes more is a FAILURE too.
+    csv_text = read(args.csv_path)
+    header, rows = [], []
+    if csv_text is None:
+        check(False, "CSV-READ", "%s is missing" % args.csv_path)
+    else:
+        with open(args.csv_path, newline="", encoding="utf-8") as f:
+            rdr = csv.reader(f)
+            header = next(rdr, [])
+            rows = list(rdr)
+    # The gate-passing set, recomputed from the published CSV. The headline tables carry the
+    # TOP 15 / TOP 10 of it - a CAP, not a quota (see TOPG-ROWS below).
+    q_up, q_dn, band_up, band_dn = qualifying(rows)
+    exp_gain = min(15, q_up)
+    exp_decl = min(10, q_dn)
 
     # ---------------- front matter ----------------
     fm, _ = parse_front_matter(text)
@@ -233,10 +296,10 @@ def main():
         check(len(l) > 40, "BL-L%d-LENGTH" % (i + 1), "line %d is too short to be a decision" % (i + 1))
 
     # ---------------- ## What to watch at the open ----------------
-    rows, _ = table_rows(text, ["Prior close", "PM last", "PM low", "PM high", "Trigger",
-                                "Invalidation"])
-    check(len(rows) == 3, "WATCH-THREE", "watch table has %d rows" % len(rows))
-    for r in rows:
+    watch_rows, _ = table_rows(text, ["Prior close", "PM last", "PM low", "PM high", "Trigger",
+                                      "Invalidation"])
+    check(len(watch_rows) == 3, "WATCH-THREE", "watch table has %d rows" % len(watch_rows))
+    for r in watch_rows:
         if len(r) < 7:
             check(False, "WATCH-COLUMNS", "row has %d columns" % len(r))
             continue
@@ -248,7 +311,9 @@ def main():
     # ---------------- ## Gap quality ----------------
     gq, gq_head = table_rows(text, ["Gap %", "PM range", "Hold %", "pm %ADV", "Driver",
                                     "Key level", "Invalidation"])
-    check(len(gq) == 25, "GQ-25-ROWS", "gap-quality table has %d rows" % len(gq))
+    check(len(gq) == exp_gain + exp_decl, "GQ-ROWS",
+          "gap-quality table has %d rows; the headline tables carry %d gainers + %d decliners"
+          % (len(gq), exp_gain, exp_decl))
     gq_tickers = []
     for r in gq:
         if len(r) < 10:
@@ -297,8 +362,45 @@ def main():
 
     gain = rows_of(block_after(r"###\s*Top 15 gainers"))
     decl = rows_of(block_after(r"###\s*Top 10 decliners"))
-    check(len(gain) == 15, "TOPG-15", "gainers table has %d rows" % len(gain))
-    check(len(decl) == 10, "TOPD-10", "decliners table has %d rows" % len(decl))
+    # The headline tables carry the TOP 15 / TOP 10 of the QUALIFYING set - a CAP, not a quota.
+    # The qualifying set is recomputed from the published CSV (Gate A + Gate B), so the expected
+    # row count is a fact about the screen that the artifact does not get to choose. Measured
+    # 2026-11-20: only 11 of the 181 band gainers cleared both gates, so the honest artifact
+    # published 11 gainer rows - and the v2 rule (`== 15`) rejected it, a rule that can only be
+    # satisfied by publishing names that FAIL the gates. A thin tape is a valid result; what is
+    # not allowed is a short table that reads as a complete one, so the section must publish
+    # what it carries.
+    check(len(gain) == exp_gain, "TOPG-ROWS",
+          "gainers table has %d rows; %d band gainers clear both gates, so the table carries %d"
+          % (len(gain), q_up, exp_gain))
+    check(len(decl) == exp_decl, "TOPD-ROWS",
+          "decliners table has %d rows; %d band decliners clear both gates, so the table carries %d"
+          % (len(decl), q_dn, exp_decl))
+    # ... and a SHORT table must SAY it is short, in the procedure's own "showing N of M" idiom.
+    # The rule fires only when the table is short, so an artifact from a fat tape (15 of 15)
+    # stays valid under the new gate; the disclosure is exactly what a short table needs.
+    sec1 = block_after(r"##\s*1\.\s*Refreshed top-of-book")
+    m_g = re.search(r"gainers:\s*showing\s+(\d+)\s+of\s+15", sec1)
+    m_d = re.search(r"decliners:\s*showing\s+(\d+)\s+of\s+10", sec1)
+    if exp_gain < 15:
+        check(m_g is not None and int(m_g.group(1)) == exp_gain, "TOPG-SHOWS-N-OF-M",
+              "the gainers table is short (%d of 15) and the section does not publish "
+              "'gainers: showing %d of 15'" % (exp_gain, exp_gain))
+    else:
+        check(True, "TOPG-SHOWS-N-OF-M", "the gainers table is full (15 of 15)")
+    if exp_decl < 10:
+        check(m_d is not None and int(m_d.group(1)) == exp_decl, "TOPD-SHOWS-N-OF-M",
+              "the decliners table is short (%d of 10) and the section does not publish "
+              "'decliners: showing %d of 10'" % (exp_decl, exp_decl))
+    else:
+        check(True, "TOPD-SHOWS-N-OF-M", "the decliners table is full (10 of 10)")
+    m_c = re.search(r"(\d+)\s+of\s+the\s+(\d+)\s+band\s+gainers\s+and\s+(\d+)\s+of\s+the\s+(\d+)"
+                    r"\s+band\s+decliners\s+clear\s+both\s+gates", sec1)
+    check(m_c is not None and int(m_c.group(1)) == q_up and int(m_c.group(2)) == band_up
+          and int(m_c.group(3)) == q_dn and int(m_c.group(4)) == band_dn,
+          "TOP-CLEARING-COUNTS",
+          "the section's clearing counts do not match the screen (%d/%d gainers, %d/%d decliners)"
+          % (q_up, band_up, q_dn, band_dn))
     ggaps = [num(r[3]) for r in gain if len(r) > 3]
     check(all(a is not None for a in ggaps) and ggaps == sorted(ggaps, reverse=True),
           "TOPG-SORTED", "gainers are not sorted by gap descending")
@@ -344,15 +446,6 @@ def main():
         check(False, "THIN-PRESENT", "no thin-tape block found")
 
     # ---------------- the companion CSV ----------------
-    csv_text = read(args.csv_path)
-    header, rows = [], []
-    if csv_text is None:
-        check(False, "CSV-READ", "%s is missing" % args.csv_path)
-    else:
-        with open(args.csv_path, newline="", encoding="utf-8") as f:
-            rdr = csv.reader(f)
-            header = next(rdr, [])
-            rows = list(rdr)
     check(header == CSV_HEADER, "CSV-HEADER", "header is %s" % ",".join(header[:4]) + "…")
     check(len({r[0] for r in rows}) == len(rows), "CSV-UNIQUE", "duplicate ticker in the CSV")
     check(all(r[7].strip() for r in rows), "CSV-PRIOR-CLOSE", "a row has an empty prior_close")

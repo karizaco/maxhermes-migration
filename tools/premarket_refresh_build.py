@@ -80,6 +80,15 @@ import sys
 # open time. v4 fixed the front-matter parser, the late-pull Source health, the gap-direction verb
 # and the "?" holes. It SUPERSEDES premarket-refresh-build-v3 and v4, which are still named here so
 # a procedure copy that asks for either still fetches a WORKING file rather than nothing.
+# Capability marker. v6 (2026-11-20) fixes the sixth defect, measured on the 2026-11-20 fire:
+# the top-of-book section said "The two tables below carry the top 15 and top 10 of those
+# qualifying sets" and published ELEVEN gainer rows, because only 11 of the 181 band gainers
+# clear Gate A + Gate B on a down tape - a sentence that reads as a COMPLETE table while the
+# table is short. The section now publishes what it actually carries, in the procedure's own
+# idiom ("showing N of M"), for BOTH tables and on EVERY fire, so a short table can never read
+# as a full one. It SUPERSEDES v3, v4 and v5, which are still named here so a procedure copy
+# that asks for any of them still fetches a WORKING file rather than nothing.
+PREMARKET_REFRESH_BUILD_V6 = "premarket-refresh-build-v6"
 PREMARKET_REFRESH_BUILD_V5 = "premarket-refresh-build-v5"
 PREMARKET_REFRESH_BUILD_V4 = "premarket-refresh-build-v4"
 PREMARKET_REFRESH_BUILD_V3 = "premarket-refresh-build-v3"
@@ -530,6 +539,13 @@ def build(args):
     # ---- the verdict's numbers ----
     now_dec = len(dn)
     now_gain = len(up)
+    # The gate-passing counts, and the rows the headline tables can actually carry. On a thin
+    # tape fewer than 15 gainers clear the gates, and a table that shows 11 under a heading
+    # that says "top 15" reads as a complete one. The section publishes both numbers.
+    q_gain = sum(1 for r in up if gate_a(r) and gate_b(r))
+    q_dec = sum(1 for r in dn if gate_a(r) and gate_b(r))
+    head_gain_rows = min(15, q_gain)
+    head_decl_rows = min(10, q_dec)
     then_dec = num(fm_morning.get("down_3pct"))
     then_gain = num(fm_morning.get("up_3pct"))
     widened = narrowed = 0
@@ -778,11 +794,12 @@ def build(args):
     A("The +/-3%% pre-market band held **%d gainers and %d decliners** at %s. Gate A is "
       "pre-market volume of 100,000 shares, or a $200m cap with 10,000 pre-market shares; Gate B "
       "is a $100m market cap decided on the reconciled cap. **%d of the %d band gainers and %d of "
-      "the %d band decliners clear both gates.** The two tables below carry the top 15 and top 10 "
-      "of those qualifying sets."
+      "the %d band decliners clear both gates.** The two tables below carry the top 15 gainers "
+      "and the top 10 decliners of those qualifying sets - **gainers: showing %d of 15, "
+      "decliners: showing %d of 10**."
       % (now_gain, now_dec, snap,
-         sum(1 for r in up if gate_a(r) and gate_b(r)), now_gain,
-         sum(1 for r in dn if gate_a(r) and gate_b(r)), now_dec))
+         q_gain, now_gain, q_dec, now_dec,
+         head_gain_rows, head_decl_rows))
     A("")
     A("### Top 15 gainers")
     A("")

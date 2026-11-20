@@ -48,7 +48,33 @@ ALL = GAINERS + DECLINERS
 
 
 def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-brief-refresh",
-             changes=40, up=19, down=14, complete="true"):
+             changes=40, up=19, down=14, complete="true", head_gain=None, head_decl=None,
+             cap_override=None, disclose="both"):
+    """The golden artifact.
+
+    `head_gain` / `head_decl` are the rows published in the headline tables (default: every
+    name that clears both gates) and `cap_override` changes a name's market cap in BOTH the
+    markdown and the CSV - together they build a THIN tape, where fewer than 15 gainers and
+    fewer than 10 decliners clear the gates and the tables carry the top 15 / top 10 OF THAT
+    SET. `disclose=False` drops the "showing N of M" sentence: that is the breach the
+    TOPG-SHOWS-N-OF-M assertion exists to catch.
+    """
+    hg = head_gain if head_gain is not None else GAINERS
+    hd = head_decl if head_decl is not None else DECLINERS
+    caps = cap_override or {}
+
+    def cap_of(row):
+        return caps.get(row[0], row[8])
+
+    def clearing(rows):
+        n = 0
+        for r in rows:
+            pv, cap = r[4], cap_of(r)
+            if pv >= 100000 or (cap >= 200000000 and pv >= 10000):
+                if cap >= 100000000:
+                    n += 1
+        return n
+
     L = []
     L.append("---")
     L.append("date: %s" % date)
@@ -89,21 +115,36 @@ def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-br
     L.append("")
     L.append("## 1. Refreshed top-of-book")
     L.append("")
+    parts = []
+    if disclose in ("both", "gainers"):
+        parts.append("gainers: showing %d of 15" % min(15, clearing(GAINERS)))
+    if disclose in ("both", "decliners"):
+        parts.append("decliners: showing %d of 10" % min(10, clearing(DECLINERS)))
+    tail = (" - **" + ", ".join(parts) + "**") if parts else ""
+    L.append("The +/-3%% pre-market band held **%d gainers and %d decliners** at %s. Gate A is "
+             "pre-market volume of 100,000 shares, or a $200m cap with 10,000 pre-market shares; "
+             "Gate B is a $100m market cap decided on the reconciled cap. **%d of the %d band "
+             "gainers and %d of the %d band decliners clear both gates.** The two tables below "
+             "carry the top 15 gainers and the top 10 decliners of those qualifying sets%s."
+             % (up, down, snapshot, clearing(GAINERS), up, clearing(DECLINERS), down, tail))
+    L.append("")
     L.append("### Top 15 gainers")
     L.append("")
     L.append("| Ticker | Name | Pre-market | % | Pm vol | %ADV | Mkt cap | Sector | Snapshot |")
     L.append("|---|---|---|---|---|---|---|---|---|")
-    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in GAINERS:
+    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in hg:
         L.append("| %s | %s | %.2f | %+.2f%% | %s | %.2f%% | $%.2fB | %s | %s ET |" %
-                 (t, n, px, gap, "{:,}".format(vol), pavg, cap / 1e9, sec, snapshot))
+                 (t, n, px, gap, "{:,}".format(vol), pavg, cap_of((t, n, px, gap, vol, adv, pavg,
+                 pc_, cap, sec, ex)) / 1e9, sec, snapshot))
     L.append("")
     L.append("### Top 10 decliners")
     L.append("")
     L.append("| Ticker | Name | Pre-market | % | Pm vol | %ADV | Mkt cap | Sector | Snapshot |")
     L.append("|---|---|---|---|---|---|---|---|---|")
-    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in DECLINERS:
+    for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in hd:
         L.append("| %s | %s | %.2f | %+.2f%% | %s | %.2f%% | $%.2fB | %s | %s ET |" %
-                 (t, n, px, gap, "{:,}".format(vol), pavg, cap / 1e9, sec, snapshot))
+                 (t, n, px, gap, "{:,}".format(vol), pavg, cap_of((t, n, px, gap, vol, adv, pavg,
+                 pc_, cap, sec, ex)) / 1e9, sec, snapshot))
     L.append("")
     L.append("### Thin tape")
     L.append("")
@@ -140,7 +181,8 @@ def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-br
     L.append("| Ticker | Name | Gap % | PM range | Hold % | pm %ADV | Print | Driver | Key level "
              "| Invalidation |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")
-    for (t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex), drv in zip(ALL, DRIVERS):
+    for (t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex), drv in zip(hg + hd,
+                                                                     DRIVERS[:len(hg) + len(hd)]):
         L.append("| %s | %s | %+.2f%% | %.2f–%.2f | 90 | %.2f%% | AUCTION+holding | %s | prior "
                  "close %.2f | back to/below prior close %.2f |" %
                  (t, n, gap, px - 0.5, px + 0.5, pavg, drv, pc_, pc_))
@@ -160,7 +202,8 @@ def build_md(snapshot="09:22", date="2026-11-10", cron="26-agentic-pre-market-br
     return "\n".join(L) + "\n"
 
 
-def build_csv(rows=None):
+def build_csv(rows=None, cap_override=None):
+    caps = cap_override or {}
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(["ticker", "name", "premarket_close", "premarket_change_pct", "premarket_volume",
@@ -168,7 +211,8 @@ def build_csv(rows=None):
                 "live_close", "live_change_pct", "live_volume", "market_cap", "sector",
                 "exchange", "screen_complete"])
     for t, n, px, gap, vol, adv, pavg, pc_, cap, sec, ex in (rows or (ALL + THIN)):
-        w.writerow([t, n, px, gap, vol, adv, pavg, pc_, 0.5, "", "", "", cap, sec, ex, "true"])
+        w.writerow([t, n, px, gap, vol, adv, pavg, pc_, 0.5, "", "", "", caps.get(t, cap), sec,
+                    ex, "true"])
     return buf.getvalue()
 
 
@@ -202,6 +246,42 @@ def main():
         print(out)
         return 1
     print("PASS GOLDEN — the contract is satisfiable (%s)" % out.strip().split("\n")[-1])
+
+    # ---- a THIN tape: the 2026-11-20 shape ----
+    # Only three gainers and two decliners clear both gates, so the headline tables carry the
+    # top 15 / top 10 OF THAT SET and the section publishes what it carries. The contract must
+    # be satisfiable here too: a thin tape is a valid result, and the gate must not be
+    # satisfiable only on a fat one.
+    THIN_KEEP_G = ["GA00", "GA01", "GA02"]
+    THIN_KEEP_D = ["DE00", "DE01"]
+
+    def thin_parts():
+        hg = [r for r in GAINERS if r[0] in THIN_KEEP_G]
+        hd = [r for r in DECLINERS if r[0] in THIN_KEEP_D]
+        caps = {}
+        for r in ALL + THIN:
+            if r[0] not in THIN_KEEP_G + THIN_KEEP_D:
+                caps[r[0]] = 50000000      # below the $100m quality floor
+        return hg, hd, caps
+
+    def thin_md(**kw):
+        hg, hd, caps = thin_parts()
+        return build_md(head_gain=hg, head_decl=hd, cap_override=caps, **kw)
+
+    def thin_csv():
+        _hg, _hd, caps = thin_parts()
+        return build_csv(cap_override=caps)
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(thin_md())
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write(thin_csv())
+    rc, out = run_checker(checker, md_path, csv_path)
+    if rc != 0:
+        print("FAIL THIN GOLDEN — the contract is NOT satisfiable on a thin tape:")
+        print(out)
+        return 1
+    print("PASS THIN GOLDEN — a thin tape is a valid result (%s)" % out.strip().split("\n")[-1])
 
     def md_mut(text, old, new, count=1):
         assert old in text, "mutation anchor not found: %r" % old[:60]
@@ -237,14 +317,17 @@ def main():
         ("BL-L1-INVALIDATION", lambda t, c: (md_mut(t, "invalidated by a trade back to/below",
                                                     "broken by a trade back to/below"), c)),
         ("BL-L1-ANCHORED", lambda t, c: (md_mut(t, "`CASH-OUT+ANCHORED`", "`CASH-OUT`"), c)),
-        ("GQ-25-ROWS", lambda t, c: (drop_line(t, GQ14), c)),
         ("GQ-DRIVER-VOCABULARY", lambda t, c: (mutate_line(t, GQ14, "CASH-OUT+ANCHORED",
                                                            "MADE-UP-CLASS"), c)),
         ("GQ-INVALIDATION-SIDE", lambda t, c: (mutate_line(t, GQ14, "back to/below prior close",
                                                            "at prior close"), c)),
         ("GQ-MATCHES-TOP", lambda t, c: (mutate_line(t, GQ14, "GA14", "GA13"), c)),
         ("TOPG-SORTED", lambda t, c: (mutate_line(t, TOP14, "+6.00%", "+99.00%"), c)),
-        ("TOPD-10", lambda t, c: (drop_line(t, "| DE09 | Dec Co 9"), c)),
+        ("TOPD-ROWS", lambda t, c: (drop_line(t, "| DE09 | Dec Co 9"), c)),
+        ("TOPG-ROWS", lambda t, c: (drop_line(t, TOP14), c)),
+        ("GQ-ROWS", lambda t, c: (drop_line(t, GQ14), c)),
+        ("TOP-CLEARING-COUNTS", lambda t, c: (md_mut(
+            t, "**15 of the 19 band gainers", "**14 of the 19 band gainers"), c)),
         ("THIN-COMPLETE", lambda t, c: (drop_line(t, THIN3), c)),
         ("SKELETON", lambda t, c: (md_mut(t, "### Tail - refreshed\n", ""), c)),
         ("TAIL-PRESENT", lambda t, c: (md_mut(
@@ -281,6 +364,15 @@ def main():
         ("CSV-SCREEN-COMPLETE-MATCHES-FM", lambda c: md_mut(c, ",true\n", ",false\n", -1)),
     ]
 
+    # ---- the THIN tape's mutations (2026-11-20) ----
+    # A short table that does not SAY it is short reads as a complete one. These two prove the
+    # disclosure is required: each drops one half of the "showing N of M" sentence and the
+    # matching assertion must fire.
+    thin_mutations = [
+        ("TOPG-SHOWS-N-OF-M", lambda: (thin_md(disclose="decliners"), thin_csv())),
+        ("TOPD-SHOWS-N-OF-M", lambda: (thin_md(disclose="gainers"), thin_csv())),
+    ]
+
     failures = []
     for name, fn in mutations:
         t, c = fn(build_md(), build_csv())
@@ -315,7 +407,23 @@ def main():
         else:
             print("PASS %-26s caught" % name)
 
-    total = len(mutations) + len(csv_mutations)
+    for name, fn in thin_mutations:
+        t, c = fn()
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(t)
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(c)
+        rc, out = run_checker(checker, md_path, csv_path)
+        if rc == 0:
+            failures.append("%s: the checker PASSED a broken thin artifact" % name)
+            print("FAIL %-26s slipped through" % name)
+        elif name not in out:
+            failures.append("%s: the checker failed with a different check" % name)
+            print("FAIL %-26s failed, but not on %s" % (name, name))
+        else:
+            print("PASS %-26s caught" % name)
+
+    total = len(mutations) + len(csv_mutations) + len(thin_mutations)
     print("%d mutations, %d caught, %d slipped through" %
           (total, total - len(failures), len(failures)))
     if failures:
