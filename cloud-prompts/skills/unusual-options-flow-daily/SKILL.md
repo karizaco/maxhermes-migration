@@ -29,6 +29,37 @@ If this session was NOT started by a scheduled cron run, ignore this section.
 
 # Unusual options flow — daily, ranked by RELATIVE volume
 
+## What changed on 2026-11-20, and why — the chain CDN moved behind Cloudflare
+
+**Measured 2026-11-20: the option-chain endpoint changed hosts, and the old URL now fails
+open.** `https://cdn.cboe.com/api/global/delayed_quotes/options/<SYM>.json` answers **HTTP 307**
+redirecting to `https://cdn-api.cboe.com/api/global/delayed_quotes/options/<SYM>.json`, and that
+API host answers **HTTP 403** with a Cloudflare challenge page — not JSON — unless the request
+carries a browser `Referer: https://www.cboe.com/` and `Origin: https://www.cboe.com`. The old
+engine sent only a User-Agent, so **every one of the 62 chains failed to parse** and the run
+published a 0-underlying artifact with an `Infinity` put/call ratio.
+
+Two separate defects, both fixed in `relvol_screen.py` (`CBOE_API_HOST_V1`):
+
+1. **Host + headers.** The chain URL is now the API host, sent with the Referer/Origin pair;
+   the legacy host is kept as a fallback. A request with those headers returns the full chain
+   (AAPL 1.58 MB, 200 OK).
+2. **Rate limiting.** The API host also answers **`error code: 1015`** (Cloudflare "rate
+   limited") to the old 8-way parallel sweep — 23 of 62 chains failed with it on the first
+   re-run, and the failure looked like a data condition rather than a throttle. The fetch is
+   now throttled to 3 concurrent requests and retried with exponential backoff (up to 6
+   attempts), and only a **persistent** XML `AccessDenied` counts as "no listed options series".
+
+**A throttle is not a data condition.** The rule: a body that is not the source's own format
+(`error code: 1015`, a Cloudflare challenge page, an HTML error page) is a SOURCE FAILURE to be
+retried — never silently recorded as "the name has no listed options series". Measured on the
+2026-11-20 session: 58 of 62 chains loaded with 0 errors, and the 4 that did not load
+(AKAN, ANT, MEDS, MSS) genuinely have no listed options series.
+
+**The ladder now demands `CBOE_API_HOST_V1`** (in this skill AND in the deployed prompt), so a
+stale cached copy of the pre-fix engine cannot win the ladder and silently publish an empty
+board.
+
 ## What changed on 2026-11-16, and why
 
 **The board's universe is now PUBLISHED, with the count of the names it leaves out.** The
@@ -200,7 +231,8 @@ for U in \
   # one marker cannot tell them apart. The floor marker is what stops a pre-2026-11-16 copy from
   # winning it: that copy has the rev-2 markers and silently lacks the published floor.
   if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null \
-     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null && grep -q 'FLOOR_DISCLOSURE_V1' "$S.tmp" 2>/dev/null; then
+     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null && grep -q 'FLOOR_DISCLOSURE_V1' "$S.tmp" 2>/dev/null \
+     && grep -q 'CBOE_API_HOST_V1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"

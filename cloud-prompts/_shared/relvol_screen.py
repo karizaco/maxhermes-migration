@@ -6,7 +6,7 @@ $1.8B name can outrank a $5.2T one. Also emits the legacy absolute "series book"
 routine's original 8-name universe, so the published put/call series stays comparable.
 
 Sources
-  chain    : Cboe delayed-quote option-chain CDN  (https://cdn.cboe.com/api/global/delayed_quotes/options/<SYM>.json)
+  chain    : Cboe delayed-quote option-chain CDN  (https://cdn-api.cboe.com/api/global/delayed_quotes/options/<SYM>.json)
   universe : TradingView america scanner (top-N by cash volume)
   cash vol : TradingView america scanner (volume column)
   baseline : Cboe historical options volume, all_symbols monthly file (previous + current month)
@@ -15,7 +15,7 @@ Usage
   python3 relvol_screen.py --date YYYY-MM-DD --out /workspace/options-flow/YYYY-MM-DD.md
                             [--universe 60] [--jobs 8] [--keep-raw DIR]
 """
-import argparse, csv, collections, datetime, json, math, os, re, statistics, subprocess, sys, tempfile
+import argparse, csv, collections, datetime, json, math, os, re, statistics, subprocess, sys, tempfile, threading, time
 from concurrent.futures import ThreadPoolExecutor
 
 RELVOL_SCREEN_V1 = 1
@@ -49,12 +49,29 @@ COLUMN_CONTRACT = "expiry-column-v1"
 # `ENGINE_REV=2` literally, so the rev cannot be bumped without a prompt redeploy. This marker is
 # the extra token a fetch can demand to prove it has the floor-publishing copy.
 FLOOR_DISCLOSURE_V1 = 1
+# CBOE_API_HOST_V1 - the chain CDN moved behind an API host + Cloudflare (2026-11-20).
+# `cdn.cboe.com/...options/<SYM>.json` 307-redirects to `cdn-api.cboe.com`, and that host
+# answers HTTP 403 (a challenge page, not JSON) unless the request carries a browser
+# Referer + Origin. It also rate-limits this egress (`error code: 1015`) under the old
+# 8-way parallel sweep. This marker lets a fetch ladder REFUSE a pre-fix copy instead of
+# silently running it and publishing a 0-underlying artifact.
+CBOE_API_HOST_V1 = 1
 FLOOR_CONTRACT = "universe-floor-v1"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 TV_URL = "https://scanner.tradingview.com/america/scan"
+# The chain CDN moved behind an API host + Cloudflare. Measured 2026-11-20:
+# `cdn.cboe.com/...options/<SYM>.json` answers HTTP 307 -> `cdn-api.cboe.com`, and that
+# host answers HTTP 403 (a Cloudflare challenge page, not JSON) unless the request
+# carries a browser Referer + Origin. A bare User-Agent therefore yields HTML where
+# JSON is expected, and EVERY chain fails to parse (62/62 on 2026-11-20). The fix is
+# to call the API host directly with those headers; the legacy host is kept as a
+# fallback because the redirect is still published.
 CBOE_CHAIN = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
+CBOE_CHAIN_API = "https://cdn-api.cboe.com/api/global/delayed_quotes/options/{sym}.json"
+CBOE_CHAIN_HEADERS = ["Referer: https://www.cboe.com/", "Origin: https://www.cboe.com",
+                      "Accept: application/json"]
 CBOE_MONTH = ("https://www.cboe.com/us/options/market_statistics/historical_data/download/all_symbols/"
               "?reportType=volume&month={m}&year={y}&volumeType=sum&volumeAggType=daily"
               "&exchanges=CBOE&exchanges=BATS&exchanges=C2&exchanges=EDGX")
@@ -227,18 +244,58 @@ def build_universe(n_top):
 
 
 # ---------------------------------------------------------------- chains
+# The chain CDN is behind Cloudflare and RATE-LIMITS this egress: measured 2026-11-20,
+# an 8-way parallel sweep answers `error code: 1015` (Cloudflare "rate limited") for
+# most names, and a 403 challenge page for the rest. Neither is a data condition -
+# the same URL returns the full JSON a minute later. So a chain fetch is:
+#   * throttled (a small number of concurrent requests, not `--jobs`),
+#   * retried with backoff on 1015 / challenge HTML / unparseable bodies,
+#   * and only a PERSISTENT XML AccessDenied counts as "no listed options series".
+_CHAIN_SEM = threading.Semaphore(3)
+_CHAIN_RETRIES = 6
+
+
+def _chain_body(url):
+    """Raw body of a chain URL, or the exception text."""
+    with _CHAIN_SEM:
+        try:
+            return curl(url, headers=CBOE_CHAIN_HEADERS, timeout=90), None
+        except Exception as e:
+            return None, f"{type(e).__name__}:{str(e)[:80]}"
+
+
 def fetch_chain(sym):
-    try:
-        raw = curl(CBOE_CHAIN.format(sym=sym), timeout=90)
-        if raw[:5] == b"<?xml":
-            raise ValueError("no_listed_series (CDN AccessDenied)")
-        j = json.loads(raw)
-        opts = (j.get("data") or {}).get("options")
-        if not isinstance(opts, list):
-            raise ValueError("no options list")
-        return sym, j, None
-    except Exception as e:
-        return sym, None, f"{type(e).__name__}:{str(e)[:80]}"
+    last = None
+    for attempt in range(_CHAIN_RETRIES):
+        for url in (CBOE_CHAIN_API, CBOE_CHAIN):
+            body, err = _chain_body(url.format(sym=sym))
+            if err:
+                last = err
+                continue
+            head = body[:200].lstrip()
+            if body[:5] == b"<?xml":
+                # a genuine XML AccessDenied = the CDN does not cover this symbol.
+                # It is also what a throttled request can look like, so it is only
+                # accepted once the retry budget is spent.
+                last = "no_listed_series (CDN AccessDenied)"
+                continue
+            if b"error code: 1015" in head or head[:1] == b"<":
+                last = "rate_limited_or_challenge (Cloudflare)"
+                continue
+            try:
+                j = json.loads(body)
+            except Exception as e:
+                last = f"{type(e).__name__}:{str(e)[:80]}"
+                continue
+            opts = (j.get("data") or {}).get("options")
+            if not isinstance(opts, list):
+                last = "no options list"
+                continue
+            return sym, j, None
+        time.sleep(min(2 ** attempt, 20))
+    if last and "no_listed_series" in last:
+        return sym, None, last
+    return sym, None, last or "chain_fetch_failed"
 
 
 def parse_chain(sym, j):
@@ -520,6 +577,7 @@ def self_test():
     print(json.dumps({"self_test": "passed", "cases": [c[0] for c in cases],
                       "engine_rev": ENGINE_REV, "marker": "RELVOL_SCREEN_V1",
                       "floor_disclosure": f"FLOOR_DISCLOSURE_V{FLOOR_DISCLOSURE_V1}",
+                      "cboe_api_host": f"CBOE_API_HOST_V{CBOE_API_HOST_V1}",
                       "floor_contract": FLOOR_CONTRACT}, indent=1))
     return 0
 
@@ -958,7 +1016,7 @@ def main():
     W("## Source health\n")
     W("| Source | URL / query | Status | Result |")
     W("|---|---|---|---|")
-    W(f"| Cboe delayed-quote option chain | `https://cdn.cboe.com/api/global/delayed_quotes/options/{{SYM}}.json` | "
+    W(f"| Cboe delayed-quote option chain | `https://cdn-api.cboe.com/api/global/delayed_quotes/options/{{SYM}}.json` (the `cdn.cboe.com` host 307-redirects here; the API host needs a browser Referer/Origin) | "
       f"{'ok' if len(names) == len(uni) else 'partial'} ({len(names)}/{len(uni)}) | "
       f"{sum(len(n['rows']) for n in names.values()):,} contracts parsed; "
       f"{len(uni)-len(names)} names without a chain: {', '.join(sorted(set(uni)-set(names))) or 'none'} "

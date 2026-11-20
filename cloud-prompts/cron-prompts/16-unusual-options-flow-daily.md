@@ -133,7 +133,8 @@ for U in \
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
   if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'RELVOL_SCREEN_V1' "$S.tmp" 2>/dev/null \
-     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null; then
+     && grep -q 'ENGINE_REV=2' "$S.tmp" 2>/dev/null \
+     && grep -q 'CBOE_API_HOST_V1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
