@@ -2,7 +2,7 @@
 """
 open_0950_pull.py — cron #17 `us-stocks-in-play`, OPEN slot: the 09:50 ET pull.
 
-CAPABILITY MARKER: OPEN_0950_PULL_V2
+CAPABILITY MARKER: OPEN_0950_PULL_V3
 
 WHY THIS EXISTS
 ---------------
@@ -125,7 +125,7 @@ import urllib.request
 import zlib
 from datetime import datetime, timedelta, timezone
 
-CAPABILITY_MARKER = "OPEN_0950_PULL_V2"
+CAPABILITY_MARKER = "OPEN_0950_PULL_V3"
 
 # --- published constants ----------------------------------------------------
 PACE_CONSTANT = 0.125
@@ -337,6 +337,7 @@ def build_record(sym: str, res: dict, date: str, prior: str) -> dict:
 
     rec = {
         "symbol": sym,
+        "pull_date": date,
         "meta_chart_previous_close": meta.get("chartPreviousClose"),
         "prior_close_source": "prior_session_last_non_null_bar",
     }
@@ -826,17 +827,30 @@ def rebase_on_official(records, published, avg10):
 # --------------------------------------------------------------------------- #
 # the pull
 # --------------------------------------------------------------------------- #
-def load_done(path):
+def load_done(path, date=None):
     """Symbols already on disk — a retry resumes instead of restarting.
 
     KEYED BY THE TRADINGVIEW SYMBOL (the work list's key). Keying by the Yahoo
     symbol instead made every round look "incomplete" and re-fetched the whole
     universe (measured 2026-11-13: 8,627 symbols re-pulled because
     `NASDAQ:NVDA` never matched `NVDA`).
+
+    THE CACHE IS DATED (V3). The resume cache is keyed by symbol only, so a
+    records file left in the output directory by a PREVIOUS session was replayed
+    as if it were this session's — and the symptom is a board full of yesterday's
+    numbers that still passes every structural check. Measured 2026-11-20: the
+    first pull of the day resumed 7,197 records from the 2026-11-19 run and
+    reconstructed SPY at +1.19% and QQQ at +2.29% — the previous day's moves —
+    and only the publish gate's index check caught it. Every record now carries
+    the session it was pulled for (`pull_date`), and a record whose date is not
+    this session's is DISCARDED, not resumed. A record with no date at all
+    (written by an older copy) is discarded too: it cannot be proven to be this
+    session's.
     """
     done = {}
+    stale = 0
     if not os.path.exists(path):
-        return done
+        return done, stale
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -846,19 +860,29 @@ def load_done(path):
                 rec = json.loads(line)
             except Exception:
                 continue
+            if date is not None and rec.get("pull_date") != date:
+                stale += 1
+                continue
             key = rec.get("tv_symbol") or rec.get("symbol")
             if key:
                 done[key] = rec
-    return done
+    return done, stale
 
 
 def pull(symbols, out_jsonl, date, prior, workers=12, rng="2d",
          max_rounds=4, backoff=20.0, progress=True):
     """The Yahoo 5-minute pull. Durable, resumable, throttle-aware."""
-    done = load_done(out_jsonl)
+    done, stale = load_done(out_jsonl, date)
+    if stale:
+        # rewrite the cache with THIS session's records only, so the file on disk
+        # cannot hand a later reader a mix of two sessions
+        with open(out_jsonl, "w", encoding="utf-8") as fh:
+            for rec in done.values():
+                fh.write(json.dumps(rec) + "\n")
     todo = [s for s in symbols if s not in done]
     stats = {"requested": len(symbols), "resumed": len(done), "fetched": 0,
              "missing": 0, "bad_body": 0, "throttle_rounds": 0,
+             "stale_discarded": stale,
              "errors": {}, "elapsed_s": 0.0}
     if not todo:
         stats["landed"] = len(done)
@@ -900,9 +924,11 @@ def pull(symbols, out_jsonl, date, prior, workers=12, rng="2d",
                         rec["tv_symbol"] = tv
                     elif kind == "SYMBOL_MISSING":
                         rec = {"symbol": yahoo_symbol(tv), "tv_symbol": tv,
+                               "pull_date": date,
                                "status": "SYMBOL_MISSING"}
                     else:
                         rec = {"symbol": yahoo_symbol(tv), "tv_symbol": tv,
+                               "pull_date": date,
                                "status": "BAD_BODY", "detail": str(payload)[:160]}
                         stats["errors"][str(payload)[:60]] = \
                             stats["errors"].get(str(payload)[:60], 0) + 1
@@ -924,7 +950,7 @@ def pull(symbols, out_jsonl, date, prior, workers=12, rng="2d",
             t.start()
         for t in threads:
             t.join()
-        done = load_done(out_jsonl)
+        done, _stale = load_done(out_jsonl, date)
         remaining = [s for s in todo if s not in done]
         stats["fetched"] = len([r for r in done.values() if r.get("status") == "OK"])
         stats["missing"] = len([r for r in done.values() if r.get("status") == "SYMBOL_MISSING"])
@@ -943,7 +969,7 @@ def pull(symbols, out_jsonl, date, prior, workers=12, rng="2d",
     fh.flush()
     fh.close()
     stats["elapsed_s"] = round(time.time() - t0, 1)
-    done = load_done(out_jsonl)
+    done, _stale = load_done(out_jsonl, date)
     missing = [s for s in symbols if s not in done]
     stats["missing_symbols"] = len(missing)
     stats["landed"] = len(done)
@@ -1347,7 +1373,9 @@ def selftest():
     with open(jl, "w") as fh:
         fh.write(json.dumps(recs["A"]) + "\n")
     check("a completed symbol is not re-fetched on a retry",
-          "A" in load_done(jl))
+          "A" in load_done(jl)[0])
+    check("a record from another session is NOT resumed (V3 date guard)",
+          "A" not in load_done(jl, "1999-01-01")[0])
 
     print()
     total = tally["ok"] + len(fails)
@@ -1428,7 +1456,7 @@ def main():
         return
 
     if a.cmd == "daily":
-        recs = load_done(a.records)
+        recs, _stale = load_done(a.records, a.date)
         syms = [s.strip() for s in open(a.symbols) if s.strip()]
         vols = daily_bars(syms, a.date, a.prior, workers=a.workers)
         json.dump(vols, open(a.out, "w"))
@@ -1436,7 +1464,7 @@ def main():
         return
 
     if a.cmd == "gate":
-        recs = load_done(a.records)
+        recs, _stale = load_done(a.records, a.date)
         live = {}
         for part in [x for x in a.index_live.split(",") if x.strip()]:
             if "=" in part:

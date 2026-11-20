@@ -334,7 +334,7 @@ for U in \
   "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/open_0950_pull.py" ; do
   curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
     -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$E.tmp" "$U" 2>/dev/null
-  if [ -s "$E.tmp" ] && grep -q 'OPEN_0950_PULL_V2' "$E.tmp" 2>/dev/null; then
+  if [ -s "$E.tmp" ] && grep -q 'OPEN_0950_PULL_V3' "$E.tmp" 2>/dev/null; then
     mv -f "$E.tmp" "$E"; break
   fi
   rm -f "$E.tmp"
@@ -358,7 +358,26 @@ greps for it, so a cached `V1` copy of the engine — the one with the look-ahea
 win the fetch. Do not accept `V1` as a substitute; if the ladder cannot find `V2`, say so and
 stop rather than publishing a board on the old cut.
 
-`V2` also excludes the **derivative profile** from the published set: a W/WS/`.W` ticker whose
+**`OPEN_0950_PULL_V3` (2026-11-20) makes the resume cache DATED — the previous day's records can
+no longer be replayed as today's.** The engine's pull is resumable, and it resumes from the
+records file in its OWN output directory, keyed by the trading symbol only. A directory left
+over from the previous session therefore replayed **that session's** records as if they were
+this session's, and the symptom is a board full of yesterday's numbers that still passes every
+structural check: **measured 2026-11-20, the first pull of the day resumed 7,197 records from
+the 2026-11-19 run** and reconstructed **SPY at +1.19%** and **QQQ at +2.29%** — the previous
+day's moves — while the live index was at **-0.44%** and **-1.36%**. **Only the publish
+gate's index check caught it**, which is a thin margin for a defect this class. Every record
+now carries the session it was pulled for (`pull_date`), a record whose date is not this
+session's is **DISCARDED rather than resumed**, and a record with no date at all is discarded
+too — it cannot be proven to be this session's. The cache file is then rewritten with this
+session's records only, so no later reader can be handed a mix of two sessions.
+
+The marker was bumped so a cached **V2** copy — the one without the date guard — cannot win
+the fetch ladder above. **Do not accept V2 as a substitute:** a V2 engine in a dirty output
+directory replays the previous session's numbers, and the board's own 09:50 state is what the
+whole routine exists to publish.
+
+**`V2` also excludes the **derivative profile** from the published set: a W/WS/`.W` ticker whose
 10-day average share volume does not exist (measured 2026-11-16: Polestar's **PSNYW**, +59.71%,
 a 3,522-share 10-day average, a pace of 33,003 — the name-based filter missed it because its
 description carries no "warrant" keyword). The volume test is what separates it from the

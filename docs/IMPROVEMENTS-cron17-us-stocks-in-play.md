@@ -968,3 +968,46 @@ not.
    have published a **zero-name board**. The session was re-fetched and the denominator is
    complete for all ten sessions; a helper that publishes an empty denominator should say so
    loudly rather than hand the caller a file that looks valid.
+
+---
+
+## The resume cache was undated, and it replayed yesterday's board (fixed 2026-11-20, `OPEN_0950_PULL_V3`)
+
+**The defect.** `open_0950_pull.py` is resumable: `pull()` calls `load_done(out_jsonl)` and
+re-fetches only the symbols that are not already on disk. The cache is keyed by the trading
+symbol and carried **no session stamp**, so a records file left in the output directory by a
+PREVIOUS session was replayed as if it were this session's. Nothing errors; the records are
+structurally perfect.
+
+**Measured 2026-11-20.** The 09:50 fire ran into an output directory that still held the
+2026-11-19 run's `records.jsonl`. The pull reported `requested 8,115 / resumed 7,197 /
+fetched 7,654` and completed in **10.7 seconds** — a tenth of a real pull. The engine then
+reconstructed **SPY at +1.19%** and **QQQ at +2.29%**: the previous day's moves, because the
+session it was reconstructing was the previous day's. The publish gate caught it —
+`G1: SPY reconstructed 09:50 move +1.19% vs the live index move -0.44% — 1.62pp apart` and
+the same for QQQ at 3.65pp — and **refused to publish**. The output directory was wiped and the
+pull re-run from scratch (7,316 priced, 464 published, the gate green at 0.134pp on both
+indices).
+
+**Why the gate was too thin a margin.** The whole routine exists to publish the session's own
+09:50 state. A stale cache makes it publish the PREVIOUS session's 09:50 state, and every
+structural check — the tier counts, the pace reconciliation, the CSV counts — passes on it.
+Only G1, the index cross-check, sees it. If the two sessions had moved the index the same way,
+the board would have shipped yesterday's numbers with today's date on them.
+
+**The fix (`V3`).** Every record now carries `pull_date`, the session it was pulled for.
+`load_done(path, date)` **discards** any record whose date is not this session's, and
+discards any record with no date at all (written by an older copy — it cannot be proven to be
+this session's). The cache file is rewritten with this session's records only, so the file on
+disk can never hand a later reader a mix of two sessions. The engine's stats publish
+`stale_discarded` so the discard is visible in the run record.
+
+**The selftest grew a case for it:** `a record from another session is NOT resumed (V3 date
+guard)` — the selftest writes a record with no `pull_date` and asserts it is NOT resumed for
+a different session. 51 checks pass.
+
+**The general rule, and it is the same one the fleet keeps relearning:** a cache that is
+KEYED but not STAMPED will be replayed. Every resumable artifact in a fleet that runs twice a
+day needs the session in the key, not only the identifier. The engine's capability marker was
+bumped to `OPEN_0950_PULL_V3` so a cached V2 copy cannot win the skill's fetch ladder — a V2
+engine in a dirty output directory is exactly the defect above.
