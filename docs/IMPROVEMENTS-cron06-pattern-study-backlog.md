@@ -498,3 +498,66 @@ collected) and both must exit non-zero.
 The artifact now also publishes **`snapshot_pulled_at`** — the UTC instant of the pull —
 because a published short-float number is a fact about that instant, not about the week,
 and C12 refuses an artifact that does not say when it was pulled.
+
+---
+
+## 8. The next pass: the cross-check had the same defect it was built to catch (2026-11-20)
+
+The cross-check shipped on 2026-11-16 (§6) was the newest feature, so it was the first
+thing audited for the defect class §7 is about. It failed the audit **immediately**.
+
+### 8.1 A cross-check of 7% of the universe passed every clause
+
+Measured 2026-11-19: the published artifact was edited down to a cross-check covering
+**10 of 138 names** (7%) — and the checker returned **CONTRACT OK — 18 checks passed**.
+C16 verified that the section existed, that the verdicts were a closed set, that the
+ratios were recomputable and that the table matched the JSON. It never asked how much of
+the universe was actually cross-checked. A half-done cross-check therefore read exactly
+like a complete one.
+
+*Fix:* the engine publishes `published_names`, `crosschecked_names`, `coverage_pct`,
+`coverage_floor_pct` (80%) and `not_cross_checked` (the names it did not cover), the
+artifact's cross-check block states the coverage in words, and **C19** fails a run below
+the floor, a coverage number that does not equal `crosschecked/published`, a row count
+that disagrees with the claim, or a missing list of uncross-checked names. The
+fault-injection test carries the case: cut the cross-check to a quarter of the universe
+in BOTH the table and the JSON (so C16's consistency clause cannot catch it) and require
+**C19** to be the clause that fails.
+
+### 8.2 The squeeze flag was published from a number the cross-check disputes
+
+The artifact's headline claim is the squeeze flag, and on 2026-11-14 two of the four
+candidates (VG, MMED) were wrong by 9x and 21x on the share count. The flag survived the
+cross-check unchanged.
+
+*Fix:* `squeeze_candidate` is now a closed set of **YES / NO / CONTESTED** — a candidate
+whose short position the independent source disputes is CONTESTED, not a setup. The
+independent source's own percentage and its verdict are published **on every row**
+(`src_short_pct_float`, `xcheck_verdict`), so the disagreement sits next to the number
+instead of in a separate block further down the document. C10 refuses a YES whose
+cross-check DIVERGES and a CONTESTED without one.
+
+### 8.3 Two fixed-index checks, and a mutator that could not apply
+
+Adding the `Src %Float` column moved every cell to its right — and **C11 and C15 were
+reading fixed indexes**, so they started reading the WRONG CELLS (the delta check
+compared the source percentage against the JSON's delta). Both now locate their columns
+**by header name**, once, in one place.
+
+The same class of bug was in the test harness: the C11 mutator wrote its placeholder into
+a fixed index — which, after the column was added, was the market cap, not the squeeze
+flag — so the mutation "passed" because it never touched the field it claimed to break.
+The mutators now target columns **by name**, and a mutator that cannot find its column or
+row **raises** instead of silently doing nothing.
+
+That last one is the rule the whole episode points at: **a mutation that cannot be
+applied must FAIL the test, not pass it.** Every mutator now raises when its target is
+missing, and the harness verifies the table and the JSON are mutated CONSISTENTLY, so the
+mutation is caught by the clause it is meant to exercise (the coverage mutation is caught
+by C19, not by C16's row-count comparison).
+
+### 8.4 What the contract test is now
+
+21 mutations, each caught by its own clause, plus two engine-level cases (a wrong count
+override and a truncated branch) that must exit non-zero. The checker's clauses grew from
+14 (2026-11-07) to 19.

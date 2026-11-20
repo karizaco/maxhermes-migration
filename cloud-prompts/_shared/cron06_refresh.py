@@ -96,6 +96,9 @@ TEN_YEAR_QUALIFIED = "YES"
 # date column, so a published number is a fact about THIS instant, and the artifact
 # says so.
 SNAPSHOT_PULLED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# The cross-check must cover the PUBLISHED universe — a cross-check of a handful of
+# names is not a cross-check. The floor is a published number, not a claim.
+CROSSCHECK_COVERAGE_FLOOR = 80.0
 
 FAILURES: list[str] = []
 
@@ -576,10 +579,32 @@ def main():
                    if r["ticker"].upper() in fetched and r["ticker"] in wanted]
         xc_status = "ok" if xc_rows else "no_rows"
 
+    # The cross-check's COVERAGE is a number the reader must see: a cross-check that
+    # covers 7% of the universe is not a cross-check. (Proven 2026-11-19: a
+    # 10-of-138 cross-check passed all 18 clauses.) The names with NO figure are
+    # named, so an incomplete run cannot read as a clean one.
+    xc_published = len(sf_rows)
+    xc_covered = len(xc_rows)
+    xc_cov_pct = round(100.0 * xc_covered / xc_published, 1) if xc_published else 0.0
+    xc_missing = sorted(r["ticker"] for r in sf_rows if r["ticker"] not in
+                         {x["ticker"] for x in xc_rows})
+    # A squeeze candidate whose short position the independent source DISPUTES is not a
+    # squeeze setup — it is CONTESTED. The flag is the artifact's headline claim, and
+    # two of the four candidates published on 2026-11-14 (VG, MMED) were wrong by
+    # 9x and 21x on the share count.
+    _xc_by_t = {x["ticker"]: x for x in xc_rows}
+    for r in sf_rows:
+        x = _xc_by_t.get(r["ticker"])
+        r["xcheck_verdict"] = x["verdict"] if x else "NOT_CROSS_CHECKED"
+        r["src_short_pct_float"] = x["source_short_pct_float"] if x else None
+        if r["squeeze_candidate"] == "YES" and r["xcheck_verdict"] == "DIVERGES":
+            r["squeeze_candidate"] = "CONTESTED"
+
     # ---------------------------------------------------------------- render
     os.makedirs(args.out_md_dir, exist_ok=True)
     write_ipo_md(args, ipo_rows, inter, sf_rows, sf_display)
-    write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct, xc_rows, xc_status)
+    write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct, xc_rows, xc_status,
+                xc_missing)
     write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
                       ledger, prior_meta, inter, live_by_ticker, type_by_ticker, sf_rows)
 
@@ -611,6 +636,11 @@ def main():
         "tag_change_vocabulary": sorted(TAG_CHANGES),
         "short_interest_crosscheck": {
             "status": xc_status,
+            "published_names": xc_published,
+            "crosschecked_names": xc_covered,
+            "coverage_pct": xc_cov_pct,
+            "coverage_floor_pct": CROSSCHECK_COVERAGE_FLOOR,
+            "not_cross_checked": xc_missing,
             "source": "Nasdaq short-interest table (api.nasdaq.com/api/quote/<symbol>/short-interest)"
                       if xc_status == "ok" else "not supplied in this run",
             "verdict_vocabulary": sorted(SI_VERDICTS),
@@ -771,7 +801,7 @@ def write_ipo_md(args, ipo_rows, inter, sf_rows, sf_display):
 
 
 def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
-                xc_rows=None, xc_status="not_supplied"):
+                xc_rows=None, xc_status="not_supplied", xc_missing=None):
     fire, data = args.fire_date, args.data_date
     head = _hdr("Weekly High-Short-Float Refresh", fire, data)
     cov = (f"**Universe:** Common Stock with `short_percent_float > 20%`. **Latest available shibui date:** {data} "
@@ -779,12 +809,13 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
     cov += (f"**Count:** {len(sf_rows)} names pass the gate — rows_passing {len(sf_rows)} = rows_kept {len(sf_rows)} "
             f"(paged at the 200-row server ceiling, complete). The table shows the top {len(sf_display)} by "
             "`short_pct_float`; every name in any cross-screen intersection is enriched and listed below the table.\n\n")
-    cols = ("| # | Ticker | Name | Exchange | Short %Float | Δ vs Prior Wk (pp) | Close | 30d Chg % | 30d ADVol ($M) "
-            "| Tradeable | Squeeze | MCap ($B) | Sector |")
-    rows = [cols, "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    cols = ("| # | Ticker | Name | Exchange | Short %Float | Src %Float | Δ vs Prior Wk (pp) | Close | 30d Chg % | "
+            "30d ADVol ($M) | Tradeable | Squeeze | MCap ($B) | Sector |")
+    rows = [cols, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for i, r in enumerate(sf_display, 1):
         rows.append(
             f"| {i} | {r['ticker']} | {r['name']} | {r['exchange']} | {pct(r['short_pct_float'])} | "
+            f"{pct(r.get('src_short_pct_float'))} | "
             f"{r['short_float_delta_pp']} | {money(r['close'])} | {pct(r['chg_30d_pct'])} | "
             f"{('%.1f' % (r['adv30']/1e6)) if r['adv30'] is not None else '—'} | "
             f"{r['tradeable_verdict']} | {r['squeeze_candidate']} | {bn(r['market_cap'])} | {r['sector']} |")
@@ -811,7 +842,7 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
         trend = ("- **Δ vs Prior Wk (pp)** is `NO_PRIOR_SNAPSHOT` on every row: this is the FIRST state snapshot. "
                  "`ownership_stats` has no date column, so the short-float book cannot be replayed — this week's "
                  "sample is the beginning of the series, and next week's run can publish the change.\n")
-    xc = _si_crosscheck_md(xc_rows or [], xc_status)
+    xc = _si_crosscheck_md(xc_rows or [], xc_status, len(sf_rows), xc_missing or [])
     notes = ("## Notes\n" + trend +
              "- `short_percent_float` is a fraction in shibui (`0.20` = 20%); values > 100% occur where disclosed "
              "short interest exceeds float — the `FLOAT_ARTIFACT` verdict marks those rows as noise, not squeeze fuel.\n"
@@ -825,7 +856,7 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
     open(os.path.join(args.out_md_dir, "weekly-high-short-float.md"), "w", encoding="utf-8").write(txt)
 
 
-def _si_crosscheck_md(xc_rows, xc_status):
+def _si_crosscheck_md(xc_rows, xc_status, published=0, missing=None):
     """The cross-check block. It is ALWAYS published — a missing source is named,
     never silently absent."""
     head = "## Short-interest cross-check\n\n"
@@ -842,9 +873,17 @@ def _si_crosscheck_md(xc_rows, xc_status):
     contra = [r for r in xc_rows if (r.get("shibui_short_pct_float") or 0) > 20
               and (r.get("source_short_pct_float") is not None)
               and r["source_short_pct_float"] <= 20]
+    xc_cov_pct = (round(100.0 * len(xc_rows) / published, 1) if published else 0.0)
+    xc_missing = missing or []
+    cov_line = (f"**Coverage:** {len(xc_rows)} of {published} published names cross-checked "
+                f"({xc_cov_pct:.1f}%; floor {CROSSCHECK_COVERAGE_FLOOR:.0f}%).")
+    if xc_missing:
+        cov_line += (f" **Not cross-checked ({len(xc_missing)}):** " + ", ".join(xc_missing[:25])
+                     + (f", … (+{len(xc_missing)-25} more)" if len(xc_missing) > 25 else "") + ".")
     out = ["**Source:** an independent short-interest figure (settlement-dated), compared with "
            "the short interest shibui's own ratio implies. **Status: ok** — "
            f"{len(xc_rows)} names cross-checked: {agree} AGREE, {div} DIVERGES, {nod} NO_DATA.",
+           "", cov_line,
            "",
            f"**{len(contra)} of the {len(xc_rows)} cross-checked names publish a short % of float "
            "that the independent source contradicts ABOVE the 20% gate** — shibui says >20% and "

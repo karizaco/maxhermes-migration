@@ -192,6 +192,49 @@ def run_checker(d: Path, md: Path, reply: Path | None = None):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def set_cell_by_name(txt: str, row_prefix: str, column: str, value: str) -> str:
+    """Replace the cell of the FIRST table row starting with row_prefix, in the
+    column NAMED `column`.
+
+    Two traps this helper exists to kill (both hit on 2026-11-19):
+
+    * a mutator that targets a FIXED INDEX silently mutates a different field the
+      moment a column is added (the cross-check's "Src %Float" shifted the short-float
+      table and the C11 mutation was writing a placeholder into the market cap instead
+      of the squeeze flag) — and the mutation then "passes" because the checker never
+      saw the field it was supposed to break;
+    * the header and the data row must be split THE SAME WAY. A leading "|" makes
+      `line.split("|")` produce one more cell than `line.strip().strip("|").split("|")`,
+      so a column index taken from one and applied to the other lands one cell off.
+    """
+    lines = txt.splitlines()
+    cols = {}
+    for line in lines:
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.split("|")]
+            names = [c for c in cells]
+            if "#" in names and "Ticker" in names:
+                cols = {name: i for i, name in enumerate(names)}
+                break
+    if column not in cols:
+        raise AssertionError(f"the mutator cannot find the column {column!r} — "
+                             "a mutation that cannot be applied must FAIL the test")
+    idx = cols[column]
+    out = []
+    hit = False
+    for line in lines:
+        if (not hit) and line.startswith(row_prefix):
+            cells = line.split("|")
+            cells[idx] = f" {value} "
+            line = "|".join(cells)
+            hit = True
+        out.append(line)
+    if not hit:
+        raise AssertionError(f"the mutator cannot find the row {row_prefix!r} — "
+                             "a mutation that cannot be applied must FAIL the test")
+    return "\n".join(out) + "\n"
+
+
 def set_cell(txt: str, row_prefix: str, idx: int, value: str) -> str:
     """Replace one cell of the first table row starting with row_prefix."""
     out = []
@@ -280,7 +323,8 @@ def main():
         def blank_days(t):
             return re_sub_days(t)
         mut("C4 an IPO row loses days_since_ipo", "C4",
-            lambda: edit_md("weekly-ipo.md", lambda t: set_cell(t, "| 1 | AAAA |", 7, "—")))
+            lambda: edit_md("weekly-ipo.md",
+                            lambda t: set_cell_by_name(t, "| 1 | AAAA |", "Days Since IPO", "—")))
 
         mut("C5 a verdict is outside the closed set", "C5",
             lambda: edit_json(lambda j: j["short_float_rows"][0].__setitem__("tradeable_verdict", "AWESOME")))
@@ -309,7 +353,7 @@ def main():
 
         mut("C11 a required field carries a placeholder", "C11",
             lambda: edit_md("weekly-high-short-float.md",
-                            lambda t: set_cell(t, "| 1 | AAAA |", 10, "—")))
+                            lambda t: set_cell_by_name(t, "| 1 | AAAA |", "Squeeze", "—")))
 
         mut("C12 the data date is not published", "C12",
             lambda: edit_md("peoplewish-backlog.md", lambda t: t.replace("data_date: 2026-11-06", "data_date: 2026-11-05")))
@@ -393,6 +437,39 @@ def main():
                   "arrived than were collected — the truncation guard is vacuous")
             sys.exit(1)
         print("ok  the engine refuses to publish a TRUNCATED branch (rows_passing > collected)")
+
+        def cut_coverage(j):
+            xc = j["short_interest_crosscheck"]
+            keep = xc["rows"][:1]
+            xc["rows"] = keep
+            xc["crosschecked_names"] = 1
+            xc["coverage_pct"] = 25.0
+            xc["not_cross_checked"] = ["CCCC", "DDDD", "EEEE"]
+            return keep
+
+        def cut_md(txt):
+            # scope the cut to the CROSS-CHECK table only — a blunt row-drop across the
+            # whole document also empties the intersection table, and then C6 catches
+            # the mutation instead of C19.
+            head, sep, rest = txt.partition("## Short-interest cross-check")
+            section, sep2, tail = rest.partition("\n## ")
+            lines = section.splitlines()
+            hdr = next((l for l in lines if l.startswith("|") and "Shibui %Float" in l), None)
+            if hdr is None:
+                raise AssertionError("the mutator cannot find the cross-check table")
+            ti = [c.strip() for c in hdr.split("|")].index("Ticker")
+            kept = []
+            for line in lines:
+                if line.startswith("|") and line != hdr and "---" not in line:
+                    cells = [c.strip() for c in line.split("|")]
+                    if len(cells) > ti and cells[ti] not in ("Ticker", "AAAA"):
+                        continue
+                kept.append(line)
+            return head + sep + "\n".join(kept) + sep2 + tail
+
+        mut("C19 the cross-check covers a handful of names", "C19",
+            lambda: (edit_json(cut_coverage),
+                      edit_md("weekly-high-short-float.md", cut_md)))
 
         def bad_qualifier(j):
             for r in j["backlog_live_rescore"]:

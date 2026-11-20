@@ -37,7 +37,7 @@ REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-bac
                    "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
-CHECKS = 18
+CHECKS = 19
 
 
 def fail(clause: str, msg: str) -> None:
@@ -183,8 +183,9 @@ def main():
         v = r.get("tradeable_verdict")
         if v not in TRADEABLE_VERDICTS:
             fail("C5", f"short-float row {r.get('ticker')}: verdict {v!r} outside the closed set")
-        if r.get("squeeze_candidate") not in ("YES", "NO"):
-            fail("C5", f"short-float row {r.get('ticker')}: squeeze_candidate must be YES/NO")
+        if r.get("squeeze_candidate") not in ("YES", "NO", "CONTESTED"):
+            fail("C5", f"short-float row {r.get('ticker')}: squeeze_candidate "
+                       f"{r.get('squeeze_candidate')!r} is outside ['CONTESTED', 'NO', 'YES']")
         d = r.get("short_float_delta_pp")
         if d != "NO_PRIOR_SNAPSHOT" and num(d) is None:
             fail("C5", f"short-float row {r.get('ticker')}: short_float_delta_pp is neither a number "
@@ -305,6 +306,21 @@ def main():
             if not (sp is not None and sp > 50 and v == "TRADEABLE"):
                 fail("C10", f"short-float row {r.get('ticker')}: squeeze_candidate=YES without "
                             f"short>50% AND a TRADEABLE verdict (short={sp}, verdict={v})")
+            if r.get("xcheck_verdict") == "DIVERGES":
+                fail("C10", f"short-float row {r.get('ticker')}: squeeze_candidate=YES while the "
+                            f"independent source DISPUTES the short position — it must be CONTESTED")
+        if r.get("squeeze_candidate") == "CONTESTED" and r.get("xcheck_verdict") != "DIVERGES":
+            fail("C10", f"short-float row {r.get('ticker')}: squeeze_candidate=CONTESTED without a "
+                        f"disputed cross-check (verdict={r.get('xcheck_verdict')!r})")
+
+    # ---------------------------------------------------------------- the short-float table's columns
+    # Column positions are looked up BY HEADER NAME, once, here. A fixed index is a
+    # time bomb: adding a column (the cross-check's "Src %Float", 2026-11-19) moved
+    # the delta and silently made C15 read the wrong cell.
+    sf_display = table_rows(docs["weekly-high-short-float.md"],
+                             docs["weekly-high-short-float.md"].splitlines()[0])
+    _sf_hdr = next((x for x in sf_display if len(x) > 2 and x[0] == "#" and x[1] == "Ticker"), None)
+    _sf_ix = {name: i for i, name in enumerate(_sf_hdr)} if _sf_hdr else {}
 
     # ---------------------------------------------------------------- C11 no placeholder
     for r in ipo_rows:
@@ -314,12 +330,12 @@ def main():
                 if r[idx] == "—":
                     fail("C11", f"weekly-ipo.md: row {r[1]} carries a placeholder '—' in the required "
                                 f"field {name}")
-    sf_display = table_rows(docs["weekly-high-short-float.md"],
-                             docs["weekly-high-short-float.md"].splitlines()[0])
-    for r in [x for x in sf_display if x and re.match(r"^\d+$", x[0])]:
-        if len(r) >= 12:
-            for idx, name in ((5, "short_float_delta_pp"), (9, "tradeable"), (10, "squeeze")):
-                if r[idx] == "—":
+    if not _sf_hdr:
+        fail("C11", "the short-float table has no header row")
+    else:
+        for r in [x for x in sf_display if x and re.match(r"^\d+$", x[0])]:
+            for name in ("Δ vs Prior Wk (pp)", "Tradeable", "Squeeze"):
+                if name in _sf_ix and _sf_ix[name] < len(r) and r[_sf_ix[name]] == "—":
                     fail("C11", f"weekly-high-short-float.md: row {r[1]} carries a placeholder '—' in "
                                 f"the required field {name}")
 
@@ -455,14 +471,27 @@ def main():
             fail("C15", f"the artifact names a prior state snapshot "
                         f"({data.get('prior_state_fire_date')}) but no row carries a "
                         "week-over-week delta — the delta lookup is keyed on the wrong key")
+    _di = _sf_ix.get("Δ vs Prior Wk (pp)")
     for cells in [r for r in sf_display if r and re.match(r"^\d+$", r[0])]:
         r = by_ticker.get(cells[1])
-        if not r or len(cells) < 6:
+        if not r or _di is None or len(cells) <= _di:
             continue
-        if cells[5] != str(r.get("short_float_delta_pp")):
+        if cells[_di] != str(r.get("short_float_delta_pp")):
             fail("C15", f"weekly-high-short-float.md row {cells[1]}: the published delta "
-                        f"{cells[5]!r} does not match the JSON companion's "
+                        f"{cells[_di]!r} does not match the JSON companion's "
                         f"{r.get('short_float_delta_pp')!r}")
+        _si = _sf_ix.get("Src %Float")
+        if _si is not None and len(cells) > _si:
+            want = r.get("src_short_pct_float")
+            if want is None:
+                if cells[_si] != "—":
+                    fail("C15", f"weekly-high-short-float.md row {cells[1]}: publishes "
+                                f"{cells[_si]!r} for a name the JSON has no cross-checked "
+                                f"percentage for")
+            elif num(cells[_si]) is None or num(want) is None \
+                    or abs(float(num(cells[_si])) - float(num(want))) > 0.11:
+                fail("C15", f"weekly-high-short-float.md row {cells[1]}: the published source "
+                            f"percentage {cells[_si]!r} does not match the JSON's {want!r}")
 
     # ---------------------------------------------------------------- C17 the 10-year claim
     # The scan's gate is 1,260 bars (~5 years), so a name can be published as a
@@ -521,6 +550,44 @@ def main():
         if str(basis) > str(data.get("data_date")):
             fail("C18", f"the sweep basis date {basis} is AFTER the artifact's data date "
                         f"{data.get('data_date')} — the intersection is computed against the future")
+
+    # ---------------------------------------------------------------- C19 the cross-check coverage
+    # A cross-check that covers a handful of names is not a cross-check: proven
+    # 2026-11-19, a 10-of-138 cross-check passed every other clause. The coverage is
+    # a published number with a published floor.
+    xc = data.get("short_interest_crosscheck") or {}
+    cov_pct = xc.get("coverage_pct")
+    floor = xc.get("coverage_floor_pct")
+    pub_n = xc.get("published_names")
+    cov_n = xc.get("crosschecked_names")
+    if cov_pct is None or floor is None:
+        fail("C19", "the cross-check publishes no coverage_pct / coverage_floor_pct — a "
+                    "cross-check of a few names would read as a cross-check of the universe")
+    else:
+        if num(cov_pct) is None or num(floor) is None:
+            fail("C19", f"the cross-check coverage is not numeric (coverage={cov_pct!r}, "
+                        f"floor={floor!r})")
+        elif float(cov_pct) < float(floor):
+            fail("C19", f"the cross-check covers {cov_pct}% of the published universe, below the "
+                        f"{floor}% floor — the unverified names are not verified")
+        if num(pub_n) is not None and num(cov_n) is not None and num(cov_pct) is not None:
+            want = round(100.0 * float(cov_n) / float(pub_n), 1) if float(pub_n) else 0.0
+            if abs(float(cov_pct) - want) > 0.11:
+                fail("C19", f"the cross-check publishes coverage_pct {cov_pct} but "
+                            f"{cov_n}/{pub_n} is {want}")
+        rows_x = xc.get("rows") or []
+        if num(cov_n) is not None and num(cov_n) != len(rows_x):
+            fail("C19", f"the cross-check claims {cov_n} names cross-checked and carries {len(rows_x)}")
+        missing = xc.get("not_cross_checked")
+        if missing is None:
+            fail("C19", "the cross-check does not name the names it did NOT cross-check")
+        elif num(pub_n) is not None and num(cov_n) is not None \
+                and len(missing) != int(pub_n) - int(cov_n):
+            fail("C19", f"the cross-check names {len(missing)} uncross-checked names, but "
+                        f"{pub_n} - {cov_n} is {int(pub_n) - int(cov_n)}")
+    sfm_txt = docs["weekly-high-short-float.md"]
+    if "**Coverage:**" not in sfm_txt:
+        fail("C19", "the short-float artifact does not publish the cross-check coverage")
 
     report()
 

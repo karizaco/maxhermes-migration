@@ -2611,6 +2611,12 @@ markdown. A hand-typed price is a defect, not a style choice.
    ~125 KB each). Fetch them with 6 threads: **138 names in 6 s**, no rate-limit hit. A
    sequential fetch of the same set takes minutes — use the threads.
 
+   **Cross-check EVERY published name.** The artifact publishes a **coverage floor**: the
+   run must cross-check at least 80% of the names it publishes, and the names it did not
+   cross-check are named. (Proven 2026-11-19: a 10-of-138 cross-check passed all 18
+   clauses — a cross-check of a handful of names reads exactly like a cross-check of the
+   universe unless the coverage is published and floored.)
+
    Pass the rows to the engine as `--si-crosscheck-json`:
    `[{"ticker":"VG","interest_shares":48857305,"short_pct_float":9.366,"days_to_cover":3.42,
    "source":"stockanalysis.com"}]`. The engine owns the ratio, the percentage gap and the
@@ -2639,7 +2645,9 @@ markdown. A hand-typed price is a defect, not a style choice.
 | Field | Vocabulary / rule |
 |---|---|
 | `tradeable_verdict` | `TRADEABLE` (30d ADVol >= $20M) / `THIN` ($5-20M) / `ILLIQUID` (< $5M) / `FLOAT_ARTIFACT` (short % of float > 100) / `NO_QUOTE` (no volume history). Precedence: FLOAT_ARTIFACT > NO_QUOTE > ILLIQUID > THIN > TRADEABLE. |
-| `squeeze_candidate` | `YES` only when short > 50% AND the verdict is `TRADEABLE`. |
+| `squeeze_candidate` | `YES` only when short > 50% AND the verdict is `TRADEABLE` **AND the independent source does not dispute the short position**; `CONTESTED` when the cross-check DIVERGES (two of the four candidates published on 2026-11-14 were wrong by 9x and 21x on the share count); `NO` otherwise. |
+| `src_short_pct_float` / `xcheck_verdict` | the independent source's own short % of float, and its verdict (`AGREE` / `DIVERGES` / `NO_DATA` / `NOT_CROSS_CHECKED`), published **on the row** — the disagreement belongs next to the number, not in a separate block. |
+| `coverage_pct` / `coverage_floor_pct` | how much of the published universe the cross-check actually covered, and the floor it must clear (80%). |
 | `short_float_delta_pp` | the change in short % of float against the prior state snapshot, in percentage points; `NO_PRIOR_SNAPSHOT` when the name was not in it. |
 | `chg_30d_pct` | the price change over the 30-bar window already pulled for the ADVol denominator — it costs NO extra call. |
 | `mcap_verified` | `YES` when a `shibui.valuation` row exists within 14 days; `NO` means the name passed the $1B floor BY DEFAULT, not on a stamped number. |
@@ -2683,6 +2691,10 @@ checker rejects it.
   **225 have a full ~10 years of bars and 76 have less than 9.5 years** (the thinnest: 1,276
   bars, 5.1 years). The claim is therefore a published FIELD (`bars_10y`, `history_years`,
   `ten_year_qualifier`), not a word in the title.
+* **A cross-check of a handful of names reads exactly like a cross-check of the
+  universe** — unless the COVERAGE is published and floored. Proven 2026-11-19: a
+  10-of-138 cross-check passed every one of the 18 clauses. The coverage is now a
+  published number with an 80% floor, and the uncross-checked names are named.
 * **The short-float universe moves INTRADAY, because the threshold is applied to a live
   snapshot.** Measured 2026-11-19: the same screen query, the same data date, run 40
   minutes apart, returned **132 names instead of 138** — 11 dropped below the 20% gate and
