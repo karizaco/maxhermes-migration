@@ -148,13 +148,20 @@ def _f(value, default=None):
 def tv_scan(filters, columns, rng=(0, 2000), sort=None):
     """One POST to the TradingView scanner. The payload key is `filter`
     (singular) and the dialect is left/operation/right — the
-    field/operator/value dialect is rejected with HTTP 400."""
+    field/operator/value dialect is rejected with HTTP 400.
+
+    The DEFAULT sort is `name` -- the ticker -- on purpose. `name` is unique,
+    so a paged pull's boundary never shifts between two requests. `description`
+    (the company name) is NOT unique and must never be a pagination key: see
+    `fetch_universe()` and
+    `docs/IMPROVEMENTS-cron09-2026-11-20-tv-pagination-key.md`.
+    """
     body = {
         "filter": filters,
         "options": {"lang": "en"},
         "symbols": {"query": {"types": []}, "tickers": []},
         "columns": columns,
-        "sort": sort or {"sortBy": "description", "sortOrder": "asc"},
+        "sort": sort or {"sortBy": "name", "sortOrder": "asc"},
         "range": list(rng),
     }
     req = urllib.request.Request(
@@ -223,8 +230,25 @@ def fetch_universe(min_cap, page=2000):
     rows, seen, total = [], set(), None
     offset = 0
     while True:
+        # PAGE ON A STABLE, UNIQUE KEY.
+        #
+        # Measured 2026-11-20 (cron #09's 18:30 ET fire): sorting by
+        # `description` (the company name) is NOT unique -- GOOG/GOOGL,
+        # BBD/BBDC and ~30 other pairs share a description -- so the server's
+        # tie-break is unstable BETWEEN requests, and a row sitting on a page
+        # boundary comes back TWICE. The dedupe drops the repeat and the
+        # universe lands on 3710 unique rows against totalCount 3711: a
+        # one-row silent truncation that the completeness assertion correctly
+        # refused (the run failed closed rather than publishing a short book).
+        #
+        # `name` (the ticker) is unique, so the same pull returns 3711/3711
+        # with zero duplicates. This is the rule `docs/
+        # IMPROVEMENTS-2026-11-12-tv-scanner-pull-completeness.md` §1 already
+        # states -- and §5 of that same document wrongly claimed this engine
+        # "already pages on a stable key". It did not. That claim is corrected
+        # in docs/IMPROVEMENTS-cron09-2026-11-20-tv-pagination-key.md.
         payload = tv_scan(filters, TV_COLUMNS, rng=(offset, offset + page),
-                          sort={"sortBy": "description", "sortOrder": "asc"})
+                          sort={"sortBy": "name", "sortOrder": "asc"})
         total = payload.get("totalCount")
         chunk = _rows(payload, TV_COLUMNS)
         if not chunk:

@@ -655,6 +655,35 @@ def _size_cut_note(regime: dict, breadth_pct: float) -> str:
     return (f"size cut is off - breadth {breadth_pct:.2f}% is not under the "
             "40% trigger")
 
+def _divergence_note(band: str, divergence: float) -> str:
+    """The divergence sentence is DERIVED from the band - never printed.
+
+    WHY (measured 2026-11-20): the sentence under the divergence band was
+    unconditional. It read "the average large cap is materially healthier than
+    the index" under EVERY band, so a NARROW divergence - the average name
+    WEAKER than the index - was described with the opposite sentence. The
+    2026-11-20 artifact published "band MATCHED" over a +14.94 pp divergence
+    and the sentence directly underneath contradicted its own label.
+
+    The band itself is a published rule (BROAD at or above +15 pp, NARROW at
+    or below -15 pp, MATCHED in between) and is NOT changed here; only the
+    explanation now follows the band it is attached to.
+    """
+    if band == "BROAD":
+        return ("the average large cap is materially healthier than the index - "
+                "participation is broader than the headline index, and the "
+                "index's own posture is the weak leg. It is NOT a megacap-led "
+                "advance.")
+    if band == "NARROW":
+        return ("the average large cap is materially WEAKER than the index - the "
+                "index is being held up by a narrow group while the typical "
+                "large cap sits below it.")
+    return ("the average large cap and the index ETFs are in the same posture - "
+            "the index's own position is representative of the typical large "
+            f"cap, with a divergence of {divergence:+.2f} pp (the band flips at "
+            "+/-15 pp).")
+
+
 # ------------------------------------------------------------- the collectors
 
 def collect_branches(bridge: str, t1_date: str, workers: int) -> tuple[dict, dict]:
@@ -1366,9 +1395,8 @@ def render_breadth_md(path: Path, breadth: dict, results: dict, live: dict,
         f"| index ETFs above their 20-DMA | {b['index_etfs_above_20dma_pct']:.0f}% "
         f"({sum(1 for s in order if etfs[s]['above_sma20'])} of 5) |",
         "",
-        f"A **{b['divergence_band']}** divergence means the average large cap is materially healthier than "
-        "the index — participation is broader than the headline index, and the index's own posture is the "
-        "weak leg. It is NOT a megacap-led advance.",
+        f"A **{b['divergence_band']}** divergence: "
+        f"{_divergence_note(b['divergence_band'], b['breadth_divergence_pp'])}",
         "",
         "## Index positioning — distance from the 50-DMA",
         "",

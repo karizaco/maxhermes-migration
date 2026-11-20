@@ -1728,9 +1728,22 @@ def select_focus(candidates: dict[str, Candidate]) -> dict[str, Candidate]:
         return {}
     high_conv = {s: c for s, c in candidates.items() if c.n_stylists >= FOCUS_THRESHOLD_STYLISTS}
     # top-5 velocity
+    #
+    # A MISSING velocity reading is NOT a zero velocity. `dict.get(k, 0)`
+    # substitutes the default only when the key is ABSENT -- a candidate whose
+    # velocity_14d is explicitly None comes back as None and then sorts
+    # against an int: "TypeError: '<' not supported between instances of
+    # 'NoneType' and 'int'" (measured 2026-11-20, cron #09's 18:30 ET fire --
+    # the whole tiering stage died on it). `select_tier_a` below already uses
+    # the None-safe `or 0` idiom; this one did not, so the two halves of the
+    # SAME tiering disagreed. The key below ranks names that CARRY a velocity
+    # reading above names that do not, and orders the carriers descending.
     by_velocity = sorted(
         candidates.items(),
-        key=lambda kv: kv[1].data.get("velocity_14d", 0),
+        key=lambda kv: (
+            0 if kv[1].data.get("velocity_14d") is None else 1,
+            kv[1].data.get("velocity_14d") or 0,
+        ),
         reverse=True,
     )[:5]
     top_velocity = {s: c for s, c in by_velocity}

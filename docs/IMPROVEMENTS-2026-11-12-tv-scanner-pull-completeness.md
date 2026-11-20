@@ -88,10 +88,19 @@ the file, so a fetch ladder demanding the old token resolves to the new file, an
 
 **#10 needs nothing** — its intraday breadth never queries the scanner (shibui SQL + CBOE + bridge;
 its published artifact says "TradingView scanner — not attempted"), and the EOD breadth inside
-cron #09's sweep goes through `daily_sweep_engines.py::fetch_universe()`, which already pages on a
-stable key, DEDUPES through a `seen` set and asserts `len(rows) == totalCount` ("TRUNCATED SCAN …
-Refusing to publish a short book"). **#92 needs nothing** — its movers come from the bridge's
-`top_movers`, and the scanner is used only for a TARGETED enrichment pull.
+cron #09's sweep goes through `daily_sweep_engines.py::fetch_universe()`, which DEDUPES through a
+`seen` set and asserts `len(rows) == totalCount` ("TRUNCATED SCAN … Refusing to publish a short
+book"). **#92 needs nothing** — its movers come from the bridge's `top_movers`, and the scanner is
+used only for a TARGETED enrichment pull.
+
+> **CORRECTION (2026-11-20).** This paragraph originally also claimed that `fetch_universe()`
+> "already pages on a **stable key**". **It did not** — it paged on `sortBy: "description"`, the
+> company name, which is NOT unique (GOOG/GOOGL, BBD/BBDC and ~30 other pairs share one), so the
+> server's tie-break shifted between requests and the 2026-11-20 fire fetched 3,710 unique rows
+> against `totalCount` 3,711. The key is now `name` (the ticker). The claim in this document was
+> asserted without measuring the key, and it survived a month of fires because a *sorted* key looks
+> like a *stable* one. **A pagination key is stable only if it is UNIQUE.** Evidence and the fix:
+> `docs/IMPROVEMENTS-cron09-2026-11-20-tv-pagination-key.md`.
 
 ## 6. The guard
 
