@@ -1067,11 +1067,18 @@ def write_md(path, results, report, bridge):
     A("")
     A("## Candidates")
     A("")
+    # The Candidates section is a TABLE even when it is empty. The contract's gate
+    # (tools/check_bonde_artifact.py) asserts the table's columns exist on EVERY
+    # artifact, so a zero-passer day must still publish the header row - the CSV
+    # already publishes its header with zero rows, and the two files must not
+    # disagree about the candidate set. The note below explains the emptiness.
+    # The header is data-independent, so an empty run's Candidates section is
+    # byte-identical whatever the tape did.
+    for line in _md_candidates_table(results):
+        A(line)
     if not results:
+        A("")
         A("_No name passed every gate today._")
-    else:
-        for line in _md_candidates_table(results):
-            A(line)
     A("")
     A("## Promoted ideas")
     A("")
@@ -1211,7 +1218,8 @@ def write_md(path, results, report, bridge):
     else:
         A(f"| shibui-finance (bridge) | settled history, latest close | ok for every PUBLISHED "
           f"candidate (the day-alignment check resolved against shibui's latest settled close) |")
-    A("| market-recap (bridge) | market state / index backdrop | see caveats |")
+    A("| market-recap (bridge) | market state / index backdrop | not used by this screen \u2014 "
+      "the day-alignment proof is the TradingView + shibui pair |")
     if fb_tickers:
         A("")
         A(f"_history note: {len(fb_tickers)} ticker(s) had no shibui history and were served by the "
