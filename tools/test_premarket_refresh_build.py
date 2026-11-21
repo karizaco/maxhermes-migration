@@ -151,7 +151,7 @@ def main():
     # verdicts when the branch it was told to publish is not the gate's.
     merged0, mmd0, mcsv0, slots0 = build_fixture(tmp)
     gatef = os.path.join(tmp, "state.json")
-    json.dump({"marker": "session-state-v2", "session_state": "PRE-OPEN",
+    json.dump({"marker": "session-state-v3", "session_state": "PRE-OPEN",
                "close_field_defects": ["AUGO"],
                "verdict_reason": "the scanner's close disagreed on one name of 703 common names"},
               open(gatef, "w"))
@@ -167,7 +167,7 @@ def main():
         check(False, "the gate-verdict build wrote a file")
 
     gatef2 = os.path.join(tmp, "state_open.json")
-    json.dump({"marker": "session-state-v2", "session_state": "OPEN",
+    json.dump({"marker": "session-state-v3", "session_state": "OPEN",
                "close_field_defects": [],
                "verdict_reason": "the gate says the session is live"},
               open(gatef2, "w"))
@@ -420,7 +420,7 @@ def main():
     #     names off their prior close) and the artifact published "These are ISOLATED field
     #     defects, not a live session" directly beside `market_open_at_pull: true`.
     gatef3 = os.path.join(tmp, "state_live.json")
-    json.dump({"marker": "session-state-v2", "session_state": "OPEN",
+    json.dump({"marker": "session-state-v3", "session_state": "OPEN",
                "close_field_defects": ["AUGO", "NVDA", "SLS"],
                "tests": {"prior_close_matches_morning": {"checked": 747, "failed": 581}},
                "verdict_reason": "the scanner's close moved off the prior close on 581 of 747 names"},
