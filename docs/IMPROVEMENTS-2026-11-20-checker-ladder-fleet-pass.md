@@ -80,11 +80,20 @@ worked anonymously), the acceptance test demanding the marker, and a fail-closed
 **Two checkers were promoted from "run it locally" to "fetch it, then run it":**
 `check_cron06_artifact.py` (#06) and `check_eod_artifact.py` (#20).
 
-**Cron #07 got its gate** — a new STEP 8 that fetches `check_focus_rvol_artifact.py` over the
-ladder demanding `focus-rvol-alert-v1` and runs it on the artifact before the push. The
-gate's exit code is the decision: 0 → push, 1 → fix and re-run, publish nothing. The
-reply-level clauses (C15/C16) are **not** exercised in that slot — the chat reply is composed
-after the push — and the prompt says so.
+**Cron #07 got its gate** — the shared SKILL spec now fetches
+`check_focus_rvol_artifact.py` over the ladder demanding `focus-rvol-alert-v1` and runs it on
+the artifact before the push. The gate's exit code is the decision: 0 → push, 1 → fix and
+re-run, publish nothing. The reply-level clauses (C15/C16) are **not** exercised in that slot —
+the chat reply is composed after the push, so the gate is run on the artifact alone — and the
+SKILL says so.
+
+**It went into the SKILL, not the prompt.** The prompt is the DEPLOYED prompt: a gate there
+would have needed a 54 KB byte-exact redeploy, and a typo in that transcription would have
+failed the SHA-256 check after the fact. The SKILL is fetched at RUN time and is where this
+family's other gates already live (#04 Bonde, #06 pattern-study, #08 pre-market, #10 breadth),
+so #07's next fire is gated with **no redeploy at all** — and the prompt carries a pointer
+instead of a second copy of the gate, because two copies of a gate is two chances to run the
+wrong one.
 
 **The prose was made true.** #15 and #15b said "if the checker cannot be fetched, say so in
 `### Method & caveats` and carry on"; the block now fails closed, so the prose says the run
