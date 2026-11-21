@@ -1001,6 +1001,17 @@ def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
                      f"{r.get('history_years') if r.get('history_years') is not None else '—'} | "
                      f"{r.get('ten_year_qualifier') or '—'} |")
 
+    # The carried-forward rows were tagged BEFORE the history was published, so their
+    # "10y Low" was never checked against the 10-year bar floor. The ledger is frozen —
+    # that is what a ledger means — but the artifact says so, rather than letting an
+    # unverified claim sit in a durable table.
+    carried_note = (
+        "**The carried-forward rows were tagged before 2026-11-19, when the scan's history "
+        "was not published per name.** Their `10y Low` is the trough of whatever history "
+        "they had at the time and was NOT checked against the 10-year bar floor (2,500+ "
+        "bars): a row tagged in 2021 has no 10-year low at all. The live re-score above "
+        "carries the current history and the `10y` flag for every name still in the tagged "
+        "window.\n\n")
     car = ["| Ticker | Name | Type | Exchange | Sector | Current | 10y Low | Peak Gain | Gain | 60d High | Contraction | YTD Low | Last Day | Tags | First Tagged |",
            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     def gnum(v):
@@ -1038,7 +1049,7 @@ def write_backlog_md(args, tagged, rescore, newly, newly_common, excluded_new,
             if excluded_new else "No newly-discovered non-Common-Stock names in this week's tagged window.") + "\n\n" +
            chg_md + "\n\n" +
            f"## Live re-score of the tagged window\n\n" + "\n".join(rrows) + "\n\n" +
-           f"## Carried forward (first tagged on or before {fire})\n\n" + "\n".join(car) + "\n\n" +
+           f"## Carried forward (first tagged on or before {fire})\n\n" + carried_note + "\n".join(car) + "\n\n" +
            notes + _source_health(data))
     open(os.path.join(args.out_md_dir, "peoplewish-backlog.md"), "w", encoding="utf-8").write(txt)
 

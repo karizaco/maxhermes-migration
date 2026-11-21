@@ -88,6 +88,19 @@ def ledger_names(txt: str) -> set:
     return names
 
 
+def col_map(rows, first_header: str):
+    """{column name: index} for the table whose HEADER row starts with `first_header`.
+
+    Column positions are looked up BY NAME, never by a literal index: a content column
+    moves when a column is added, and a check that reads the wrong cell fails silently
+    (2026-11-19, cron #06; 2026-11-21, the same defect in three more places).
+    """
+    for r in rows:
+        if r and r[0] == first_header:
+            return {name: i for i, name in enumerate(r)}
+    return {}
+
+
 def num(v):
     try:
         return float(str(v).replace(",", "").replace("%", "").replace("$", "").replace("pp", "").strip())
@@ -156,15 +169,22 @@ def main():
                        f"carries {n_got} rows")
 
     # ---------------------------------------------------------------- C4 IPO fields
-    ipo_rows = table_rows(docs["weekly-ipo.md"], docs["weekly-ipo.md"].splitlines()[0])
-    ipo_rows = [r for r in ipo_rows if r and re.match(r"^\d+$", r[0])]
+    _ipo_all = table_rows(docs["weekly-ipo.md"], docs["weekly-ipo.md"].splitlines()[0])
+    ipo_rows = [r for r in _ipo_all if r and re.match(r"^\d+$", r[0])]
     if not ipo_rows:
         fail("C4", "the IPO table has no data rows")
+    _ipo_ix = col_map(_ipo_all, "#")
     for r in ipo_rows:
         if len(r) < 12:
             fail("C4", f"IPO row {r[1] if len(r) > 1 else '?'} has {len(r)} columns, expected 12")
             continue
-        days, post, verified, verdict = r[6], r[7], r[8], r[9]
+        def icol(name, default=None):
+            i = _ipo_ix.get(name)
+            return r[i] if (i is not None and i < len(r)) else default
+        days = icol("Days Since IPO")
+        post = icol("Post Lockup")
+        verified = icol("MCap Verified")
+        verdict = icol("Tradeable")
         if num(days) is None:
             fail("C4", f"IPO row {r[1]}: days_since_ipo is not a number ({days!r})")
         if post not in ("YES", "NO"):
@@ -245,16 +265,19 @@ def main():
     if "## Live re-score of the tagged window" not in bl:
         fail("C7", "the backlog does not publish the live re-score section")
     else:
-        rows = [r for r in table_rows(bl, "## Live re-score of the tagged window")
-                if r and r[0] != "Ticker"]
+        _rs_all = table_rows(bl, "## Live re-score of the tagged window")
+        rows = [r for r in _rs_all if r and r[0] != "Ticker"]
         tagged = (cov.get("tagged") or {}).get("rows_kept")
         if tagged and len(rows) != tagged:
             fail("C7", f"the live re-score has {len(rows)} rows but {tagged} names were tagged")
+        _rs_ix = col_map(_rs_all, "Ticker")
+        _tc = _rs_ix.get("Tag Change")
         for r in rows:
             if len(r) < 5:
                 continue
-            if r[4] not in TAG_CHANGES:
-                fail("C7", f"re-score row {r[0]}: tag_change {r[4]!r} is outside the closed set "
+            tc = r[_tc] if (_tc is not None and _tc < len(r)) else None
+            if tc not in TAG_CHANGES:
+                fail("C7", f"re-score row {r[0]}: tag_change {tc!r} is outside the closed set "
                            f"{sorted(TAG_CHANGES)}")
     nnew = len(data.get("newly_tagged") or [])
     nrows = [r for r in table_rows(bl, "## Newly tagged entries") if r and re.match(r"^\d+$", r[0])]
@@ -516,29 +539,34 @@ def main():
         if num(hy) is None or abs(float(hy) - float(bars) / 252.0) > 0.15:
             fail("C17", f"scan row {r.get('symbol')}: history_years {hy!r} does not match "
                         f"bars_10y {bars}")
-    _bl_rows = [r for r in table_rows(docs["peoplewish-backlog.md"],
-                                      "## Live re-score of the tagged window") if r and r[0] != "Ticker"]
+    _bl_all = table_rows(docs["peoplewish-backlog.md"], "## Live re-score of the tagged window")
+    _bl_rows = [r for r in _bl_all if r and r[0] != "Ticker"]
     _rs = {r.get("ticker"): r for r in (data.get("backlog_live_rescore") or [])}
+    _bl_ix = col_map(_bl_all, "Ticker")
+    _hi = _bl_ix.get("Hist (y)")
+    _qi = _bl_ix.get("10y")
     for cells in _bl_rows:
-        if len(cells) < 12:
+        if len(cells) < 5:
             continue
-        if cells[11] not in ("YES", "NO"):
-            fail("C17", f"the live re-score row {cells[0]} carries the 10y flag {cells[11]!r}, "
+        hist = cells[_hi] if (_hi is not None and _hi < len(cells)) else None
+        qual = cells[_qi] if (_qi is not None and _qi < len(cells)) else None
+        if qual not in ("YES", "NO"):
+            fail("C17", f"the live re-score row {cells[0]} carries the 10y flag {qual!r}, "
                         f"which is outside ['NO', 'YES']")
-        if num(cells[10]) is None:
+        if num(hist) is None:
             fail("C17", f"the live re-score row {cells[0]} carries no numeric history "
-                        f"({cells[10]!r}) — the 10-year claim must be checkable per name")
+                        f"({hist!r}) — the 10-year claim must be checkable per name")
         # the table and the JSON companion must agree, or one of them is a copy
         j = _rs.get(cells[0])
         if not j:
             fail("C17", f"the live re-score row {cells[0]} is not in the JSON companion")
             continue
-        if j.get("ten_year_qualifier") != cells[11]:
-            fail("C17", f"the live re-score row {cells[0]}: the table says {cells[11]!r} and the "
+        if j.get("ten_year_qualifier") != qual:
+            fail("C17", f"the live re-score row {cells[0]}: the table says {qual!r} and the "
                         f"JSON says {j.get('ten_year_qualifier')!r}")
-        if num(j.get("history_years")) is not None and num(cells[10]) is not None \
-                and abs(float(cells[10]) - float(j["history_years"])) > 0.11:
-            fail("C17", f"the live re-score row {cells[0]}: the table says {cells[10]!r} years "
+        if num(j.get("history_years")) is not None and num(hist) is not None \
+                and abs(float(num(hist)) - float(j["history_years"])) > 0.11:
+            fail("C17", f"the live re-score row {cells[0]}: the table says {hist!r} years "
                         f"and the JSON says {j.get('history_years')!r}")
 
     # ---------------------------------------------------------------- C18 the sweep basis

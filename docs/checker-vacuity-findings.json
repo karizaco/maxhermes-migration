@@ -1,0 +1,273 @@
+{
+ "repo": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src",
+ "checkers": 18,
+ "findings": [
+  {
+   "kind": "SELF_COMPARISON",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_cron06_artifact.py",
+   "line": 148,
+   "detail": "rows_passing vs rows_kept \u2014 if the producer fills both from the same place, this clause cannot fail",
+   "snippet": "rp, rk = c.get(\"rows_passing\"), c.get(\"rows_kept\")"
+  },
+  {
+   "kind": "SELF_COMPARISON",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_cron06_artifact.py",
+   "line": 150,
+   "detail": "rows_passing vs rows_kept \u2014 if the producer fills both from the same place, this clause cannot fail",
+   "snippet": "fail(\"C3\", f\"coverage for '{key}' does not publish rows_passing and rows_kept\")"
+  },
+  {
+   "kind": "SELF_COMPARISON",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_cron06_artifact.py",
+   "line": 152,
+   "detail": "rows_passing vs rows_kept \u2014 if the producer fills both from the same place, this clause cannot fail",
+   "snippet": "fail(\"C3\", f\"coverage for '{key}' is TRUNCATED: rows_passing {rp} != rows_kept {rk}\")"
+  },
+  {
+   "kind": "SELF_COMPARISON",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_cron06_artifact.py",
+   "line": 156,
+   "detail": "rows_passing vs rows_kept \u2014 if the producer fills both from the same place, this clause cannot fail",
+   "snippet": "if f\"rows_passing {rp} = rows_kept {rk}\" not in docs[owner]:"
+  },
+  {
+   "kind": "SELF_COMPARISON",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_cron06_artifact.py",
+   "line": 158,
+   "detail": "rows_passing vs rows_kept \u2014 if the producer fills both from the same place, this clause cannot fail",
+   "snippet": "f\"(rows_passing {rp} = rows_kept {rk})\")"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 181,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "ch = num(r[3])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 184,
+   "detail": "r[4] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "pv = num(r[4]) or 0"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 185,
+   "detail": "r[12] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "cap = num(r[12]) or 0"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 312,
+   "detail": "r[6] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(any(w in r[6].lower() for w in SIDE_WORDS), \"WATCH-INVALIDATION-SIDE\","
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 313,
+   "detail": "r[6] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "\"row %s's invalidation carries no side: %r\" % (r[0], r[6]))"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 327,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "d = r[7].strip()"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 331,
+   "detail": "r[8] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(r[8].strip() != \"\", \"GQ-KEY-LEVEL\", \"%s has no key level\" % r[0])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 332,
+   "detail": "r[9] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(any(w in r[9].lower() for w in SIDE_WORDS), \"GQ-INVALIDATION-SIDE\","
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 333,
+   "detail": "r[9] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "\"%s's invalidation carries no side: %r\" % (r[0], r[9]))"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 334,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(num(r[2]) is not None, \"GQ-GAP\", \"%s has no gap %%\" % r[0])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 340,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "gq_none = sum(1 for r in gq if len(r) > 7 and r[7].strip() == \"NONE\")"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 418,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "ggaps = [num(r[3]) for r in gain if len(r) > 3]"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 421,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "dgaps = [num(r[3]) for r in decl if len(r) > 3]"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 465,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(all(r[7].strip() for r in rows), \"CSV-PRIOR-CLOSE\", \"a row has an empty prior_close\")"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 472,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "pm = float(r[2]); ch = float(r[3]); pc = float(r[7])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 472,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "pm = float(r[2]); ch = float(r[3]); pc = float(r[7])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 472,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "pm = float(r[2]); ch = float(r[3]); pc = float(r[7])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 482,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(all(r[2].strip() for r in rows), \"CSV-PREMARKET\", \"a row has an empty premarket_close\")"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 483,
+   "detail": "r[9] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "live_blank = all((r[9].strip() == \"\" and r[10].strip() == \"\" and r[11].strip() == \"\") for r in rows)"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 483,
+   "detail": "r[10] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "live_blank = all((r[9].strip() == \"\" and r[10].strip() == \"\" and r[11].strip() == \"\") for r in rows)"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 483,
+   "detail": "r[11] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "live_blank = all((r[9].strip() == \"\" and r[10].strip() == \"\" and r[11].strip() == \"\") for r in rows)"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 491,
+   "detail": "r[15] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "sc = set(r[15].strip() for r in rows) if rows and len(rows[0]) > 15 else set()"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 514,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "md_gap = num(r[2])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 529,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "if not r[2].strip() or not r[3].strip():"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 529,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "if not r[2].strip() or not r[3].strip():"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 531,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "if any(w in r[7].lower() for w in SIDE_WORDS) is False:"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 532,
+   "detail": "r[7] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "tail_bad.append(\"%s's invalidation carries no side: %r\" % (r[0], r[7]))"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 537,
+   "detail": "r[4] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "mg = num(r[4])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_premarket_refresh.py",
+   "line": 601,
+   "detail": "r[3] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "g = num(r[3])"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_preopen_checkpoint.py",
+   "line": 941,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "confs = [r[2].replace(\"\u26a0\", \"\").strip() for r in body if len(r) > 2]"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_preopen_checkpoint.py",
+   "line": 947,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "unv_cells = [r for r in body if len(r) > 2 and \"unverified\" in r[2]]"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_preopen_checkpoint.py",
+   "line": 948,
+   "detail": "r[2] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "check(all(\"\u26a0\" in r[2] for r in unv_cells),"
+  },
+  {
+   "kind": "FIXED_INDEX",
+   "file": "/run/csi/mount-root/nas/eab0d61a99b6696edb3d2aff87b585e8/repo_src/tools/check_preopen_checkpoint.py",
+   "line": 1005,
+   "detail": "cells[4] \u2014 a table row read at a literal index; adding a column moves every cell to its right",
+   "snippet": "got = cells[4].strip()"
+  }
+ ],
+ "no_test": []
+}
