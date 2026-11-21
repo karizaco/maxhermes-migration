@@ -188,8 +188,8 @@ step as the pipeline/skill fetch, then follow it in full:
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared
 # --- fetch cloud-prompts/_shared/PROMPT-BLOCKS.md ---
 # The CONTENTS API is authoritative and is NOT CDN-cached. The two CDNs cache `main`
-# independently: measured 2026-11-04, raw.githubusercontent served a STALE blob for >17
-# minutes after a push while jsDelivr was fresh. The OLD `[ -s file ] || curl` loop could
+# independently: measured 2026-11-04, raw.githubusercontent served a stale blob for >17
+# minutes after a push while the contents API was fresh. The OLD `[ -s file ] || curl` loop could
 # NEVER reach its fallback - the first successful download satisfied the guard, so the
 # second URL was DEAD CODE. Now all three are tried, and a 404 body (non-empty JSON) is
 # rejected on its BODY, not on its byte count.
