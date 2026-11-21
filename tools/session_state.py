@@ -11,9 +11,11 @@ number in the artifact changes meaning with that branch, so the branch has to be
 guessed.
 
 The clock cannot decide it. The procedure says to judge the gate against the FIRE, never the
-wall clock, and this environment's `America/New_York` has no DST (November is EST, UTC-5), so a
-hardcoded UTC-4 offset reads an hour late and a wall-clock test reads a 09:24 pull as 10:24 —
-after the open. The DATA can decide it, and the data does not depend on the clock.
+wall clock, and a HARD-CODED ET offset reads an hour wrong for half the year: this environment's
+`America/New_York` DOES observe DST (measured 2026-11-20: 2026-07-15 12:00 UTC is 08:00 EDT,
+UTC-4, while 2026-11-20 12:00 UTC is 07:00 EST, UTC-5), so a fixed UTC-5 offset is an hour
+EARLY for every date from mid-March to early November. The DATA can decide it, and the data
+does not depend on the clock.
 
 THE THREE TESTS
 ---------------
@@ -54,7 +56,7 @@ USAGE
 OUTPUT
     A JSON document on stdout (or in --out):
     {"session_state": "PRE-OPEN" | "OPEN" | "INDETERMINATE",
-     "rows": N, "pulled_at_et": "...", "et_offset_hours": -5,
+     "rows": N, "pulled_at_et": "...", "et_offset_hours": -5 or -4 (the offset in force),
      "tests": {...}, "verdict_reason": "...",
      "front_matter": {"market_open_at_pull": false, "pull_late": false}}
 
@@ -73,18 +75,21 @@ ISOLATED DEFECTS
 import argparse
 import csv
 import datetime
+import zoneinfo
 import json
 import os
 import sys
 
-SESSION_STATE_V2 = "session-state-v2"
+SESSION_STATE_V3 = "session-state-v3"
 
-# The environment's America/New_York has NO DST: November is EST (UTC-5). Confirmed against
-# the platform's own scheduled_at_ms (cron #26 at 08:30 ET = 13:50 UTC, cron #26b at 09:20 ET
-# = 14:20 UTC, exactly 50 minutes apart) and against the scanner's premarket_time (09:00 UTC
-# = 04:00 ET). The offset is REPORTED in the output so a wrong clock is visible rather than
-# silently baked in.
-ET_OFFSET_HOURS = -5
+# The ET offset is DERIVED from the IANA zone, never hardcoded. The sandbox's
+# America/New_York DOES observe DST - measured 2026-11-20: 2026-07-15 12:00 UTC is
+# 08:00 EDT (UTC-4) and 2026-11-20 12:00 UTC is 07:00 EST (UTC-5) - so a fixed
+# UTC-5 offset is an hour EARLY for every date from mid-March to early November,
+# and a fixed UTC-4 offset is an hour LATE for the rest of the year. The offset in
+# force is REPORTED in the output so a wrong clock is visible rather than silently
+# baked in.
+ET = zoneinfo.ZoneInfo("America/New_York")
 
 TOL_IDENTITY = 0.02          # a settled session's change_abs, in price units
 TOL_PRIOR_CLOSE = 0.02       # the scanner's close vs the morning brief's prior_close
@@ -100,7 +105,14 @@ OPEN_MISMATCH_MIN = 3         # and the mismatching names must be at least this 
 
 
 def now_et():
-    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=ET_OFFSET_HOURS)))
+    """The current ET wall clock, resolved through the IANA zone (DST-aware)."""
+    return datetime.datetime.now(ET)
+
+
+def et_offset_hours():
+    """The ET offset in force RIGHT NOW, in whole hours (-5 EST / -4 EDT)."""
+    off = datetime.datetime.now(ET).utcoffset() or datetime.timedelta(hours=-5)
+    return int(round(off.total_seconds() / 3600.0))
 
 
 def num(v):
@@ -266,11 +278,11 @@ def main():
                        "not a live session: %s" % (prior["failed"], ", ".join(defects)))
 
     out = {
-        "marker": SESSION_STATE_V2,
+        "marker": SESSION_STATE_V3,
         "session_state": state,
         "rows": len(rows),
         "pulled_at_et": merged.get("pulled_at_et") or now_et().strftime("%Y-%m-%d %H:%M:%S"),
-        "et_offset_hours": ET_OFFSET_HOURS,
+        "et_offset_hours": et_offset_hours(),
         "tests": {"settled_session_identity": ident, "prior_close_matches_morning": prior,
                   "live_like_fraction": live_like},
         "close_field_defects": defects,
@@ -285,7 +297,7 @@ def main():
     if not args.json_only:
         print("session state: %s" % state)
         print("  rows: %d   pulled_at_et: %s (ET offset %+d)"
-              % (out["rows"], out["pulled_at_et"], ET_OFFSET_HOURS))
+              % (out["rows"], out["pulled_at_et"], et_offset_hours()))
         print("  (a) settled-session identity: ok=%s checked=%d failed=%d"
               % (ident["ok"], ident["checked"], ident["failed"]))
         print("  (b) close == the morning brief's prior_close: ok=%s checked=%d failed=%d "

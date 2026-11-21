@@ -50,6 +50,7 @@ EXIT CODES
 import argparse
 import concurrent.futures as cf
 import datetime
+import zoneinfo
 import json
 import os
 import re
@@ -59,7 +60,7 @@ import tempfile
 import time
 import urllib.request
 
-BRIEF26_PULL_V2 = "brief26-pull-v2"
+BRIEF26_PULL_V3 = "brief26-pull-v3"
 
 COLS = ["name", "description", "close", "change", "change_abs", "volume",
         "average_volume_30d_calc", "premarket_close", "premarket_change",
@@ -119,8 +120,14 @@ BAND_TAIL = {
 
 
 # ------------------------------------------------------------------ utilities
+# DST-AWARE: the sandbox's America/New_York DOES observe DST (2026-07-15 12:00 UTC is
+# 08:00 EDT = UTC-4; 2026-11-20 12:00 UTC is 07:00 EST = UTC-5). A hardcoded -5 is an
+# hour EARLY for every date from mid-March to early November.
+ET = zoneinfo.ZoneInfo("America/New_York")
+
+
 def now_et():
-    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-5)))
+    return datetime.datetime.now(ET)
 
 
 def log(msg):
@@ -582,7 +589,7 @@ def main():
     out = {
         "date": args.date,
         "pulled_at_et": now_et().strftime("%Y-%m-%d %H:%M:%S"),
-        "marker": BRIEF26_PULL_V2,
+        "marker": BRIEF26_PULL_V3,
         "band": {"gainers": len(band["gainers"]), "decliners": len(band["decliners"]),
                  "complete": band["complete"]},
         "band_gainers": [r["ticker"] for r in band["gainers"]],

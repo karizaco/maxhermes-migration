@@ -212,6 +212,38 @@ and in `PROMPT-BLOCKS.md`, which is the file the prompts actually quote.
 - **`latency.per_routine_allowed_minutes` is still EMPTY** in the auditor's config, so three
   routines are chronically reported as late (`20-eod-watchlist-csv-snapshot`, `25-ntrt-gap-brief-daily`,
   `26b-agentic-pre-market-brief-refresh`). That is an OPERATOR decision, not a code fix.
-- **The `ET_OFFSET_HOURS = -5` hardcode** in `tools/session_state.py` and
-  `cloud-prompts/_shared/brief26_pull.py` is wrong for every summer date (the sandbox's
-  `America/New_York` DOES observe DST: 2026-07-15 12:00 UTC → 08:00 EDT). Separate fix.
+- ~~The `ET_OFFSET_HOURS = -5` hardcode~~ — **FIXED 2026-11-20**, see section 8.
+
+## 8. Also fixed on 2026-11-20: the hardcoded ET offset (an hour wrong for half the year)
+
+The queued DST bug, closed in the same session.
+
+**The claim in the code was false.** `tools/session_state.py` said:
+
+> The environment's America/New_York has NO DST: November is EST (UTC-5).
+
+It was measured against a November instant — EST — and generalised to the year. **The sandbox's
+`America/New_York` DOES observe DST**: measured 2026-11-20, `2026-07-15 12:00 UTC` is
+`08:00 EDT` (UTC-4) and `2026-11-20 12:00 UTC` is `07:00 EST` (UTC-5).
+
+So `ET_OFFSET_HOURS = -5` was an hour **EARLY** for every date from mid-March to early November,
+and a wall-clock test read a 09:24 ET pull as 10:24 — after the open. The same hardcode was in
+`cloud-prompts/_shared/brief26_pull.py` (the #26 pull's `pulled_at_et` stamp).
+
+**The fix:** both resolve the offset through `zoneinfo.ZoneInfo("America/New_York")`; the
+offset in force is still PUBLISHED (`et_offset_hours`), so a wrong clock stays visible instead of
+being silently baked in. The markers moved with the code — `session-state-v2` → `session-state-v3`
+and `brief26-pull-v2` → `brief26-pull-v3` — and the fetch ladders in
+`_shared/premarket-refresh.md` and the pre-market SKILL were updated **in the same commit**, so a
+stale helper cannot win the ladder and reintroduce the hardcode.
+
+Both files are fetched at RUN time, so the fix lands on the next #26/#26b fire with **no
+redeploy**.
+
+**Five regression cases** were added to `tools/test_session_state.py` (15 → 20): the offset
+resolved for a summer instant is −4, for a winter instant −5, the reported offset is one of the
+two, the hardcoded constant is GONE, and `now_et()` is DST-aware. A fix without a case is a claim.
+
+**The generalisable rule:** "the environment has no DST" is a claim about the YEAR, and the
+evidence for it was one day's instant. Probe the zone for the date you care about
+(`zoneinfo` + a July instant and a January instant), not for the day you happened to be working.

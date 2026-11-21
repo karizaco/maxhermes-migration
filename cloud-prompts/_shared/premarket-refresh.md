@@ -103,9 +103,9 @@ fetch_helper() {   # $1 = repo path, $2 = local path, $3 = capability marker
   done
   return 1
 }
-fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v2 \
+fetch_helper cloud-prompts/_shared/brief26_pull.py /workspace/brief26_pull.py brief26-pull-v3 \
   || echo "brief26_pull.py UNAVAILABLE - fall back to the pull spec below"
-fetch_helper tools/session_state.py /workspace/session_state.py session-state-v2 \
+fetch_helper tools/session_state.py /workspace/session_state.py session-state-v3 \
   || echo "session_state.py UNAVAILABLE - judge the session state from the data by hand"
 fetch_helper tools/premarket_refresh_build.py /workspace/premarket_refresh_build.py premarket-refresh-build-v7 \
   || echo "premarket_refresh_build.py UNAVAILABLE - the artifact then has to be hand-written"

@@ -116,7 +116,7 @@ for F in brief26_pull.py shibui_caps.py tv_scan.py; do
       -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/workspace/tools/$F.tmp" "$U" 2>/dev/null
     if [ -s "/workspace/tools/$F.tmp" ] && head -1 "/workspace/tools/$F.tmp" | grep -q '^#!'; then
       # brief26_pull.py must be the v2 cap rule - a cached OLD copy must not win
-      if [ "$F" = "brief26_pull.py" ] && ! grep -q 'brief26-pull-v2' "/workspace/tools/$F.tmp"; then
+      if [ "$F" = "brief26_pull.py" ] && ! grep -q 'brief26-pull-v3' "/workspace/tools/$F.tmp"; then
         rm -f "/workspace/tools/$F.tmp"; continue
       fi
       mv -f "/workspace/tools/$F.tmp" "/workspace/tools/$F"; break
@@ -124,7 +124,7 @@ for F in brief26_pull.py shibui_caps.py tv_scan.py; do
     rm -f "/workspace/tools/$F.tmp"
   done
 done
-grep -q 'brief26-pull-v2' /workspace/tools/brief26_pull.py \
+grep -q 'brief26-pull-v3' /workspace/tools/brief26_pull.py \
   || echo "brief26_pull.py v2 NOT FETCHED - the cap rule in this skill is the v2 rule, so do not publish a brief from the v1 helper"
 python3 /workspace/tools/brief26_pull.py --date {date} \
   --out /workspace/_mcp/merged.json --extra-tickers "<the trending list and the earnings names>"

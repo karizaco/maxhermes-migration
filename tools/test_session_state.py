@@ -175,6 +175,40 @@ def main():
     check(v["tests"]["prior_close_matches_morning"]["ok"] is None,
           "missing baseline is reported", str(v["tests"]["prior_close_matches_morning"]))
 
+    # ---------- the ET offset is DERIVED (DST), not hardcoded ----------
+    # The sandbox's America/New_York observes DST: a fixed -5 is an hour EARLY for
+    # every date from mid-March to early November, a fixed -4 an hour LATE for the
+    # rest of the year. The tool must resolve the offset through the IANA zone for
+    # the instant it is asked about.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("session_state_mod", TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    import datetime as _dt
+
+    def _offset_at(instant):
+        return int(round((instant.astimezone(mod.ET).utcoffset()
+                          or _dt.timedelta(hours=-5)).total_seconds() / 3600.0))
+
+    summer = _dt.datetime(2026, 7, 15, 12, 0, tzinfo=_dt.timezone.utc)
+    winter = _dt.datetime(2026, 1, 15, 12, 0, tzinfo=_dt.timezone.utc)
+    check(_offset_at(summer) == -4,
+          "EDT offset is derived",
+          "2026-07-15 12:00 UTC -> %+d (want -4)" % _offset_at(summer))
+    check(_offset_at(winter) == -5,
+          "EST offset is derived",
+          "2026-01-15 12:00 UTC -> %+d (want -5)" % _offset_at(winter))
+    check(mod.et_offset_hours() in (-5, -4),
+          "the reported offset is one of the two",
+          "reported %+d" % mod.et_offset_hours())
+    check(not hasattr(mod, "ET_OFFSET_HOURS"),
+          "the hardcoded offset constant is gone",
+          "a fixed offset is an hour wrong for half the year")
+    check(mod.now_et().tzinfo is not None
+          and mod.now_et().utcoffset() in (_dt.timedelta(hours=-5), _dt.timedelta(hours=-4)),
+          "now_et is DST-aware",
+          str(mod.now_et()))
+
     failed = [n for ok, n, _ in RESULTS if not ok]
     print("\n%d tests, %d passed, %d failed" % (len(RESULTS), len(RESULTS) - len(failed), len(failed)))
     for n in failed:
