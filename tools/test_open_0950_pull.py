@@ -203,12 +203,32 @@ def main():
     check("M6 a truncated pull (a published name never landed) is CAUGHT",
           not g6["ok"], str(g6["failures"]))
 
-    # the resume path
+    SESSION = "2026-11-20"
+    # the resume path (V3, 2026-11-20: the cache is DATED)
+    # `load_done(path, date)` returns `(done, stale)`. A record is resumed only when it
+    # carries THIS session's `pull_date`; a record from another session - or one with no
+    # date at all, written by an older copy - is DISCARDED, because it cannot be proven
+    # to belong to this session (measured 2026-11-20: the first pull of the day resumed
+    # 7,197 records from the previous run and rebuilt the index leg on YESTERDAY's moves).
     tmp = tempfile.mkdtemp()
     jl = os.path.join(tmp, "records.jsonl")
     with open(jl, "w") as fh:
-        fh.write(json.dumps({"symbol": "A", "status": "OK"}) + "\n")
-    check("a completed symbol is not re-fetched on a retry", "A" in op.load_done(jl))
+        fh.write(json.dumps({"symbol": "A", "status": "OK", "pull_date": SESSION}) + "\n")
+    done, stale = op.load_done(jl, SESSION)
+    check("a completed symbol is not re-fetched on a retry", "A" in done,
+          "done=%s stale=%d" % (sorted(done), stale))
+
+    # the complementary assertion the old case could not express
+    jl2 = os.path.join(tmp, "foreign.jsonl")
+    with open(jl2, "w") as fh:
+        fh.write(json.dumps({"symbol": "B", "status": "OK", "pull_date": "2026-11-19"}) + "\n")
+        fh.write(json.dumps({"symbol": "C", "status": "OK"}) + "\n")
+    done2, stale2 = op.load_done(jl2, SESSION)
+    check("a foreign-session record is NOT resumed", "B" not in done2,
+          "done=%s" % sorted(done2))
+    check("an undated record is NOT resumed", "C" not in done2,
+          "done=%s" % sorted(done2))
+    check("both discarded records are counted", stale2 == 2, "stale=%d" % stale2)
 
     # the engine's own selftest must also be green
     import subprocess
