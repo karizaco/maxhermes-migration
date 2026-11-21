@@ -148,18 +148,32 @@ update silently resets the timezone.
 against the persisted `cron_read view=list` response — the bytes are hashed from the file, so
 there is no transcription in the proof).
 
-### 6a. #16 was STALE IN THE SCHEDULER, and today's 16:35 ET fire was about to run the broken engine
+### 6a. #16's DEPLOYED PROMPT was stale — and the byte check was the only thing that said so
 
 The byte check found a drift nobody had reported: the deployed #16 prompt did **not** carry the
-`CBOE_API_HOST_V1` marker demand, while the repo's does. That is the 2026-11-20 Cboe fix
+`CBOE_API_HOST_V1` marker demand, while the repo's does. That marker is the 2026-11-20 Cboe fix
 (`0659bc2`): the chain CDN moved behind Cloudflare, the pre-fix engine parsed **0 of 62 chains**
 and published a board with an `Infinity` put/call ratio — and it still exited 0, so the failure
 was invisible in the artifact's shape.
 
-The repo file had the fix and the scheduler did not. **A prompt can be "fixed" in the repo and
-still be running the old code for the next fire**, and no gate in this fleet would have said so:
-the artifact gate checks the ARTIFACT, not whether the engine that built it was the current one.
-Redeployed before the 16:35 ET slot.
+**What actually happened, measured afterwards (2026-11-20):**
+
+- The Friday 16:35 ET fire had **already run** (the redeploy landed hours later, at ~23:00 ET),
+  and it published a **good** board: `options-flow/2026-11-20.md`, 58 underlyings with a chain,
+  series book put/call 1.58 → PUT, wide book 1.25 → PUT, no `Infinity`, no empty board. The
+  contents API is FIRST in the ladder and is not CDN-cached, so it served the current (fixed)
+  engine even though the prompt did not demand the marker.
+- The marker demand is the defence against the case the contents API cannot cover: a **stale
+  CDN copy** winning the ladder. Without it, `raw.githubusercontent` or jsDelivr could serve the
+  pre-Cloudflare engine — and on 2026-11-04 `raw` was measured serving a stale blob for >17
+  minutes. So the stale prompt was a live risk for the **next** fire (Monday 2026-11-23), not
+  for the one that had already run.
+- Redeployed, with the marker demanded.
+
+**The lesson stands, with the timeline corrected: a prompt can be fixed in the repo and still be
+running the old code for the next fire.** The artifact gate checks the ARTIFACT — it never asks
+whether the ENGINE that built it was the current build. Here the artifact happened to be fine,
+and the only thing that would have told us the prompt was stale was the byte comparison.
 
 ### 6b. A 2-byte typo I introduced, and what it cost to find
 
