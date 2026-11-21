@@ -961,3 +961,171 @@ would have inverted the setup. The same is true of 9.2: the gold ETF's -1.70% an
 -4.34% are both internally consistent, both passable, and only a human comparing them against the
 underlying catches that they disagree. **The gates cover the shape; the reasoning is still the
 writer's.**
+
+---
+
+## 10.0 The 2026-11-20 fire — the universe CSV carried a `change_pct` computed against an UNADJUSTED prior close, and the put/call page lagged a session
+
+**Fire:** 2026-11-20 22:30 ET (Friday) · **Artifact:** `daily-briefs/2026-11-20-post-market.md` ·
+**Session:** 465625634095262 · **Contract:** `postmkt-artifact-v2`, checker green on the first run.
+
+Friday was an AI repricing: S&P 500 **-3.70%** to 6,910.39, Nasdaq Composite **-5.28%** to 22,617.73,
+PHLX Semiconductor **-10.73%**, VIX **+26.20%** to 35.89, with 804 advancers against 3,895 decliners,
+`median_name_move_pct` **-1.88**, `liquid_adv_dec_ratio` **0.23**, and `cap_weight_penalty_bp`
+**-166** (SPY -3.64% vs RSP -1.98%) — the largest negative reading in the five-session history.
+
+### 10.1 SNDK's `change_pct` was computed against an unadjusted prior close — and the row says `CONFIRMED`
+
+`us-eod/2026-11-20.csv` (4,881 rows, 4,852 priced) carries, for **SNDK** (Sandisk):
+
+| field | value |
+|---|---|
+| `close` | 79.24 |
+| `change_pct` | **-89.51** |
+| implied prior close | ≈ 708 (79.24 / 0.1049) |
+| `open` | 89.91 · `high` 90.67 · `low` 78.25 |
+| `data_quality` | `EX_DISTRIBUTION|SPLIT_ADJUSTED` |
+| `settle_status` | **`CONFIRMED`** |
+
+The bridge `get_quotes` gives the **same close** — 79.24 — against a prior close of **94.395**, i.e.
+**-16.05%**. The CSV's close is right; its `change_pct` was computed against a prior close that was
+never split-adjusted.
+
+Why this is a trap and not a rounding error:
+
+- **It would have been the day's largest decliner by a factor of five.** In the universe's own
+  ranking (4,881 rows) SNDK at -89.51% outranks a real -18.23% (SVRA); in the >$2B liquid screen
+  it prints **-89.51%** against a real -16.05%. A movers table with that number in it is a
+  fabrication the reader would act on.
+- **The row is flagged `CONFIRMED`.** Nothing in the file warns the reader that the derived column
+  disagrees with the settled close. `SPLIT_ADJUSTED` is in `data_quality` — but the flag says the
+  CLOSE was adjusted, which is exactly why the prior close must be adjusted to match.
+- **The two tests that catch these things elsewhere do not catch it.** The arithmetic reconciles
+  internally (`open` == the adjusted prior close == 89.91, and the day's range 78.25–90.67 sits
+  entirely around the 79.24 close), so a stale-print test and a contract-adjustment test both pass.
+  Only the comparison against a second source's prior close catches it.
+
+**The rule for the next fire:** cron #20's universe CSV is a **POPULATION** source — breadth
+counts, the sector taxonomy, the de-duplication keys, the screen (market cap, flags). It is
+**not** a price source. For every name published in a movers table, take `close`/`change_pct` from
+the bridge `get_quotes` and take the SCREEN from the CSV. That is the fleet's existing "one number
+per field, one source per field" rule applied to the universe file, and §5.6's `EX_DISTRIBUTION`
+exclusion already keeps SNDK out of the cap-weighted columns — which is why the participation read
+below is unaffected.
+
+### 10.2 A second row defect, this one labelled: NVDA's close is `UNCONFIRMED`
+
+The same file carries **NVDA** at `close` **128.10**, `change_pct` **-12.26**,
+`settle_status` **`UNCONFIRMED`**. The bridge gives close **125.53** and **-14.01%**, and the
+press agrees with the bridge — AP, CNBC and Schwab all report Nvidia down about 14% on the day
+(its ninth loss in ten sessions). The confirmed close is **2.57 lower** than the CSV's, and the
+CSV's change understates the move by 1.75pp.
+
+The file is honest here: `settle_status` says `UNCONFIRMED`. The lesson is that **`UNCONFIRMED`
+means "possibly stale", not "wrong"** — and it does not mean `CONFIRMED` is safe (10.1). **Read
+`settle_status` on every row you publish**, and publish the confirmed number.
+
+### 10.3 The CBOE put/call page carried the PRIOR session at a 22:30 ET fire
+
+§4.4 and §9.6 recorded that the CBOE daily statistics payload carries `selectedDate`, and both
+concluded the page serves the session that just closed. On 2026-11-20 it did not: the payload read
+`"selectedDate":"2026-11-19"`, `prevTradingDay` 2026-11-19 — **one session before the fire date** —
+with total put/call **1.01** (index 1.20, equity 0.62, ETP 1.09, VIX 1.10, SPX+SPXW+SPXO 1.21,
+XSP 1.33; total volume 17,766,692, open interest 740,262,454). Those components all came from ONE
+payload and reconcile with the total, so the split was publishable — but the **session stamp is not
+guaranteed to equal the fire date**, and this fire it did not.
+
+**The rule stands and is now stricter:** assert `selectedDate == fire_date`; if it is earlier,
+say which session the number belongs to, publish it labelled with that session, and count it in
+`degraded_sources`. This fire counted it. (A `?date=` query does not change the server-rendered
+payload — measured again on this fire.)
+
+### 10.4 A Friday settlement can sit ABOVE the cash close — the denominator flips the sign
+
+§9.1 (2026-11-19) recorded a fresh futures quote that read -0.26% against the prior settle while
+the cash close made the overnight +0.04%. On 2026-11-20 the same two denominators disagree in the
+**other direction and with a bigger gap**:
+
+| Contract | settle | vs prior settle | vs the cash index close |
+|---|---|---|---|
+| ES=F | 6,966.75 | -3.20% | **+0.82%** (SPX 6,910.39) |
+| NQ=F | 25,291.00 | -4.92% | **+1.05%** (NDX 25,028.98) |
+| YM=F | 48,391.00 | -1.60% | **+0.51%** (DJI 48,147.33) |
+| RTY=F | 2,599.90 | -2.38% | **+0.70%** (RUT 2,581.79) |
+
+Both futures rows carry `as_of` 16:59:56–16:59:59 ET — Friday's settlement, and the CME
+equity-index week was closed, so there was no overnight print to find (§6.2). Published as the
+settlement, with both denominators, and the futures source counted as degraded.
+
+### 10.5 The after-hours tape's one real story was corporate, not earnings
+
+Ten rows, ten identity checks, ten bridge-confirmed prior closes, no OTC venue. **ZS +16.35%**
+(last 226.68, high 246.06) on the Bloomberg/Reuters report that **CrowdStrike is in talks to
+acquire Zscaler** (headline ~16:11 ET; Zscaler separately released an Anthropic/Mistral
+partnership at 16:05 ET), with **CRWD -4.84%** (last 218.345, low 201.11, high 231.16 — a 13.10%
+range on 3.2M shares, the widest book of the night). **PRAX -8.46%** had no sourced company
+release. Vendors quoted CrowdStrike at -5.44% (18:01 ET), -8% (21:46 ET) and -4.84% (Benzinga,
+22:16 ET); the scanner is the source of record and the others are named, not blended.
+
+### 10.6 The participation read, for the next run's baseline
+
+From `us-eod/2026-11-20.csv` (4,881 rows, 4,852 priced), liquid set `market_cap` above $2B
+(1,748 names):
+
+| Metric | 2026-11-20 | 2026-11-19 | 2026-11-16 |
+|---|---|---|---|
+| advancers | 804 | 816 | 1,086 |
+| decliners | 3,895 | 3,861 | 3,594 |
+| unchanged | 153 | 168 | 164 |
+| median_name_move_pct | -1.88% | -1.54% | -1.17% |
+| liquid_adv_dec_ratio | 0.23 (320 : 1,416) | 0.13 (197 : 1,552) | 0.37 |
+| cap_weight_penalty_bp | **-166** | -20 | -90 |
+
+The penalty went from -20bp to **-166bp** in one session: on 11-19 the selloff was **not** a
+mega-cap story, and on 11-20 it was exactly that. `liquid_adv_dec_ratio` stayed in the same
+decade (0.13 → 0.23), so the breadth was **broad** — the day's damage was in the CAP WEIGHT of the
+tape, not in the count of names. The median name fell 1.88% while the index fell 3.70%: the median
+name fell about half as far as the index, and the equal-weight index less than half as far again.
+
+### 10.7 The guards that held on this fire
+
+- **The participation metrics are unaffected by 10.1 and 10.2.** SNDK and NVDA closed lower on
+  either number, so the advancer/decliner counts are unchanged, and the median is robust to one
+  row. The counts remain comparable with the prior session's published breadth.
+- **Every index row's `as_of` was date-checked** — all carry 2026-11-20. The volatility indices
+  were read from `price_history` and cross-checked to the cent against CBOE's dated close files
+  (VIX **35.89**, VXN **45.25**).
+- **The sector column was asserted inside ±20%** and every sector was cross-checked against its
+  own ETF. Two gaps exceeded 0.5pp and both were **constituent effects, not rotations**:
+  Industrials **-4.14%** vs XLI -3.09% is Space Exploration Technologies ($1.68T cap, -7.66%,
+  -1.58pp of the sector) — ex-SPCX the sector was **-3.22%**, a 0.13pp gap; and Consumer
+  Discretionary **-3.55%** vs XLY -2.95% is AMZN (-1.46pp) — ex-AMZN **-3.24%**. Information
+  Technology's gap reverses (**-6.53%** vs XLK -7.27%) because the ETF's heavier semiconductor
+  weighting dragged it lower; ex-AAPL the sector was **-7.88%**.
+- **Defensiveness was in the index, not in the stocks**: Consumer Staples' cap-weighted return is
+  **+0.71%** but its **median name still fell 0.50%**, and Health Care's median (-2.73%) is far
+  worse than its cap-weighted print (-0.41%). Staples survived because of Walmart (+1.59%, +0.39pp),
+  not because the sector held up. Staples, Health Care and Energy were the top three by
+  cap-weighted return; Information Technology, Industrials and Consumer Discretionary the bottom
+  three.
+- **The earnings and economic calendars disagree** (Monday 23 November: StockTitan 9 names ≥$2B,
+  all AMC; EarningsWhispers 23; Nexqual 19; Seeking Alpha 35; EarningsToday 34) and so do the EPS
+  estimates (HPE 1.17 / 1.28 / 1.27). The roster published is the **intersection of two or more
+  sources**, with the disagreement disclosed rather than a silent vendor pick. One calendar
+  conflict is worth carrying: Scotiabank lists Monday 23 November as having no US releases, while
+  the JPMorgan, Investrade and MarketWatch calendars all carry the 9:45 ET flash PMIs.
+- **The $1B after-hours floor hid the session's real leaders again** (§4.3, §7.6, §8.3, §9.6): the
+  no-floor pull surfaced **WETO +373.48%**, MRM +79.13%, NAK +25.00% on the upside and **CAPR
+  -78.33%**, VWAV -28.65%, TOVX -25.08% on the downside. Published in `## Source health` so the
+  table is never read as the tape.
+- **The MCP availability probe** printed `catalog_ok total=135 finance_tools=0`, and the bridge
+  answered every call (7 batched calls). No `mcp__*` finance tool was called.
+
+### 10.8 One thing the checker could not see
+
+The contract checker passed the artifact and the reply on the first run. It could not see
+**10.1** — there is no clause about a universe CSV's `change_pct` agreeing with a second source,
+and a movers table containing SNDK at -89.51% would have passed every gate in the fleet, because
+the row is internally consistent and marked `CONFIRMED`. It could not see **10.3** either: the
+put/call table would have looked identical whether the session stamp was the fire date or the
+prior session's. **The gates cover the shape; the reasoning is still the writer's.**
