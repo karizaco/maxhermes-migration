@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -235,6 +236,42 @@ def set_cell_by_name(txt: str, row_prefix: str, column: str, value: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def set_cell_by_ticker(txt: str, ticker: str, column: str, value: str) -> str:
+    """Replace the cell of the row for `ticker`, in the column NAMED `column`.
+
+    The row is found by TICKER, not by position: the short-float table is re-ranked by
+    the cross-checked figure, so a mutator that targets "| 1 | AAAA |" now targets
+    whatever sits in row 1 — which may not be AAAA at all.
+    """
+    lines = txt.splitlines()
+    cols, ti = {}, None
+    for line in lines:
+        if line.startswith("|"):
+            names = [c.strip() for c in line.split("|")]
+            if "#" in names and "Ticker" in names:
+                cols = {n: i for i, n in enumerate(names)}
+                ti = cols.get("Ticker")
+                break
+    if column not in cols or ti is None:
+        raise AssertionError(f"the mutator cannot find the column {column!r} — "
+                             "a mutation that cannot be applied must FAIL the test")
+    idx = cols[column]
+    out, hit = [], False
+    for line in lines:
+        if (not hit) and line.startswith("|"):
+            cells = [c.strip() for c in line.split("|")]
+            if len(cells) > ti and cells[ti] == ticker:
+                raw = line.split("|")
+                raw[idx] = f" {value} "
+                line = "|".join(raw)
+                hit = True
+        out.append(line)
+    if not hit:
+        raise AssertionError(f"the mutator cannot find the row for {ticker!r} — "
+                             "a mutation that cannot be applied must FAIL the test")
+    return "\n".join(out) + "\n"
+
+
 def set_cell(txt: str, row_prefix: str, idx: int, value: str) -> str:
     """Replace one cell of the first table row starting with row_prefix."""
     out = []
@@ -324,7 +361,7 @@ def main():
             return re_sub_days(t)
         mut("C4 an IPO row loses days_since_ipo", "C4",
             lambda: edit_md("weekly-ipo.md",
-                            lambda t: set_cell_by_name(t, "| 1 | AAAA |", "Days Since IPO", "—")))
+                            lambda t: set_cell_by_ticker(t, "AAAA", "Days Since IPO", "—")))
 
         mut("C5 a verdict is outside the closed set", "C5",
             lambda: edit_json(lambda j: j["short_float_rows"][0].__setitem__("tradeable_verdict", "AWESOME")))
@@ -353,7 +390,7 @@ def main():
 
         mut("C11 a required field carries a placeholder", "C11",
             lambda: edit_md("weekly-high-short-float.md",
-                            lambda t: set_cell_by_name(t, "| 1 | AAAA |", "Squeeze", "—")))
+                            lambda t: set_cell_by_ticker(t, "AAAA", "Squeeze", "—")))
 
         mut("C12 the data date is not published", "C12",
             lambda: edit_md("peoplewish-backlog.md", lambda t: t.replace("data_date: 2026-11-06", "data_date: 2026-11-05")))
@@ -466,6 +503,19 @@ def main():
                         continue
                 kept.append(line)
             return head + sep + "\n".join(kept) + sep2 + tail
+
+        def swap_rows(txt):
+            # swap the first two NUMBERED rows of the document — the short-float
+            # table is the first one, and its order is what C20 checks.
+            lines = txt.splitlines()
+            idxs = [i for i, l in enumerate(lines) if re.match(r"^\| \d+ \|", l)]
+            if len(idxs) < 2:
+                raise AssertionError("the mutator cannot find two numbered rows to swap")
+            a, b = idxs[0], idxs[1]
+            lines[a], lines[b] = lines[b], lines[a]
+            return "\n".join(lines) + "\n"
+        mut("C20 the published table is not in the ranking order it declares", "C20",
+            lambda: edit_md("weekly-high-short-float.md", swap_rows))
 
         mut("C19 the cross-check covers a handful of names", "C19",
             lambda: (edit_json(cut_coverage),

@@ -2793,6 +2793,7 @@ markdown. A hand-typed price is a defect, not a style choice.
 | `squeeze_candidate` | `YES` only when short > 50% AND the verdict is `TRADEABLE` **AND the independent source does not dispute the short position**; `CONTESTED` when the cross-check DIVERGES (two of the four candidates published on 2026-11-14 were wrong by 9x and 21x on the share count); `NO` otherwise. |
 | `src_short_pct_float` / `xcheck_verdict` | the independent source's own short % of float, and its verdict (`AGREE` / `DIVERGES` / `NO_DATA` / `NOT_CROSS_CHECKED`), published **on the row** — the disagreement belongs next to the number, not in a separate block. |
 | `coverage_pct` / `coverage_floor_pct` | how much of the published universe the cross-check actually covered, and the floor it must clear (80%). |
+| `sort_basis` | the table's ORDER, published: the independent source's short % of float (cross-checked names first); names with no cross-check follow, ranked by shibui's figure. **The MEMBERSHIP stays shibui's** — the screen's own definition — so a name the source contradicts stays in the book, flagged, and the reader sees both figures on the row. |
 | `short_float_delta_pp` | the change in short % of float against the prior state snapshot, in percentage points; `NO_PRIOR_SNAPSHOT` when the name was not in it. |
 | `chg_30d_pct` | the price change over the 30-bar window already pulled for the ADVol denominator — it costs NO extra call. |
 | `mcap_verified` | `YES` when a `shibui.valuation` row exists within 14 days; `NO` means the name passed the $1B floor BY DEFAULT, not on a stamped number. |
@@ -2836,6 +2837,12 @@ checker rejects it.
   **225 have a full ~10 years of bars and 76 have less than 9.5 years** (the thinnest: 1,276
   bars, 5.1 years). The claim is therefore a published FIELD (`bars_10y`, `history_years`,
   `ten_year_qualifier`), not a word in the title.
+* **Rank by the figure that survives the cross-check, but do not redefine the screen.**
+  The table is ordered by the independent source's short % of float (the names with no
+  cross-check follow, ranked by shibui's figure, because an unverified number must not
+  lead); the MEMBERSHIP stays shibui's, so a contradicted name stays in the book with both
+  figures on its row. C20 checks the published order against the JSON companion's order —
+  a declared ranking that the table does not follow is a broken claim.
 * **A cross-check of a handful of names reads exactly like a cross-check of the
   universe** — unless the COVERAGE is published and floored. Proven 2026-11-19: a
   10-of-138 cross-check passed every one of the 18 clauses. The coverage is now a

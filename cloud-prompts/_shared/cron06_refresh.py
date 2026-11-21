@@ -99,6 +99,10 @@ SNAPSHOT_PULLED_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # The cross-check must cover the PUBLISHED universe — a cross-check of a handful of
 # names is not a cross-check. The floor is a published number, not a claim.
 CROSSCHECK_COVERAGE_FLOOR = 80.0
+# The ranking basis is a published claim about the ORDER of the table, so it lives
+# where the reader and the checker can both see it.
+SORT_BASIS = ("independent source short % of float (cross-checked names first, ranked by the "
+              "source's figure); names with no cross-check follow, ranked by shibui's figure")
 
 FAILURES: list[str] = []
 
@@ -500,7 +504,6 @@ def main():
             "in_intersection": r["ticker"] in set(inter["union"]),
         })
     sf_rows.sort(key=lambda r: -r["short_pct_float"])
-    sf_display = sf_rows[:30]
 
     # ---------------------------------------------------------------- IPO rows
     ipo_rows = []
@@ -564,8 +567,11 @@ def main():
     excluded_new = [r for r in newly if type_by_ticker.get(r["ticker"]) != "Common Stock"]
 
     # ---------------------------------------------------------------- cross-check
+    xc_reason = None
     if nasdaq_si is None:
         xc_rows, xc_status = [], "not_supplied"
+        xc_reason = ("the independent source was not queried in this run — the short-float "
+                     "numbers below are UNVERIFIED against a second source")
     else:
         # EVERY name the screen publishes — the cross-check is about the screen's
         # MEMBERSHIP, not a footnote on the top of the table (measured 2026-11-16:
@@ -578,6 +584,10 @@ def main():
         xc_rows = [r for r in si_crosscheck(sf_rows, nasdaq_si)
                    if r["ticker"].upper() in fetched and r["ticker"] in wanted]
         xc_status = "ok" if xc_rows else "no_rows"
+        if not xc_rows:
+            xc_reason = ("the independent source was queried and returned no figure for any "
+                         "published name — the short-float numbers below are UNVERIFIED "
+                         "against a second source")
 
     # The cross-check's COVERAGE is a number the reader must see: a cross-check that
     # covers 7% of the universe is not a cross-check. (Proven 2026-11-19: a
@@ -599,6 +609,21 @@ def main():
         r["src_short_pct_float"] = x["source_short_pct_float"] if x else None
         if r["squeeze_candidate"] == "YES" and r["xcheck_verdict"] == "DIVERGES":
             r["squeeze_candidate"] = "CONTESTED"
+
+    # ---------------------------------------------------------------- the ranking
+    # The table is ranked by the INDEPENDENT source's short % of float, because that is
+    # the figure that survives a cross-check; shibui's own percentage is published beside
+    # it on every row, and the membership stays shibui's (the screen's definition). Names
+    # with no cross-check fall to the end, ranked by shibui's figure — they are the ones
+    # the reader cannot verify, so they do not lead.
+    _xc_pct = {x["ticker"]: x.get("source_short_pct_float") for x in xc_rows}
+    for r in sf_rows:
+        r["rank_source_pct"] = _xc_pct.get(r["ticker"])
+    sf_rows.sort(key=lambda r: (
+        0 if r.get("rank_source_pct") is not None else 1,
+        -(r["rank_source_pct"] if r.get("rank_source_pct") is not None else r["short_pct_float"]),
+    ))
+    sf_display = sf_rows[:30]
 
     # ---------------------------------------------------------------- render
     os.makedirs(args.out_md_dir, exist_ok=True)
@@ -632,6 +657,8 @@ def main():
         "prior_state_fire_date": prior_fire,
         "sweep_basis_data_date": sweep_basis,
         "snapshot_pulled_at": SNAPSHOT_PULLED_AT,
+        "sort_basis": SORT_BASIS,
+        "crosscheck_unavailable_reason": xc_reason,
         "verdict_vocabulary": sorted(TRADEABLE_VERDICTS),
         "tag_change_vocabulary": sorted(TAG_CHANGES),
         "short_interest_crosscheck": {
@@ -806,6 +833,9 @@ def write_sf_md(args, sf_rows, sf_display, inter, prior_fire, prior_pct,
     head = _hdr("Weekly High-Short-Float Refresh", fire, data)
     cov = (f"**Universe:** Common Stock with `short_percent_float > 20%`. **Latest available shibui date:** {data} "
            f"(T+1 lag vs cron date {fire}).\n\n")
+    cov += ("**Ranking:** " + SORT_BASIS + ". **Membership** is shibui's — the screen's own "
+            "definition — so a name the independent source contradicts stays in the book, "
+            "flagged.\n\n")
     cov += (f"**Count:** {len(sf_rows)} names pass the gate — rows_passing {len(sf_rows)} = rows_kept {len(sf_rows)} "
             f"(paged at the 200-row server ceiling, complete). The table shows the top {len(sf_display)} by "
             "`short_pct_float`; every name in any cross-screen intersection is enriched and listed below the table.\n\n")
@@ -866,7 +896,8 @@ def _si_crosscheck_md(xc_rows, xc_status, published=0, missing=None):
                 "a second source.\n\n")
     if not xc_rows:
         return (head + "**Status: no_rows** — the cross-check source was queried but returned no "
-                "row for any name in this universe.\n\n")
+                "row for any name in this universe, so the short-interest numbers below are "
+                "UNVERIFIED against a second source.\n\n")
     agree = sum(1 for r in xc_rows if r["verdict"] == "AGREE")
     div = sum(1 for r in xc_rows if r["verdict"] == "DIVERGES")
     nod = sum(1 for r in xc_rows if r["verdict"] == "NO_DATA")

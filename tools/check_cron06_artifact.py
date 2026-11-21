@@ -37,7 +37,7 @@ REQUIRED_FILES = ["weekly-ipo.md", "weekly-high-short-float.md", "peoplewish-bac
                    "peoplewish-backlog-run-full.json"]
 
 FAILURES: list[str] = []
-CHECKS = 19
+CHECKS = 20
 
 
 def fail(clause: str, msg: str) -> None:
@@ -560,7 +560,18 @@ def main():
     floor = xc.get("coverage_floor_pct")
     pub_n = xc.get("published_names")
     cov_n = xc.get("crosschecked_names")
-    if cov_pct is None or floor is None:
+    if xc.get("status") != "ok":
+        # The source did not answer: a DISCLOSED degradation, not a failed run. The
+        # artifact must say so in words — an unverified screen that reads as a verified
+        # one is the failure mode.
+        if not data.get("crosscheck_unavailable_reason"):
+            fail("C19", "the cross-check source did not answer, but the artifact publishes no "
+                        "crosscheck_unavailable_reason — the reader cannot see that the "
+                        "short-float numbers are UNVERIFIED")
+        if "UNVERIFIED" not in docs["weekly-high-short-float.md"]:
+            fail("C19", "the short-float artifact does not say that its numbers are UNVERIFIED "
+                        "against a second source")
+    elif cov_pct is None or floor is None:
         fail("C19", "the cross-check publishes no coverage_pct / coverage_floor_pct — a "
                     "cross-check of a few names would read as a cross-check of the universe")
     else:
@@ -588,6 +599,25 @@ def main():
     sfm_txt = docs["weekly-high-short-float.md"]
     if "**Coverage:**" not in sfm_txt:
         fail("C19", "the short-float artifact does not publish the cross-check coverage")
+
+    # ---------------------------------------------------------------- C20 the ranking
+    # The table says it is ranked by the independent source's figure. That is a CLAIM
+    # about order, and it is checkable: the md's rows must appear in the JSON
+    # companion's order.
+    basis = data.get("sort_basis")
+    if not basis:
+        fail("C20", "the artifact publishes no sort_basis — the table's order is undeclared")
+    else:
+        sfm = docs["weekly-high-short-float.md"]
+        if "**Ranking:**" not in sfm:
+            fail("C20", "the short-float artifact does not state its ranking basis")
+        md_tickers = [c[1] for c in sf_display if c and re.match(r"^\d+$", c[0])]
+        json_order = [r["ticker"] for r in (data.get("short_float_rows") or [])]
+        shown = [t for t in md_tickers if t in json_order]
+        want = [t for t in json_order if t in set(shown)]
+        if shown != want:
+            fail("C20", "the published table is not in the JSON companion's order — the ranking "
+                        f"basis says {basis[:60]!r} but the rows are ordered differently")
 
     report()
 

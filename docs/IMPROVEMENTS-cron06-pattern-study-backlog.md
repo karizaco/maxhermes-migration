@@ -561,3 +561,57 @@ by C19, not by C16's row-count comparison).
 21 mutations, each caught by its own clause, plus two engine-level cases (a wrong count
 override and a truncated branch) that must exit non-zero. The checker's clauses grew from
 14 (2026-11-07) to 19.
+
+---
+
+## 9. The ranking, and the two defects the re-ranking exposed (2026-11-21)
+
+The user's call on 2026-11-20: **keep shibui's membership** (it is the screen's documented
+definition) but **rank by the figure that survives the cross-check**, and publish both
+numbers on every row.
+
+### 9.1 What changed in the artifact
+
+The table is now ordered by the **independent source's short % of float**; names with no
+cross-check follow, ranked by shibui's figure, because an unverified number must not lead.
+The membership stays shibui's, so a name the source contradicts stays in the book — with
+both figures on its row and a `CONTESTED` squeeze flag.
+
+The 2026-11-16 data date, before and after:
+
+| rank | before (shibui's figure) | after (the source's figure) |
+|---|---|---|
+| 1 | VG 83.8% (source: 9.4%) | **WOLF 90.4%** (shibui: 51.7%) |
+| 2 | NMAX 63.5% (source: 16.2%) | **LCID 63.7%** (shibui: 60.4%) |
+| 3 | LCID 60.4% | **ONDS 44.8%** (shibui: 43.9%) |
+| 4 | WOLF 51.7% | **CRK 41.8%** (shibui: 32.4%) |
+
+The ranking basis is a PUBLISHED field (`sort_basis`) and **C20** checks the table's order
+against the JSON companion's order — a declared ranking the table does not follow is a
+broken claim. The fault-injection test swaps the first two rows of the published table and
+requires C20 to be the clause that fails.
+
+### 9.2 A fixed-index check, again — and this time the CHECKER read the wrong cells
+
+Adding the `Src %Float` column moved every cell to its right, and C11 and C15 were reading
+fixed indexes, so the delta check had started comparing the source percentage against the
+JSON's delta. Both now look their columns up **by header name**, once, in one place.
+
+### 9.3 A mutator that could not apply, and could not fail
+
+The C11 mutator wrote its placeholder into a fixed index — after the column was added that
+was the market cap, not the squeeze flag — so the mutation "passed" because it never
+touched the field it claimed to break. Two rules now hold:
+
+* a mutator targets a column **by name** and a row **by ticker** (the table is re-ranked
+  now, so "| 1 | AAAA |" targets whatever sits in row 1 — which may not be AAAA);
+* a mutator that cannot find its target **raises**, because a mutation that cannot be
+  applied must FAIL the test, not pass it.
+
+### 9.4 The floor must not turn a blocked source into a missed week
+
+C19's coverage floor applies when the cross-check source **answered**. When it did not
+answer, the run is a DISCLOSED degradation, not a failed week: the artifact publishes
+`crosscheck_unavailable_reason` and says in words that its numbers are UNVERIFIED against
+a second source, and C19 refuses an artifact that fails to say so. A hard failure on a
+third-party outage would have cost the routine a week of output for a missing footnote.
