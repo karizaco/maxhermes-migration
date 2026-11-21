@@ -123,16 +123,62 @@ it.** Every edit to a checker runs its own suite; a suite that was not run is a 
 
 | routine | changed file | needs a redeploy? |
 |---|---|---|
-| #07 | `cron-prompts/07-…md` (new STEP 8) | **yes** — the prompt file IS the deployed prompt |
+| #07 | `cron-prompts/07-…md` | **no** — the gate moved to the SKILL (§7b), which is fetched at run time |
 | #15, #15b | `cron-prompts/15-…md`, `15b-…md` | **yes** |
 | #19 | `cron-prompts/19-…md` | **yes** |
 | #26 | `cron-prompts/26-…md` | **yes** |
+| #16 | `cron-prompts/16-…md` | **yes** — see below |
 | #90, #91 | `_shared/auditor-procedure.md` | no — the prompt fetches the procedure at RUN time |
-| #06, #20, #12, #16 | the shared skill specs | no — fetched at run time |
+| #06, #20, #12 | the shared skill specs | no — fetched at run time |
 
 A redeploy is `cron_update` + a **SHA-256 of the read-back** (`{"ok":true}` proves only that the
 write landed), always resending `schedule` + `timezone` + `session`, because a prompt-only
 update silently resets the timezone.
+
+**Final state: 27 of 27 routines are byte-identical to the scheduler** (`tools/verify_prompts.py`
+against the persisted `cron_read view=list` response — the bytes are hashed from the file, so
+there is no transcription in the proof).
+
+### 6a. #16 was STALE IN THE SCHEDULER, and today's 16:35 ET fire was about to run the broken engine
+
+The byte check found a drift nobody had reported: the deployed #16 prompt did **not** carry the
+`CBOE_API_HOST_V1` marker demand, while the repo's does. That is the 2026-11-20 Cboe fix
+(`0659bc2`): the chain CDN moved behind Cloudflare, the pre-fix engine parsed **0 of 62 chains**
+and published a board with an `Infinity` put/call ratio — and it still exited 0, so the failure
+was invisible in the artifact's shape.
+
+The repo file had the fix and the scheduler did not. **A prompt can be "fixed" in the repo and
+still be running the old code for the next fire**, and no gate in this fleet would have said so:
+the artifact gate checks the ARTIFACT, not whether the engine that built it was the current one.
+Redeployed before the 16:35 ET slot.
+
+### 6b. A 2-byte typo I introduced, and what it cost to find
+
+The byte comparison caught a heading that read `## GIT PUSH (OPTIONAL)` in the repo while the
+scheduler held `(OPTIONAL)` — two extra letters, introduced by an `edit` whose `old_string`
+matched **fuzzily** and whose `new_string` was hand-written: the file gained bytes it never
+had. A line-level diff would have shown the line as "changed" and the cause would have been
+invisible.
+
+**The lesson: a diff is not a byte check.** After any edit to a file that is deployed somewhere,
+compare the SHA-256 of the two sides. The repo now carries the scheduler's bytes verbatim for
+that heading.
+
+### 6c. The redeploys drifted in COMMENTS, and the fix ran the other way
+
+Four of the five redeploys (#15, #16, #19, #26) came back 8–19 bytes off the repo. The cause was
+mine: re-typing a 25 KB prompt, I paraphrased the shared `PROMPT-BLOCKS` comment ("served a
+stale blob" for "STALE blob", "while the contents API was fresh" for "while jsDelivr was fresh",
+"that this is a reconstruction" for "that it is a reconstruction", and one trailing newline).
+
+No CODE line differed, so no instruction changed — but the fleet's invariant is byte-identity,
+and a drift guard that fires on a comment is a drift guard nobody reads.
+
+**The repo files were aligned to the DEPLOYED bytes, not the other way round.** Re-typing 96 KB
+to chase a comment is how a second, worse slip gets typed into a code line. The four prompts
+now carry a wording variant of the house comment; both wordings describe the same 2026-11-04
+measurement (raw was the stale mirror), and the canonical wording stays in the other 26 prompts
+and in `PROMPT-BLOCKS.md`, which is the file the prompts actually quote.
 
 ## 7. What is still open
 
