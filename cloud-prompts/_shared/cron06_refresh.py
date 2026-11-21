@@ -196,6 +196,16 @@ def si_crosscheck(sf_rows, nasdaq_rows):
     return out
 
 
+def xc_source_label(xc_rows):
+    """Name the source the run ACTUALLY used. The cross-check source is chosen by the
+    run (stockanalysis.com covers NYSE names; Nasdaq's own table returns null for
+    them), so a hardcoded label can name a source that was never called."""
+    srcs = sorted({str(r.get("source")).strip() for r in (xc_rows or []) if r.get("source")})
+    if not srcs:
+        return "an independent short-interest source (unnamed in this run)"
+    return "an independent short-interest source: " + ", ".join(srcs)
+
+
 def squeeze_flag(short_pct: float | None, adv30: float | None) -> str:
     if short_pct is None or adv30 is None:
         return "NO"
@@ -668,8 +678,10 @@ def main():
             "coverage_pct": xc_cov_pct,
             "coverage_floor_pct": CROSSCHECK_COVERAGE_FLOOR,
             "not_cross_checked": xc_missing,
-            "source": "Nasdaq short-interest table (api.nasdaq.com/api/quote/<symbol>/short-interest)"
-                      if xc_status == "ok" else "not supplied in this run",
+            # The source is whatever the run ACTUALLY queried — the label used to be a
+            # hardcoded "Nasdaq short-interest table" while the rows carry stockanalysis.com,
+            # so the block named a source that was never called.
+            "source": xc_source_label(xc_rows) if xc_status == "ok" else "not supplied in this run",
             "verdict_vocabulary": sorted(SI_VERDICTS),
             "agree_band": [SI_AGREE_LO, SI_AGREE_HI],
             "rows": xc_rows,
@@ -911,7 +923,10 @@ def _si_crosscheck_md(xc_rows, xc_status, published=0, missing=None):
     if xc_missing:
         cov_line += (f" **Not cross-checked ({len(xc_missing)}):** " + ", ".join(xc_missing[:25])
                      + (f", … (+{len(xc_missing)-25} more)" if len(xc_missing) > 25 else "") + ".")
-    out = ["**Source:** an independent short-interest figure (settlement-dated), compared with "
+    srcs = sorted({str(r.get("source")).strip() for r in (xc_rows or []) if r.get("source")})
+    out = ["**Source:** an independent short-interest figure ("
+           + (", ".join(srcs) if srcs else "unnamed in this run")
+           + "), compared with "
            "the short interest shibui's own ratio implies. **Status: ok** — "
            f"{len(xc_rows)} names cross-checked: {agree} AGREE, {div} DIVERGES, {nod} NO_DATA.",
            "", cov_line,
