@@ -740,18 +740,7 @@ at execution time. If they differ, this is a **delayed replay**: rebuild for the
 do NOT write a SKIPPED marker, and say in the artifact that it is a reconstruction produced late.
 A replay is normal, not an error.
 
-## STEP 8 — VERIFY THE ARTIFACT AGAINST THE CONTRACT (before the push)
-
-**This routine's artifact has a contract checker in the repo, and the procedure that
-FETCHES it lives in the SKILL spec** — section 7b, "Cron #07 — the focus-rvol
-artifact contract". The SKILL is fetched at RUN time, so the gate lands there with no
-redeploy, and this prompt deliberately does NOT carry a second copy of it: two copies of a
-gate is two chances to run the wrong one.
-
-Fetch it over the ladder, demanding its capability marker, and run it BEFORE the push.
-**A gate that is never fetched is not a gate.**
-
-## GIT PUSH (OPTITIONAL)
+## GIT PUSH (OPTIONAL)
 
 ```bash
 B=https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared

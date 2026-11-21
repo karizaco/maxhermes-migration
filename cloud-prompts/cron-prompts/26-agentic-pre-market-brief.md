@@ -209,9 +209,9 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
   fi
-  # Accept ONLY a copy that carries THIS checker's capability marker. The marker was
-  # named `2026-11-20.1` and is now `brief-consistency-2026-11-20.1`; accept either
-  # spelling so a ladder can never fail closed against the build that actually lands.
+  # Accept ONLY a copy that carries THIS checker's capability marker. The marker is
+  # `brief-consistency-2026-11-20.1` — it identifies THIS checker and no other, so a
+  # copy of a different gate can never satisfy the grep.
   if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
      && grep -q 'CHECKER_VERSION: brief-consistency-2026-11-20.1' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
