@@ -173,6 +173,57 @@ def main():
     check(AM.schedule_compatible("0 14 * * 3", "0 14 * * 3"),
           "an identical schedule is compatible")
 
+    # --- 1b. the RECONSTRUCTION detector ---------------------------------------
+    # A carried-forward gap is retired as `reconstructed` when the artifact
+    # DECLARES itself a rebuild. On 2026-11-22 the old detector - two markers,
+    # first 40 lines, first 4000 bytes - read two rebuilt artifacts as
+    # ordinary deliveries, so the audit would have published them as plain
+    # deliveries and lost the rebuild story. The markers are the phrases the
+    # fleet actually writes, measured over every file on origin/main.
+    check(AM.looks_like_reconstruction("# options flow (RECONSTRUCTION)\n"),
+          "the title form (RECONSTRUCTION) is detected")
+    check(AM.looks_like_reconstruction(
+        "## 0. Read this first - this is a RECONSTRUCTION, not the original run\n"),
+        "the section-0 form is detected")
+    check(AM.looks_like_reconstruction(
+        "- **REPLAY - the scheduled fire was blocked by the platform's Token "
+        "Plan window; this run executed 2195 min after the fire**\n"),
+        "the settlement scanner's REPLAY banner is detected")
+    check(AM.looks_like_reconstruction(
+        "This brief is a late reconstruction of the November 20 ET day built "
+        "on settled closes\n"),
+        "the 'late reconstruction' prose form is detected")
+    check(AM.looks_like_reconstruction(
+        "- **Produced:** 2026-11-03 03:21 ET - **a reconstruction, produced "
+        "~18h late**\n"),
+        "the 'a reconstruction, produced' form is detected")
+    check(AM.looks_like_reconstruction(
+        "This run is a delayed replay, so the live print no longer exists on "
+        "any feed\n"),
+        "the 'delayed replay' form is detected")
+    # the declaration can sit DEEP in the file: the 2026-11-20 earnings
+    # reminder declares itself 13.8 KB in, on line 179 of 227, and the old
+    # detector only ever read the first 40 lines of the first 4000 bytes.
+    deep = ("# earnings reminders\n\n" + ("filler line\n" * 200)
+            + "this brief is a late reconstruction of the November 20 ET day\n")
+    check(AM.looks_like_reconstruction(deep),
+          "a declaration 200 lines down is detected")
+    # and the traps. The LIVE screen disclaims being a reconstruction, and the
+    # settled boards describe their PRICES as one - neither is a rebuild, and a
+    # false positive here would publish a false gap.
+    check(not AM.looks_like_reconstruction(
+        "- **This is the LIVE 09:50 screen, not a reconstruction.**\n"),
+        "the LIVE screen's 'not a reconstruction' disclaimer is NOT a rebuild")
+    check(not AM.looks_like_reconstruction(
+        "This board is a reconstruction of a live session, not a live board.\n"),
+        "a settled board's 'reconstruction of a live session' is NOT a rebuild")
+    check(not AM.looks_like_reconstruction(
+        "the reconstructed prints were SPY -0.30% and 803 names reconstructed\n"),
+        "a reconstructed PRICE is NOT a rebuild")
+    check(not AM.looks_like_reconstruction(
+        "# ntrt gap brief\n\n- **Produced:** 2026-11-20 09:02 ET\n"),
+        "an ordinary artifact is not a rebuild")
+
     # --- 2. the end-to-end run --------------------------------------------------
     tmp = Path(tempfile.mkdtemp(prefix="auditor-metrics-"))
     repo = build_fixture(tmp)

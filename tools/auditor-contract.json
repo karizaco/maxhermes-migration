@@ -1,5 +1,5 @@
 {
-  "contract_version": "auditor-contract-v2",
+  "contract_version": "auditor-contract-v2.1",
   "_note": "THE contract for cron #90 (delivery-auditor). One file, shared by three consumers: the prompt (which fetches it at RUN time and applies it), tools/check_auditor_contract.py (the gate that validates a produced status.json + digest), and tools/test_auditor_contract.py (the fault injections). A contract that lives only in prose is a claim; a contract that lives here and is asserted is a contract. The prompt also carries a COMPACT INLINE COPY of the cause vocabulary and the state list as a fallback for a failed fetch - tools/check_auditor_contract.py --prompt parses that copy out of the prompt and FAILS if it disagrees with this file, so the fallback can never silently drift.",
   "states": {
     "delivered": "The artifact exists on origin/main and was byte-verified.",
@@ -74,6 +74,7 @@
       "connection_error",
       "platform_500",
       "timeout",
+      "quota_2056",
       "quota_2067",
       "push_failure",
       "cron_update_failed",
@@ -82,6 +83,7 @@
     "reconstructed": [
       "platform_500",
       "timeout",
+      "quota_2056",
       "quota_2067",
       "push_failure",
       "delayed_replay",
@@ -108,6 +110,7 @@
     "never_delivered": [
       "platform_500",
       "timeout",
+      "quota_2056",
       "quota_2067",
       "push_failure",
       "cron_update_failed",
@@ -118,6 +121,7 @@
     ]
   },
   "_label_causes_note": "Which causes may pair with which label. A pair outside this map is a FAILED AUDIT: e.g. `skipped_by_design` is never a cause OF a MISSING gap, because a routine that skipped by design is not missing at all.",
+  "_quota_symmetry_note": "2026-11-22: `quota_2056` (the Token Plan 5-hour window; the fire's FIRST model call is rejected, the turn dies) and `quota_2067` (the same wall, surfaced later) are ONE class of cause, so their label sets are identical: {stalled, MISSING, reconstructed, never_delivered}. Before this note only `stalled` accepted `quota_2056`, and the 2026-11-20 audit could not publish its own truthful finding: cron #10's fire died on the 2056 wall, and `MISSING`+`quota_2056` failed the gate's C05 with three violations. The procedure's own STEP 4c table routes ANY non-empty status_message on a due fire to MISSING, so a quota wall that produced NOTHING is a MISSING gap. Widening the map does not weaken C05: `skipped_by_design` is still refused for every artifact label, and tools/test_auditor_contract.py proves both halves.",
   "latency": {
     "field": "delivery_latency_min",
     "unit": "minutes",

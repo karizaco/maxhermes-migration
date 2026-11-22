@@ -444,6 +444,44 @@ def main():
     expect_catch(tmp, "a 'stalled' gap paired with a cause the label does not accept is caught",
                  stalled_wrong_cause, "C05")
 
+    # --- 2b-2. the Token Plan wall: 2056 and 2067 are ONE class of cause -----
+    # On 2026-11-20 the audit could not publish its own truthful finding: cron
+    # #10's fire died on the 2056 wall, and `MISSING`+`quota_2056` failed the
+    # gate's C05 three times. The procedure's STEP 4c table routes ANY
+    # non-empty status_message on a due fire to MISSING, so a quota wall that
+    # produced NOTHING is a MISSING gap.
+    st = copy.deepcopy(STATUS)
+    dg = copy.deepcopy(DIGEST)
+    st["gaps"][0]["cause"] = "quota_2056"
+    dg = dg.replace("cause=platform_500 age_h=18.4", "cause=quota_2056 age_h=18.4")
+    rc, detail = run_checker(tmp, st, dg, tasks=copy.deepcopy(TASKS))
+    record(rc == 0, "a MISSING caused by quota_2056 passes the gate", detail)
+
+    # the same for a RETIRED gap: the retirement rule publishes `reconstructed`
+    # with the cause of the ORIGINAL loss, and that original loss can be a
+    # quota wall (the 2026-11-20 earnings reminder and reaction board).
+    st = copy.deepcopy(STATUS)
+    dg = copy.deepcopy(DIGEST)
+    st["gaps"][1]["cause"] = "quota_2056"
+    dg = dg.replace("cause=delayed_replay age_h=20.2", "cause=quota_2056 age_h=20.2")
+    rc, detail = run_checker(tmp, st, dg, tasks=copy.deepcopy(TASKS))
+    record(rc == 0, "a reconstructed gap caused by quota_2056 passes the gate", detail)
+
+    # and the contract's own map is what says so - checked directly, so a
+    # future edit that re-narrows it is caught here and not in a live audit.
+    contract = json.loads((ROOT / "tools" / "auditor-contract.json").read_text(encoding="utf-8"))
+    lc = contract.get("label_causes") or {}
+    record("quota_2056" in (lc.get("MISSING") or []),
+           "the contract allows quota_2056 to cause a MISSING gap")
+    record("quota_2056" in (lc.get("reconstructed") or []),
+           "the contract allows quota_2056 to cause a reconstructed gap")
+    record(not any("quota_2056" in (lc.get(lbl) or [])
+                   for lbl in ("present_but_empty", "partial", "stale")),
+           "the contract still refuses quota_2056 for the degraded-artifact labels")
+    record(all({"quota_2056", "quota_2067"} <= set(lc.get(lbl) or [])
+               for lbl in ("stalled", "MISSING", "reconstructed", "never_delivered")),
+           "the two Token Plan wall causes have the same label set")
+
     # --- 3. the roster self-check must catch the bug it was written for ----------
     tasks_path = tmp / "tasks.json"
     tasks_path.write_text(json.dumps(TASKS), encoding="utf-8")

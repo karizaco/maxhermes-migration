@@ -1,7 +1,7 @@
 # cron #90 delivery-auditor — THE PROCEDURE
 
 AUDITOR_PROCEDURE_V1
-PROCEDURE_VERSION: 2026-11-17.1
+PROCEDURE_VERSION: 2026-11-22.1
 
 This file is the PROCEDURE for cron #90 (delivery-auditor). It is fetched at RUN time by the
 routine's prompt, which carries only the title block, the fetch ladder and the REPLY FORMAT.
@@ -356,7 +356,7 @@ carried-forward gap (STEP 4c-3a):
 | field | what it means |
 |---|---|
 | `prior_gaps[].path_present` | the artifact the PREVIOUS audit's gap names is on `origin/main` right now |
-| `prior_gaps[].reconstruction` | that artifact declares itself a RECONSTRUCTION — `(RECONSTRUCTION)` in its title, or "this is a RECONSTRUCTION" in its section 0 |
+| `prior_gaps[].reconstruction` | that artifact declares itself a RECONSTRUCTION. The engine's marker set is the vocabulary the fleet actually writes, measured over every file on `origin/main` on 2026-11-22 (all 20 hits inspected by hand): `(reconstruction)`, `this is a reconstruction`, `reconstruction, produced`, `reconstruction produced`, `late reconstruction`, `replay - `, `delayed replay`. The WHOLE file is scanned, not just its head — a rebuild may declare itself in a source-health table far down the artifact (the 2026-11-20 earnings reminder declares itself 13.8 KB in, on line 179 of 227). Two phrases are deliberately NOT markers: the bare word `reconstruction` (which also covers "803 names reconstructed" and the settled pre-close boards' "This board is a reconstruction of a live session") and the LIVE screen's own disclaimer "not a reconstruction" |
 | `path_presence` | every path the engine measured, and whether it is on `origin/main` — the gate's cross-check (STEP 6b) that a gap never names an artifact that is already there |
 
 **The engine measures; you judge.** It cannot see a session's `status_message`, a skip marker,
@@ -802,7 +802,7 @@ Classify every gap with its cause:
 | Evidence | Cause | Report as |
 |---|---|---|
 | No run at all for that routine on `$AUDIT_DATE`, and no session with that routine's title | it never fired | `MISSING` — reason: never fired |
-| A session for that routine on `$AUDIT_DATE` whose `status_message` contains `2067` | the Token Plan quota wall | `MISSING` — reason: quota exhausted (2067) |
+| A session for that routine on `$AUDIT_DATE` whose `status_message` contains `2067` or `2056` | the Token Plan quota wall | `MISSING` — reason: quota exhausted (2067) / quota window exhausted (2056) |
 | A session for that routine on `$AUDIT_DATE` with a different non-empty `status_message` | the run failed | `MISSING` — reason: <that message> |
 | A healthy session, but the routine's own commit is absent for `$AUDIT_DATE` | the push silently failed | `MISSING` — reason: push failed (session healthy) |
 
@@ -828,7 +828,7 @@ delivered delivered_late missing not_yet_fired skipped_by_design written_off not
 | `connection_error` | The platform's transport to the model failed mid-fire. Evidence: the session's last message is `[Error] Connection error.`, `finish_reason: "error"`, and `usage.total_tokens == 0` — the model call never completed, so the routine did NO work (no title set, no artifact, no commit). NOT a quota wall (no 2056/2067), NOT a push loss (nothing was ever staged), NOT the routine's logic (it never ran). The fix is a re-run, not a code change. Measured 2026-11-12 on cron #13's 2026-11-11 14:00 ET fire. |
 | `timeout` | The run exceeded its time budget and was cut off before it could write or push. |
 | `quota_2067` | The Token Plan usage limit was reached and credit auto-consumption was OFF — a BILLING wall, not a code bug. |
-| `quota_2056` | The Token Plan **5-hour usage window** was exhausted (error 2056, surfaced by the platform as 42212). The fire's FIRST model call was rejected, so the turn died and could only be resumed in place later — the run record still says `status: 1` and ~1 s. The window ROLLS from the account's first use. |
+| `quota_2056` | The Token Plan **5-hour usage window** was exhausted (error 2056, surfaced by the platform as 42212). The fire's FIRST model call was rejected, so the turn died and could only be resumed in place later — the run record still says `status: 1` and ~1 s. The window ROLLS from the account's first use. Measured 2026-11-20: cron #10's 14:00 ET fire ended `status: 2` with a `status_message` naming the 2056 limit, one assistant turn at `finish_reason: error` and `usage.total_tokens == 0` — no artifact, no commit, nothing on `origin/main`. It is a MISSING cause exactly like `quota_2067`, and the contract's `label_causes` map now gives the two Token Plan walls the SAME label set (`stalled`, `MISSING`, `reconstructed`, `never_delivered`) — before 2026-11-22 only `stalled` accepted `quota_2056`, and the 2026-11-20 audit could not publish its own truthful finding (three C05 violations). |
 | `push_failure` | The run was healthy and the artifact was built, but the push never landed (a lost race, a non-fast-forward, a staging abort). The artifact was NOT delivered. |
 | `delayed_replay` | The fire was dispatched for an earlier date and resumed late; the artifact was rebuilt for the ORIGINAL date. |
 | `not_yet_fired` | The routine's current schedule had not reached its first fire at the audited date. |
@@ -1106,7 +1106,7 @@ LATE (STEP 4a). Every gap carries a label AND a cause (STEP 4c-1) AND an age in 
 | `never_delivered` | STEP 4b: the routine has produced no artifact **at all**, ever, and its first fire date has already passed. Equivalent to MISSING — report it as MISSING with this detail in the reason. |
 | `partial` | The artifact exists for the right date but a second expected file for that routine is absent. |
 | `roster_desync` | The roster table's schedule differs from the GROUND TRUTH (STEP 4c-0). The ground truth wins. |
-| `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so in its title and its section 0. NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. Currently `options-flow/2026-10-19.md`, `options-flow/2026-10-26.md` and `macro-calendar/2026-11-11-midweek.md` are the three. |
+| `reconstructed` | The artifact exists at the expected path but was rebuilt after the fact from archival sources, not produced by that date's scheduled run. The file says so — in its title, in its section 0, or in a source-health table further down (see `prior_gaps[].reconstruction` above for the exact marker vocabulary). NOT a MISSING — but NOT a clean delivery either: report it, name the date and the cause of the original loss, and say which layer (aggregate vs strike-level) the file carries. There is no fixed list of them: the ones on `origin/main` as of 2026-11-22 are `options-flow/2026-10-19.md`, `options-flow/2026-10-26.md`, `macro-calendar/2026-11-11-midweek.md`, `ntrt/2026-10-29.md`, `ntrt/2026-10-30.md`, `ntrt/2026-11-02.md`, `ntrt/2026-11-17.md`, `ntrt/2026-11-20.md`, `us-stocks-in-play/2026-11-17-open.md`, `daily-screens/2026-11-05/focus-rvol-snapshot.md`, `daily-screens/2026-11-05/pre-market-gapper.md`, `daily-screens/2026-11-19/breadth-snapshot.md` and `earnings/2026-11-19-reactions-settled.md`, `earnings/2026-11-20-reactions-settled.md`, `earnings/2026-11-20-reminders.md` (plus their `derived/client-safe/` copies). MEASURE it — do not assume this list is current. |
 
 **WHAT A GAP'S DETAIL MUST CARRY** (the detail is the evidence — never leave it bare):
 

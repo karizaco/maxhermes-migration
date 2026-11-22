@@ -291,7 +291,31 @@ def last_delivered(files, suffix_set, name_re=None):
 # "## 0. Read this first - this is a RECONSTRUCTION, not the original run".
 # The marker is what lets the auditor retire a carried-forward gap as
 # `reconstructed` instead of leaving it MISSING for ever.
-RECONSTRUCTION_MARKERS = ("(RECONSTRUCTION)", "this is a RECONSTRUCTION")
+#
+# 2026-11-22: the fleet's wording has drifted past those two phrases, and the
+# old detector read two rebuilt artifacts as ordinary deliveries:
+#   earnings/2026-11-20-reactions-settled.md - "REPLAY - the scheduled fire was
+#     blocked by the platform's Token Plan window; this run executed 2195 min
+#     after the fire"
+#   earnings/2026-11-20-reminders.md - "this brief is a late reconstruction of
+#     the November 20 ET day built on settled closes and issuer release
+#     timestamps" (13.8 KB in, on line 179 of 227 - past the old head window)
+# The markers below are what the fleet actually writes today, measured over
+# every file on origin/main on 2026-11-22: each one matches only files that
+# really are rebuilds (20 files, all inspected by hand). Two near-misses are
+# deliberately NOT markers - the bare word "reconstruction" (which also covers
+# "803 names reconstructed", "a 5-minute-bar reconstruction" and the settled
+# pre-close boards' "This board is a reconstruction of a live session") and the
+# LIVE screen's own disclaimer "not a reconstruction".
+RECONSTRUCTION_MARKERS = (
+    "(reconstruction)",              # the options-flow title form
+    "this is a reconstruction",      # the section-0 form
+    "reconstruction, produced",      # "a reconstruction, produced ~18h late"
+    "reconstruction produced",       # "Reconstruction produced late"
+    "late reconstruction",           # the prose form
+    "replay - ",                     # the earnings settlement scanner's replay banner
+    "delayed replay",                # "This run is a delayed replay"
+)
 
 # The gap labels whose `path` is an ARTIFACT in this repo. `roster_desync` is the
 # odd one out: its path is a file of the roster repo (the procedure file), so the
@@ -299,11 +323,21 @@ RECONSTRUCTION_MARKERS = ("(RECONSTRUCTION)", "this is a RECONSTRUCTION")
 ARTIFACT_GAP_LABELS = ("MISSING", "stalled", "reconstructed", "present_but_empty",
                        "partial", "stale", "never_delivered")
 
+# How much of a blob the reconstruction scan reads. The declaration can sit deep
+# in the file (the 2026-11-20 earnings reminder declares itself 13.8 KB in), so
+# this is the same budget the health check uses.
+RECONSTRUCTION_SCAN_BYTES = 200000
+
 
 def looks_like_reconstruction(text):
-    """Does this artifact declare itself a reconstruction rather than an original run?"""
-    head = "\n".join((text or "").splitlines()[:40])
-    return any(marker in head for marker in RECONSTRUCTION_MARKERS)
+    """Does this artifact declare itself a reconstruction rather than an original run?
+
+    The WHOLE file is scanned, not just its first 40 lines: a rebuild may
+    declare itself in a source-health table far down the artifact, and a
+    detector that only reads the head cannot tell a rebuild from a delivery.
+    """
+    body = (text or "").lower()
+    return any(marker in body for marker in RECONSTRUCTION_MARKERS)
 
 
 def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=None):
@@ -514,7 +548,8 @@ def measure(date_str, repo, procedure, ground_truth_path, holidays_path, prior=N
         present = p in files
         g["path_present"] = present
         g["reconstruction"] = bool(
-            present and looks_like_reconstruction(blob_text(repo, p, limit=4000)))
+            present and looks_like_reconstruction(
+                blob_text(repo, p, limit=RECONSTRUCTION_SCAN_BYTES)))
         presence[p] = present
 
     return {
