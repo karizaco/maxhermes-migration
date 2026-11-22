@@ -1,5 +1,5 @@
 {
-  "contract_version": "auditor-contract-v2.1",
+  "contract_version": "auditor-contract-v3",
   "_note": "THE contract for cron #90 (delivery-auditor). One file, shared by three consumers: the prompt (which fetches it at RUN time and applies it), tools/check_auditor_contract.py (the gate that validates a produced status.json + digest), and tools/test_auditor_contract.py (the fault injections). A contract that lives only in prose is a claim; a contract that lives here and is asserted is a contract. The prompt also carries a COMPACT INLINE COPY of the cause vocabulary and the state list as a fallback for a failed fetch - tools/check_auditor_contract.py --prompt parses that copy out of the prompt and FAILS if it disagrees with this file, so the fallback can never silently drift.",
   "states": {
     "delivered": "The artifact exists on origin/main and was byte-verified.",
@@ -129,8 +129,12 @@
     "default_allowed_minutes": 45,
     "_note": "The run record's started_at_ms/finished_at_ms measure the DISPATCH of the prompt to the agent, NOT the work: a fire that was blocked for hours and then resumed still shows ~1 s and status 1. The artifact's push time against scheduled_at_ms is the only honest measure of when the work actually happened.",
     "_allowed_note": "45 minutes is the default for the whole fleet, measured across 2026-11-04 to 2026-11-08: the slowest HEALTHY routine landed 32 min after its schedule (#17's preclose slot) and #10 - which fires at 14:00 ET - landed at 14:07. A routine that is chronically slower than that needs its own allowed value named HERE, never a global widening.",
-    "per_routine_allowed_minutes": {},
-    "_per_routine_note": "A routine that is CHRONICALLY slower than the default needs its own allowance HERE - never widen the global default to hide one slow routine. Measured 2026-11-12: cron #20's latencies were 42.7 (11-09), 50.5 (11-10) and 46.1 (11-11) min, so a single 45-minute default makes it flap between 'delivered' and 'delivered_late' on noise. Name the routine here with the allowance the OPERATOR accepts; the auditor reports the chronic condition and recommends a value, it never widens the allowance by itself. The gate (C17) reads this map."
+    "per_routine_allowed_minutes": {
+      "20-eod-watchlist-csv": 110,
+      "25-ntrt-gap-brief-daily": 60,
+      "26b-agentic-pre-market-brief-refresh": 80
+    },
+    "_per_routine_note": "A routine that is CHRONICALLY slower than the default needs its own allowance HERE - never widen the global default to hide one slow routine. The OPERATOR sets these values (the auditor recommends, it never widens the allowance by itself). Set 2026-11-22 on the operator's approval: 110 for 20-eod-watchlist-csv, 60 for 25-ntrt-gap-brief-daily, 80 for 26b-agentic-pre-market-brief-refresh. THE BASIS: 20's own work is a long settle loop (measured 92.8 / 77.7 / 561.1 / 81.8 / 80.1 min on 11-16..11-20) and the audit itself recommends ~110. 25's OWN work is ~46 min; its 766.5 / 981.2 / 1109.8 min readings are the PLATFORM's Token Plan wall holding the fire, not the routine being slow - a stall stays LATE whatever the allowance is, and the cause line says `delayed_replay`. 26b's own readings are 10.7 / 71.0 / 124.0 min; 80 was the operator's figure, while the 2026-11-20 audit (of the 11-20 fire, which took 124.0 min and was a genuine slow_run) recommends ~130 - raise it to 130 to accept that run, or leave it at 80 to keep the routine surfaced as slow until it is optimised. THE KEY IS THE STATUS-FILE KEY (see above), not the prompt file name: an unmatched key leaves the allowance inert. The gate (C17) reads this map and fails when a routine's published state disagrees with its allowance."
   },
   "skip_marker": {
     "glob": "refs/skipped-markers/{date}_SKIPPED_*.md",
@@ -146,8 +150,8 @@
   },
   "digest": {
     "summary": "audit: <AUDIT_DATE> due=<n> delivered=<n> missing=<n>",
-    "gap": "gap: <routine> <label> <path> \u2014 cause=<token> age_h=<n> \u2014 <detail>",
-    "skipped": "skipped: <routine> <reason> \u2014 <marker path>",
+    "gap": "gap: <routine> <label> <path> — cause=<token> age_h=<n> — <detail>",
+    "skipped": "skipped: <routine> <reason> — <marker path>",
     "roster_gap": "roster_gap: <name> (task <id>) is live but not in schedule-ground-truth.json",
     "streak": "streak: <routine> <n> consecutive missed fires",
     "push": "push: ok (verified)",
