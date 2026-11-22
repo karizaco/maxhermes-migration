@@ -3,7 +3,7 @@
 check_earnings_reminder_artifact.py — independent verifier for cron #19's artifact.
 
 The routine renders the artifact; this checks that the artifact on disk obeys the
-ARTIFACT FORMAT CONTRACT v3 (EARNINGS_REMINDER_V3) in
+ARTIFACT FORMAT CONTRACT v4 (EARNINGS_REMINDER_V4) in
 `cloud-prompts/skills/earnings-reminder/SKILL.md`. It is deliberately a SEPARATE
 implementation: the renderer is the producer, this is the verifier, and neither
 imports the other.

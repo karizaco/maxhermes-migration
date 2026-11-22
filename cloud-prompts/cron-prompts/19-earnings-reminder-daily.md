@@ -246,7 +246,7 @@ band_low_usd: 40000000000
 Add `reaction_degraded: <n>` when a reaction column could not be computed for exactly `n` rows.
 
 Then: a `## Your watchlist` section ONLY IF a watchlist is actually available, then the THREE
-tables defined by the SKILL's `## ARTIFACT FORMAT CONTRACT v2 (EARNINGS_REMINDER_V2)` section —
+tables defined by the SKILL's `## ARTIFACT FORMAT CONTRACT v4 (EARNINGS_REMINDER_V4)` section —
 read that section and follow it exactly. In short:
 
 1. `## Big S&P 500 today` — the US roster, one row per name, carrying the reaction columns
