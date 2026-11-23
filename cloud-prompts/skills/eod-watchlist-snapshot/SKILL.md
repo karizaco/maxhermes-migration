@@ -631,11 +631,46 @@ change (median error 0.46pp, max **5.2pp**).
 2. a quote prior close **more than 5% above** it → a **reverse split** intervened: the
    published prior close is a raw pre-split print, so the quote's split-adjusted prior close
    becomes the anchor and the row is flagged **`SPLIT_ADJUSTED`**;
-3. a quote prior close **more than 0.5% below** it → an **ex-distribution**: the quote is
-   dividend-adjusted, so **the PRICE change stands** on the published basis and the row is
-   flagged **`EX_DISTRIBUTION`**;
+3. a quote prior close **more than 0.5% below** it → **either** an **ex-distribution**: the
+   quote is dividend-adjusted, so **the PRICE change stands** on the published basis and the
+   row is flagged **`EX_DISTRIBUTION`**; **or** a **defective published prior close**, which
+   is a different fact and needs a different answer — see the rule below;
 4. no published prior close → the bar series' prior close, **with its date asserted**;
 5. no anchor at all → `NO_PRIOR_CLOSE`.
+
+### A GAP BELOW THE PUBLISHED PRIOR CLOSE IS NOT ALWAYS A DISTRIBUTION (2026-11-23)
+
+**Measured on the 2026-11-23 fire: the prior session's published close was WRONG for 279 rows,
+and the rule above mislabelled every one of them as a distribution — which hid the session's
+biggest mover from the movers table.** The archive's 2026-11-20 file published NVDA's close as
+**128.10**; the exchange's own historical record (`api.nasdaq.com/api/quote/NVDA/historical`)
+says **125.53**, which is also what the vendor's price history and the quote service both
+carried. NVDA's real move that session was **+31.48%**, not the **+28.88%** the archive's
+number produced — and because the gap was read as a distribution, the row was flagged
+`EX_DISTRIBUTION` and **excluded from the movers table and from the headline**.
+
+The adjudication was per-row, against the exchange's record: of the 279 rows whose published
+prior close disagreed with the corroborated close, **279 of 279** were confirmed by Nasdaq's
+own historical close — **zero** of them were distributions.
+
+**So the two cases need to be told apart, and the discriminator needs NO new source.** The
+quote service's prior close is dividend- **and** split-adjusted; the bar series' prior close
+is split-adjusted **only**. When the two **agree** (within 0.5%), **no distribution can be in
+play** — a dividend would make them differ — so the gap against the published prior close
+cannot be a distribution: it is the **published prior close that is the outlier**.
+
+⇒ **The corroborated prior close becomes the anchor** (the bar series' prior close, with its
+date asserted), and the row is flagged **`PRIOR_CLOSE_SUPERSEDED`**. The flag says, per row,
+that the prior session's file cannot reproduce this row's change % — which is true, because
+the prior session's file is wrong on that row.
+
+- The rule is **derived, not assumed**: it needs only `--quote-prev` and the price history,
+  both of which the run already has.
+- **The prior session's file still has to be repaired.** Today's artifact names the affected
+  count and the rows; it does not silently rewrite the prior session's published file (that is
+  a separate, deliberately-published repair).
+- A superseded row is **NOT** an ex-distribution row: it is a real move, so it **stays in the
+  movers table** and it is **not** excluded from the headline.
 
 `gap_pct` uses the same anchor, so a gap and a change are never measured against different
 sessions. The checker asserts the result against the prior session's file (`--prior-csv`), so
@@ -928,6 +963,7 @@ precedence (most severe first):
 | `RANGE_ADJUSTED` | high/low came from the vendor's day range, not the daily bar |
 | `NO_HISTORY` | no session bar in the price history, so no derived column exists |
 | `NO_PRIOR_CLOSE` | the prior session's settled close could not be resolved, so the change % could not be verified |
+| `PRIOR_CLOSE_SUPERSEDED` | the prior session's PUBLISHED close is wrong - the exchange's own record contradicts it - so the change % is measured on the corroborated prior close and the prior session's file cannot reproduce it (2026-11-23: 279 rows; NVDA 128.10 → 125.53) |
 | `EX_DISTRIBUTION` | the row went ex a distribution between the sessions: the price change is a mechanical artefact, not a market move (the screen's dividend-adjusted basis differs — the count is published) |
 | `SPLIT_ADJUSTED` | a split happened between the sessions: the change % is measured on the split-adjusted basis, so the two RAW published closes are not comparable (CDT, JSPR, ONCO) |
 | `NO_PE` | no trailing P/E for the row |
@@ -1023,13 +1059,14 @@ The derive stage is a **script**, not prose, so the numbers cannot drift between
 # Each file carries its OWN marker: EOD_SETTLE_V1 for the settle-stage scripts,
 # EOD_SETTLE_V2 for the BATCHED probe script (2026-11-16 - a stale copy without the
 # batched detector would silently put the old request volume back on the wire),
-# EOD_BASE_V1 for the base assembly, EOD_DERIVE_V2 for the derive/report stages.
+# EOD_BASE_V1 for the base assembly, EOD_DERIVE_V3 for the derive/report stages (V3 = the
+# PRIOR_CLOSE_SUPERSEDED anchor rule of 2026-11-23).
 mkdir -p /workspace/eod_scripts
 for SPEC in \
   "fetch_eod_universe.py:EOD_SETTLE_V1" "fetch_eod_quotes.py:EOD_SETTLE_V1" \
   "fetch_eod_settled.py:EOD_SETTLE_V2" "fetch_eod_venue.py:EOD_SETTLE_V1" \
   "build_eod_base.py:EOD_BASE_V1" "patch_eod_session_closes.py:EOD_BASE_V1" \
-  "eod_derive.py:EOD_DERIVE_V2" "build_eod_report.py:EOD_DERIVE_V2" ; do
+  "eod_derive.py:EOD_DERIVE_V3" "build_eod_report.py:EOD_DERIVE_V3" ; do
   F=${SPEC%%:*}; MARK=${SPEC##*:}
   S=/workspace/eod_scripts/$F
   for U in \
@@ -1057,7 +1094,7 @@ publishing nothing: the consumer cannot tell which shape it is holding.
 **The GATE is fetched at run time too.** `tools/check_eod_artifact.py` lives in the repo,
 and the cron sandbox's cwd is **not** a repo checkout — so it is never run from
 `tools/check_eod_artifact.py`. It is downloaded over the same three-URL ladder and
-demanded by its capability marker `CHECKER_VERSION: eod-artifact-2026-11-20.1`: the CDNs cache `main`
+demanded by its capability marker `CHECKER_VERSION: eod-artifact-2026-11-23.1`: the CDNs cache `main`
 independently, so a copy without that marker is a stale gate that checks fewer rules. If no
 copy carries it, the run stops — it does not publish an ungated artifact.
 
@@ -1133,13 +1170,13 @@ for U in \
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$C.tmp" "$U" 2>/dev/null
   fi
   if [ -s "$C.tmp" ] && ! head -c 200 "$C.tmp" | grep -q '"message"' \
-     && grep -q 'CHECKER_VERSION: eod-artifact-2026-11-20.1' "$C.tmp" 2>/dev/null; then
+     && grep -q 'CHECKER_VERSION: eod-artifact-2026-11-23.1' "$C.tmp" 2>/dev/null; then
     mv -f "$C.tmp" "$C"; break
   fi
   rm -f "$C.tmp"
 done
-if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: eod-artifact-2026-11-20.1' "$C" 2>/dev/null; then
-  echo "check_eod_artifact.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: eod-artifact-2026-11-20.1) - do NOT publish an artifact that was not gated"
+if [ ! -s "$C" ] || ! grep -q 'CHECKER_VERSION: eod-artifact-2026-11-23.1' "$C" 2>/dev/null; then
+  echo "check_eod_artifact.py: UNAVAILABLE (no copy carrying CHECKER_VERSION: eod-artifact-2026-11-23.1) - do NOT publish an artifact that was not gated"
   exit 1
 fi
 

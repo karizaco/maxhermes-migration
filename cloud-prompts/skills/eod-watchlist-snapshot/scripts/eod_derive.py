@@ -97,7 +97,7 @@ import re
 import sys
 from decimal import Decimal, ROUND_HALF_UP
 
-MARKER = "EOD_DERIVE_V2"
+MARKER = "EOD_DERIVE_V3"
 
 BASE_COLUMNS = ["date", "ticker", "name", "open", "high", "low", "close", "volume",
                 "change_pct", "market_cap", "pe_ratio", "sector", "currency", "exchange"]
@@ -117,7 +117,8 @@ SETTLE_VOCABULARY = ["CONFIRMED", "UNCONFIRMED", "NO_BAR"]
 OUT_COLUMNS = BASE_COLUMNS + DERIVED_COLUMNS
 
 FLAG_PRECEDENCE = ["NO_CAP", "CAP_CARRIED", "HIGH_LOW_UNAVAILABLE", "RANGE_ADJUSTED",
-                   "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION", "SPLIT_ADJUSTED",
+                   "NO_HISTORY", "NO_PRIOR_CLOSE", "PRIOR_CLOSE_SUPERSEDED",
+                   "EX_DISTRIBUTION", "SPLIT_ADJUSTED",
                    "NO_PE", "NO_SECTOR", "OK"]
 
 # The US numeric rule: 4 significant figures with the fractional trailing zeros stripped,
@@ -409,6 +410,7 @@ def main() -> int:
     change_unverified = 0
     ex_divid_rows = []
     split_rows = []
+    superseded_rows = []
 
     for r in base:
         t = r["ticker"]
@@ -462,6 +464,7 @@ def main() -> int:
         bar_asserted = bool(prior_date) and d["_prior_close_date"] == prior_date
         ex_div = False
         split_row = False
+        superseded_row = False
 
         if published_prior is not None:
             anchor, anchor_date, anchor_source = published_prior, prior_date, "prior_published"
@@ -477,17 +480,46 @@ def main() -> int:
                 split_row = True
                 split_rows.append((t, round(published_prior, 4), qp))
             elif qp < published_prior * 0.995:
-                # an ex-distribution: the price change stands on the published basis. The
-                # threshold is 0.5%, because a distribution can be a few percent (AB: 2.6%)
-                # and the screen's number then differs from the price change by that much.
-                ex_div = True
-                ex_divid_rows.append((t, round(published_prior, 4), qp))
+                # A gap BELOW the published prior close has TWO possible causes, and they
+                # are not the same fact:
+                #
+                #   (a) an EX-DISTRIBUTION: the quote service's prior close is
+                #       dividend-adjusted, so it sits below the published raw basis
+                #       (AB: 34.02 against 34.90). The price change stands on the
+                #       published basis and the row is flagged EX_DISTRIBUTION.
+                #
+                #   (b) a DEFECTIVE PUBLISHED PRIOR CLOSE: the prior session's file
+                #       published a close that the exchange's own record contradicts
+                #       (measured 2026-11-23: 279 of 279 disputed rows - the venue's
+                #       Nasdaq historical close matched the vendor bar and the quote
+                #       service, and NOT the archive's published close). Here no
+                #       distribution intervened, so the price change against the
+                #       archive's own number is not the session's price change at all.
+                #
+                # The DISCRIMINATOR needs no new source: the quote service's prior close
+                # is dividend- AND split-adjusted, while the bar series' prior close is
+                # split-adjusted only. When the two AGREE (within 0.5%), no distribution
+                # can be in play, so the gap cannot be (a) - it is (b), the published
+                # prior close is the outlier, and the corroborated close becomes the
+                # anchor. The row is flagged PRIOR_CLOSE_SUPERSEDED so the divergence
+                # from the prior session's FILE is visible per row.
+                if bar_prior is not None and bar_asserted and \
+                        abs(qp - bar_prior) / max(abs(bar_prior), 1e-9) <= 0.005:
+                    anchor, anchor_source = bar_prior, "bar_superseded_prior"
+                    superseded_row = True
+                    superseded_rows.append((t, round(published_prior, 4), round(bar_prior, 4)))
+                else:
+                    # The threshold is 0.5%, because a distribution can be a few percent
+                    # (AB: 2.6%) and the screen's number then differs from the price
+                    # change by that much.
+                    ex_div = True
+                    ex_divid_rows.append((t, round(published_prior, 4), qp))
         elif qp and anchor and anchor_source.startswith("bar") and qp > anchor * 1.05:
             anchor, anchor_source = qp, "quote_split_adjusted"
             split_row = True
             split_rows.append((t, round(anchor, 4), qp))
 
-        if bar_prior and published_prior and \
+        if not superseded_row and bar_prior and published_prior and \
                 abs(bar_prior - published_prior) / published_prior > 0.05:
             # the bar and the published prior close disagree by more than 5%: a split intervened
             split_row = True
@@ -528,6 +560,8 @@ def main() -> int:
         if anchor_missing and (row["close"] != "" or row["change_pct"] != ""):
             fl.append("NO_PRIOR_CLOSE")
             change_unverified += 1
+        if superseded_row:
+            fl.append("PRIOR_CLOSE_SUPERSEDED")
         if ex_div:
             fl.append("EX_DISTRIBUTION")
         if split_row:
@@ -629,6 +663,10 @@ def main() -> int:
         "change_pct_unverified": change_unverified,
         "prior_session": prior_date,
         "ex_distribution_rows": len(ex_divid_rows),
+        "superseded_prior_close_rows": len(superseded_rows),
+        "superseded_prior_close_detail": [
+            {"ticker": t, "prior_published_close": a, "corroborated_prior_close": b}
+            for t, a, b in superseded_rows],
         "split_adjusted_rows": len(split_rows),
         "split_adjusted_detail": [{"ticker": t, "anchor_before": a,
                                     "split_adjusted_prior_close": b} for t, a, b in split_rows],
@@ -637,7 +675,10 @@ def main() -> int:
         "change_pct_basis": "the session's PRICE change against the prior session's published "
                             "close (the archive's convention, verifiable from the two published "
                             "closes); ex-distribution rows are flagged EX_DISTRIBUTION because "
-                            "the quote service's prior close is dividend-adjusted there",
+                            "the quote service's prior close is dividend-adjusted there; rows "
+                            "flagged PRIOR_CLOSE_SUPERSEDED are measured on the corroborated "
+                            "prior close instead, because the prior session's published close "
+                            "is contradicted by the exchange's own record",
         "range_adjusted_rows": range_adjusted,
         "implied_shares_implausible": shares_implausible,
         "universe_pulled": len(base),
@@ -671,6 +712,8 @@ def main() -> int:
           f"shares_implausible={shares_implausible}")
     print(f"change_pct: corrected={change_corrected} filled={change_filled} "
           f"unverified={change_unverified} (prior session {prior_date or 'n/a'})")
+    print(f"prior close superseded: {len(superseded_rows)} row(s) measured on the "
+          f"corroborated prior close instead of the prior session's published close")
     return 0
 
 

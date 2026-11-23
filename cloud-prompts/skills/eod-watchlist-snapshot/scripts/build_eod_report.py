@@ -37,7 +37,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 
-MARKER = "EOD_DERIVE_V2"
+MARKER = "EOD_DERIVE_V3"
 
 INDEX_PROXIES = [("S&P 500", "SPY"), ("Nasdaq 100", "QQQ"), ("Russell 2000", "IWM"),
                  ("Dow Jones", "DIA"), ("S&P 500 equal-weight", "RSP")]
@@ -312,6 +312,10 @@ def main() -> int:
         "NO_HISTORY": "no session bar in the price history, so no derived column exists",
         "NO_PRIOR_CLOSE": "the prior session's settled close could not be resolved, so the "
                           "change % could not be verified",
+        "PRIOR_CLOSE_SUPERSEDED": "the prior session's published close is contradicted by the "
+                                  "exchange's own record: the change % is measured on the "
+                                  "corroborated prior close, so the prior session's file cannot "
+                                  "reproduce it",
         "EX_DISTRIBUTION": "the row went ex a distribution between the sessions: the price "
                            "change is a mechanical artefact, not a market move",
         "SPLIT_ADJUSTED": "a split happened between the sessions: the change % is on the "
@@ -381,6 +385,19 @@ def main() -> int:
           f"dividend-adjusted basis shows a different number. Worst by size: "
           + ", ".join(f"`{w['ticker']}` ({w['prior_published_close']} → "
                       f"{w['quote_adjusted_prior_close']})" for w in worst) + ".")
+    sup = manifest.get("superseded_prior_close_detail") or []
+    if sup:
+        worst = sorted(sup, key=lambda x: -abs(x["prior_published_close"]
+                                               - x["corroborated_prior_close"]))[:10]
+        A(f"- **{len(sup)} rows are flagged `PRIOR_CLOSE_SUPERSEDED`: the prior session's "
+          f"published close for them is WRONG.** The exchange's own historical record for "
+          f"`{manifest.get('prior_session', 'the prior session')}` agrees with the vendor's "
+          f"price history and with the quote service's adjusted prior close, and disagrees "
+          f"with the close the prior session's file published - so on these rows the change "
+          f"% is measured on the corroborated prior close, and the prior session's file "
+          f"cannot reproduce it. Worst by size: "
+          + ", ".join(f"`{w['ticker']}` ({w['prior_published_close']} → "
+                      f"{w['corroborated_prior_close']})" for w in worst) + ".")
     A(f"- **CSV**: `{os.path.basename(args.csv)}` — **{manifest['csv_columns']} columns** "
       f"(the base 14 session columns plus {len(manifest['derived_columns'])} derived/provenance "
       f"columns). A consumer reading by position still gets the same first 14 columns."

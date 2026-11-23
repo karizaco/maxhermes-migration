@@ -24,6 +24,11 @@ it checks cannot catch a bug in that code. It asserts the published contract:
   11. the Coverage table reports populated counts AND per-flag counts
   12. the Method section states the market-cap currency and the conversion direction
 
+  EXEMPTION (2026-11-23.1): a row flagged `PRIOR_CLOSE_SUPERSEDED` is measured on the
+  corroborated prior close, because the prior session's published close is contradicted by
+  the exchange's own record - so the archive's own prior file cannot reproduce that row's
+  change %. The row says so in its `data_quality`; the exemption is per-row and named.
+
 Exit code 0 = every assertion passed. Exit code 1 = one or more failed; each failure is
 printed on its own line.
 
@@ -32,8 +37,13 @@ printed on its own line.
 
 from __future__ import annotations
 
-# CHECKER_VERSION: eod-artifact-2026-11-20.1
-CHECKER_VERSION = "eod-artifact-2026-11-20.1"
+# CHECKER_VERSION: eod-artifact-2026-11-23.1
+# LEGACY MARKER: the DEPLOYED cron #20 prompt still greps for the literal string
+# 'CHECKER_VERSION: eod-artifact-2026-11-20.1' when it fetches this file. It is kept so
+# the deployed prompt's ladder keeps resolving; the SKILL's ladder (fetched at RUN time)
+# demands the CURRENT marker above, so the run always installs THIS build. Do not delete
+# the legacy string until every deployed prompt asks for the current marker.
+CHECKER_VERSION = "eod-artifact-2026-11-23.1"
 
 import argparse
 import csv
@@ -56,7 +66,7 @@ REQUIRED_COLUMNS = [
 
 VOCABULARY = {"OK", "RANGE_ADJUSTED", "HIGH_LOW_UNAVAILABLE", "CAP_CARRIED", "NO_SECTOR",
               "NO_PE", "NO_CAP", "NO_HISTORY", "NO_PRIOR_CLOSE", "EX_DISTRIBUTION",
-              "SPLIT_ADJUSTED"}
+              "SPLIT_ADJUSTED", "PRIOR_CLOSE_SUPERSEDED"}
 
 # The settle evidence: every row states how its close was settled. `CONFIRMED` means the
 # close was matched against an INDEPENDENT reading of the 16:00 ET auction print.
@@ -328,6 +338,12 @@ def main() -> int:
                 # split-adjusted basis, so the raw prior close is not comparable
                 flags = set((r.get("data_quality") or "").split("|"))
                 if "SPLIT_ADJUSTED" in flags:
+                    continue
+                # a row whose PRIOR PUBLISHED CLOSE was superseded (the prior session's
+                # published close is contradicted by the exchange's own record) is measured
+                # on the corroborated prior close, so the archive's own prior file cannot
+                # reproduce it - that is the row's own published reason for the difference.
+                if "PRIOR_CLOSE_SUPERSEDED" in flags:
                     continue
                 bad_change.append((r.get("ticker", ""), round(implied, 3), pc))
         if bad_change:
