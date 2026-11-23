@@ -1540,8 +1540,9 @@ dropping one.
 **⇒ DO NOT build a closed region from the scanner's stale pull.** The scanner's `change` field
 for a shut market is the LAST session's change, so building it writes that day's date against
 the previous session's close AND its previous session's move - on the 2026-11-23 fire that
-would have published 1,357 Japanese rows dated 23 November carrying SoftBank's -14.48% of
-20 November. The artifact would assert a session that never happened. The per-instrument
+would have published 1,347 Japanese rows dated 23 November, 1,333 of them carrying the 20 November
+move, among them SoftBank's -14.48% of 20 November. The artifact would assert a session that never
+happened. The per-instrument
 carry-over contract does not apply to a whole market: carry-over rows are for an instrument
 that did not trade inside a market that DID, and the region-level `closed_regions` record is
 the machine-readable form of "there was no session here".

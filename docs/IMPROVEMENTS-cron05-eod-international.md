@@ -661,8 +661,8 @@ ways before the region was removed:
 **⇒ A CONFIRMED closure removes the region from the artifact** (no `jp.csv`, no rows in any
 movers table, a `closed_regions` block in `_manifest.json`, and the region's last-session index
 levels published in the report's index table carrying THAT session's date). Building the closed
-region from the scanner's stale pull would have written **1,357 Japanese rows dated 23 November
-carrying the 20 November moves** — SoftBank's -14.48% of 20 November among them — so the artifact
+region from the scanner's stale pull would have written **1,347 Japanese rows dated 23 November, 1,333 of
+them carrying the 20 November move** — SoftBank's -14.48% of 20 November among them — so the artifact
 would have asserted a session that never happened. The per-instrument carry-over contract does not
 apply to a whole market: carry-over rows are for an instrument that did not trade inside a market
 that DID. `scripts/build_intl_eod.py` gained `--closed-regions` (capability marker `INTL_EOD_V2`,
