@@ -251,6 +251,40 @@ def main():
     check(fm.get("screen_complete") in ("true", "false"), "FM-SCREEN-COMPLETE",
           "screen_complete is %r" % fm.get("screen_complete"))
 
+    # ---------------- the band-prose honesty rule ----------------
+    # A truncated band is a FLOOR. The front matter says so (`screen_complete: false`), and the
+    # PROSE must agree: a sentence that claims the counts are exact while the front matter says
+    # the screen was truncated is the 2026-11-05 failure mode (a count that LOOKS exact and is
+    # not) restated in the intro. Measured 2026-11-23: the builder's intro asserted "the
+    # scanner's own `totalCount` matched the rows returned on each ... so the counts above are
+    # exact, not floors" on a pull that returned 1000 rows against a totalCount of 1384, and
+    # Source health printed rows against THEMSELVES ("1000/1000") and called the band exact -
+    # and this checker passed the artifact on all 189 checks. A gate that cannot see the defect
+    # it was written for is not a gate.
+    if fm.get("screen_complete") == "false":
+        low = text.lower()
+        false_exact = [
+            "the band counts are exact",
+            "the published band counts are exact",
+            "counts above are exact",
+            "exact, not floors",
+            "matched the rows returned on each",
+            "held on each",
+            "asserted `len(rows) == totalcount`",
+        ]
+        hits = [p for p in false_exact if p in low]
+        check(not hits, "FM-FLOOR-NOT-EXACT",
+              "screen_complete is false but the prose claims the band counts are exact: %s"
+              % "; ".join(hits))
+        # and the floor must be DISCLOSED as a FLOOR of the counts: a line that carries both
+        # "floor" and "count", and no "not floors" (which is the opposite of a disclosure).
+        # The thin tape's "$100M quality floor" is not a band-count floor and must not satisfy
+        # this - a gate that passes on an unrelated line is a gate that cannot fail.
+        disclosed = any(("floor" in l.lower()) and ("count" in l.lower())
+                        for l in text.split("\n"))
+        check(disclosed and ("not floor" not in low), "FM-FLOOR-DISCLOSED",
+              "screen_complete is false but no band-count FLOOR is disclosed")
+
     # ---------------- skeleton ----------------
     hs = headings(text)
     idx, ok_order = 0, True

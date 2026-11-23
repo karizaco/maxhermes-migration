@@ -207,7 +207,7 @@ def num(v):
 def pull_band(workdir, timings):
     """The ±3% band, both sides, with totalCount asserted."""
     band = {"gainers": [], "decliners": [], "tail": [], "complete": True,
-            "tail_complete": True}
+            "tail_complete": True, "totals": {}}
     for label, body, key in (("gainers", BAND_GAIN, "gainers"), ("losers", BAND_LOSE, "decliners"),
                              ("tail", BAND_TAIL, "tail")):
         bf = os.path.join(workdir, "body_%s.json" % label)
@@ -234,6 +234,10 @@ def pull_band(workdir, timings):
         for r in rows:
             r["screen"] = key
         band[key] = rows
+        # PERSIST the scanner's own totalCount next to the row count. It used to be logged and
+        # then DROPPED, so the artifact had no way to say "1000 of 1384" - and the builder
+        # printed rows against themselves (a tautology) and called the band exact.
+        band["totals"][key] = {"rows": len(rows), "totalCount": total}
         log("%s: %d rows (totalCount %s)" % (label, len(rows), total))
     # The truncation guard above sets complete=False, and it used to be overwritten here by an
     # unconditional `band["complete"] = True` — so a TRUNCATED band was published as complete and
@@ -591,7 +595,7 @@ def main():
         "pulled_at_et": now_et().strftime("%Y-%m-%d %H:%M:%S"),
         "marker": BRIEF26_PULL_V3,
         "band": {"gainers": len(band["gainers"]), "decliners": len(band["decliners"]),
-                 "complete": band["complete"]},
+                 "complete": band["complete"], "totals": band.get("totals", {})},
         "band_gainers": [r["ticker"] for r in band["gainers"]],
         "band_decliners": [r["ticker"] for r in band["decliners"]],
         "targeted_asked": asked, "targeted_returned": len(targeted),

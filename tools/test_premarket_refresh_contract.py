@@ -313,6 +313,22 @@ def main():
     THIN3 = "| TH03 |"                    # a thin-tape row
 
     mutations = [
+        # The band-prose honesty rule (2026-11-23). The artifact's front matter is flipped to
+        # `screen_complete: false` AND the CSV's rows are flipped with it, so the two agree and
+        # the CSV-SCREEN-COMPLETE-MATCHES-FM check still passes - which leaves ONLY the new
+        # band-prose rule able to catch it. The golden's prose still asserts the screens were
+        # complete, so a truncated band is published as exact: the 2026-11-05 failure mode.
+        ("FM-FLOOR-NOT-EXACT", lambda t, c: (
+            md_mut(t, "screen_complete: true", "screen_complete: false"),
+            md_mut(c, ",true\n", ",false\n", -1))),
+        # The same flip, but the golden's exactness CLAIM is removed as well, so the only rule
+        # left able to catch it is the disclosure rule: a truncated band that says nothing about
+        # floors is as wrong as one that calls them exact.
+        ("FM-FLOOR-DISCLOSED", lambda t, c: (
+            md_mut(md_mut(t, "screen_complete: true", "screen_complete: false"),
+                   "Both screens asserted `len(rows) == totalCount`.",
+                   "Both screens were pulled."),
+            md_mut(c, ",true\n", ",false\n", -1))),
         ("FM-KEYS", lambda t, c: (md_mut(t, "up_3pct: 19\n", ""), c)),
         ("FM-CRON", lambda t, c: (md_mut(t, "cron: 26-agentic-pre-market-brief-refresh",
                                          "cron: 26b-agentic-pre-market-brief-refresh"), c)),

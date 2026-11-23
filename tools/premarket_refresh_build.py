@@ -532,7 +532,14 @@ def build(args):
 
     setup_moves = []
     for t, m in morning.items():
-        if not (m.get("setup_theme") or "").strip():
+        # The morning CSV publishes THREE per-name columns: `setup_theme` (the theme cluster),
+        # `has_news` and `setup_published`. This loop keyed on `setup_theme` ALONE, and the
+        # 2026-11-23 morning brief left that column BLANK on all 1276 rows while publishing
+        # `setup_published = yes` on 31 - so the "published setups" table came out EMPTY under a
+        # header, and the run's own setups went unreported. Either marker now counts.
+        published = (m.get("setup_published") or "").strip().lower() == "yes"
+        themed = bool((m.get("setup_theme") or "").strip())
+        if not (published or themed):
             continue
         g = live_gap.get(t)
         mg = num(m.get("gap_pct"))
@@ -663,12 +670,32 @@ def build(args):
               "`market_open_at_pull: true`.%s"
               % (snap, (" " + stall_txt) if stall_txt else ""))
     else:
+        btot = (merged.get("band") or {}).get("totals") or {}
+        bcomp = (merged.get("band") or {}).get("complete", True)
+        g_t = (btot.get("gainers") or {}).get("totalCount")
+        d_t = (btot.get("decliners") or {}).get("totalCount")
+        if bcomp:
+            band_txt = ("Both screens were pulled with the row cap at 1000 and the scanner's own "
+                        "`totalCount` matched the rows returned on each (%d gainers, %d decliners), "
+                        "so the counts above are exact, not floors." % (now_gain, now_dec))
+        else:
+            # The band is a FLOOR. The old template asserted the match unconditionally, so a
+            # truncated band was published as exact - the 2026-11-05 failure mode the whole
+            # `len(rows) == totalCount` assert exists to catch, restated in the intro.
+            bits = []
+            if g_t is not None:
+                bits.append("the gainers screen returned %d rows against the scanner's own "
+                            "`totalCount` of %d" % (now_gain, int(g_t)))
+            if d_t is not None:
+                bits.append("the decliners screen returned %d rows against a `totalCount` of %d"
+                            % (now_dec, int(d_t)))
+            band_txt = ("%s - so the published band counts are **floors**, not exact counts, and "
+                        "`screen_complete: false` says so." % "; ".join(bits))
+            band_txt = band_txt[0].upper() + band_txt[1:]
         A("One pull of the TradingView `america` scanner at **%s**, before the 09:30 ET open. "
-          "Both screens were pulled with the row cap at 1000 and the scanner's own "
-          "`totalCount` matched the rows returned on each (%d gainers, %d decliners), so the "
-          "counts above are exact, not floors. The regular session has **not** opened, so every "
+          "%s The regular session has **not** opened, so every "
           "`live_*` column in the companion CSV is blank - the pre-market prints below are the "
-          "last trades before the bell." % (snap, now_gain, now_dec))
+          "last trades before the bell." % (snap, band_txt))
     A("")
     A("## Bottom line")
     A("")
@@ -1000,10 +1027,19 @@ def build(args):
         A("On the other side the decliners widened: %s."
           % ", ".join("%s %+.2f%% to %+.2f%%" % (x[2], x[3], x[4]) for x in wid))
     A("")
-    A("**Band membership.** The band went from the brief's %s to %d / %d. "
+    # A band whose screen hit the row cap is a FLOOR on that side. Comparing a floor against a
+    # floor and calling it "the band went from X to Y" reads as an exact pair of counts.
+    _bt = (merged.get("band") or {}).get("totals") or {}
+    _bc = (merged.get("band") or {}).get("complete", True)
+    _base_floor = (fm_morning.get("screen_complete") or "").strip().lower() != "true"
+    floor_note = ""
+    if not _bc or _base_floor:
+        floor_note = (" - both sides are **floors**, because a screen that hit the row cap "
+                      "cannot count the whole band")
+    A("**Band membership.** The band went from the brief's %s to %d / %d%s. "
       "Of the %d band names the morning brief published in its CSV, **%d no longer clear the "
       "+/-3%% band**%s and **%d published name%s entered it**.%s"
-      % (fm_band_text(fm_morning), now_gain, now_dec,
+      % (fm_band_text(fm_morning), now_gain, now_dec, floor_note,
          len(mband), len(faded),
          (" (%s)" % ", ".join(faded)) if faded else "", len(entered),
          "" if len(entered) == 1 else "s",
@@ -1027,12 +1063,27 @@ def build(args):
     A("")
     A("## 5. Source health")
     A("")
-    A("- **One pull.** Every number in this file and in the companion CSV comes from a single pull "
-      "of the TradingView `america` scanner at %s. Both screens were pulled with `range:[0,1000]` "
-      "and `len(rows) == totalCount` held on each (%d/%d gainers, %d/%d decliners), so "
-      "`screen_complete: %s` and the band counts are exact."
-      % (snap, now_gain, now_gain, now_dec, now_dec,
-         "true" if merged.get("band", {}).get("complete", True) else "false"))
+    btot = (merged.get("band") or {}).get("totals") or {}
+    bcomp = (merged.get("band") or {}).get("complete", True)
+    g_t = (btot.get("gainers") or {}).get("totalCount")
+    d_t = (btot.get("decliners") or {}).get("totalCount")
+    if bcomp:
+        A("- **One pull.** Every number in this file and in the companion CSV comes from a single "
+          "pull of the TradingView `america` scanner at %s. Both screens were pulled with "
+          "`range:[0,1000]` and `len(rows) == totalCount` held on each (%d/%d gainers, %d/%d "
+          "decliners), so `screen_complete: true` and the band counts are exact."
+          % (snap, now_gain, int(g_t) if g_t is not None else now_gain,
+             now_dec, int(d_t) if d_t is not None else now_dec))
+    else:
+        A("- **One pull.** Every number in this file and in the companion CSV comes from a single "
+          "pull of the TradingView `america` scanner at %s. Both screens were pulled with "
+          "`range:[0,1000]`, and the band is **truncated**: the gainers screen returned %d rows "
+          "against the scanner's own `totalCount` of %s and the decliners screen returned %d rows "
+          "against a `totalCount` of %s, so `screen_complete: false` and **the published band "
+          "counts are FLOORS, not exact counts** - the omitted gainers are the least-positive "
+          "ones."
+          % (snap, now_gain, int(g_t) if g_t is not None else "an unpublished total",
+             now_dec, int(d_t) if d_t is not None else "an unpublished total"))
     if not market_open:
         A("- **The regular session had not opened at the pull.** The scanner's `close` column is "
           "the last completed regular session's close, and the companion CSV's `live_close`, "
@@ -1096,14 +1147,16 @@ def build(args):
       "catalyst was not sourced. `NONE` is a finding: %d of the %d headline names have no "
       "sourced catalyst." % (none_ct, head_ct))
     A("- **The morning brief's CSV is a published-name subset, not the whole band.** It holds %d "
-      "rows (%d of them in the +/-3%% band) against a band the brief counted at %s names, so "
+      "rows (%d of them in the +/-3%% band) against a band the brief counted at %d names%s, so "
       "band-level fade and entrant counts cannot be derived from it: a name absent from the CSV "
       "was never published, which is not the same as having faded out of the band. **The "
       "comparison base used here is the %d published band names**, and the fade count (%d) and "
       "the entrant count (%d) are stated against that base. The %d live-band names the morning "
       "CSV never carried are reported as unclassified rather than counted as entrants."
       % (len(morning), len(mband),
-         (num(fm_morning.get("up_3pct")) or 0) + (num(fm_morning.get("down_3pct")) or 0),
+         int((num(fm_morning.get("up_3pct")) or 0) + (num(fm_morning.get("down_3pct")) or 0)),
+         (" - itself a FLOOR, because the brief's own gainers screen hit the row cap"
+          if (fm_morning.get("screen_complete") or "").strip().lower() != "true" else ""),
          len(mband), len(faded), len(entered), unclassified))
     A("- **No catalyst was searched for in this run.** The Driver column carries the catalyst the "
       "08:30 brief already sourced and labels it with the fixed vocabulary. A name with no "
