@@ -73,3 +73,55 @@ counterpart does not exist yet at 14:00 ET.
 - The prompt's SELF-DESCRIPTION block still writes `daily-screens/<date>/breadth.md`. It is
   harmless once the renderer supplies a concrete date, but a future edit to the prompt should
   make the placeholder explicit (`<fire date>`) so nobody reads it as a literal again.
+
+
+## 2026-11-23 — a pinned volatility bar was labelled a replay on a LIVE fire
+
+**What fired.** Cron #10's 14:00:05 ET fire ran on time (`stall_min: 1`) and the live layer
+was a genuine live pull. The settled layer was shibui's newest ingested session, **2026-11-20**
+(Friday's rout: 16.74% of the 860 large caps above their 20-DMA, percentile 1.2; 174 advancing
+against 682 declining; divergence +16.74 pp BROAD).
+
+**The defect.** `breadth_metrics._vix_from_yahoo()` labelled the pinned volatility pair:
+
+    "session_mode": ("replay — reconstructed from the pinned %s bar at the fire clock "
+                     "(the live print is no longer available)" % interval) if want_time ...
+
+`want_time` is set whenever the caller pins the pair to the fire clock — which the procedure
+does on EVERY fire, live or replay. On the 2026-11-23 fire the pair came from the **13:45
+five-minute bar of a session that was still trading**, so the label claimed the live print was
+"no longer available" about a print that was the live one. A reader would take "replay" to mean
+"this artifact is a reconstruction", which is the opposite of the truth on an on-schedule fire.
+
+The 2026-11-23 artifact did not ship the string (the Agent wrote its own volatility block), but
+the next fire would have, because the label is in the helper.
+
+**The fix (in the repo, so it lands on the next fire with no `cron_update`).**
+
+1. `scripts/breadth_metrics.py` — the label is now DERIVED from the feed, not from the
+   presence of a fire clock:
+
+   ```python
+   def _vix_session_mode(interval, want_time, pinned_stamp, latest_day_stamp) -> str:
+       if not want_time:            return "regular hours — live print …"
+       if interval != "5m":         return "daily bar — the intraday print … is no longer in the feed …"
+       if latest_day_stamp > pinned_stamp:
+                                   return "replay — reconstructed from the pinned … bar …"
+       return "regular hours — live print (… pinned to the fire clock; it is the latest bar …)"
+   ```
+
+   `latest_day_stamp` is the last bar the feed carries for that session, computed from the two
+   series' shared bar stamps — so "replay" now means what it says: the feed has moved past the
+   fire's print.
+2. `scripts/test_breadth_session_mode.py` — an offline test with no network access, asserting
+   all four branches (live pin, replay pin, daily-bar fallback, no fire clock). It fails if the
+   label regresses to "replay whenever a clock was supplied".
+3. `SKILL.md` §3.5.5 — the procedure now says the `session_mode` string is raw material, not a
+   sentence to paste verbatim, and that the published volatility block must state the quote time
+   and whether the print is live or reconstructed.
+
+**Also measured on this fire (no code change needed).** The Cboe delayed-quote CDN answered
+**HTTP 403** (Cloudflare interstitial) for every User-Agent — the Yahoo fallback path is the
+only working route from this egress, and it served both `^VIX` and `^VIX3M` from the same
+five-minute bar. `shibui` over the MCP-over-HTTP bridge answered normally; the MCP probe
+reported `catalog_ok total=135 finance_tools=0`.

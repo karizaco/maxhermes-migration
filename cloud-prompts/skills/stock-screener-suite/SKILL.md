@@ -528,6 +528,19 @@ that case. The published `source` names the source that actually served the numb
 > 2026-11-18 close with `--date 2026-11-18`. The bridge's `market-recap` was NOT used: on a
 > replay it serves the next session's quotes, not the fire's tape.
 
+> **A PINNED BAR IS NOT A REPLAY (fixed 2026-11-23).** `breadth_metrics.py` used to label the
+> volatility pair "replay — reconstructed from the pinned bar at the fire clock (the live print
+> is no longer available)" whenever a fire clock was supplied — including on an ON-TIME LIVE
+> fire, where the pinned bar WAS the live print. On the 2026-11-23 fire (14:00:05 ET, on time,
+> `stall_min: 1`) the pair came from the 13:45 five-minute bar of a session that was still
+> running; publishing that label would have told the reader the tape was a reconstruction when
+> it was a live pull. The label is now DERIVED from the feed: the pair is a replay only when
+> the feed carries a LATER bar for that session than the pinned one
+> (`breadth_metrics._vix_session_mode`, covered by `scripts/test_breadth_session_mode.py`).
+> **The published volatility block must state the pair's quote time and whether the print is
+> live or reconstructed** — the `session_mode` string is the Agent's raw material, not a
+> sentence to paste verbatim.
+
 
 #### 3.5.6 THE FRONT MATTER — structured, never a concatenated string
 

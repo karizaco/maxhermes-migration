@@ -480,6 +480,39 @@ def _yahoo_bars(sym: str, p1: int, p2: int, interval: str) -> list:
     return out
 
 
+def _vix_session_mode(interval: str, want_time, pinned_stamp, latest_day_stamp) -> str:
+    """Describe the volatility pair's provenance HONESTLY.
+
+    The old code labelled the pair a "replay" whenever a fire clock was pinned:
+
+        "session_mode": ("replay — reconstructed from the pinned %s bar at the fire clock "
+                         "(the live print is no longer available)" % interval) if want_time ...
+
+    That is FALSE for an on-time LIVE fire. Measured 2026-11-23 (cron #10, 14:00:05 ET):
+    the pair came from the 13:45 five-minute bar while the session was still running, and
+    the label would have published "the live print is no longer available" about a print
+    that was the live one. A reader would read "replay" as "this artifact is a
+    reconstruction", which is the opposite of the truth on an on-schedule fire.
+
+    The distinction is mechanical, not a guess: the feed carries LATER bars for that
+    session than the pinned one — so the fire's live print is no longer the latest —
+    and that is a replay. When the pinned bar IS the latest bar the feed carries for
+    that session, the pair IS the live print.
+    """
+    if not want_time:
+        return "regular hours — live print (Yahoo %s bar)" % interval
+    if interval != "5m":
+        return ("daily bar — the intraday print at the fire clock is no longer in the feed "
+                "(Yahoo keeps ~60 days of %s bars); the session's own bar is published"
+                % interval)
+    if latest_day_stamp is not None and latest_day_stamp > pinned_stamp:
+        return ("replay — reconstructed from the pinned %s bar at the fire clock (later %s bars "
+                "exist in the feed, so the print at the fire clock is no longer the live one)"
+                % (interval, interval))
+    return ("regular hours — live print (Yahoo %s bar pinned to the fire clock; it is the latest "
+            "bar the feed carries for that session)" % interval)
+
+
 def _vix_from_yahoo(session_date: str | None = None, fire_time_et: str | None = None) -> dict:
     """FALLBACK volatility pair: Yahoo's chart API for ^VIX and ^VIX3M.
 
@@ -529,6 +562,11 @@ def _vix_from_yahoo(session_date: str | None = None, fire_time_et: str | None = 
         stamp, map_a, map_b = pick(bars_a, bars_b)
         if stamp is None:
             raise ValueError("no shared bar for ^VIX/^VIX3M on " + session_date)
+
+    # the LATEST bar the feed carries for that session — the replay test.
+    shared_all = sorted(set(map_a) & set(map_b))
+    day_all = [t for t in shared_all if t.date() == day]
+    latest_day_stamp = day_all[-1] if day_all else None
     vix = map_a[stamp]
     vix3m = map_b[stamp]
 
@@ -549,9 +587,7 @@ def _vix_from_yahoo(session_date: str | None = None, fire_time_et: str | None = 
         "source": ("Yahoo chart API (^VIX / ^VIX3M) — FALLBACK: the Cboe delayed-quote CDN "
                    "answered HTTP 403 (Cloudflare) from this egress; both symbols read from "
                    "the SAME %s bar, pinned to the fire day and clock" % interval),
-        "session_mode": ("replay — reconstructed from the pinned %s bar at the fire clock "
-                         "(the live print is no longer available)" % interval) if want_time
-                        else ("regular hours — live print (Yahoo %s bar)" % interval),
+        "session_mode": _vix_session_mode(interval, want_time, stamp, latest_day_stamp),
         "prev_close": {"vix": round(pc_a, 2) if pc_a else None,
                        "vix3m": round(pc_b, 2) if pc_b else None},
         "price_change_pct": {"vix": pct(vix, pc_a), "vix3m": pct(vix3m, pc_b)},
