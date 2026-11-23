@@ -1615,3 +1615,44 @@ v6 a brief could publish any pull time it liked and nothing asked.
   the corrected rule.
 - Do NOT `cron_update` for this work — the prompt was not changed and the skill is fetched at run
   time.
+
+## 35. Round 4 (2026-11-23) — the CSV's %ADV must be derived from the row it ships
+
+**Evidence.** The 2026-11-23 08:45 ET fire built its CSV with `pct_of_adv` computed from the
+screener's RAW floats (e.g. `average_volume_30d_calc` = 59 706.666…) while the row itself
+published `avg_volume_30d` as the integer `59707`. The contract checker re-derives
+`premarket_volume / avg_volume_30d * 100` **from the row it reads**, so it computed 4524.135 where
+the row said 4524.115 — a 0.02 drift, and `PCT_ADV_EMPTY` failed with "the artifact is right and
+the gate says it is wrong". Three rows failed (RSSS, DWTX, DCGO); the other 1 268 passed only
+because their drift fell inside the checker's 0.0015 tolerance.
+
+**The rule.** Both operands of `pct_of_adv` are the integers the row publishes. Derive the ratio
+from the ROUNDED `premarket_volume` and `avg_volume_30d` written into the row, so the CSV
+re-derives exactly and the column keeps one meaning across runs. The skill spec's §4 CSV column
+contract now says so.
+
+**Why it matters beyond this fire.** The failure is silent and data-dependent: it hits the names
+with the LARGEST volume-to-ADV ratios — precisely the names the actionable gate and the §8
+asymmetry table are built from. A run that computes the ratio on raw floats can fail the gate on
+a screen whose numbers are all correct.
+
+## 36. Round 4 (2026-11-23) — the wider screen must EXCLUDE every floor-excluded name
+
+**Evidence.** The 2026-11-23 fire first built the wider screen by removing only the watchlist's
+top-5-per-direction, which left the wider screen full of sub-$200M names (ABTS, FCHL, NIVF, TELO,
+SMX …) while the same category appeared in the watchlist. §2 says the below-the-floor names "live
+in the CSV, not the markdown", and §10 says the watchlist is where the floor's names belong — so
+the markdown was publishing one category in two places. The wider screen is now built from the
+names that cleared the floor and failed the gate, and the floor-excluded names appear only in the
+watchlist (top 5 per direction) and in the CSV.
+
+**Note on the checker.** `SUBFLOOR` does not forbid a floor-excluded name in the wider screen, and
+`GATE` is satisfied either way (a floor-excluded name fails the cap leg). The change is to the
+SKILL's meaning, not to the gate: one category, one place.
+
+## 37. Do-not list (round 4)
+
+- Do NOT compute `pct_of_adv` from the screener's raw floats while the row publishes rounded
+  integers. Derive it from the published row (§35).
+- Do NOT publish a floor-excluded name in the wider screen. It belongs in the watchlist or in the
+  CSV only (§36).

@@ -325,6 +325,13 @@ ticker,premarket_change_pct,premarket_close,prev_close,premarket_volume,avg_volu
   `pct_of_adv` is therefore directly comparable with every earlier brief's.
   When a name has **no 30-day ADV history** (`average_volume_30d_calc` is null or 0) the value is
   **empty, never 0** — an unmeasurable denominator is not a zero-volume name.
+  **Both operands are the integers this row publishes.** Compute the ratio from the ROUNDED
+  `premarket_volume` and `avg_volume_30d` you actually wrote into the row, not from the screener's
+  raw floats: the checker re-derives `volume / ADV * 100` from the row it reads, so a ratio built
+  on the raw floats while the row carries rounded integers drifts and fails `PCT_ADV_EMPTY`.
+  Measured 2026-11-23: RSSS published 4524.135 where the row's own integers give 4524.115 — the
+  artifact was right and the gate called it wrong. Derive from the published row and the column
+  re-derives exactly.
 - `noise` — `true` when `pct_of_adv` is **empty or below 1**, `false` otherwise. A downstream
   consumer must be able to filter the quotes out without re-deriving the threshold, and a name
   with no ADV history must not slip through as "real" on an empty value.
