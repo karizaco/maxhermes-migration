@@ -50,13 +50,20 @@ BASE_COLUMNS = ["date", "ticker", "name", "open", "high", "low", "close", "volum
 # ticker -> (name, published prior close, quote prior close, bar prior close,
 #            session close, expected flag, expected change_pct)
 CASES = {
-    # the archive's prior close is WRONG: the quote and the bar agree with each other and
-    # with the exchange's record, and both disagree with the published close.
-    "SUPA": ("Superseded Corp", 128.1, 125.53, 125.53, 165.05, "PRIOR_CLOSE_SUPERSEDED",
+    # the archive's prior close is TOO HIGH: the quote and the bar agree with each other
+    # and with the exchange's record, and both disagree with the published close.
+    "SUPA": ("Superseded High Corp", 128.1, 125.53, 125.53, 165.05, "PRIOR_CLOSE_SUPERSEDED",
              (165.05 - 125.53) / 125.53 * 100.0),
+    # the archive's prior close is TOO LOW - the same defect in the other direction.
+    "LOWP": ("Superseded Low Corp", 3.315, 3.42, 3.42, 3.50, "PRIOR_CLOSE_SUPERSEDED",
+             (3.50 - 3.42) / 3.42 * 100.0),
     # a real distribution: the quote is dividend-adjusted, so it sits BELOW the bar.
     "EXDI": ("Ex Distribution Corp", 34.90, 34.02, 34.90, 33.90, "EX_DISTRIBUTION",
              (33.90 - 34.90) / 34.90 * 100.0),
+    # a reverse split: the published prior close is a RAW pre-split print, and the bar's
+    # series has not processed the split either - so the quote and the bar do NOT agree.
+    "SPLT": ("Split Corp", 0.0423, 2.0755, 0.0423, 2.00, "SPLIT_ADJUSTED",
+             (2.00 - 2.0755) / 2.0755 * 100.0),
     # the control: no gap at all, the published basis stands.
     "NORM": ("Normal Corp", 100.0, 99.80, 100.0, 101.0, "",
              (101.0 - 100.0) / 100.0 * 100.0),
@@ -156,16 +163,18 @@ def check(rows: dict[str, dict], label: str) -> list[str]:
     return fails
 
 
+M1_OLD = ('            elif (bar_prior is not None and bar_asserted\n'
+          '                  and abs(qp - bar_prior) / max(abs(bar_prior), 1e-9) <= 0.005\n'
+          '                  and abs(published_prior - bar_prior) / max(abs(bar_prior), 1e-9) > 0.005):')
+M2_OLD = '                anchor, anchor_source = bar_prior, "bar_superseded_prior"'
+
 MUTATIONS = [
-    ("M1: the discriminator removed - every gap below the published close is read as a "
-     "distribution again",
-     """                if bar_prior is not None and bar_asserted and \\
-                        abs(qp - bar_prior) / max(abs(bar_prior), 1e-9) <= 0.005:""",
-     """                if False:"""),
+    ("M1: the discriminator removed - the corroborated prior close is never recognised, so "
+     "the published prior close keeps the anchor and the gap reads as a distribution again",
+     M1_OLD, '            elif False:'),
     ("M2: the superseded row keeps the published prior close as its anchor (the flag stays, "
      "the number does not move)",
-     """                    anchor, anchor_source = bar_prior, "bar_superseded_prior\"""",
-     """                    anchor, anchor_source = published_prior, "prior_published\""""),
+     M2_OLD, '                anchor, anchor_source = published_prior, "prior_published"'),
 ]
 
 

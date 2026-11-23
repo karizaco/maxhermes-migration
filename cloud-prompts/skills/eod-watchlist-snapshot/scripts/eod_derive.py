@@ -479,41 +479,48 @@ def main() -> int:
                 anchor, anchor_source = qp, "quote_split_adjusted"
                 split_row = True
                 split_rows.append((t, round(published_prior, 4), qp))
-            elif qp < published_prior * 0.995:
-                # A gap BELOW the published prior close has TWO possible causes, and they
-                # are not the same fact:
+            elif (bar_prior is not None and bar_asserted
+                  and abs(qp - bar_prior) / max(abs(bar_prior), 1e-9) <= 0.005
+                  and abs(published_prior - bar_prior) / max(abs(bar_prior), 1e-9) > 0.005):
+                # The published prior close is THE OUTLIER - the anchor is superseded.
                 #
-                #   (a) an EX-DISTRIBUTION: the quote service's prior close is
-                #       dividend-adjusted, so it sits below the published raw basis
-                #       (AB: 34.02 against 34.90). The price change stands on the
-                #       published basis and the row is flagged EX_DISTRIBUTION.
+                # A gap against the prior session's published close has THREE possible
+                # causes, and they are not the same fact:
                 #
-                #   (b) a DEFECTIVE PUBLISHED PRIOR CLOSE: the prior session's file
-                #       published a close that the exchange's own record contradicts
-                #       (measured 2026-11-23: 279 of 279 disputed rows - the venue's
-                #       Nasdaq historical close matched the vendor bar and the quote
-                #       service, and NOT the archive's published close). Here no
-                #       distribution intervened, so the price change against the
-                #       archive's own number is not the session's price change at all.
+                #   * a REVERSE SPLIT (the first branch): the published prior close is a
+                #     RAW pre-split print, so it is not comparable with the session's
+                #     post-split close. The quote's split-adjusted prior close is the
+                #     anchor and the row is flagged SPLIT_ADJUSTED.
+                #   * an EX-DISTRIBUTION: the quote service's prior close is
+                #     dividend-adjusted, so it sits BELOW the published raw basis
+                #     (AB: 34.02 against 34.90). The price change stands on the published
+                #     basis and the row is flagged EX_DISTRIBUTION - the divergence is
+                #     named, not hidden.
+                #   * a DEFECTIVE PUBLISHED PRIOR CLOSE: the prior session's file published
+                #     a close the exchange's own record contradicts (measured 2026-11-23:
+                #     279 of 279 disputed rows - the venue's Nasdaq historical close
+                #     matched the vendor bar and the quote service and NOT the archive's
+                #     published close). No distribution intervened, so the price change
+                #     against the archive's own number is not the session's price change
+                #     at all - and the row was previously mislabelled EX_DISTRIBUTION,
+                #     which EXCLUDED it from the movers table (NVDA's real +31.48% move).
                 #
                 # The DISCRIMINATOR needs no new source: the quote service's prior close
                 # is dividend- AND split-adjusted, while the bar series' prior close is
                 # split-adjusted only. When the two AGREE (within 0.5%), no distribution
-                # can be in play, so the gap cannot be (a) - it is (b), the published
-                # prior close is the outlier, and the corroborated close becomes the
-                # anchor. The row is flagged PRIOR_CLOSE_SUPERSEDED so the divergence
-                # from the prior session's FILE is visible per row.
-                if bar_prior is not None and bar_asserted and \
-                        abs(qp - bar_prior) / max(abs(bar_prior), 1e-9) <= 0.005:
-                    anchor, anchor_source = bar_prior, "bar_superseded_prior"
-                    superseded_row = True
-                    superseded_rows.append((t, round(published_prior, 4), round(bar_prior, 4)))
-                else:
-                    # The threshold is 0.5%, because a distribution can be a few percent
-                    # (AB: 2.6%) and the screen's number then differs from the price
-                    # change by that much.
-                    ex_div = True
-                    ex_divid_rows.append((t, round(published_prior, 4), qp))
+                # can be in play, so the gap cannot be a distribution: the published prior
+                # close is the outlier, and the corroborated close becomes the anchor. The
+                # row is flagged PRIOR_CLOSE_SUPERSEDED, which says per row that the prior
+                # session's FILE cannot reproduce this row's change %.
+                anchor, anchor_source = bar_prior, "bar_superseded_prior"
+                superseded_row = True
+                superseded_rows.append((t, round(published_prior, 4), round(bar_prior, 4)))
+            elif qp < published_prior * 0.995:
+                # an ex-distribution: the price change stands on the published basis. The
+                # threshold is 0.5%, because a distribution can be a few percent (AB: 2.6%)
+                # and the screen's number then differs from the price change by that much.
+                ex_div = True
+                ex_divid_rows.append((t, round(published_prior, 4), qp))
         elif qp and anchor and anchor_source.startswith("bar") and qp > anchor * 1.05:
             anchor, anchor_source = qp, "quote_split_adjusted"
             split_row = True
