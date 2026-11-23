@@ -1421,7 +1421,9 @@ Soitec downgrade) — with "no company-specific release found" wherever the move
 sector's.
 
 **On Cloud there is no `run_intl_cron.py` - the build is a REFERENCE implementation published
-with this spec.** `scripts/build_intl_eod.py` (capability marker **`INTL_EOD_V1`**) is the Cloud
+with this spec.** `scripts/build_intl_eod.py` (capability marker **`INTL_EOD_V2`** - the
+2026-11-23 build, which adds `--closed-regions` so a CONFIRMED closed market can be removed
+from the artifact; `INTL_EOD_V1` is the 2026-11-19 build) is the Cloud
 stage-2 build: it takes the per-country scanner pulls and the FX table and writes the 16 per-region
 CSVs, the issuer groups, the cap carrier, the venue collapse, the floors and the carry-over
 detection. It is parameterised (`--date --work --out --prior-dir --prior-history-dir
@@ -1505,6 +1507,44 @@ The rules:
 - Run the probe for **every** region the calendar would skip, not just the ones that look
   doubtful. A skip is a deletion from the historical record and it needs a positive
   confirmation.
+
+### A CONFIRMED closure removes the region — and the probe's `unknown` after the last session must be CONFIRMED, not assumed (2026-11-23)
+
+On 2026-11-23 the probe answered `traded=unknown` for **Japan** with the reason
+`after_last_session (last bar 2026-11-20)`. A date after the exchange's last bar is ambiguous
+on its face — it can mean the market was shut, or that the vendor has not published the bar
+yet. **Ambiguity is not a licence to skip, and it is not a licence to publish a fake session
+either.** The closure must be CONFIRMED, and there are three cheap confirmations, all of which
+the 2026-11-23 fire ran before deciding:
+
+1. **The exchange's own session bars, per instrument, not only the index.** Yahoo's daily bars
+   for `^N225` AND for TSE constituents (`9984.T`, `7203.T`, `6758.T`, `8306.T`) all stopped at
+   2026-11-20. A single missing index bar is lag; every constituent missing the same day is a
+   closure.
+2. **The venue's own holiday calendar.** JPX publishes its 2026-2027 market holidays, and
+   `Nov. 23 (Mon.) Labor Thanksgiving Day` is on it (jpx.co.jp market-holidays page). The
+   derivatives notice adds the reason: the JPX Group ran BCP testing from 21 to 23 November.
+3. **The scanner's own staleness.** The Japan pull returned the 20 November session verbatim -
+   `TSE:9984` close 3,025 with a -14.4755% change and volume 109,918,800, byte-identical to
+   the 20 November published row - and the index scan returned the same Nikkei close and the
+   same -5.06% change as the 20 November session. A scanner that repeats yesterday's close
+   AND yesterday's change is not reporting a session.
+
+**⇒ A CONFIRMED closure means the region is REMOVED from the artifact**, and the removal is
+disclosed in four places: no `<region>.csv`, no rows in any movers table, a `closed_regions`
+block in `_manifest.json`, and a note in `## Market context` plus the region's own row in the
+**index table** carrying the LAST session's close with THAT session's date in the cell. The
+index row is what keeps the report's index table at 16 comparable rows instead of quietly
+dropping one.
+
+**⇒ DO NOT build a closed region from the scanner's stale pull.** The scanner's `change` field
+for a shut market is the LAST session's change, so building it writes that day's date against
+the previous session's close AND its previous session's move - on the 2026-11-23 fire that
+would have published 1,357 Japanese rows dated 23 November carrying SoftBank's -14.48% of
+20 November. The artifact would assert a session that never happened. The per-instrument
+carry-over contract does not apply to a whole market: carry-over rows are for an instrument
+that did not trade inside a market that DID, and the region-level `closed_regions` record is
+the machine-readable form of "there was no session here".
 
 The probe covers the 16 regions of this skill. There is no Yahoo index symbol for the ATHEX, so
 Greece probes a liquid ATHEX constituent (`ALPHA.AT`) instead. Use `--audit --from … --to …` to

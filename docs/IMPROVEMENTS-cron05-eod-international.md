@@ -635,3 +635,77 @@ the disagreement was noted rather than mixing the two.
 50 vs 51, pt 27 vs 27, ie 17 vs 17, fi 101 vs 101, dk 75 vs 75, gr 83 vs 83). The session was the
 violent one: the TAIEX fell 4.40% with 128 limit-downs and the OTC board fell 7.22%, so Taiwan's
 published set carried 144 liquid names down more than 5% against 6 the day before.
+
+---
+
+## 2026-11-23 — a closed market, two contract-adjustment rows, and an issuer whose country is outside the sixteen boards
+
+**Finding 1 — the session probe's `traded=unknown` after the last session must be CONFIRMED, not
+assumed in either direction.** On 23 November the probe answered `traded=unknown` for **Japan**,
+reason `after_last_session (last bar 2026-11-20)`. That verdict is ambiguous on its face: the
+market may have been shut, or the vendor may not have published the bar yet. **Ambiguity is not a
+licence to skip and not a licence to publish a stale session.** The closure was confirmed three
+ways before the region was removed:
+
+1. **Per-instrument bars, not only the index.** Yahoo's daily bars for `^N225` **and** for TSE
+   constituents (`9984.T`, `7203.T`, `6758.T`, `8306.T`) all stop at 2026-11-20. A missing index
+   bar is lag; every constituent missing the same day is a closure.
+2. **The venue's own holiday calendar.** JPX publishes its 2026-2027 market holidays and
+   `Nov. 23 (Mon.) Labor Thanksgiving Day` is on it; the derivatives notice of 20 November adds
+   that the JPX Group ran BCP testing from 21 to 23 November.
+3. **The scanner's own staleness.** The Japan pull returned the 20 November session verbatim —
+   `TSE:9984` close 3,025 with a -14.4755% change and volume 109,918,800, byte-identical to the
+   20 November published row — and the index scan returned the same Nikkei close and the same
+   -5.06% change as the 20 November session.
+
+**⇒ A CONFIRMED closure removes the region from the artifact** (no `jp.csv`, no rows in any
+movers table, a `closed_regions` block in `_manifest.json`, and the region's last-session index
+levels published in the report's index table carrying THAT session's date). Building the closed
+region from the scanner's stale pull would have written **1,357 Japanese rows dated 23 November
+carrying the 20 November moves** — SoftBank's -14.48% of 20 November among them — so the artifact
+would have asserted a session that never happened. The per-instrument carry-over contract does not
+apply to a whole market: carry-over rows are for an instrument that did not trade inside a market
+that DID. `scripts/build_intl_eod.py` gained `--closed-regions` (capability marker `INTL_EOD_V2`,
+2026-11-23) so this is a first-class path rather than a hand-edited build; the flag is opt-in and
+the default behaviour is unchanged.
+
+**Finding 2 — the contract-adjustment rule fired twice in one session, and one of the two is not a
+consolidation.** `ASX:ZIP` (Zip Co) printed **+363.50%** on a **1-for-5 share consolidation**
+effective 23 November (ASX Notice 1312.26.11; the ETO adjustment notice of 20 November): the
+implied prior of A$1.685 equals the 20 November close exactly, so the source measured the change
+on the **unadjusted** basis and the stale-print test passes it. On the adjusted basis
+(A$1.685 × 5 = A$8.425) the real move is about **-7.3%**, which is what the ASX's own
+sharpest-decliners table shows. `EURONEXT:ALAGR` (AgroGeneration) printed **+11,119.51%** against a
+EUR0.041 prior close on a **210-share** print; the implied prior of EUR0.041 is the 20 November
+close exactly, and the row's own market cap moved with the stale price (EUR9.8m to EUR996m), so
+the row is a price-basis artefact rather than a consolidation. Both stay in their CSVs with the
+source's own field, per the archive's convention, and are excluded from every published table.
+
+**Finding 3 — three Taiwanese OTC rows printed OUTSIDE Taiwan's ±10% band, again.** `TPEX:3117`
+closed NT$17.10 against a NT$12.90 prior close (+32.56%), `TPEX:7415` NT$227.50 against NT$187.00
+(+21.66%) and `TPEX:7959` NT$60.10 against NT$51.00 (+17.84%), each opening at the prior close and
+each reconciling arithmetically with it. This is the second session running that prints outside the
+venue's limit band (2026-11-20 had three), and **all six are below the cap floor or unsourced** —
+the limit-band class deserves its own automated screen, because the per-row test that catches
+everything else cannot see it.
+
+**Finding 4 — the issuer-country universe rule silently drops a $26bn AI name.**
+`STMicroelectronics` — the day's biggest single European AI mover at **+8.96% to EUR40.01** — is
+**not in the artifact at all**. The scanner files its country as **Switzerland**, and the universe
+is the ISSUER's own country, so its Milan and Paris lines fall outside all sixteen boards. The same
+rule excludes any other issuer the vendor files under a country this skill does not cover, and the
+omission is invisible in the artifact (the name is simply absent). The session's Milan leader was
+therefore Technoprobe, not STM.
+
+**Finding 5 — a small two-source disagreement on a close, disclosed rather than hidden.**
+`EURONEXT:GL9` (Glanbia) prints **EUR17.92, -6.91%** from the scanner while the Irish Times
+reports **EUR18.09, -6.03%** at the close — a 0.95% difference on the same session. No
+**venue-official** Euronext Dublin print was obtained, so the row carries an empty `price_conflict`
+cell and the disagreement is disclosed in the row and in the caveats rather than asserted as an
+official price.
+
+**What the gate did this time.** The artifact passes `intl_assert.py` with **0 failures and 97
+warnings** — the same 97 as the previous session and the one `cap-provenance` heuristic on Canadian
+preferred lines whose descriptions do not reduce to the issuer name (the carrier IS the same issuer
+by venue-qualified ticker root). The 2026-11-20 artifact passes the same gate with the same 97, so
+the run is at parity with the archive's own standard and the warnings are not a new regression.

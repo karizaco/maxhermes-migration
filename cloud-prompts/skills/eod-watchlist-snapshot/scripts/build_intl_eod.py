@@ -5,6 +5,11 @@ INTL_EOD_V1 - capability marker (2026-11-19).  Parameterised by --date; the sess
 scanner pulls live in --work and the prior sessions' CSVs in --prior-dir/--prior-history-dir.
 Reproduces the 2026-11-19 artifact byte-for-byte on all 16 per-region CSVs.
 
+INTL_EOD_V2 - capability marker (2026-11-23).  Adds `--closed-regions`: a market that did
+not trade on the date (a national holiday) has NO session to publish, so it is removed from
+the artifact instead of being rebuilt from the scanner's stale copy of its last session.
+Default behaviour is unchanged when the flag is absent.
+
 Implements the skill contract:
   * universe = the per-country scanner's ISSUER-country filtered rows, type == stock
   * dedupe: (description, symbol) per line - Germany by description alone
@@ -30,6 +35,11 @@ _ap.add_argument("--out", default=None, help="the output directory (default /wor
 _ap.add_argument("--prior-dir", default=None, help="the prior session's per-region CSVs")
 _ap.add_argument("--prior-history-dir", default=None, help="the prior sessions' per-region CSVs")
 _ap.add_argument("--prior-dates", default="", help="comma-separated prior session dates, newest first")
+_ap.add_argument("--closed-regions", default="",
+                 help="comma-separated regions whose market did not trade on this date (a national "
+                      "holiday). They are removed from the artifact: no <region>.csv, no rows in "
+                      "any movers table, and a `closed_regions` block in the manifest. Use it "
+                      "only for a CONFIRMED closure - an unknown session is not a closure.")
 _A = _ap.parse_args()
 WORK = _A.work
 DATE = _A.date
@@ -37,6 +47,10 @@ OUT = _A.out or f"/workspace/international-eod/{DATE}"
 PRIOR_DIR = _A.prior_dir or "/workspace/prior"
 PRIOR_DATE = _A.prior_dates.split(",")[0] if _A.prior_dates else ""
 PRIOR_HIST_DIR = _A.prior_history_dir or "/workspace/prior_hist"
+
+# The regions whose market did not trade on this date.  Empty by default (a run with no closed
+# market is unchanged); the caller passes a region only on a CONFIRMED closure.
+CLOSED_REGIONS = {r.strip() for r in _A.closed_regions.split(",") if r.strip()}
 
 HEADER = ["date", "ticker", "name", "open", "high", "low", "close", "volume",
           "change_pct", "market_cap", "pe_ratio", "sector", "currency", "exchange",
@@ -473,7 +487,26 @@ def main():
     movers_all = {}
     adr_all = {}
     adr_flags = []
+    closed_all = {}
     for region in REGIONS:
+        # 2026-11-23 - a market that did not trade (a national holiday) has NO session to
+        # publish.  Building it anyway writes the market's LAST session's close AND its last
+        # session's change_pct under today's date, which asserts a session that never happened -
+        # 1,357 Japanese rows on the 2026-11-23 fire, carrying SoftBank's -14.48% of 20 Nov.
+        # So a confirmed closed market is REMOVED from the artifact: no <region>.csv, no rows in
+        # any movers table, and the manifest records it under `closed_regions` so the omission is
+        # machine-readable rather than a silent hole.  The flag is opt-in and defaults to empty,
+        # so a run with no closed market reproduces the archive byte-for-byte.
+        if region in CLOSED_REGIONS:
+            closed_all[region] = {
+                "date": DATE,
+                "session": "closed",
+                "rows_written": 0,
+                "note": ("no session on this date - the market was closed; its last session's "
+                         "levels are published in the report's index table with that session's date"),
+            }
+            print(f"{region:6s} CLOSED - no session, excluded from the artifact", flush=True)
+            continue
         prior = prior_rows(region)
         res = build_region(region, data[region], prior)
         rows = res["rows"]
@@ -543,7 +576,7 @@ def main():
               f"carry={len(res['carryover'])} off={res['off_official']} movers={len(mv)} bg={len(bg)}", flush=True)
 
     json.dump({"regions": manifest_regions, "movers": movers_all, "adr_check": adr_all,
-               "adr_flags": adr_flags},
+               "adr_flags": adr_flags, "closed_regions": closed_all},
               open(f"{WORK}/build_state.json", "w"), indent=1)
     json.dump(excluded_all, open(f"{WORK}/excluded.json", "w"))
     json.dump(carry_all, open(f"{WORK}/carryover.json", "w"))
