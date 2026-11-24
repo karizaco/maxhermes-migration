@@ -1002,6 +1002,69 @@ saying" notes, the flags and the method notes need judgement, and
 `check` will not let an unfilled slot ship. The numbers, the tables, the
 coverage assertion and the file set are the pipeline's.
 
+#### 4.5.5b The second pass MUST NOT re-fetch — use `tools/sweep_two_pass.py`
+
+The two-step order above (fetch → write the narrative → `run --live-json`)
+means the SECOND `cmd_run` re-runs every fetch stage. The bridge is METERED
+(**50 tool calls/day per egress IP, shared across the whole fleet**), so a
+literal re-run spends the shared allowance twice on data already in hand. The
+silence is what makes it dangerous: the second run usually succeeds and the
+artifact looks perfect, so the cost never appears in the run.
+
+The pipeline's replay flags (`--fresh-json`, `--breadth-json`,
+`--enrichment-json`, `--branches-json`, `--canslim-json`, `--overlay-json`)
+exist for exactly this, but **nothing on the first pass saves those stage
+outputs to disk**, so the flags have nothing to point at.
+
+`tools/sweep_two_pass.py` closes the gap. It imports the pipeline, patches the
+four collector functions IN MEMORY (the pipeline file on disk is never
+modified), and:
+
+| phase | what it does | network |
+|---|---|---|
+| `--phase 1` | fetches everything, and PERSISTS each collector's result under `<scratch>/pass1/` | yes — **the metered calls happen here, once** |
+| `--phase 2` | replays those persisted results and renders the Agent's narrative on top | **no** |
+
+```bash
+# --- fetch the driver (run-time fetch: fixes land with NO redeploy) ---
+T=/workspace/tools/sweep_two_pass.py
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/tools/sweep_two_pass.py?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/tools/sweep_two_pass.py" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/tools/sweep_two_pass.py" ; do
+  curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+    -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$T.tmp" "$U" 2>/dev/null
+  if [ -s "$T.tmp" ] && grep -q 'SWEEP_TWO_PASS_V1' "$T.tmp" 2>/dev/null; then
+    mv -f "$T.tmp" "$T"; break
+  fi
+  rm -f "$T.tmp"
+done
+[ -s "$T" ] || { echo "sweep_two_pass.py: UNAVAILABLE (no copy carrying SWEEP_TWO_PASS_V1)"; exit 1; }
+
+# 1. the fetch — the bridge allowance is spent HERE, once
+python3 "$T" --phase 1 --date <CRON_DATE> --out /workspace/daily-screens \
+  --scratch /workspace/scratch --bridge /workspace/mcp_bridge.py
+
+# 2. the Agent writes the narrative to /workspace/scratch/live-<DATE>.json
+#    (keys: weekday, date_long, fire_time_et, tldr, tier_a_notes, focus_notes,
+#    theme_note, headline, flags_block, method_block, source_health_block)
+
+# 3. re-render + re-check on the SAME data, no refetch
+python3 "$T" --phase 2 --date <CRON_DATE> --live-json /workspace/scratch/live-<DATE>.json
+```
+
+**Phase 1 is EXPECTED to exit 1** — the check stage rejects an artifact that
+still carries a `<!-- FILL: ... -->` stub marker, and the narrative does not
+exist yet. The files ARE written; phase 2 re-renders and re-checks them.
+Phase 2 must exit 0, and the artifact must be free of stub markers.
+
+The two passes produce the SAME artifact as the single-run flow: the fresh
+book and the overlay are the pipeline's own persisted files (`scratch/tv_sweep.json`,
+`scratch/overlay.json`, replayed through the pipeline's own flags), and the
+four stages the pipeline does not persist are replayed from `<scratch>/pass1/`
+with their REAL `screen_coverage` — the pipeline's own replay path would
+rebuild that coverage with `pages: 1`, which loses the page count.
+
 #### 4.5.5a Running the stages by hand (only when the pipeline is unavailable)
 
 If `tools/sweep_pipeline.py` cannot be fetched, fall back to the manual order —
