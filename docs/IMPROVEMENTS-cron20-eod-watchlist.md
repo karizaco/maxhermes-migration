@@ -729,3 +729,70 @@ stage and the build stage, and the push landed at **01:21 ET — 9h20m after the
 The artifact is unaffected (every source was read inside the session's own window), but a latency
 figure of "9h20m" describes a PLATFORM HOLD, not a slow routine — the same distinction cron #90's
 audit makes between a dispatch record and the real delivery time.
+
+---
+
+## 2026-11-24 — the report builder can publish the PREVIOUS session's `## Source health`
+
+**The trap.** The cron sandbox is NOT wiped between fires: `/workspace/work/` still holds the
+previous session's `source_health.json`, `manifest.json`, `venue_info.json`, `settle_map.json` and
+`quote_prev.json`. The skill's step 6 hands the report builder a PATH:
+
+```bash
+python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<DATE>.csv \
+    --manifest ... --history ... --source-health /workspace/work/source_health.json ...
+```
+
+so a run that does not write a fresh `source_health.json` first publishes the **previous session's
+source-health table verbatim** — yesterday's symbol counts, yesterday's CONFIRMED totals and
+yesterday's index cross-read, inside today's artifact, with no error anywhere. On the 2026-11-24
+fire the artifact was built with the 2026-11-23 table: it claimed "4,882 symbols", "4,839/4,882
+settled prints", "3,451 rows CONFIRMED", "4,813 of 4,898 symbols carry a 2026-11-23 bar" and a
+market-recap cross-read of "SPY 722.29 +4.71%, QQQ 651.03 +7.00%" — while the session's real
+figures were 4,878 symbols, 4,818/4,878 settled prints, 3,185 CONFIRMED and SPY 718.78 -0.49%.
+Every row was internally consistent and **the 34-assertion gate passed anyway**: nothing in
+`tools/check_eod_artifact.py` ties a source-health cell to the session it belongs to.
+
+**Why it is dangerous rather than merely wrong.** The stale rows are not gibberish — they are
+plausible, self-consistent numbers from a real session, so a reader cannot tell them from today's.
+It is the same class as the fleet rule "a published LABEL that describes a method must be DERIVED
+from the rows it describes": here the label is a whole table, and it was inherited.
+
+**What was done.** The fresh table was written before the rebuild, and the artifact's `##
+Source health` now carries the run's own measurements. The detection was manual — the stale table
+was visible only because its session dates said 2026-11-23.
+
+**Proposed fix (not yet in the repo).** Two independent guards, either of which would have caught
+this:
+
+1. `build_eod_report.py` should REFUSE a `--source-health` file whose rows do not mention the
+   session being built (or should stamp the session into every row and assert it), the same way it
+   already refuses a `--csv` whose `date` column disagrees with `--session`.
+2. The checker should assert that the `## Source health` table's session-bearing numbers are
+   consistent with the CSV's own counts — at minimum that no source-health row carries a session
+   date other than `--session`.
+
+**This run's own measurements, for the next session's comparison.**
+
+| measurement | 2026-11-23 | 2026-11-24 |
+|---|---|---|
+| universe pulled / written | 4,882 | 4,878 (BIPC, BKHA, MACI, RLYB deleted by the vendor) |
+| settled prints from the venue | 4,839/4,882 | 4,818/4,878 |
+| independent confirmation resolved | 4,814 | 4,733 |
+| rows CONFIRMED | 3,451 | 3,185 |
+| probe rounds | 12 (max) | 12 (max) |
+| symbols changed after pass 1 | 818 (bar 808 / venue 2) | 1,044 (bar 741 / venue 308) |
+| venue polls / rounds | 9/12 | 12/12 |
+| PRIOR_CLOSE_SUPERSEDED rows | 279 | 243 |
+| EX_DISTRIBUTION rows | 37 | 71 |
+| SPLIT_ADJUSTED rows | — | 19 |
+
+**On `venue_moved`:** on 2026-11-23 the venue's settled print moved **zero** times across all 12
+rounds while the vendor's bar moved 41-104 times per round, which showed the `--max-rounds` bound
+is a SERIES bound and not a CLOSE bound. On 2026-11-24 the venue moved **308 times** across the 12
+rounds (`venue_moved` ran 0/7/13/15/20/25/30/35/32/39/40/52) — the opposite result, on the same
+source and the same cadence. So the 2026-11-23 reading was **not** a property of the source: the
+venue's auction print DOES keep moving for ~55 minutes after the close on some sessions. The
+statement to carry forward is narrower: **the published close can only be trusted as final once
+the venue's own settled block has stopped moving**, and this session it never did within the
+bound. The residue is published as it stands, and the artifact says so.
