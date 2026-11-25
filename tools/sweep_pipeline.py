@@ -686,6 +686,27 @@ def _divergence_note(band: str, divergence: float) -> str:
 
 # ------------------------------------------------------------- the collectors
 
+def has_inner_limit(sql: str) -> bool:
+    """True when the branch SQL caps the book ITSELF.
+
+    The outer `LIMIT 200 OFFSET n` is the page size: it is how the branch is
+    paged to completion, and `rows_passing` (COUNT(*) OVER () inside the
+    branch) is computed BEFORE it, so it cannot hide a truncation.
+
+    A SECOND limit — one inside the branch CTE — is the historical defect that
+    shipped twice (2026-11-03, 2026-11-04): it caps the book, and because
+    `rows_passing` is then also computed inside the capped CTE, `rows_passing`
+    and `rows_kept` agree on the CAP and the coverage assertion cannot see
+    the truncation. That is the case the fingerprint must catch.
+
+    So the fingerprint is not "the count looks like a cap" — it is "the count
+    looks like a cap AND the SQL could have produced it".
+    """
+    import re as _re
+    body = _re.sub(r"--[^\n]*", "", sql)      # drop the comment header
+    return len(_re.findall(r"(?is)\blimit\s+\d+", body)) > 1
+
+
 def collect_branches(bridge: str, t1_date: str, workers: int) -> tuple[dict, dict]:
     """The eight shibui sweep branches, fetched in PARALLEL and paged to
     completion.
@@ -700,8 +721,11 @@ def collect_branches(bridge: str, t1_date: str, workers: int) -> tuple[dict, dic
         rows_passing = None
         offset = 0
         pages = 0
+        inner_limit = False
         while True:
             sql = screen.emit_sweep_sql_branch(t1_date, branch, offset=offset, limit=200)
+            if not inner_limit:
+                inner_limit = has_inner_limit(sql)
             rows = shibui_query(bridge, sql, f"{branch}_{offset}")
             if rows_passing is None and rows:
                 rows_passing = rows[0].get("rows_passing")
@@ -734,6 +758,16 @@ def collect_branches(bridge: str, t1_date: str, workers: int) -> tuple[dict, dic
             "rows_kept": kept,
             "pages": pages,
             "consistent": kept == passing,
+            # A count that lands exactly on a LEGACY per-branch cap (30/50/60/200)
+            # is only a fingerprint of truncation when the branch SQL can
+            # actually truncate. `inner_limit` records that fact: it is True
+            # when the branch CTE carries a LIMIT of its own (the 2026-11-03 /
+            # 2026-11-04 defect), and False when the only LIMIT is the outer
+            # page size. A book that lands on 200 with no inner LIMIT is
+            # COMPLETE — `rows_passing` is COUNT(*) OVER () inside an
+            # uncapped branch, so it is the true passing count, not the cap.
+            "inner_limit": inner_limit,
+            "legacy_cap_collision": kept in (30, 50, 60, 200),
         }
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -749,10 +783,12 @@ def collect_branches(bridge: str, t1_date: str, workers: int) -> tuple[dict, dic
             f"COVERAGE FAILURE on {bad}: rows_kept != rows_passing. "
             "Re-fetch the short branches and rebuild."
         )
-    capped = [b for b, c in coverage.items() if c["rows_kept"] in (30, 50, 60, 200)]
+    capped = [b for b, c in coverage.items()
+              if c["rows_kept"] in (30, 50, 60, 200) and c.get("inner_limit")]
     if capped:
         raise PipelineError(
-            f"TRUNCATION FINGERPRINT: {capped} landed exactly on a cap (30/50/60/200)."
+            f"TRUNCATION FINGERPRINT: {capped} carries a per-branch LIMIT and "
+            f"landed exactly on a cap (30/50/60/200)."
         )
     return rows_by_branch, coverage
 
@@ -1582,8 +1618,14 @@ def render_daily_sweep_md(path: Path, results: dict, breadth: dict, live: dict,
         "## Screen coverage — the assertion that makes the book publishable",
         "",
         "Every branch was fetched as its own query, uncapped, and paged until the rows collected equalled "
-        "`rows_passing`. **rows_kept == rows_passing on every branch**, and no branch count lands on a cap "
-        "(30 / 50 / 60 / 200).",
+        "`rows_passing`. **rows_kept == rows_passing on every branch**, and no branch carries a per-branch "
+        "LIMIT — so no book is capped. "
+        + (f"A branch count landing on a legacy cap value (30 / 50 / 60 / 200) is only a truncation "
+           f"fingerprint when the SQL could have produced it; "
+           f"{len([b for b, c in coverage.items() if c['rows_kept'] in (30, 50, 60, 200)])} branch count(s) "
+           f"land on such a value today and each was verified complete."
+           if any(c["rows_kept"] in (30, 50, 60, 200) for c in coverage.values())
+           else "No branch count lands on a cap value (30 / 50 / 60 / 200)."),
         "",
         "| Branch | Screen | rows_passing | rows_kept | Status |",
         "|---|---|---|---|---|",
@@ -1604,7 +1646,10 @@ def render_daily_sweep_md(path: Path, results: dict, breadth: dict, live: dict,
         if not c:
             continue
         lines.append(
-            f"| `{br}` | {labels.get(br, br)} | {c['rows_passing']} | {c['rows_kept']} | complete |"
+            f"| `{br}` | {labels.get(br, br)} | {c['rows_passing']} | {c['rows_kept']} | "
+            + ("complete" if not c["rows_kept"] in (30, 50, 60, 200)
+               else "complete — count lands on a legacy cap value, verified: no per-branch LIMIT, rows_passing == rows_kept")
+            + " |"
         )
     total_rows = sum(c["rows_kept"] for c in coverage.values())
     lines += [
@@ -1887,8 +1932,13 @@ def check_artifact(out_dir: Path, cron_date: str, t1_date: str) -> list[str]:
     for br, c in (results.get("screen_coverage") or {}).items():
         need(c["rows_kept"] == c["rows_passing"],
              f"coverage: {br} rows_kept {c['rows_kept']} != rows_passing {c['rows_passing']}")
-        need(c["rows_kept"] not in (30, 50, 60, 200),
-             f"coverage: {br} landed exactly on {c['rows_kept']} — the truncation fingerprint")
+        # A count that lands on a legacy cap is a truncation ONLY when the
+        # branch SQL carries a per-branch LIMIT of its own. Without one, the
+        # count IS the true passing count (COUNT(*) OVER () inside an
+        # uncapped branch) and the book is complete.
+        need(not c.get("inner_limit"),
+             f"coverage: {br} carries a per-branch LIMIT — the book is capped, "
+             f"not complete (rows_kept {c['rows_kept']})")
 
     # --- the dual book: every candidate publishes its session ----------------
     cands = results.get("candidates") or []

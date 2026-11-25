@@ -191,7 +191,16 @@ and peoplewish ADR+velocity.
 >
 > A branch count that lands EXACTLY on 30 / 50 / 60 / 200 is a cap, not a
 > screen outcome — that is the truncation fingerprint, and it must be reported
-> as a failure, never as a result.
+> as a failure, never as a result. **But the fingerprint is only valid when the
+> branch SQL could have produced it.** Since the per-branch `LIMIT` was
+> removed (one uncapped query per branch, paged to completion), a count that
+> happens to EQUAL 30 / 50 / 60 / 200 is a real passing count whenever
+> `rows_passing == rows_kept` AND the branch carries no inner `LIMIT` — the
+> `COUNT(*) OVER ()` is then the true passing count, not the cap. The rule is
+> EVIDENCE-BASED: a count is a cap only when the SQL could have capped it.
+> Measured 2026-11-25: `B_stockbee_ep9m` returned exactly 200 and
+> `C_qullamaggie_rs` exactly 60 — both complete, both verified, and the
+> number-blind fingerprint would have failed a clean run.
 
 **Batch 2 (parallel):**
 - One `mcp__tradingview__screen_stocks` call with the **Jeff Sun CANSLIM-calibrated**
@@ -806,9 +815,19 @@ mandatory.
 - **`rows_kept` MUST equal `rows_passing` for every branch.** When they differ the book is
   INCOMPLETE: **fail loudly, do not publish it.** Re-fetch the short branch, page it until
   the counts agree, and rebuild.
-- **A branch count that lands exactly on 30 / 50 / 60 / 200 is a CAP, not a result.**
-  That is the truncation fingerprint — report it as a failure even if `rows_passing`
-  happens to agree.
+- **A branch count that lands exactly on 30 / 50 / 60 / 200 is a CAP, not a result —
+> but only when the SQL could have produced it.** The truncation fingerprint was
+  written for the OLD shape, where each branch CTE carried its own
+  `LIMIT 50 / 30 / 60` and the count was therefore the cap. That shape is gone:
+  one uncapped query per branch, paged to completion, with `rows_passing`
+  computed as `COUNT(*) OVER ()` INSIDE the branch. So the number alone proves
+  nothing. The fingerprint is now: **the count looks like a cap AND the branch
+  SQL carries an inner `LIMIT`** (or `rows_kept != rows_passing`). A book that
+  lands on 200 with no inner LIMIT is COMPLETE — `rows_passing` is the true
+  passing count. `tools/sweep_pipeline.py` implements this
+  (`has_inner_limit()`, and `coverage.inner_limit` / `coverage.legacy_cap_collision`),
+  and publishes the collision in the artifact's coverage table instead of
+  hiding it.
 - **Publish the counts in `_results.json`** (under `screen_coverage`) **and in the
   artifact's method section.** A coverage table the reader cannot see is not a guard.
 

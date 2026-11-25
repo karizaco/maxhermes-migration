@@ -139,9 +139,17 @@ def main(argv=None) -> int:
                   f"(run --phase 1 first)", file=sys.stderr)
             return 2
         b = json.loads((save_dir / "branches.json").read_text())
-        # collect_branches returns (rows, coverage); keep the REAL coverage,
-        # because the pipeline's own replay path rebuilds it with pages=1.
-        sp.collect_branches = lambda *ar, **kw: (b["rows"], b["coverage"])
+        # collect_branches returns the PAIR (rows, coverage), and phase 1
+        # persisted that pair verbatim — so the file on disk is a 2-element
+        # ARRAY, not a dict. Reading it as a dict ("b['rows']") raises
+        # TypeError: list indices must be integers. Accept BOTH shapes.
+        if isinstance(b, dict):
+            rows_b, cov_b = b.get("rows"), b.get("coverage")
+        else:
+            rows_b, cov_b = b[0], b[1]
+        # keep the REAL coverage, because the pipeline's own replay path
+        # rebuilds it with pages=1.
+        sp.collect_branches = lambda *ar, **kw: (rows_b, cov_b)
         sp.collect_canslim_growth = lambda *ar, **kw: json.loads(
             (save_dir / "canslim.json").read_text())
         sp.collect_enrichment = lambda *ar, **kw: json.loads(

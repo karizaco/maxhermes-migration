@@ -10,7 +10,7 @@ The defects it proves are caught are the ones this suite has actually shipped:
 
   * a stub marker left in the artifact (the narrative never filled in)
   * a truncated book (rows_kept != rows_passing)
-  * a branch that landed exactly on a cap (the truncation fingerprint)
+  * a branch that landed exactly on a cap WITH an inner LIMIT (the truncation fingerprint)
   * a candidate with no data_as_of / source (the session ambiguity)
   * an empty per-stylist file (the silent zero)
   * a missing `.csv` companion (the `.md`-only publish)
@@ -204,9 +204,35 @@ def main() -> int:
             d = json.loads(p.read_text())
             d["screen_coverage"]["A_stockbee_4pct"]["rows_passing"] = 50
             d["screen_coverage"]["A_stockbee_4pct"]["rows_kept"] = 50
+            # the SQL carries a per-branch LIMIT — the historical truncation
+            # defect, and the one the fingerprint exists to catch
+            d["screen_coverage"]["A_stockbee_4pct"]["inner_limit"] = True
             _write(p, json.dumps(d, indent=1))
 
-        broken("a branch that landed exactly on a cap", cap)
+        broken("a branch that landed exactly on a cap WITH an inner LIMIT", cap)
+
+        def honest_cap(out2: Path):
+            p = out2 / "_results.json"
+            d = json.loads(p.read_text())
+            d["screen_coverage"]["A_stockbee_4pct"]["rows_passing"] = 200
+            d["screen_coverage"]["A_stockbee_4pct"]["rows_kept"] = 200
+            d["screen_coverage"]["A_stockbee_4pct"]["inner_limit"] = False
+            _write(p, json.dumps(d, indent=1))
+
+        # NOT a defect: a COMPLETE book that legitimately lands on 200 must
+        # PASS. The fingerprint is evidence-based (2026-11-25: two branches
+        # returned exactly 200 and exactly 60, both verified complete).
+        out3 = _minimal_artifact(root / "honest_cap", date, t1_date)
+        honest_cap(out3)
+        proc = subprocess.run(
+            [sys.executable, str(PIPELINE), "check", "--date", date,
+             "--t1-date", t1_date, "--out", str(out3.parent)],
+            capture_output=True, text=True)
+        n, ls = check(proc.returncode == 0,
+                      "the checker does NOT flag a complete book that lands on 200",
+                      "" if proc.returncode == 0 else proc.stdout.strip())
+        failures += ls
+        lines += ls
 
         def no_session(out2: Path):
             p = out2 / "_results.json"
