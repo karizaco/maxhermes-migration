@@ -575,10 +575,11 @@ def _vix_from_yahoo(session_date=None):
         "pulls": 1,
         "gap_seconds": 0.0,
         "stable": True,
-        "source": ("Yahoo chart API (^VIX / ^VIX3M) - FALLBACK: the Cboe "
-                   "delayed-quote CDN returned HTTP 403 (Cloudflare) from "
-                   "this egress on 2026-11-19; both symbols read from the "
-                   "same session bar"),
+        "source": (f"Yahoo chart API (^VIX / ^VIX3M) - FALLBACK: the Cboe "
+                   f"delayed-quote CDN returned HTTP 403 (Cloudflare) from "
+                   f"this egress on {vix['date']} (first observed 2026-11-19, "
+                   f"reproduced 2026-11-25); both symbols read from the "
+                   f"same session bar"),
         "session_bar_date": vix["date"],
     }
 
