@@ -111,6 +111,30 @@ rebuilds it with `pages: 1`, which loses the page count).
 
 ---
 
+## Finding 3 — the VIX fallback note named the WRONG day (found while reading the published artifact)
+
+The published `breadth.md` read:
+
+> `vix_quote_time: "… FALLBACK: the Cboe delayed-quote CDN returned HTTP 403 (Cloudflare) from this egress on 2026-11-19 …"`
+
+The 403 in that run happened on **2026-11-25**. The date was a hardcoded
+literal in the Yahoo-fallback branch of `fetch_vix_pair()` — the date the
+failure was FIRST measured, quoted forever after as if it were the date of the
+failure. An artifact therefore named a day the CDN had not failed on, while
+the source it was actually describing (the fallback) had just been used
+because it HAD failed today.
+
+A note about a degraded source has to be about the degraded source. The
+string now names the **session bar's date** — the day the failure was
+observed — and keeps the first-observation date as history:
+`"… returned HTTP 403 (Cloudflare) from this egress on 2026-11-25 (first
+observed 2026-11-19, reproduced 2026-11-25)"`.
+
+The published 2026-11-25 artifact was re-rendered and re-pushed with the
+correct string.
+
+---
+
 ## What changed
 
 | File | Change |
@@ -119,6 +143,7 @@ rebuilds it with `pages: 1`, which loses the page count).
 | `tools/sweep_two_pass.py` | phase 2 reads the branches capture in either shape |
 | `tools/test_sweep_pipeline.py` | the cap case now carries an inner LIMIT; a new case proves a complete book landing on 200 is **not** flagged |
 | `cloud-prompts/skills/stock-screener-suite/SKILL.md` | §2 and §4: the fingerprint is a cap only when the SQL could have produced it |
+| `tools/sweep_pipeline.py` (Finding 3) | the VIX fallback note names the day the 403 was OBSERVED, not the day it was first seen |
 
 **Verified offline:** `tools/test_sweep_pipeline.py` 14/14, `test_sweep_pipeline_vix.py` 17/17,
 `test_sweep_pipeline_divergence.py` 4/4, `test_sweep_replay.py` 6/6,
