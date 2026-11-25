@@ -796,3 +796,74 @@ venue's auction print DOES keep moving for ~55 minutes after the close on some s
 statement to carry forward is narrower: **the published close can only be trusted as final once
 the venue's own settled block has stopped moving**, and this session it never did within the
 bound. The residue is published as it stands, and the artifact says so.
+
+## 2026-11-25 — the platform's 30-minute command cap kills the settle stage mid-run; the pipeline must be launched DETACHED
+
+**The trap.** The cron sandbox runs every long command under a **hard 1800 s command limit**, and a
+command that exceeds it is KILLED — not paused, not resumed. `fetch_eod_settled.py` is the one
+stage that cannot finish inside 30 minutes: pass 1 takes ~6 min and the probe loop runs up to
+`--max-rounds 12` at `--probe-interval 240`, i.e. **up to ~55 minutes of rounds**, and it writes
+`history.jsonl` and `settle_map.json` only at the very end.
+
+Measured on the 2026-11-25 fire: the first launch was made as a managed background task and was
+killed at the 30-minute mark, mid-probe, with the process left as a **zombie** and
+`history.jsonl` still carrying the PREVIOUS session's bytes (Nov 24, not Nov 25). Nothing in the
+tool output said "killed": the task simply reported `status: failed` with `(no output yet)`, because
+the stage's stdout was piped into `tail -40`, which buffers until EOF — so the log that would
+have shown rounds 1-12 was lost with the process. The run then had to be restarted from pass 1,
+paying the ~55-minute probe cost a second time.
+
+**Why this is a trap and not a hiccup.** The stage's duration is NOT predictable and it is not the
+runner's to choose: the 2026-11-24 session needed all 12 rounds (1,044 symbols still changing at
+the cap) and the 2026-11-25 session settled after **2** rounds with **0** symbols changing. A fixed
+budget cannot cover both. And because the outputs are written only at the end, a kill loses the
+whole stage, not just the last round.
+
+**What was done.** The settle stage is now launched **detached**, so it is outside the tool's
+process group and survives the command cap:
+
+```bash
+cd /workspace/eod_scripts
+setsid nohup python3 fetch_eod_settled.py --symbols /workspace/work/symbols.csv \
+    --session <DATE> --out /workspace/work/history.jsonl \
+    --settle-map /workspace/work/settle_map.json \
+    --probe-size 300 --probe-interval 240 --max-rounds 12 \
+    > /workspace/work/settled_run.log 2>&1 < /dev/null &
+```
+
+and the REST of the pipeline is chained in a second detached shell script (venue stage → patch →
+base assembly → derive → report), each stage writing its own log file so a failure is visible
+without waiting for the process to exit. Two details matter: the stage's stdout must go to a FILE
+(not a pipe into `tail`, which loses everything when the process dies), and the tool call that
+starts the chain must return immediately.
+
+**A related trap: the "wait until it exits" waiter is capped too.** `while kill -0 <pid>; do sleep 30; done`
+in the foreground is itself a command, so it is killed at 30 minutes as well — and the waiter
+cannot be the thing that guarantees completion. Detach first, then poll.
+
+**This run's own measurements, for the next session's comparison.**
+
+| measurement | 2026-11-23 | 2026-11-24 | 2026-11-25 |
+|---|---|---|---|
+| universe pulled / written | 4,882 | 4,878 | 4,902 (+26 added, -2 removed by the vendor) |
+| settled prints from the venue | 4,839/4,882 | 4,818/4,878 | 4,820/4,902 |
+| independent confirmation resolved | 4,814 | 4,733 | 4,764 |
+| rows CONFIRMED | 3,451 | 3,185 | 3,390 |
+| probe rounds | 12 (max) | 12 (max) | **2 (settled)** |
+| symbols changed after pass 1 | 818 (bar 808 / venue 2) | 1,044 (bar 741 / venue 308) | **0 (bar 0 / venue 0)** |
+| venue polls / rounds | 9/12 | 12/12 | 2/2 |
+| PRIOR_CLOSE_SUPERSEDED rows | 279 | 243 | **936** (12 of 12 sampled rows adjudicated against Nasdaq's own 2026-11-24 record — the exchange agrees with the corroborated close, not with the published one) |
+| EX_DISTRIBUTION rows | 37 | 71 | 79 |
+| SPLIT_ADJUSTED rows | — | 19 | 68 |
+
+**The 936 is the number to look at.** It is 19% of the universe against 279 (5.7%) and 243 (5.0%)
+on the two prior sessions, and every sampled row is confirmed by the exchange's own historical
+record — so the 2026-11-24 file, not the vendor, is the outlier on those rows. Two candidate
+explanations remain open and this run does not settle them: (a) the 2026-11-24 file published a
+close that the exchange contradicts (a defect in that fire), or (b) something systematic about the
+2026-11-24 session (a large intraday reversal — SPY traded down to 695.45 against a 716.70 close)
+widened the gap between the venue's settled print and the vendor's bar. **The next session should
+adjudicate the prior session's file the same way this one did — a sample against
+`api.nasdaq.com/api/quote/{SYM}/historical` — and publish the count, because until the prior file
+is repaired by a separate, deliberately-published repair, a consumer joining two files will
+compute a different change % on 19% of the rows.**
