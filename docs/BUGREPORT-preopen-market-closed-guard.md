@@ -27,8 +27,25 @@ closure** — and published a tape of **379 records** as if the market were open
 **The gate passed it.** Run against that tape and its board with the correct file names,
 the 2026-11-20.1 checker returned **PASSED all 179 of its checks**.
 
-The artifact was **not** published: the operator recognised the closure, and the tape was
-rejected in favour of a skip marker. The tape is retained as the regression fixture at
+### The 08:30 slot rejected it; the 09:50 slot published it and had to retract it
+
+* **08:30** — the capture ran and returned 379 records; the operator recognised the
+  closure, rejected the tape and published a skip marker instead. No artifact was
+  published.
+* **09:50** — the same routine, two hours later, ran the capture and **pushed the false
+  tape and its board** (`preopen-feed/2026-11-26-0950.jsonl` / `.md`, commit
+  `37a019f5`) **before** the window check was consulted. It then diagnosed the same
+  defect independently — **362 of 362** tickers shared the previous tape's implied
+  reference — and **retracted** both files in commit `90ae9566`. Both `main` and
+  `master` are clean now (the files 404), but the retraction is a **deletion commit**,
+  so the false artifact remains readable in the outputs repo's git history at
+  `37a019f5`.
+
+That near-miss is the sharpest argument for the fix below: the failure was not
+theoretical, it was published and then un-published by hand, on the same day, by two fires
+of the same routine, minutes apart.
+
+The tape itself is retained as the regression fixture at
 `preopen-feed/2026-11-26-0830.jsonl` (never pushed).
 
 ---
@@ -178,6 +195,12 @@ The gate then passed all 144 checks on that marker.
 coverage floor made the fleet measure *how much of the board was explained*; nothing ever
 measured *whether the board's numbers were true*. The anchor rule is that measurement, and
 it is the shape the next silent failure will take.
+
+**And a run-time helper that is not the FIRST action is not a gate.** The 09:50 fire
+published a false artifact because the window check ran *late* — after the capture, after
+the push. The house had already learned this with the checker itself on 2026-11-19 (the
+procedure referenced it three times and never fetched it). The rule generalises: a check
+that runs after the thing it checks is not a check, it is a post-mortem.
 
 Two smaller lessons, both from the same fire:
 
