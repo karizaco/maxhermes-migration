@@ -290,6 +290,39 @@ the universe pull's 20,155 rows. `tv_scan.py pull --names` does this and asserts
 (`name-missing` when a requested name never comes back). **Use the targeted pull whenever the
 ticker list is known; pull the universe only when a screen genuinely needs every name.**
 
+#### The pre-market columns keep a STALE ANCHOR when the market is shut (measured 2026-11-26)
+
+`premarket_change` is measured against the **previous close**, and the scanner publishes that
+same previous close in its own `close` column. So on a live pre-market session the two must
+agree:
+
+```
+implied_reference = premarket_close / (1 + premarket_change/100)   ==   close
+```
+
+**When the market is SHUT, the scanner does not roll the pre-market session forward.** It
+keeps serving the PREVIOUS session's anchor, so `premarket_change` is measured against a
+close that is one session behind the `close` column published beside it. Measured
+2026-11-26 (Thanksgiving, the NYSE closed): **242 of 242** tickers shared the 2026-11-25
+tape's implied reference (the 2026-11-24 close) while the last completed session had
+closed at the 2026-11-25 price. Validated on a LIVE session (2026-11-25): **14 / 14**
+tickers matched close(2026-11-24) against Yahoo's daily closes, and **0 / 14** matched
+close(2026-11-25).
+
+**The damage is not cosmetic.** On that tape 62% of the priced rows were wrong by more than
+a point, 15.3% had a **flipped sign**, and the worst was off by **177 points** (VWAV
+published −5.84% against a true +171.84%). The band itself came back 168 up / 951 **down**
+— 85% decliners — because a market that closed lower leaves the stale anchor sitting above
+most names.
+
+**So `premarket_change` is only meaningful when the anchor agrees with `close`.** Pull the
+`close` column in the SAME request (it is free) and check the two. A capture that publishes
+`premarket_change` without this check publishes a tape of invented moves on any closed
+market — and the 2026-11-26 pre-open checkpoint did exactly that, with the fleet's own
+179-check gate passing it. `preopen_capture.py` now refuses to write a tape when they
+disagree (`CAPTURE_ANCHOR_GUARD_V1`), and the tape carries the anchor (`ref_close`) so the
+gate can check it afterwards.
+
 **There is a VALIDATED CLIENT — use it instead of hand-building a body.**
 
 ```bash

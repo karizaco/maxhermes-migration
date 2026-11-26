@@ -141,6 +141,11 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             # The pre-market DOLLAR behind the print, and the sign probe's verdict.
             "pm_notional": round(1234567 * (10.0 + i), 2),
             "sign_conflict": False,
+            # THE ANCHOR (2026-11-26): the close this move was measured against, as
+            # the scanner published it. The implied reference rebuilt from this row's
+            # own (price, pct) MUST agree with it - that is what makes a tape of
+            # invented moves detectable after the fact.
+            "ref_close": round(10.0 + i, 2) / (1.0 + pct / 100.0),
         })
     for i in range(n_narrative):
         rows.append({
@@ -164,6 +169,8 @@ def build_conforming(tmp, n_priced=20, n_narrative=30, date="2026-11-09", slot="
             "news_url": None,
             "pm_notional": None,
             "sign_conflict": False,
+            # A narrative row carries no print, so it has no anchor either.
+            "ref_close": None,
         })
     with open(tape, "w", encoding="utf-8") as fh:
         for r in rows:
@@ -195,6 +202,68 @@ def build_date_only(tmp, date="2026-11-18", slot="0830"):
     subprocess.run([sys.executable, DIGEST, "--tape", tape, "--out", digest,
                     "--date", date, "--slot", slot], capture_output=True, text=True, check=True)
     return tape, digest
+
+
+def build_anchored(tmp, date="2026-11-27", slot="0830", stale=False, drop_anchor=False):
+    """A CONFORMING tape dated ON OR AFTER the ANCHOR RULE's effective date.
+
+    The anchor rule (2026-11-26) requires every priced row to carry `ref_close` - the
+    close the scanner published alongside the move - and requires the tape's own
+    implied reference to agree with it. A tape that fails either is a tape whose
+    MOVES are not the moves that happened, and the gate must refuse it.
+
+      * `stale=True` writes the anchor the scanner leaves behind on a CLOSED MARKET:
+        one session behind, and far enough away that the move no longer agrees with
+        it. This is the 2026-11-26 defect in miniature - the real tape had 15.3% of
+        its priced rows with a FLIPPED sign, and the 2026-11-20.1 gate passed all 179
+        of its checks on it.
+      * `drop_anchor=True` removes the anchor entirely, which is what a tape written
+        by a capture build that predates the rule looks like.
+
+    The fixture is dated on or after the rule's effective date so it is NOT
+    grandfathered - which is the whole point of it.
+    """
+    tape, digest = build_conforming(tmp, date=date, slot=slot)
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        r["ts"] = f"{date}T08:47:31-05:00"
+        if r.get("news_date"):
+            # The catalyst window is measured against the TAPE's date, so a fixture
+            # dated 2026-11-27 must date its catalysts there too.
+            r["news_date"] = f"{date}T11:30:00Z"
+        if r.get("pct") is not None:
+            if drop_anchor:
+                r.pop("ref_close", None)
+                continue
+            implied = r["price"] / (1.0 + r["pct"] / 100.0)
+            r["ref_close"] = implied * 0.88 if stale else implied
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    # Re-render from the tape, so the board and the tape always agree.
+    subprocess.run([sys.executable, DIGEST, "--tape", tape, "--out", digest,
+                    "--date", date, "--slot", slot], capture_output=True, text=True, check=True)
+    return tape, digest
+
+
+def build_stale_anchor(tmp):
+    """A tape whose moves DISAGREE with the close they claim to be measured against."""
+    return build_anchored(tmp, stale=True)
+
+
+def build_unanchored(tmp):
+    """A tape from a capture build that predates the anchor rule."""
+    return build_anchored(tmp, drop_anchor=True)
+
+
+def build_grandfathered_anchor(tmp):
+    """A tape dated BEFORE the anchor rule, with no anchor: GRANDFATHERED.
+
+    A historical artifact is never failed for a rule that post-dates it - the same
+    shape as the date contract and the coverage floor. 2026-11-26 is the date of the
+    rejected tape itself, so this case is exactly that tape's situation.
+    """
+    return build_anchored(tmp, date="2026-11-26", drop_anchor=True)
 
 
 def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
@@ -1112,6 +1181,15 @@ CASES = [
      m_no_size_split),
     ("a board that blames the CATALYST BUDGET again is caught", False,
      m_budget_cause_restored, build_low_coverage),
+    # THE ANCHOR RULE (2026-11-26). The gate used to verify the tape's SHAPE and
+    # never its MOVES: on 2026-11-26 it PASSED all 179 of its checks on a tape the
+    # capture wrote on THANKSGIVING, with the NYSE closed, where 15.3% of the priced
+    # rows had a FLIPPED sign and the worst was off by 177 points.
+    ("a tape whose moves disagree with its own anchor is caught", False, None,
+     build_stale_anchor),
+    ("a tape that carries no anchor at all is caught", False, None, build_unanchored),
+    ("a tape dated BEFORE the anchor rule is grandfathered (it still passes)", True, None,
+     build_grandfathered_anchor),
 ]
 
 
@@ -1137,6 +1215,34 @@ def run_skip_cases():
     open(os.path.join(feed, "2026-11-09-0830.jsonl"), "w", encoding="utf-8").write("{}\n")
     rc, out = run_checker(repo, skipped=marker, slot="0830")
     record("a tape written beside a skip marker is caught", False, rc, out)
+
+    # 3. THE FLEET'S OWN MARKER SHAPE must be ACCEPTED. The shared window check
+    #    writes `- Reason: ...` (unbolded) and names the slot on its own; this
+    #    family's marker writes `- **Reason:** ...` and the date-slot stem. Both are
+    #    legitimate, and the gate used to accept only the second - so on 2026-11-26
+    #    it REJECTED the marker the window check had just written for this very
+    #    checkpoint.
+    #
+    #    The tape case above left a .jsonl beside the marker; remove it, because its
+    #    presence is a SEPARATE breach and would mask this one.
+    stray = os.path.join(feed, "2026-11-09-0830.jsonl")
+    if os.path.exists(stray):
+        os.remove(stray)
+    open(marker, "w", encoding="utf-8").write(
+        "# 92a preopen catalyst capture 0830 — SKIPPED\n"
+        "- Date (ET): 2026-11-09\n"
+        "- Reason: US market holiday (2026-11-09)\n"
+        "- No artifact produced: preopen-feed/2026-11-09.md is intentionally absent.\n")
+    rc, out = run_checker(repo, skipped=marker, slot="0830")
+    record("a skip marker in the FLEET's shape is accepted", True, rc, out)
+
+    # 4. a marker that names the WRONG slot is still caught: the relaxation is about
+    #    the SHAPE of the marker, not about which checkpoint it belongs to.
+    open(marker, "w", encoding="utf-8").write(
+        "# 92b preopen catalyst capture 0950 — SKIPPED\n"
+        "- Reason: US market holiday (2026-11-09)\n")
+    rc, out = run_checker(repo, skipped=marker, slot="0830")
+    record("a skip marker naming another slot is caught", False, rc, out)
     shutil.rmtree(tmp, ignore_errors=True)
 
 

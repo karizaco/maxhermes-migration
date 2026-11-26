@@ -1,6 +1,27 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-17.2
+CAPTURE_SCRIPT_VERSION: 2026-11-26.1
+# CAPTURE_ANCHOR_GUARD_V1 - the capability marker the procedure's fetch ladder demands,
+# so a STALE copy (one with no market-closed guard) cannot win it.
+#
+# WHY THIS BUILD EXISTS. Measured 2026-11-26 08:30 ET: the checkpoint fired on
+# THANKSGIVING, with the NYSE closed, and the capture wrote 379 records anyway. The
+# scanner's pre-market columns keep their ANCHOR on the previous session's close when
+# the market is shut, so every move on that tape was measured from the wrong base:
+# 62% of the priced rows were wrong by more than a point, 15.3% had a FLIPPED SIGN, and
+# the worst was off by 177 points (VWAV published at -5.84% against a true +171.84%).
+# The band itself was an artifact of that stale base - 168 up / 951 DOWN, 85% decliners,
+# where the documented band is roughly balanced.
+#
+# And the gate BLESSED it: the 2026-11-20.1 checker, run in tape mode against that
+# tape and its board with the correct file names, PASSED all 179 of its checks. The
+# checker verifies row shape, provenance, date windows and coverage - it had no notion
+# of whether a MOVE was real, so a tape full of invented moves looked exactly like a
+# clean one.
+#
+# So this build refuses to write a tape it cannot stand behind: it pulls the scanner's
+# own `close` column in the SAME request it already makes, checks the anchor against it,
+# and fails closed with a marker when the two disagree.
 preopen_capture.py — write the pre-open catalyst tape.
 
 WHY THIS EXISTS
@@ -254,6 +275,40 @@ BAND_PCT = 2.5
 # day was 2026-09-30, so a four-day window rejects the claim; the honest tape row is
 # the price with no catalyst.
 CATALYST_MAX_AGE_DAYS = 4
+
+# ---------------------------------------------------------------------------
+# THE ANCHOR - IS THE SCANNER'S PRE-MARKET SESSION LIVE?
+# ---------------------------------------------------------------------------
+# TradingView's `premarket_change` is measured against the PREVIOUS close, and the
+# scanner's `close` column IS that previous close while a pre-market session is
+# running. So on a live pre-market session:
+#
+#     premarket_close / (1 + premarket_change/100)  ==  close
+#
+# and the tape's own numbers can be checked against the scanner's own `close` without
+# a second source and without a calendar.
+#
+# When the market is SHUT, the scanner does not roll the pre-market session forward:
+# it keeps serving the PREVIOUS session's anchor, so the implied reference stays one
+# session behind the `close` column it publishes alongside it. Measured 2026-11-26
+# (Thanksgiving): 242 of 242 tickers shared the 2026-11-25 tape's implied reference -
+# the 2026-11-24 close - while the last completed session had closed at the 2026-11-25
+# price. Validated on a LIVE session (2026-11-25): 14 of 14 tickers matched
+# close(2026-11-24) exactly, and 0 of 14 matched close(2026-11-25).
+#
+# The invariant is definitional, not heuristic, so it needs no holiday calendar and it
+# catches an UNPLANNED closure, a half-day roll and a scanner anomaly alike - all the
+# days a calendar calls "trading".
+#
+# The TOLERANCE absorbs the provider's rounding: the implied reference is rebuilt from
+# a rounded percentage, so it is compared relatively, not exactly.
+ANCHOR_TOLERANCE = 0.005
+# The share of priced rows that must agree with the scanner's `close`. On a live
+# session it is ~100%; on a stale anchor it is ~0%. 90% is far from both.
+ANCHOR_MATCH_FLOOR = 0.90
+# Below this many priced rows the sample cannot decide anything, so the capture does
+# NOT trip: a thin band on a quiet pre-market must not be read as a closed market.
+ANCHOR_MIN_SAMPLE = 25
 
 # ---------------------------------------------------------------------------
 # THE MOVER COVERAGE FLOOR - HOW MUCH OF WHAT THE READER READS DID WE EXPLAIN?
@@ -583,7 +638,7 @@ def call_scanner_premarket(tickers):
     if not syms:
         return {"rows": {}, "error": "no tickers"}
     cols = ["name", "description", "premarket_change", "premarket_close",
-            "premarket_volume", "exchange"]
+            "premarket_volume", "exchange", "close"]
     body = {"filter": [{"left": "type", "operation": "equal", "right": "stock"},
                        {"left": "name", "operation": "in_range", "right": syms}],
             "columns": cols, "range": [0, len(syms) + 5]}
@@ -613,7 +668,12 @@ def call_scanner_premarket(tickers):
             continue
         out[t] = {"pct": pm_chg, "price": pm_px,
                    "volume": rec.get("premarket_volume"),
-                   "name": rec.get("description"), "exchange": rec.get("exchange")}
+                   "name": rec.get("description"), "exchange": rec.get("exchange"),
+                   # THE ANCHOR: the close the pre-market change is measured against.
+                   # The scanner publishes it in the SAME response, so the tape can
+                   # carry it and the gate can check it - no extra request, no second
+                   # source, no calendar.
+                   "ref_close": rec.get("close")}
     return {"rows": out, "total": len(out), "requested": len(syms)}
 
 
@@ -643,7 +703,7 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
                             "right": ["OTC"]},
                            {"left": "premarket_change", "operation": op, "right": right}],
                 "columns": ["name", "description", "premarket_change", "premarket_close",
-                            "premarket_volume", "exchange"],
+                            "premarket_volume", "exchange", "close"],
                 "sort": {"sortBy": "premarket_change", "sortOrder": order},
                 "range": [0, limit]}
         req = urllib.request.Request(
@@ -661,10 +721,10 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
             truncated.append(f"{side}: {len(data)} of {total}")
         for row in data:
             d = row.get("d") or []
-            if len(d) < 6:
+            if len(d) < 7:
                 continue
             rec = dict(zip(["name", "description", "premarket_change", "premarket_close",
-                            "premarket_volume", "exchange"], d))
+                            "premarket_volume", "exchange", "close"], d))
             t = (rec.get("name") or "").upper()
             if not t:
                 continue
@@ -675,9 +735,64 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
                 continue
             out[t] = {"pct": pm_chg, "price": pm_px,
                       "volume": rec.get("premarket_volume"),
-                      "name": rec.get("description"), "exchange": rec.get("exchange")}
+                      "name": rec.get("description"), "exchange": rec.get("exchange"),
+                      # THE ANCHOR, from the SAME response - see anchor_health().
+                      "ref_close": rec.get("close")}
     return {"rows": out, "up": counts.get("up", 0), "down": counts.get("down", 0),
             "total": len(out), "truncated": truncated}
+
+
+def anchor_health(pm_rows):
+    """Is the scanner's PRE-MARKET SESSION live, or is its anchor stale?
+
+    TradingView measures `premarket_change` against the previous close, and the
+    scanner publishes that same previous close in its `close` column. So on a live
+    pre-market session the tape's own numbers must satisfy
+
+        premarket_close / (1 + premarket_change/100)  ==  close
+
+    and the check needs no calendar, no second source and no extra request.
+
+    When the market is SHUT the scanner does not roll the pre-market session forward:
+    it keeps serving the PREVIOUS session's anchor, so the implied reference stays one
+    session behind the `close` column published beside it. Measured 2026-11-26
+    (Thanksgiving): 242 of 242 tickers shared the previous tape's implied reference,
+    and 56 of the 365 priced rows came out with a FLIPPED SIGN.
+
+    The verdict is deliberately three-valued. `stale` means the anchor is provably
+    wrong, so the capture must not publish. `unknown` means the sample cannot decide
+    (a thin band, or a scanner that stopped publishing `close`), and the capture
+    proceeds - a quiet pre-market must never be read as a closed market.
+    """
+    checked = 0
+    matched = 0
+    offenders = []
+    for tk, r in (pm_rows or {}).items():
+        pct = r.get("pct")
+        price = r.get("price")
+        ref = r.get("ref_close")
+        if pct is None or price is None or ref in (None, ""):
+            continue
+        try:
+            pct = float(pct)
+            price = float(price)
+            ref = float(ref)
+        except (TypeError, ValueError):
+            continue
+        if ref <= 0 or pct <= -100:
+            continue
+        implied = price / (1.0 + pct / 100.0)
+        checked += 1
+        if abs(implied - ref) / ref <= ANCHOR_TOLERANCE:
+            matched += 1
+        elif len(offenders) < 5:
+            offenders.append(f"{tk}: implied {implied:.4f} vs close {ref:.4f}")
+    ratio = (matched / checked) if checked else None
+    stale = bool(checked >= ANCHOR_MIN_SAMPLE and ratio < ANCHOR_MATCH_FLOOR)
+    return {"checked": checked, "matched": matched, "ratio": ratio, "stale": stale,
+            "unknown": bool(checked < ANCHOR_MIN_SAMPLE),
+            "tolerance": ANCHOR_TOLERANCE, "floor": ANCHOR_MATCH_FLOOR,
+            "offenders": offenders}
 
 
 def call_top_movers(category="gainers", limit=40):
@@ -1651,6 +1766,40 @@ def build(date_str, checkpoint, top_n=8):
     pm_error = pm.get("error")
     priced_candidates = sum(1 for tk in candidates if tk in pm_rows)
 
+    # ------------------------------------------------------------------
+    # THE ANCHOR GUARD (2026-11-26).
+    #
+    # Before the capture spends a single metered catalyst call, it checks that the
+    # scanner's PRE-MARKET SESSION is live: the reference close implied by the tape's
+    # own numbers must match the scanner's own `close` column, published in the same
+    # response.
+    #
+    # A stale anchor means every move on the tape is measured from the wrong base.
+    # Measured on 2026-11-26 (Thanksgiving, the NYSE closed): 242 of 242 tickers
+    # shared the PREVIOUS tape's implied reference, 62% of the priced rows were wrong
+    # by more than a point, 15.3% had a flipped sign, and the worst was off by 177
+    # points. The band was 168 up / 951 down - 85% decliners - which is an artifact of
+    # that stale base, not a market.
+    #
+    # So the capture FAILS CLOSED here: a marker, no tape. It is not a quiet tape and
+    # it is not a loud error - it is a checkpoint that declined, with a trail.
+    # ------------------------------------------------------------------
+    anchor = anchor_health(pm_rows)
+    if anchor.get("stale"):
+        detail = "; ".join(anchor.get("offenders") or [])
+        reason = (f"the market is closed - the scanner's pre-market anchor is stale: "
+                  f"{anchor['matched']}/{anchor['checked']} priced rows match the "
+                  f"scanner's own close (floor {ANCHOR_MATCH_FLOOR:.0%})")
+        if detail:
+            reason += f" [{detail}]"
+        return {"error": f"market_closed: {reason}",
+                "market_closed": True,
+                "reason": reason,
+                "anchor": anchor,
+                "band_up": band.get("up"), "band_down": band.get("down"),
+                "band_total": band.get("total"),
+                "errors": [f"market_closed: {reason}"]}
+
     # Re-order the candidates by THIS session's absolute pre-market move. The
     # grounded-call budget is finite and is spent in this order, so the order must follow
     # the session the tape is about: ranked by the movers scan's move (the last COMPLETED
@@ -1721,6 +1870,12 @@ def build(date_str, checkpoint, top_n=8):
                 "trending_score": (trr or {}).get("score"),
                 "volume": pr.get("volume"),
                 "exchange": pr.get("exchange"),
+                # THE ANCHOR: the close this move was measured against, straight from
+                # the scanner. It rides on the row so the GATE can check the tape
+                # afterwards: a tape whose implied reference disagrees with its own
+                # anchor is a tape of invented moves, and the gate must be able to see
+                # that without re-fetching anything.
+                "ref_close": pr.get("ref_close"),
                 # The DOLLAR behind the print, and the sign probe's verdict.
                 "pm_notional": pm_notional(pr),
                 "sign_conflict": False,
@@ -1750,6 +1905,8 @@ def build(date_str, checkpoint, top_n=8):
                 "trending_score": (trr or {}).get("score"),
                 "volume": None,
                 "exchange": (mv or {}).get("exchange"),
+                # A narrative row carries no print, so it has no anchor either.
+                "ref_close": None,
                 "pm_notional": None,
                 "sign_conflict": False,
                 "sentiment": None,
@@ -1863,6 +2020,14 @@ def build(date_str, checkpoint, top_n=8):
             "premarket_unprinted": sum(1 for r in rows if r.get("src") == "stocktwits"),
             "premarket_candidates_priced": priced_candidates,
             "premarket_error": pm_error,
+            # THE ANCHOR'S OWN LEDGER: how many priced rows were checked against the
+            # scanner's `close`, and how many agreed. A healthy run is ~100%; the
+            # number is printed so the reply can say the tape's moves were VERIFIED
+            # against the scanner's own close, and not merely asserted.
+            "anchor_checked": anchor.get("checked"),
+            "anchor_matched": anchor.get("matched"),
+            "anchor_ratio": anchor.get("ratio"),
+            "anchor_stale": anchor.get("stale"),
             "stale_dropped": stale_dropped,
             "thin_dropped": thin_dropped,
             "empty_dropped": empty_dropped,
@@ -1938,6 +2103,34 @@ def main():
         return 0
 
     res = build(date_str, cp, args.top)
+    if res.get("market_closed"):
+        # THE MARKET-CLOSED TRAIL (2026-11-26).
+        #
+        # The capture DECLINED: the scanner's pre-market anchor is stale, so every
+        # move it would have published was measured against the wrong close (measured
+        # 2026-11-26: 15.3% of the priced rows came out with a FLIPPED sign). Fail
+        # closed with a MARKER and NO tape.
+        #
+        # The marker wears the family's own .SKIPPED.md name, so the gate can validate
+        # it (`--skipped`) and cron #17's consumer sees that the slot was SKIPPED
+        # rather than missing. It must NEVER wear the tape's .jsonl name: the
+        # consumer would parse it as tape and call every line malformed.
+        #
+        # EXIT CODE 3 = "declined, marker written". It is not 1 (a failed capture)
+        # and not 0 (a successful one), so the procedure can branch on it.
+        tape0 = args.out or f"/workspace/preopen-feed/{date_str}-{cp}.jsonl"
+        marker = (tape0[:-6] if tape0.endswith(".jsonl") else tape0) + ".SKIPPED.md"
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write("# Pre-open catalyst capture — SKIPPED\n\n"
+                     f"- **Reason:** {res.get('reason')}\n"
+                     f"- **Checkpoint:** {date_str}-{cp}\n"
+                     f"- **Tape:** none. The capture wrote no tape, because every move "
+                     f"on it would have been measured against the wrong close. The tape "
+                     f"is intentionally absent — a missing tape is honest, a false one "
+                     f"is not.\n")
+        print(f"preopen capture: MARKET CLOSED — {res.get('reason')} (marker: {marker})")
+        return 3
     if "error" in res:
         print(json.dumps(res))
         return 1
@@ -1992,6 +2185,10 @@ def main():
           f"trending={res['trending_count']}, "
           f"premarket_priced={res.get('premarket_priced')}, "
           f"premarket_unprinted={res.get('premarket_unprinted')}, "
+          # THE ANCHOR, printed: the share of priced rows whose move agrees with the
+          # scanner's own close. A healthy run is ~100%, and that number is what turns
+          # "the tape's moves" into "the tape's moves, verified against the scanner".
+          f"anchor={res.get('anchor_matched')}/{res.get('anchor_checked')}, "
           f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
           f"catalysts: dated={res.get('catalyst_dated')} "
           f"(article={res.get('catalyst_article')}, edgar={res.get('catalyst_edgar')}, "

@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-20.1
+PROCEDURE_VERSION: 2026-11-26.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -18,6 +18,130 @@ that never moved. The skill requires the gap annex to separate a gap that **held
 from one that faded, and to attribute the move.
 
 ## STEPS — execute IN ORDER
+
+### 0. THE FIRE'S INSTANT, THE SLOT, AND THE WINDOW CHECK
+
+**THE WINDOW CHECK IS THE FIRST ACTION (2026-11-26).** This routine ran on
+2026-11-26 — **Thanksgiving, with the NYSE closed** — and published a tape of
+*invented* moves: 62% of its priced rows were wrong by more than a point, 15.3% had a
+**flipped sign**, and the worst was off by **177 points**. The gate passed all 179 of
+its checks on it, because every rule it had was about the tape's SHAPE and none of them
+asked whether a MOVE was real. The four sibling routines that carry the shared window
+check (#26, #02, #15, #19) all declined that same fire; this one had no window check at
+all, and it was a template accident: this procedure's own REPLY said *"the window check
+is the first action"*, the sentence inherited from `premarket-refresh.md` (#26's shared
+procedure, which DOES wire it) — the sentence was copied, the step was not.
+
+Two rules now stand between a closed market and a published tape:
+
+* **the window check** (this step) — the same shared gate every other routine in the
+  fleet runs. A holiday fire leaves a skip marker and **no artifact**.
+* **the anchor guard** (inside the capture script, step 2) — it checks the tape's own
+  moves against the scanner's own `close` column. It needs **no calendar**, so it also
+  catches an unplanned closure, a half-day roll and a scanner anomaly: days a calendar
+  calls "trading".
+
+```bash
+# ---- 0a. THE FIRE'S INSTANT. Read it ONCE; everything else derives from it. ------
+#
+# FIRE_MS is THIS conversation's session.created_at, in epoch milliseconds - the
+# moment the fire was DISPATCHED FOR. It is NOT the wall clock: the platform can
+# stall a fire by hours, and every value derived from the wall clock is then wrong.
+# Measured 2026-11-05: the 08:30 slot's work began at 10:09 ET after a platform
+# stall.
+#
+# Read it with the session_get tool (session_id "me"), or from the session record the
+# platform printed. Set it below before running the block.
+#
+# The prompt points at "the procedure's step 2" for FIRE_MS; it is defined HERE, in
+# step 0, because the window check needs the fire's instant before anything else runs.
+FIRE_MS=${FIRE_MS:-0}
+
+if [ "$FIRE_MS" -gt 0 ] 2>/dev/null; then
+  export DATE=$(TZ=America/New_York date -d "@$((FIRE_MS / 1000))" +%Y-%m-%d)
+  export FIRE_HHMM=$(TZ=America/New_York date -d "@$((FIRE_MS / 1000))" +%H%M)
+else
+  # No instant: fall back to the wall clock, which is right for an ON-TIME fire, and
+  # the capture's own slot guard still refuses a slot outside {0830, 0920, 0950}.
+  export DATE=$(TZ=America/New_York date +%Y-%m-%d)
+  export FIRE_HHMM=$(TZ=America/New_York date +%H%M)
+fi
+
+# ---- 0b. THE SLOT. It is a property of the FIRE, not of the clock. ---------------
+#
+# This routine has TWO fires - 0830 and 0950 - and this procedure serves both, so the
+# slot is mapped from the fire's own scheduled minute:
+#
+#     08*  ->  0830   (the 08:30 checkpoint, cron 92a)
+#     09*  ->  0950   (the 09:50 checkpoint, cron 92b)
+#
+# A literal `date +%H%M` names an 08:35 execution "0835" - a slot cron #17 never
+# reads, because it merges the checkpoints by slot name - and a phantom slot sorts
+# AFTER 0950, so a consumer replaying the checkpoints oldest-first replays the 08:30
+# tape LAST.
+export CP=0830
+case "$FIRE_HHMM" in
+  09*) CP=0950 ;;
+  08*) CP=0830 ;;
+esac
+
+# ---- 0c. THE WINDOW CHECK. -----------------------------------------------------
+#
+# The shared gate, the same one 21 of the 28 fleet prompts run. It is evaluated
+# against the FIRE's own clock, so a fire scheduled on a holiday and replayed on a
+# trading day is judged by the day it was DISPATCHED FOR, and the other way round.
+#
+# Require the CAPABILITY MARKER, not a non-empty body: an older script silently
+# ignores the flags below, and a 404 page is a non-empty JSON blob, not a script. The
+# contents API is authoritative and is NOT CDN-cached, so it is tried FIRST.
+S=/workspace/window_check.sh
+for U in \
+  "https://api.github.com/repos/karizaco/maxhermes-migration/contents/cloud-prompts/_shared/window_check.sh?ref=main" \
+  "https://raw.githubusercontent.com/karizaco/maxhermes-migration/main/cloud-prompts/_shared/window_check.sh" \
+  "https://cdn.jsdelivr.net/gh/karizaco/maxhermes-migration@main/cloud-prompts/_shared/window_check.sh" ; do
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "$S.tmp" "$U" 2>/dev/null
+  else
+    curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
+  fi
+  if head -1 "$S.tmp" 2>/dev/null | grep -q '^#!' && grep -q 'WINDOW_CHECK_V2' "$S.tmp" 2>/dev/null; then
+    mv -f "$S.tmp" "$S"; break
+  fi
+  rm -f "$S.tmp"
+done
+if [ ! -s "$S" ] || ! grep -q 'WINDOW_CHECK_V2' "$S" 2>/dev/null; then
+  echo "window-check: UNAVAILABLE (no version of the shared script with the replay-aware gate)"
+  echo "no artifact; no push"
+  exit 1
+fi
+
+sh "$S" --scheduled-at-ms "${FIRE_MS:-0}" \
+   --out preopen-feed --name "preopen_catalyst_capture_$CP" \
+   --label "Cron #92 preopen catalyst capture ($CP)" \
+   --nn 92
+WINDOW_RC=$?
+```
+
+**IF THE WINDOW CHECK EXITS NON-ZERO, THE FIRE IS OUT OF WINDOW.** Stop here: do not
+fetch the skill, do not run the capture, do not write an artifact, do not render a
+board. The skip marker the window check wrote IS the audit trail for this run, and it
+is already pushed.
+
+Reply with these lines and nothing else:
+
+```
+checkpoint: <DATE> <CP> — SKIPPED, no tape (the window check declined this fire)
+records written: 0 — no tape; digest: none (preopen-feed/<DATE>-<CP>.md is intentionally absent)
+mover coverage: n/a — no movers table published; catalyst coverage (whole tape): n/a
+halt state: not measurable (no rows)
+push: marker pushed (refs/skipped-markers/<DATE>_SKIPPED_preopen_catalyst_capture_<CP>.md)
+errors: 0 — a deliberate skip is not a failed capture
+```
+
+`window_check.sh` also prints `stall_min:` — the platform's delay before this turn
+actually started. **Over 5 means the fire was BLOCKED**: count ONE error for it and
+add a `stalled:` line (see the REPLY section).
 
 ### 1. Fetch the capture script and the digest renderer
 
@@ -48,16 +172,16 @@ for U in \
   else
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$S.tmp" "$U" 2>/dev/null
   fi
-  # 2026-11-17.2 is the version that ADDS SEC EDGAR AS THE SOURCE OF RECORD and
-  # corrects the board's DEGRADED cause. Measured 2026-11-17: the news vendor's
-  # TICKER INDEX held NO in-window article for ANY of the 13 movers the 2026-11-16
-  # checkpoints could not explain - eight of them have ZERO articles ever, and
-  # AKAN's newest is from 2024 - so the coverage floor could not be cleared no
-  # matter how the budget was spent. SEC EDGAR is free, dated and checkable, and
-  # EIGHT of those same thirteen have a catalyst-bearing filing inside the window.
-  # The banner also stopped blaming "the catalyst budget", which was never the
-  # constraint: the pool covers every mover the board publishes.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-17.2' "$S.tmp" 2>/dev/null; then
+  # 2026-11-26.1 is the version that ADDS THE ANCHOR GUARD: it refuses to write a
+  # tape when the scanner's pre-market anchor is stale, which is exactly what a
+  # CLOSED MARKET looks like. Measured 2026-11-26: the 2026-11-17.2 build wrote a
+  # tape of invented moves on Thanksgiving - 15.3% of the priced rows with a flipped
+  # sign - and the 2026-11-20.1 gate PASSED all 179 of its checks on it.
+  #
+  # The CAPABILITY MARKER is demanded as well, so the rule is explicit in the ladder
+  # and a later build that moves the version cannot silently drop the guard.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-26.1' "$S.tmp" 2>/dev/null \
+     && grep -q 'CAPTURE_ANCHOR_GUARD_V1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -112,17 +236,19 @@ done
 ### 2. Run the capture — with the FIRE'S SLOT, never the wall clock
 
 ```bash
-export DATE=$(TZ=America/New_York date +%Y-%m-%d)
-# The SLOT comes from the FIRE'S INSTANT (session.created_at), not from `date +%H%M`.
-# A literal wall clock names an 08:35 execution "0835" — a slot cron #17 never reads,
-# because it merges the checkpoints by slot name. The script asserts the slot is one of
-# 0830 / 0920 / 0950 and snaps a late dispatch DOWN onto the slot it belongs to
-# (<= 90 min); past that it writes a .DEVIATION.slot.md marker and writes NO tape.
-# Measured 2026-11-05: the 08:30 slot's work began at 10:09 ET after a platform stall
-# and a wall-clock slot would have named its file 1010 — a phantom slot that sorts
-# AFTER 0950, so a consumer replaying oldest-first replays the 08:30 tape LAST.
-export CP=0830        # <- the slot THIS fire was dispatched for
+# DATE and CP were resolved in STEP 0, from the FIRE'S INSTANT. Do not recompute
+# them here: `export DATE=$(date +%Y-%m-%d)` would name the day the agent HAPPENED to
+# start, which is the wrong day for a fire that was dispatched yesterday, and a
+# literal wall-clock slot names a phantom slot cron #17 never reads.
+#
+# The script ASSERTS the slot is one of 0830 / 0920 / 0950 and snaps a late dispatch
+# DOWN onto the slot it belongs to (<= 90 min); past that it writes a
+# .DEVIATION.slot.md marker and writes NO tape. Measured 2026-11-05: the 08:30 slot's
+# work began at 10:09 ET after a platform stall, and a wall-clock slot would have
+# named its file 1010 - a phantom slot that sorts AFTER 0950, so a consumer replaying
+# oldest-first replays the 08:30 tape LAST.
 python3 "$S" --date "$DATE" --checkpoint "$CP" --top 20
+CAPTURE_RC=$?
 ```
 
 The script prints one line: `preopen capture: wrote N records to <path> ...`.
@@ -130,6 +256,13 @@ The script prints one line: `preopen capture: wrote N records to <path> ...`.
 - **It writes nothing and exits 0 if `PIPEWORX_API_KEY` is unset** — a missing key is not a
   failure, it is a missing tape. Never write an empty tape: the consumer would read it as
   "no news" for names that had a catalyst.
+- **EXIT CODE 3 = THE MARKET-CLOSED TRAIL (2026-11-26).** The capture DECLINED: the
+  scanner's pre-market anchor is stale, so every move it would have published was
+  measured against the wrong close (measured 2026-11-26: 15.3% of the priced rows came
+  out with a **flipped sign**). The script wrote its own marker at
+  `preopen-feed/${DATE}-${CP}.SKIPPED.md` and **no tape**. Do NOT render a board and do
+  NOT write a tape: push the marker, gate it with `--skipped`, and reply with the skip
+  lines.
 - The tape is written **atomically** (temp file + rename), so a slot's file holds exactly ONE
   snapshot. Appending was how two agents running the same slot against the same shared
   `/workspace` produced a 100-row tape for 53 tickers on 2026-11-09 — one row per ticker per
@@ -183,8 +316,15 @@ for U in \
     curl -sL --max-time 30 -H "Accept: application/vnd.github.raw" -o "$K.tmp" "$U" 2>/dev/null
   fi
   # The CAPABILITY MARKER, not a non-empty body: an older gate silently ignores the
-  # date contract and fails a CORRECT board.
-  if grep -q 'CHECKER_VERSION: 2026-11-20.1' "$K.tmp" 2>/dev/null; then
+  # date contract and the ANCHOR contract and fails a CORRECT board.
+  #
+  # 2026-11-26.1 adds THE ANCHOR RULE: a tape carries the close its moves were
+  # measured against, and the gate checks the tape against it. Measured 2026-11-26:
+  # the 2026-11-20.1 gate, run against the tape the capture wrote on Thanksgiving
+  # with the NYSE closed, PASSED all 179 of its checks - on a tape where 15.3% of the
+  # priced rows had a flipped sign. It verified the tape's SHAPE and never asked
+  # whether its MOVES were real.
+  if grep -q 'CHECKER_VERSION: 2026-11-26.1' "$K.tmp" 2>/dev/null; then
     mv -f "$K.tmp" "$K"; break
   fi
   rm -f "$K.tmp"
@@ -217,6 +357,16 @@ python3 "$K" --repo "$R" \
    --digest /workspace/preopen-feed/${DATE}-${CP}.md --slot "$CP"
 ```
 
+**A SKIPPED CHECKPOINT IS GATED TOO.** The marker is the checkpoint's audit trail, so
+the same gate checks it: it must name its reason and its slot, and **no tape may sit
+beside it** (a tape beside a skip marker is the worst outcome — the consumer reads a
+tape that has no catalyst in it as "no news").
+
+```bash
+python3 "$K" --repo "$R" \
+   --skipped /workspace/preopen-feed/${DATE}-${CP}.SKIPPED.md --slot "$CP"
+```
+
 **The gate's exit code is a decision, not a note.**
 
 - `0` — every check passed. Push.
@@ -243,7 +393,98 @@ sh /workspace/push_artifact.sh --out preopen-feed \
 sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.jsonl --branch main
 ```
 
+**IN A SKIPPED CHECKPOINT, STAGE THE MARKER INSTEAD** — the tape and the board do not
+exist, and pushing a path that does not exist is not a push:
+
+```bash
+sh /workspace/push_artifact.sh --out preopen-feed \
+   --add preopen-feed/${DATE}-${CP}.SKIPPED.md \
+   --branch main --nn 92
+sh /workspace/verify_delivery.sh --path preopen-feed/${DATE}-${CP}.SKIPPED.md --branch main
+```
+
 **Stage only `preopen-feed/`. Never `git add -A`.**
+
+## THE MARKET-CLOSED GUARD — A CLOSED MARKET IS NOT A QUIET ONE
+
+**MEASURED 2026-11-26 08:30 ET. This checkpoint fired on THANKSGIVING, with the NYSE
+closed, and it published a tape of INVENTED moves.** 379 records, and:
+
+| measure on that tape | value |
+|---|---|
+| priced rows materially wrong (>1 point) | **227 / 365 (62%)** |
+| rows whose **sign was flipped** | **56 / 365 (15.3%)** |
+| rows wrong by more than 10 points | 56 (15.3%) |
+| worst single error | **VWAV: published −5.84%, actually +171.84%** (177.68 points) |
+| the band itself | **168 up / 951 down** — 85% decliners, where the documented band is roughly balanced |
+
+And **the 2026-11-20.1 gate PASSED all 179 of its checks on it.** Every rule the gate
+had was about the tape's SHAPE — one row per ticker, a price on every priced row,
+movers on both sides, catalysts dated inside the window, coverage above the floor — and
+**not one of them asked whether a MOVE was real.** A tape of invented moves looked
+exactly like a clean one. That is the silent failure this whole file exists to prevent,
+in a dimension nobody had looked at.
+
+### WHY THE MOVES WERE WRONG
+
+TradingView measures `premarket_change` against the **previous close**, and the
+scanner publishes that same previous close in its own `close` column. So on a live
+pre-market session:
+
+```
+implied_reference = premarket_close / (1 + premarket_change/100)   ==   close
+```
+
+and the tape's own numbers can be checked against the scanner's own `close` — **in the
+same response, with no extra request, no second source and no calendar.**
+
+When the market is SHUT, the scanner does not roll the pre-market session forward: it
+keeps serving the PREVIOUS session's anchor, so the implied reference stays one session
+behind the `close` column published beside it.
+
+| | measured |
+|---|---|
+| **2026-11-25** (a live pre-market session) | **14 / 14** tickers' implied reference == close(2026-11-24), validated against Yahoo's daily closes — **0 / 14** matched close(2026-11-25) |
+| **2026-11-26** (the NYSE closed) | **242 / 242** tickers shared the 2026-11-25 tape's implied reference (the 2026-11-24 close) while the last completed session had closed at the 2026-11-25 price |
+
+So the invariant is **definitional, not heuristic**, and it needs no holiday calendar.
+The band was 85% decliners for the same reason: a market that closed lower leaves the
+stale anchor sitting ABOVE most names, so nearly everything reads as a decliner.
+
+### THE TWO RULES THAT NOW STAND BETWEEN A CLOSED MARKET AND A PUBLISHED TAPE
+
+1. **THE WINDOW CHECK** (step 0) — the same shared gate 21 of the 28 fleet prompts run.
+   A holiday fire leaves a skip marker and **no artifact**. It is calendar-based, so it
+   knows about **planned** closures.
+2. **THE ANCHOR GUARD** (inside the capture script) — it checks the tape's own moves
+   against the scanner's own close and **fails closed**: a marker, no tape, exit code 3.
+   It is data-based, so it also catches an **unplanned** closure, a half-day roll and a
+   scanner anomaly — all the days a calendar calls "trading".
+
+The second is the durable one, and it lives in the **script**, not in the prompt: a
+rule in a byte-pinned prompt is one deployment away from not running, and a rule in the
+shared script protects every caller of it.
+
+### THE TAPE CARRIES ITS ANCHOR
+
+Every priced row now carries **`ref_close`** — the close the scanner published alongside
+the move, so the gate can check the tape **against itself** afterwards, with no network
+and no second source:
+
+* the capture publishes `ref_close` on every priced row;
+* `tools/check_preopen_checkpoint.py` rebuilds the implied reference from the row's own
+  `(price, pct)` and requires it to agree with `ref_close` on **at least 90%** of the
+  priced rows (a live session measures ~100%; a stale anchor measured **11%**);
+* a tape dated on or after **2026-11-27** that does not carry the anchor, or whose
+  moves disagree with it, **FAILS the gate** instead of being published.
+
+The rule is **GRANDFATHERED** for tapes written before the capture started carrying the
+anchor — a historical artifact is never failed for a rule that post-dates it. Same
+shape as the date contract and the coverage floor.
+
+`ref_close` is **additive**: cron #17's consumer reads the keys it knows and ignores
+the rest, and the board's columns are unchanged. The board still shows the move, not
+the anchor — the anchor is what the GATE reads, not what the reader needs.
 
 ## WHAT THE SCRIPT DOES (for the reply, not for reimplementation)
 
@@ -710,6 +951,27 @@ Under 6 lines: the checkpoint, the number of records written, the **mover covera
 one line for push status, one line for `errors: <n>`. **EIGHT lines when the mover coverage is
 below the floor** — the whole-tape context line and the `degraded:` line are not optional, and
 the floor is not a footnote.
+
+**A SKIPPED CHECKPOINT HAS ITS OWN REPLY (2026-11-26).** If the window check declined the
+fire, or the capture exited 3 (the market is closed), there is no tape, no board, no
+coverage and no digest — so the reply says so, names the marker, and counts **no error**
+(a deliberate skip is not a failed capture). Both shapes are spelled out in step 0:
+
+```
+checkpoint: 2026-11-26 0830 — SKIPPED, no tape (the window check declined this fire)
+records written: 0 — no tape; digest: none (preopen-feed/2026-11-26-0830.md is intentionally absent)
+mover coverage: n/a — no movers table published; catalyst coverage (whole tape): n/a
+halt state: not measurable (no rows)
+push: marker pushed (refs/skipped-markers/2026-11-26_SKIPPED_preopen_catalyst_capture_0830.md)
+errors: 0 — a deliberate skip is not a failed capture
+```
+
+**A PUBLISHED CHECKPOINT MAY ALSO NAME ITS ANCHOR.** The capture prints
+`anchor=<matched>/<checked>` — the priced rows whose move agrees with the close the
+scanner published alongside it. It is the number that turns "the tape's moves" into "the
+tape's moves, VERIFIED against the scanner's own close", and it belongs on the push line
+when it is not 100%. A healthy live session measures ~100% (measured 2026-11-25: 14/14);
+a stale anchor measured 11% — and that run wrote no tape at all.
 
 **THE MOVER COVERAGE LINE REPLACES THE OLD "how many movers carry a catalyst" LINE.** It
 carries the same count and the arithmetic around it, so it is the same line with the

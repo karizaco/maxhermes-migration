@@ -32,7 +32,7 @@ USAGE
       [--tape <tape.jsonl>] [--digest <board.md>] [--skipped <marker.md>] [--slot 0830]
 """
 
-# CHECKER_VERSION: 2026-11-20.1
+# CHECKER_VERSION: 2026-11-26.1
 #
 # THE VERSION MARKER. Every other run-time dependency in this fleet carries one -
 # CAPTURE_SCRIPT_VERSION (capture), PREOPEN_DIGEST_V2 / PREOPEN_EDGAR_DATE_V1
@@ -44,7 +44,14 @@ USAGE
 # failed a CORRECT board and, worse, demanded the 2026-11-15.1 capture script - the
 # build with NO SEC EDGAR leg, the one that cannot clear the mover-coverage floor.
 # The marker is what makes that failure impossible to repeat.
-CHECKER_VERSION = "2026-11-20.1"
+#
+# 2026-11-26.1 adds THE ANCHOR RULE: a tape carries the close its moves were measured
+# against, and the gate checks that the tape agrees with it. Measured 2026-11-26: this
+# gate, run against the tape the capture wrote on THANKSGIVING with the NYSE closed,
+# PASSED all 179 of its checks - on a tape where 15.3% of the priced rows had a
+# FLIPPED sign and the worst was off by 177 points. The gate verified the tape's SHAPE
+# and never asked whether its MOVES were real. Now it does.
+CHECKER_VERSION = "2026-11-26.1"
 
 import argparse
 import datetime
@@ -62,7 +69,11 @@ TAPE_KEYS = ["ts", "src", "ticker", "name", "pct", "price", "cat", "why", "ref",
 # Provenance extras the capture script adds. They are additive: the consumer ignores
 # them, and the board reads the timestamp and the volume from them.
 TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "grounded_tool",
-                    "news_date", "news_url", "pm_notional", "sign_conflict", "sentiment"]
+                    "news_date", "news_url", "pm_notional", "sign_conflict", "sentiment",
+                    # THE ANCHOR (2026-11-26): the close the row's move was measured
+                    # against, as the scanner published it. Additive - cron #17's
+                    # consumer reads the keys it knows and ignores the rest.
+                    "ref_close"]
 # How old a catalyst may be and still explain a move that happened today. This MUST
 # equal the capture script's own CATALYST_MAX_AGE_DAYS - check_script() asserts it,
 # because a gate that reads a different window than the one that wrote the tape
@@ -83,7 +94,40 @@ DATE_RULE_EFFECTIVE = "2026-11-17"
 # The capture script the procedure must demand. The version moves when the capture's
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
-CAPTURE_VERSION = "2026-11-17.2"
+CAPTURE_VERSION = "2026-11-26.1"
+# ---------------------------------------------------------------------------
+# THE ANCHOR RULE (2026-11-26).
+# ---------------------------------------------------------------------------
+# TradingView measures `premarket_change` against the PREVIOUS close, and the scanner
+# publishes that same previous close in its `close` column. So on a live pre-market
+# session the tape's own numbers satisfy
+#
+#     premarket_close / (1 + premarket_change/100)  ==  close
+#
+# and when the market is SHUT the scanner does not roll the pre-market session
+# forward: it keeps serving the PREVIOUS session's anchor, so every move on the tape
+# is measured from the wrong base.
+#
+# Measured 2026-11-26 (Thanksgiving, the NYSE closed): 242 of 242 tickers shared the
+# previous tape's implied reference, 62% of the priced rows were wrong by more than a
+# point, 15.3% had a FLIPPED SIGN, and the worst was off by 177 points. The band came
+# back 168 up / 951 down - 85% decliners - which is an artifact of the stale base and
+# not a market. AND THIS GATE PASSED ALL 179 OF ITS CHECKS on that tape, because every
+# rule it had was about the tape's SHAPE and none of them asked whether a MOVE was real.
+#
+# So the tape now carries the anchor (`ref_close`) on every priced row, and the gate
+# checks the tape against it. A stale-anchored tape FAILS instead of being published.
+#
+# The rule is GRANDFATHERED for tapes written before the capture started carrying the
+# anchor: a historical artifact is never failed for a rule that post-dates it. Same
+# shape as the date contract and the coverage floor.
+ANCHOR_RULE_EFFECTIVE = "2026-11-27"
+# The share of priced rows whose implied reference must agree with their own anchor.
+# On a live session it is ~100%; on a stale anchor it is ~0% (measured: 11%).
+ANCHOR_MATCH_FLOOR = 0.90
+# The relative tolerance: the implied reference is rebuilt from a ROUNDED percentage,
+# so it is compared relatively, not exactly.
+ANCHOR_TOLERANCE = 0.005
 # THE REPO CONTEXT the gate reads its static sources from. The gate is not hermetic:
 # it checks the procedure, the capture script, the renderer AND the two cron prompts
 # the fleet deploys. A missing one is a PRECONDITION failure, not a check failure -
@@ -331,6 +375,37 @@ def check_procedure(path):
           "the procedure does NOT mandate the false 'the catalyst budget did not "
           "reach them' cause - the pool covers every mover the board publishes")
 
+    # 11. THE MARKET-CLOSED GUARD (2026-11-26).
+    #
+    # The procedure ran on THANKSGIVING with the NYSE closed and published a tape of
+    # INVENTED moves - 15.3% of the priced rows with a flipped sign, the worst off by
+    # 177 points - and the gate passed all 179 of its checks on it. Two rules now
+    # stand between a closed market and a published tape, and the procedure is where
+    # they are stated:
+    #
+    #   * the shared WINDOW CHECK, the same gate every other routine in the fleet
+    #     runs, so a holiday fire leaves a skip marker and NO artifact;
+    #   * the ANCHOR GUARD inside the capture script, which checks the tape's own
+    #     moves against the scanner's own close - a rule that needs no calendar, so
+    #     it catches an unplanned closure and a half-day roll too.
+    #
+    # The procedure is the only place these can live: the prompts are byte-pinned.
+    check(re.search(r"window_check\.sh", t) is not None,
+          "the procedure runs the shared window check (a holiday fire must leave a "
+          "marker and NO artifact)")
+    check(re.search(r"WINDOW_CHECK_V2", t) is not None,
+          "the window-check fetch demands the WINDOW_CHECK_V2 capability marker")
+    check(re.search(r"CAPTURE_ANCHOR_GUARD_V1", t) is not None,
+          "the capture fetch ALSO demands the CAPTURE_ANCHOR_GUARD_V1 marker - the "
+          "build that refuses to write a tape on a stale scanner anchor")
+    check(re.search(r"ref_close", t) is not None,
+          "the procedure states that the tape carries the close each move was "
+          "measured against")
+    check(re.search(r"anchor", t, re.I) is not None,
+          "the procedure states the ANCHOR rule")
+    check(re.search(r"market is closed|closed market|market.{0,30}closed", t, re.I) is not None,
+          "the procedure states that a closed market yields a marker and no tape")
+
 
 # ---- static: the shared scripts -----------------------------------------------
 
@@ -560,6 +635,38 @@ def check_script(path):
     check(re.search(r"catalyst_price_only", t) is not None,
           "the capture breaks the uncovered rows down by provenance (price-only vs "
           "narrative-only)")
+
+    # ------------------------------------------------------------------
+    # THE ANCHOR GUARD (2026-11-26).
+    #
+    # The capture wrote a tape on THANKSGIVING, with the NYSE closed, and this gate
+    # PASSED all 179 of its checks on it. Every rule it had was about the tape's
+    # SHAPE; none of them asked whether a MOVE was real. So the capture now refuses
+    # to write a tape it cannot stand behind: it pulls the scanner's own `close`
+    # column in the SAME request it already makes, checks the tape's implied
+    # reference against it, and fails closed with a MARKER when the two disagree.
+    #
+    # The check is asserted on the CALL and the CONSTANTS, not on a name: a script
+    # that defines anchor_health() and never calls it has the guard in name only.
+    # ------------------------------------------------------------------
+    check(re.search(r"CAPTURE_ANCHOR_GUARD_V1", t) is not None,
+          "the capture carries the CAPTURE_ANCHOR_GUARD_V1 capability marker")
+    check(re.search(r"def anchor_health", t) is not None,
+          "the capture checks the scanner's anchor before it writes a tape")
+    check(re.search(r"=\s*anchor_health\(", t) is not None,
+          "the capture CALLS the anchor check - a guard that is only defined is a "
+          "guard that never fires")
+    check(re.search(r"market_closed", t) is not None,
+          "the capture fails CLOSED on a stale anchor (a marker, not a tape)")
+    check(re.search(r"ref_close", t) is not None,
+          "the capture publishes the close each move was measured against")
+    m_tol = re.search(r"ANCHOR_TOLERANCE\s*=\s*([0-9.]+)", t)
+    check(m_tol is not None and abs(float(m_tol.group(1)) - ANCHOR_TOLERANCE) < 1e-9,
+          f"the capture's anchor tolerance matches the checker's ({ANCHOR_TOLERANCE})")
+    m_fl = re.search(r"ANCHOR_MATCH_FLOOR\s*=\s*([0-9.]+)", t)
+    check(m_fl is not None and abs(float(m_fl.group(1)) - ANCHOR_MATCH_FLOOR) < 1e-9,
+          f"the capture's anchor match floor matches the checker's "
+          f"({ANCHOR_MATCH_FLOOR})")
 
 
 def check_digest_script(path):
@@ -826,6 +933,64 @@ def check_tape(tape_path):
     check(tape_date is not None,
           f"the tape is named {{date}}-{{slot}}.jsonl so its date can be checked "
           f"(got {os.path.basename(tape_path)})")
+
+    # ------------------------------------------------------------------
+    # THE ANCHOR. Is the tape's MOVE the move the scanner says happened?
+    #
+    # Every rule above is about the tape's SHAPE. None of them asked whether its
+    # numbers were real, and that is how a tape of INVENTED moves passed all 179
+    # checks on 2026-11-26: the market was closed (Thanksgiving), the scanner's
+    # pre-market columns kept their anchor on the previous session's close, and 15.3%
+    # of the priced rows came out with a flipped sign - the worst off by 177 points.
+    #
+    # So a priced row now carries `ref_close`: the close the scanner published
+    # alongside the move. The implied reference rebuilt from the row's own (price,
+    # pct) must agree with it. The tape is checked against ITSELF, so the gate needs
+    # no second source and no network - and a stale-anchored tape FAILS instead of
+    # being published.
+    #
+    # Grandfathered for tapes written before the capture carried the anchor.
+    # ------------------------------------------------------------------
+    if (tape_date is not None
+            and tape_date >= datetime.date.fromisoformat(ANCHOR_RULE_EFFECTIVE)):
+        no_anchor = [r.get("ticker") for r in priced if r.get("ref_close") in (None, "")]
+        check(not no_anchor,
+              f"every priced row carries the close its move was measured against "
+              f"({len(no_anchor)} missing)")
+        matched = 0
+        checked = 0
+        offenders = []
+        for r in priced:
+            rc = r.get("ref_close")
+            p = r.get("price")
+            pct = r.get("pct")
+            if rc in (None, "") or p is None or pct is None:
+                continue
+            try:
+                rc = float(rc)
+                p = float(p)
+                pct = float(pct)
+            except (TypeError, ValueError):
+                continue
+            if rc <= 0 or pct <= -100:
+                continue
+            implied = p / (1.0 + pct / 100.0)
+            checked += 1
+            if abs(implied - rc) / rc <= ANCHOR_TOLERANCE:
+                matched += 1
+            elif len(offenders) < 5:
+                offenders.append(f"{r.get('ticker')} implied {implied:.4f} vs close {rc:.4f}")
+        if checked:
+            ratio = matched / checked
+            check(ratio >= ANCHOR_MATCH_FLOOR,
+                  f"the tape's moves agree with the close they were measured against "
+                  f"({matched}/{checked} = {ratio:.0%}, floor {ANCHOR_MATCH_FLOOR:.0%}"
+                  f"{'; offenders ' + str(offenders[:3]) if offenders else ''})")
+        else:
+            bad("the tape's anchor could not be verified at all - no priced row yields "
+                "a comparable close")
+    else:
+        ok(f"the tape predates the anchor rule ({ANCHOR_RULE_EFFECTIVE}) - grandfathered")
 
     stale, undated_confident = [], []
     for r in rows:
@@ -1201,14 +1366,27 @@ def check_skipped(marker_path, slot):
     # The reason must be ON THE SAME LINE as the label: a regex that can cross a
     # newline accepts an empty reason, which is exactly the 2026-11-03 failure
     # (cron #90 reported the absence "with an empty reason").
+    #
+    # TWO LABEL SHAPES ARE ACCEPTED, because the fleet has TWO marker writers: this
+    # family's own marker (`- **Reason:** ...`) and the shared window check's
+    # fleet-wide marker (`- Reason: ...`), which is the shape every other routine in
+    # the fleet publishes. Demanding only one of them failed a marker the fleet
+    # legitimately produced - measured 2026-11-26, when the shared window check
+    # declined this very checkpoint and the gate then rejected its marker.
     reason_line = ""
     for ln in t.splitlines():
-        if "**Reason:**" in ln:
-            reason_line = ln.split("**Reason:**", 1)[1].strip()
+        m_reason = re.search(r"\*?\*?Reason:\*?\*?", ln)
+        if m_reason:
+            reason_line = ln[m_reason.end():].strip()
             break
     check(bool(reason_line),
           f"the marker NAMES the reason (got {reason_line!r})")
-    check(f"-{slot}" in t, f"the marker names its checkpoint slot ({slot})")
+    # THE SLOT, as a token. This family's marker writes the date-slot stem
+    # ("2026-11-26-0830"); the shared window check's marker writes the slot on its
+    # own ("0830 - SKIPPED"). A `-{slot}` substring test accepted only the first, so
+    # the fleet's own marker shape was rejected by the fleet's own gate.
+    check(re.search(rf"(?<!\d){re.escape(slot)}(?!\d)", t) is not None,
+          f"the marker names its checkpoint slot ({slot})")
     stem = os.path.basename(marker_path)
     for suffix in (".SKIPPED.md", ".DEVIATION.slot.md"):
         if stem.endswith(suffix):
