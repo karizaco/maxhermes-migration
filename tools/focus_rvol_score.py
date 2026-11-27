@@ -878,7 +878,7 @@ def render_markdown(out: dict, path: str, csv_path: str, wider_source: str = "")
         md.append(f"Names between {NEAR_MISS_FLOOR}x and {ALERT_BAR}x - the tradable edge. Each "
                   f"would become an ALERT if `rvol_now` reaches 1.5x while `prev_session_rvol` "
                   f"stays below 1.5x. **Ordered by the trend delta, so the names that are "
-                  f"BUILDING come first** - on 2026-11-12 that split was "
+                  f"BUILDING come first** - today's split is "
                   f"{n_near_build} building against {n_near_fade} fading, and the fading ones "
                   f"were a watch list in name only.\n\n"
                   "| symbol | rvol_now | prev_session_rvol | rvol_prev | rvol_trend | "
