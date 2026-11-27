@@ -891,7 +891,41 @@ spark close is not a movement**. Five fault injections (the venue value not stor
 move, the cadence never backing off, the spark fallback dropped, a skipped round advancing
 the quiet streak, the ever-changed residue restored) are each observed to FAIL it.
 
-**THE INDEPENDENT CONFIRMATION — a different feed, and the measured reason the obvious
+## The HALF-DAY session — the close is at 1:00 PM ET, and `rel_volume` is depressed for every name (2026-11-27)
+
+**A session can be SHORTER than 6.5 hours, and every clause above that says "16:00 ET" is
+then a false statement about the close of record.** Measured on the 2026-11-27 fire (the
+Friday after Thanksgiving — the US market closes at **1:00 PM ET**):
+
+- the venue's settled stamp reads **"Closed at Nov 27, 2026 1:00 PM ET"** on **4,799 of the
+  4,800** settled prints it served. The venue stamps the EARLY close correctly, so the
+  settled block is still the close of record and nothing about the close rule changes.
+- the settle probe went quiet after **2 rounds** rather than the usual ~12, because the feed
+  had been settling since 1:00 PM ET — three hours before the 16:00 ET fire. A short session
+  is a FASTER run, not a weaker one.
+- **`rel_volume` is depressed for EVERY name, by the session length.** `rel_volume` is the
+  session's volume against the mean volume of the prior 30 **FULL** sessions, so a 3.5-hour
+  session divides into a 6.5-hour denominator: the median `rel_volume` was **0.39** on
+  2026-11-27 against **0.84** on the prior full session (46% of it). A name reading below
+  1.0 is **not illiquid** — it traded a normal amount for the hours the market was open.
+  **So the report must publish this caveat**, or a reader comparing two files reads the
+  session-length effect as a liquidity event. The report builder derives it: it compares the
+  median `rel_volume` in the file against the prior session's and states the ratio when it
+  falls below 85%.
+- the report's close wording is a **parameter**, not a constant: `build_eod_report.py` takes
+  `--close-label`, and the run passes the session's actual close time ("1:00 PM ET (EARLY
+  CLOSE - half session)"). The `## Coverage` basis, the settle evidence and the
+  settled-vs-live paragraph all read from it, so no section claims a 16:00 ET close on a
+  1:00 PM session.
+
+**How to know a session is short: read the venue's settled stamp, not a holiday table.**
+The exchange's own stamp is the authority — it says "Closed at <date> 1:00 PM ET" on a
+half-day and "4:00 PM ET" on a full day. Check it on ONE liquid name at the start of the run
+(`api.nasdaq.com/api/quote/AAPL/info` → `secondaryData.lastTradeTimestamp`) and pass the
+label down. The half-day dates are also the day after Thanksgiving, the Christmas Eve
+weekend, and the July 3rd holiday weekend, but the STAMP is what proves it.
+
+**The INDEPENDENT CONFIRMATION — a different feed, and the measured reason the obvious
 one is wrong.** The published close is the VENUE's settled print, so the independent reading
 must be a source that is not the venue. Measured on 2026-11-11: the **TradingView America
 scanner** (2 POST calls, ~20,350 lines, ~3 seconds) agrees with the **vendor's daily bar**
@@ -1059,14 +1093,18 @@ The derive stage is a **script**, not prose, so the numbers cannot drift between
 # Each file carries its OWN marker: EOD_SETTLE_V1 for the settle-stage scripts,
 # EOD_SETTLE_V2 for the BATCHED probe script (2026-11-16 - a stale copy without the
 # batched detector would silently put the old request volume back on the wire),
-# EOD_BASE_V1 for the base assembly, EOD_DERIVE_V3 for the derive/report stages (V3 = the
-# PRIOR_CLOSE_SUPERSEDED anchor rule of 2026-11-23).
+# EOD_BASE_V1 for the base assembly, EOD_DERIVE_V3 for the derive stage (V3 = the
+# PRIOR_CLOSE_SUPERSEDED anchor rule of 2026-11-23), EOD_QUOTES_V2 for the quote
+# batch (2026-11-27 - a stale copy accepts the literal crumb "Too Many Requests"
+# and resolves 0/4,902 quotes with no error raised) and EOD_DERIVE_V4 for the report
+# builder (2026-11-27 - a stale copy hardcodes a 16:00 ET close and misstates a
+# HALF-DAY session, and omits the short-session `rel_volume` caveat).
 mkdir -p /workspace/eod_scripts
 for SPEC in \
-  "fetch_eod_universe.py:EOD_SETTLE_V1" "fetch_eod_quotes.py:EOD_SETTLE_V1" \
+  "fetch_eod_universe.py:EOD_SETTLE_V1" "fetch_eod_quotes.py:EOD_QUOTES_V2" \
   "fetch_eod_settled.py:EOD_SETTLE_V2" "fetch_eod_venue.py:EOD_SETTLE_V1" \
   "build_eod_base.py:EOD_BASE_V1" "patch_eod_session_closes.py:EOD_BASE_V1" \
-  "eod_derive.py:EOD_DERIVE_V3" "build_eod_report.py:EOD_DERIVE_V3" ; do
+  "eod_derive.py:EOD_DERIVE_V3" "build_eod_report.py:EOD_DERIVE_V4" ; do
   F=${SPEC%%:*}; MARK=${SPEC##*:}
   S=/workspace/eod_scripts/$F
   for U in \
@@ -1109,6 +1147,17 @@ python3 /workspace/eod_scripts/fetch_eod_universe.py /workspace/work/vendor_swee
 
 # 1. the quote batch: the dividend/split-adjusted prior close (--quote-prev), the trailing
 #    P/E, and the market cap used as the SECOND reading on the issuer's share count
+#    >>> THE RESOLVED COUNT IS A HARD ASSERTION. Measured on the 2026-11-27 fire: the
+#    >>> published script's handshake accepted the literal crumb "Too Many Requests" (17
+#    >>> characters, under its 40-character test) as VALID, sent every query to that host,
+#    >>> and got `{"error":{"code":"Unauthorized"}}` on all 4,902 - while the run printed
+#    >>> `quotes=0/4902` and RAISED NO ERROR. The quote source was silently absent for the
+#    >>> whole universe: no adjusted prior close (so a split cannot be told from a move),
+#    >>> no trailing P/E, no second market-cap reading. The crumb is now validated by
+#    >>> PROBING the quote endpoint with it, and the host list rotates on a mid-run refusal.
+#    >>> **A resolved count of 0 (or a large shortfall) is a FAILED quote source, not a
+#    >>> quiet one** - the run must not proceed as if it had one. Check the count and the
+#    >>> `ok` line before stage 2.
 python3 /workspace/eod_scripts/fetch_eod_quotes.py /workspace/work/symbols.csv \
     /workspace/work/quote_batch.json
 
@@ -1149,10 +1198,17 @@ python3 /workspace/eod_scripts/eod_derive.py --base /workspace/work/base.csv \
     --prior-csv <PRIOR-CSV> --quote-prev /workspace/work/quote_prev.json
 
 # 6. build the report FROM the published CSV (never hand-written)
+#    --close-label states the session's ACTUAL close time. On a HALF-DAY (the Friday after
+#    Thanksgiving closes at 1:00 PM ET) the default "16:00 ET" would be a false statement
+#    about the close of record, so the run reads the venue's settled stamp and passes it.
+#    Read it on one liquid name at the start of the run:
+#      curl -s -A "Mozilla/5.0" "https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks" \
+#        | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; \
+#           print((d.get('secondaryData') or {}).get('lastTradeTimestamp'))"
 python3 /workspace/eod_scripts/build_eod_report.py --csv us-eod/<YYYY-MM-DD>.csv \
     --manifest /workspace/work/manifest.json --history /workspace/work/history_patched.jsonl \
     --session <YYYY-MM-DD> --out us-eod/<YYYY-MM-DD>.md --source-health <source_health.json> \
-    --prior-csv <PRIOR-CSV>
+    --prior-csv <PRIOR-CSV> --close-label "<the session's close time>"
 
 # 7. the GATE - fetched at run time, demanded by its capability marker, then run.
 #    The cron sandbox's cwd is not a repo checkout, so tools/check_eod_artifact.py

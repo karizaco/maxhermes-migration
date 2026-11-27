@@ -2,6 +2,7 @@
 """Batch the Yahoo v7/finance/quote snapshot for the US EOD universe.
 
 EOD_SETTLE_V1
+EOD_QUOTES_V2
 
 WHAT THIS SUPPLIES
 ------------------
@@ -48,7 +49,7 @@ HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 COOKIE = os.environ.get("EOD_YAHOO_COOKIE", "/workspace/work/yc.txt")
 FIELDS = ("symbol,shortName,regularMarketPrice,regularMarketPreviousClose,marketCap,"
           "trailingPE,regularMarketVolume,averageDailyVolume3Month,fullExchangeName,"
-          "dayHigh,dayLow")
+          "regularMarketDayHigh,regularMarketDayLow")
 
 
 def curl(url: str, timeout: int = 40) -> str:
@@ -57,16 +58,47 @@ def curl(url: str, timeout: int = 40) -> str:
     return p.stdout or ""
 
 
+def _probe_quote(host: str, crumb: str) -> dict | None:
+    """A crumb is only USABLE if the quote endpoint actually answers with a row.
+
+    The old check (`len(crumb) < 40`, no "html", no "Unauthorized") accepted the literal
+    string "Too Many Requests" - 17 characters, no spaces rejected - as a valid crumb, and
+    every subsequent query went to that host and came back
+    `{"error":{"code":"Unauthorized"}}`. Measured 2026-11-27 (cron #20): the run reported
+    `quotes=0/4902` while `query1` served the SAME endpoint with a valid crumb, so the
+    quote source (the adjusted prior close, the trailing P/E and the second market-cap
+    reading) was silently absent for the whole universe. A crumb is validated by USING it.
+    """
+    body = curl(f"{host}/v7/finance/quote?symbols=AAPL&fields=symbol,regularMarketPrice"
+                f"&crumb={urllib.parse.quote(crumb)}")
+    try:
+        doc = json.loads(body)
+    except Exception:  # noqa: BLE001 - an unparseable body is a failed probe
+        return None
+    err = (doc.get("quoteResponse") or {}).get("error") or doc.get("error") or {}
+    if err:
+        return None
+    res = (doc.get("quoteResponse") or {}).get("result") or []
+    return res[0] if res else None
+
+
 def handshake() -> tuple[str | None, str | None]:
     os.makedirs(os.path.dirname(COOKIE), exist_ok=True)
     for host in HOSTS:
         subprocess.run(["curl", "-s", "-c", COOKIE, "-A", UA, "--max-time", "25",
                         "https://fc.yahoo.com"], capture_output=True, text=True)
         crumb = curl(f"{host}/v1/test/getcrumb").strip()
-        if crumb and len(crumb) < 40 and "html" not in crumb.lower() \
-                and "Unauthorized" not in crumb:
-            return host, crumb
-        print(f"  handshake {host}: crumb=[{crumb[:60]}]", file=sys.stderr)
+        if not crumb or len(crumb) >= 40 or "html" in crumb.lower() \
+                or "Unauthorized" in crumb or "Too Many" in crumb \
+                or " " in crumb.strip():
+            print(f"  handshake {host}: crumb rejected=[{crumb[:60]}]", file=sys.stderr)
+            continue
+        probe = _probe_quote(host, crumb)
+        if probe is None:
+            print(f"  handshake {host}: crumb=[{crumb[:20]}...] but the quote endpoint "
+                  f"refused it - this host is gated for this egress", file=sys.stderr)
+            continue
+        return host, crumb
     return None, None
 
 
@@ -110,13 +142,54 @@ def main() -> int:
         url = (f"{host}/v7/finance/quote?symbols={urllib.parse.quote(syms)}"
                f"&fields={FIELDS}&crumb={urllib.parse.quote(crumb)}")
         body = curl(url)
+        got_rows = []
         try:
             doc = json.loads(body)
-            for r in ((doc.get("quoteResponse") or {}).get("result") or []):
-                key = yahoo_to_ticker.get(r["symbol"], r["symbol"])
-                out[key] = r
+            err = (doc.get("quoteResponse") or {}).get("error") or doc.get("error") or {}
+            if err:
+                raise RuntimeError(f"quote error {json.dumps(err)[:120]}")
+            got_rows = ((doc.get("quoteResponse") or {}).get("result") or [])
         except Exception as e:  # noqa: BLE001 - a failed batch is a data fact
-            print(f"  batch {i} failed: {type(e).__name__}: {body[:120]}", file=sys.stderr)
+            print(f"  batch {i} failed: {type(e).__name__}: {e} :: {body[:120]}", file=sys.stderr)
+        if not got_rows:
+            # A mid-run refusal (a gate that engaged after the handshake, a 429, an empty
+            # body) must not silently drop the REST of the universe. Re-handshake on the
+            # other host and retry the same chunk once.
+            alt = [h for h in HOSTS if h != host]
+            for h2 in alt:
+                subprocess.run(["curl", "-s", "-c", COOKIE, "-A", UA, "--max-time", "25",
+                                "https://fc.yahoo.com"], capture_output=True, text=True)
+                c2 = curl(f"{h2}/v1/test/getcrumb").strip()
+                if not c2 or len(c2) >= 40 or " " in c2.strip() \
+                        or "Too Many" in c2 or "Unauthorized" in c2:
+                    continue
+                if _probe_quote(h2, c2) is None:
+                    continue
+                host, crumb = h2, c2
+                url = (f"{host}/v7/finance/quote?symbols={urllib.parse.quote(syms)}"
+                       f"&fields={FIELDS}&crumb={urllib.parse.quote(crumb)}")
+                body = curl(url)
+                try:
+                    doc = json.loads(body)
+                    got_rows = ((doc.get("quoteResponse") or {}).get("result") or [])
+                except Exception:  # noqa: BLE001
+                    got_rows = []
+                if got_rows:
+                    print(f"  batch {i}: rotated to {host} and recovered", file=sys.stderr)
+                    break
+            if not got_rows:
+                print(f"  batch {i}: unrecoverable, {len(chunk)} symbols not quoted",
+                      file=sys.stderr)
+        for r in got_rows:
+            key = yahoo_to_ticker.get(r["symbol"], r["symbol"])
+            # Yahoo's v7 quote serves the day range as `regularMarketDayHigh/Low`; the
+            # builder reads `dayHigh`/`dayLow`. Without this alias the Yahoo range
+            # candidate was ALWAYS empty (the field names in the request were wrong), so
+            # a row whose close no other candidate bracketed lost its range for no reason.
+            if r.get("dayHigh") is None and r.get("regularMarketDayHigh") is not None:
+                r["dayHigh"] = r.get("regularMarketDayHigh")
+                r["dayLow"] = r.get("regularMarketDayLow")
+            out[key] = r
         if (i // batch) % 5 == 0:
             print(f"  {i+len(chunk)}/{len(symbols)} got={len(out)} {time.time()-t0:.0f}s", flush=True)
     json.dump(out, open(out_path, "w"))

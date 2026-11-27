@@ -2,6 +2,8 @@
 """Build the cron #20 US EOD markdown report from the derived fact table.
 
 EOD_DERIVE_V2
+EOD_DERIVE_V3
+EOD_DERIVE_V4
 
 The report is COMPUTED from the published CSV, never hand-written, so the prose cannot
 drift from the numbers. Sections, in this fixed order:
@@ -125,7 +127,14 @@ def main() -> int:
     ap.add_argument("--prior-csv", default="",
                     help="the PRIOR session's published CSV - the column count is compared "
                          "against it, because a schema change must be STATED in ## Method")
+    ap.add_argument("--close-label", default="16:00 ET",
+                    help="the session's close time as text, e.g. '16:00 ET' or "
+                         "'1:00 PM ET (EARLY CLOSE - half session)'. A HALF-DAY session "
+                         "closes at 1:00 PM ET, and a report that says '16:00 ET' on "
+                         "such a session states a false fact about the close of record.")
     args = ap.parse_args()
+
+    CLOSE = args.close_label
 
     rows = list(csv.DictReader(open(args.csv, newline="")))
     manifest = json.load(open(args.manifest))
@@ -187,6 +196,35 @@ def main() -> int:
     # The archive holds 14-, 30- and 32-column files, so a consumer must be able to tell the
     # shapes apart without parsing the header.
     prior_col_note = ""
+
+    # ---- the SHORT-SESSION caveat. `rel_volume` is the session's volume against the mean
+    # volume of the prior 30 FULL sessions, so on a HALF-DAY (a 3.5-hour session against a
+    # 6.5-hour denominator) EVERY name's rel_volume is depressed by roughly the session
+    # length ratio - it is not a liquidity signal. Measured on this session: the median
+    # rel_volume is 0.39 against 0.84 on the prior full session. A reader who compares the
+    # two files would read that as the market going illiquid, so the caveat is published.
+    short_session_note = ""
+    if args.prior_csv and os.path.exists(args.prior_csv):
+        def _median_rv(path):
+            vals = [f(r["rel_volume"]) for r in csv.DictReader(open(path, newline=""))
+                    if (r.get("rel_volume") or "").strip()]
+            vals = [v for v in vals if v == v]
+            return statistics.median(vals) if vals else None
+        rv_now = _median_rv(args.csv)
+        rv_prior = _median_rv(args.prior_csv)
+        if rv_now and rv_prior and rv_prior > 0 and rv_now < rv_prior * 0.85:
+            short_session_note = (
+                f"- **This was a SHORT session, and `rel_volume` is depressed for EVERY name "
+                f"by the session length - not by liquidity.** `rel_volume` is the session's "
+                f"volume against the mean volume of the prior 30 FULL sessions, so a "
+                f"3.5-hour session divides into a 6.5-hour denominator: the median "
+                f"`rel_volume` is **{rv_now:.2f}** here against **{rv_prior:.2f}** on the prior "
+                f"full session ({rv_now / rv_prior:.0%} of it). A name reading BELOW 1.0 in "
+                f"`rel_volume` on this file is NOT illiquid - it traded a normal amount for "
+                f"the hours the market was open. The movers table's `rel_volume` column is "
+                f"read the same way, so a mover's relative volume has to be judged against "
+                f"this session's median, not against 1.0.")
+
     if args.prior_csv and os.path.exists(args.prior_csv):
         with open(args.prior_csv, newline="") as fh:
             prior_header = next(csv.reader(fh), [])
@@ -229,7 +267,7 @@ def main() -> int:
     # ---- coverage table
     cov = []
     for col, label, basis in [
-        ("close", "close", "consolidated 16:00 ET auction print, checked against an independent reading"),
+        ("close", "close", f"consolidated {CLOSE} auction print, checked against an independent reading"),
         ("change_pct", "change_pct", "settled close vs the split-adjusted prior close"),
         ("volume", "volume", "settled session volume"),
         ("high", "high", "session range, always bracketing the close"),
@@ -295,7 +333,7 @@ def main() -> int:
     # ---- the settle evidence
     sc = manifest.get("settle_counts") or {}
     A(f"**Settle evidence:** {sc.get('CONFIRMED', 0)} of {len(rows)} rows are `CONFIRMED` - "
-      f"their close was matched against an INDEPENDENT reading of the 16:00 ET auction print; "
+      f"their close was matched against an INDEPENDENT reading of the {CLOSE} auction print; "
       f"{sc.get('UNCONFIRMED', 0)} are `UNCONFIRMED` (a close is published but no independent "
       f"reading was available for that line) and {sc.get('NO_BAR', 0)} carry no session bar "
       f"at all. The deepest probe round was {manifest.get('settle_max_round', 0)}.")
@@ -426,7 +464,7 @@ def main() -> int:
       f"exist and still be provisional - so the routine pulls a stratified sample of the "
       f"thinnest names plus every name that moved, round after round, and publishes when the "
       f"drift goes to zero instead of sleeping a fixed time. The published close of every "
-      f"**CONFIRMED** row was then matched against an independent reading of the 16:00 ET "
+      f"**CONFIRMED** row was then matched against an independent reading of the {CLOSE} "
       f"auction print (Yahoo's 1-minute final bar — a different feed; where it carries the "
       f"session's high or low instead of the close, as it does on thin names, the row is "
       f"published as `UNCONFIRMED` rather than smoothed).")
@@ -444,10 +482,12 @@ def main() -> int:
       f"range bracketed the close at all.")
     A("- **A missing value is empty, never zero.** A cap that cannot be resolved is empty and "
       "flagged `NO_CAP`.")
-    A("- **The close is the SETTLED print, never the live one.** The venue's `info` endpoint "
-      "carries two blocks: `secondaryData` is stamped *\"Closed at <date> 4:00 PM ET\"* and is "
-      "the official 16:00 ET auction print, while `primaryData` is the LIVE print — after the "
-      "close it carries an **extended-hours** trade. A pull made after 16:00 ET that reads "
+    if short_session_note:
+        A(short_session_note)
+    A(f"- **The close is the SETTLED print, never the live one.** The venue's `info` endpoint "
+      f"carries two blocks: `secondaryData` is stamped *\"Closed at <date> {CLOSE}\"* and is "
+      f"the official {CLOSE} auction print, while `primaryData` is the LIVE print — after the "
+      f"close it carries an **extended-hours** trade. A pull made after {CLOSE} that reads "
       "`primaryData` publishes an after-hours price as the session's close, and it also puts "
       "that price OUTSIDE the session's own range (measured 2026-11-12: 817 rows needed the "
       "venue's day range under the live print against 384 under the settled print). The "
