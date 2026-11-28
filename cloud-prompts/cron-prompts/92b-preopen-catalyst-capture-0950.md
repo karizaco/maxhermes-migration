@@ -111,7 +111,10 @@ to, so the conversation list stays scannable.
   (`preopen-feed/{date}-{HHMM}.jsonl`) AND a companion **digest** at `preopen-feed/{date}-{HHMM}.md`
   — the top 15 movers with their catalyst, their `conf` token, the record count, the provenance
   split (scanner / stocktwits / pipeworx) and the measured cost ($0.0000 — xAI's live search is
-  retired, so Grok is not used). The 09:50 checkpoint is the last board before the open.
+  retired, so Grok is not used). The 09:50 checkpoint fires TWENTY MINUTES AFTER the 09:30
+  open, so its tape is the FINAL pre-market picture — the pre-market session ended at
+  09:30 and its prints are frozen — and the board's **Anchor:** line says which state
+  it was written in (`aligned` before the open, `rolled` after it).
 - **The key check comes first.** If `${PIPEWORX_API_KEY}` is unset, write NO tape and write
   `preopen-feed/{date}-{HHMM}.SKIPPED.md` naming the reason, then push that marker. That is the
   key the capture script actually uses: **xAI is not used at all** (its chat API no longer serves
