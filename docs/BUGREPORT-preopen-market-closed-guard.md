@@ -221,3 +221,96 @@ Two smaller lessons, both from the same fire:
 | `tools/check_preopen_checkpoint.py` | `CHECKER_VERSION` → 2026-11-26.1; `CAPTURE_VERSION` → 2026-11-26.1; `ref_close` allowed; the anchor rule in `check_tape`; `check_skipped()` accepts both marker shapes; static assertions for the new guards |
 | `tools/test_preopen_checkpoint_contract.py` | the anchored fixtures; the three anchor cases; the two skip-marker cases |
 | `cloud-prompts/_shared/RUNTIME-CONTRACT.md` | the scanner's stale pre-market anchor, measured both ways |
+
+---
+
+## 7. The guard was right about the closed market and wrong about a live one (2026-11-28)
+
+**Status:** fixed on `main` — 2026-11-28.1 (procedure, capture script, renderer, gate).
+
+The 2026-11-26.1 anchor guard checks an invariant that is **instant-bound**:
+
+```
+implied_reference = premarket_close / (1 + premarket_change/100)  ==  close
+```
+
+It holds **while the pre-market session is live**, because then the scanner's `close`
+column IS the previous close. **At the 09:30 ET open the scanner ROLLS that column:**
+`close` becomes the **live regular-session price**, while `premarket_change` and
+`premarket_close` **freeze** at their last pre-open values.
+
+Measured 2026-11-27 09:50 ET, two scanner pulls 45 s apart:
+
+| | pull A | pull B | implied reference |
+|---|---|---|---|
+| UFG `close` | 2.9612 | 2.9099 | **1.72** (frozen) |
+| AAPL `close` | 356.7617 | 356.79 | **355.58** (frozen) |
+| POM / MNDR implied | — | — | **1.61** / **0.5048** (frozen) |
+
+The implied reference stayed **frozen and CORRECT** — byte-identical to the 08:30 tape's
+`ref_close` — while the scanner's `close` **ticked**. The moves on that tape were real;
+the guard's PREMISE was not. It fired (100 of 1142 priced rows agreed, 8.8% against a 90%
+floor) and called a live, trading market *"closed"*.
+
+**AND #92b IS SCHEDULED `50 9 * * 1-5` ET — TWENTY MINUTES AFTER THE OPEN.** So the guard
+could not pass for it on any regular weekday. It was dead from the 2026-11-26.1 build
+onward; 2026-11-26 was masked by Thanksgiving (the calendar window check declined that
+fire first), so **2026-11-27 was the first weekday it bit.** #92a (08:30 ET) was never
+affected: pre-open, `close` IS the previous close, and it measured 295 of 296.
+
+### The fix — a discriminator that needs no calendar and no second source
+
+**A SETTLED close does not move, and a LIVE price does.** Measured on a closed market
+(2026-11-28): **0 of 40** sampled names changed their `close` or their `volume` in 45
+seconds. Measured on the live session (2026-11-27 09:50 ET): **4 of 4** moved in 45
+seconds, and the regular session's `volume` accumulates every second, which no settled
+figure ever does.
+
+So when the anchor disagrees, the capture takes **its own second sample** of the same
+names and asks the scanner whether its figures moved:
+
+| the anchor says | the probe says | the capture does |
+|---|---|---|
+| agrees | — | publishes; `ref_mode: aligned`; the anchor IS the scanner's own close |
+| disagrees | nothing moved | **SKIPS** — marker, no tape, exit 3 (the closed market) |
+| disagrees | it is moving | publishes; `ref_mode: rolled`; the anchor is the provider's **implied reference** |
+
+**A SHUT MARKET IS STILL REFUSED.** The probe only decides which of the two wrong-looking
+states the capture is standing in — it never turns a closed market into a published tape.
+
+### Why the rolled anchor is the implied reference
+
+`premarket_change` is the provider's own measure against the previous close, so
+`premarket_close / (1 + premarket_change/100)` **is** that close, and the tape already
+carries both numbers — nothing is invented. It was confirmed against the 08:30 tape of
+the same day: the implied reference on the 09:50 pull was byte-identical to that tape's
+`ref_close` for every name checked.
+
+### The tape carries the evidence, so the gate can check it offline
+
+Every priced row now carries `ref_mode` (`aligned` | `rolled`) and `ref_scanner_close` —
+the scanner's published close, beside the anchor. In the aligned state the two are the
+same figure; in the rolled state the scanner's close is the live price and **the two must
+differ**. That difference IS the proof that the session rolled, and it is on the tape, so
+the gate needs no network and no second source to judge it. A tape that merely *claims* to
+be rolled while its own figures say otherwise **fails the gate** — that is the exact bug
+this rule exists to stop.
+
+The board publishes the same thing as an **Anchor:** line, so a reader knows whether the
+artifact was taken before or after the open.
+
+### The rule that generalises
+
+**A source column's SESSION SEMANTICS can change WITHIN one trading day.** The same
+field is "the previous close" before the open and "the live price" after it. A guard that
+reads one field for two different instants must be **given the instant explicitly** — do
+not infer "the market is shut" from "the field disagrees with itself". This is the second
+half of the 2026-11-11 rule (*price, cap, gap and gate in one row must describe ONE
+instant*): **the instant can move under you mid-session.**
+
+**And a fail-closed guard on a false premise is a guard that blocks the fleet.** The
+2026-11-26.1 build was right about the closed market and wrong about every other state
+after the open, and it did not publish a single wrong tape — it published none at all,
+every weekday. A guard's failure mode is not only "it let something through"; it is also
+"it stopped the fleet working, and nobody noticed because a skip looks like a quiet
+market."

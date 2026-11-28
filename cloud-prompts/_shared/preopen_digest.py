@@ -5,6 +5,7 @@ PREOPEN_MOVER_COVERAGE_V1
 PREOPEN_EDGAR_V1
 PREOPEN_SIZE_SPLIT_V1
 PREOPEN_EDGAR_DATE_V1
+PREOPEN_ANCHOR_MODE_V1
 make_digest.py — render the human-readable board that sits BESIDE a pre-open tape.
 
 WHY THIS EXISTS
@@ -309,6 +310,15 @@ def render(rows, date_str, slot, tape_name, scan_note):
     tape_priced = [r for r in rows if r.get("pct") is not None]
     gainers = sum(1 for r in tape_priced if (r.get("pct") or 0) > 0)
     losers = sum(1 for r in tape_priced if (r.get("pct") or 0) < 0)
+    # THE ANCHOR MODE (2026-11-28). Which state the capture was in when it wrote this
+    # tape: `aligned` (the scanner's `close` WAS the previous close) or `rolled` (the
+    # regular session was already open, so the scanner's `close` was a LIVE price and
+    # the anchor is the provider's implied reference instead). The board says so in the
+    # file a reader opens - a tape taken after the open is not the same artifact as one
+    # taken before it, and a board that does not say which it is is a silent context
+    # change.
+    anchor_modes = {r.get("ref_mode") for r in tape_priced if r.get("ref_mode")}
+    anchor_mode = next(iter(anchor_modes)) if len(anchor_modes) == 1 else None
     cats = {}
     for r in rows:
         c = r.get("cat") or "other"
@@ -357,6 +367,16 @@ def render(rows, date_str, slot, tape_name, scan_note):
     out.append(f"- **Coverage contract:** `{COVERAGE_CONTRACT}`")
     out.append(f"- **Date contract:** `{DATE_CONTRACT}` · a date-only catalyst (an SEC EDGAR "
                f"filing date) is published as the DATE it broke, never as a bare clock time")
+    if anchor_mode == "aligned":
+        out.append("- **Anchor:** `aligned` — the capture ran before the open, so the "
+                   "scanner's own `close` was the previous close and every move on this "
+                   "tape is measured against it")
+    elif anchor_mode == "rolled":
+        out.append("- **Anchor:** `rolled` — the regular session was already OPEN when "
+                   "this tape was taken, so the scanner's `close` was a LIVE price; the "
+                   "tape's anchor is the provider's implied reference instead (the close "
+                   "the pre-market move was really measured against), and the scanner's "
+                   "published close rides on every row beside it")
     if mv_total == 0:
         out.append(f"- **mover coverage:** n/a — the digest published no movers table · "
                    f"**floor:** {floor_pct:.0f}% · **BELOW FLOOR**")

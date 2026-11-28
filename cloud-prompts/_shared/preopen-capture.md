@@ -1,6 +1,6 @@
 # Cloud Mavis cron: preopen-catalyst-capture (cron #92)
 
-PROCEDURE_VERSION: 2026-11-26.1
+PROCEDURE_VERSION: 2026-11-28.1
 
 Captures the pre-open **catalyst tape**: for each US stock materially moving pre-market or at the
 open, record WHO / WHAT / WHEN, with ground-truth prices. Cron #17 (`us-stocks-in-play`,
@@ -180,8 +180,16 @@ for U in \
   #
   # The CAPABILITY MARKER is demanded as well, so the rule is explicit in the ladder
   # and a later build that moves the version cannot silently drop the guard.
-  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-26.1' "$S.tmp" 2>/dev/null \
-     && grep -q 'CAPTURE_ANCHOR_GUARD_V1' "$S.tmp" 2>/dev/null; then
+  # 2026-11-28.1 adds THE ROLL PROBE: the build that tells a SHUT market from an
+  # OPEN one. Measured 2026-11-27 09:50 ET: the 2026-11-26.1 build called a LIVE
+  # market "closed" (100 of 1142 priced rows agreed with the scanner's own close, 8.8%
+  # against a 90% floor) because the 09:50 slot fires TWENTY MINUTES AFTER THE OPEN,
+  # where the scanner's `close` column is a live price rather than the previous close.
+  # The probe settles it with the scanner's own figures - a settled close does not
+  # move, a live price does - so no calendar and no second source are involved.
+  if grep -q 'CAPTURE_SCRIPT_VERSION: 2026-11-28.1' "$S.tmp" 2>/dev/null \
+     && grep -q 'CAPTURE_ANCHOR_GUARD_V1' "$S.tmp" 2>/dev/null \
+     && grep -q 'CAPTURE_ANCHOR_ROLL_V1' "$S.tmp" 2>/dev/null; then
     mv -f "$S.tmp" "$S"; break
   fi
   rm -f "$S.tmp"
@@ -221,11 +229,17 @@ for U in \
   # a filing dated 2026-11-16 printed "00:00:00" - a bare midnight with no date on the
   # row, and on three of the 2026-11-17 08:30 board's rows no date ANYWHERE. The
   # column's whole job is WHEN. A stale renderer must not win the ladder.
+  #
+  # PREOPEN_ANCHOR_MODE_V1 (2026-11-28) is demanded too: the renderer that publishes
+  # the board's ANCHOR line, which names the state the capture was in. A tape taken
+  # AFTER the open is not the same artifact as one taken before it, and a board that
+  # does not say which it is is a silent context change.
   if grep -q 'PREOPEN_DIGEST_V2' "$D.tmp" 2>/dev/null \
      && grep -q 'PREOPEN_MOVER_COVERAGE_V1' "$D.tmp" 2>/dev/null \
      && grep -q 'PREOPEN_EDGAR_V1' "$D.tmp" 2>/dev/null \
      && grep -q 'PREOPEN_SIZE_SPLIT_V1' "$D.tmp" 2>/dev/null \
-     && grep -q 'PREOPEN_EDGAR_DATE_V1' "$D.tmp" 2>/dev/null; then
+     && grep -q 'PREOPEN_EDGAR_DATE_V1' "$D.tmp" 2>/dev/null \
+     && grep -q 'PREOPEN_ANCHOR_MODE_V1' "$D.tmp" 2>/dev/null; then
     mv -f "$D.tmp" "$D"; break
   fi
   rm -f "$D.tmp"
@@ -324,7 +338,12 @@ for U in \
   # with the NYSE closed, PASSED all 179 of its checks - on a tape where 15.3% of the
   # priced rows had a flipped sign. It verified the tape's SHAPE and never asked
   # whether its MOVES were real.
-  if grep -q 'CHECKER_VERSION: 2026-11-26.1' "$K.tmp" 2>/dev/null; then
+  #
+  # 2026-11-28.1 adds THE ANCHOR MODE RULE on top of it: a tape states which state
+  # the capture was in (`aligned` before the open, `rolled` after it) and carries the
+  # scanner's published close beside its anchor, so a tape written after the open is
+  # checked against evidence instead of being refused.
+  if grep -q 'CHECKER_VERSION: 2026-11-28.1' "$K.tmp" 2>/dev/null; then
     mv -f "$K.tmp" "$K"; break
   fi
   rm -f "$K.tmp"
@@ -485,6 +504,75 @@ shape as the date contract and the coverage floor.
 `ref_close` is **additive**: cron #17's consumer reads the keys it knows and ignores
 the rest, and the board's columns are unchanged. The board still shows the move, not
 the anchor — the anchor is what the GATE reads, not what the reader needs.
+
+---
+
+## THE ANCHOR IS INSTANT-BOUND, AND THE 09:50 SLOT SITS PAST THAT INSTANT (2026-11-28)
+
+**THE GUARD WAS RIGHT ABOUT THE CLOSED MARKET AND WRONG ABOUT A LIVE ONE.** The invariant it
+checks —
+
+```
+implied_reference = premarket_close / (1 + premarket_change/100)  ==   close
+```
+
+— holds **while the PRE-MARKET session is live**, because then the scanner's `close` column IS
+the previous close. At the **09:30 ET open** the scanner ROLLS that column: `close` becomes the
+**LIVE regular-session price**, while `premarket_change` and `premarket_close` **freeze** at their
+last pre-open values.
+
+Measured 2026-11-27 09:50 ET, two scanner pulls 45 s apart:
+
+| | pull A | pull B | implied reference |
+|---|---|---|---|
+| UFG `close` | 2.9612 | 2.9099 | **1.72** (frozen) |
+| AAPL `close` | 356.7617 | 356.79 | **355.58** (frozen) |
+| POM implied | — | — | **1.61** (frozen) |
+| MNDR implied | — | — | **0.5048** (frozen) |
+
+The implied reference stayed **frozen and CORRECT** — byte-identical to the 08:30 tape's
+`ref_close` — while the scanner's `close` **ticked**. So the moves on that tape were real; the
+guard's PREMISE was not. It fired (100 of 1142 priced rows agreed, 8.8% against a 90% floor) and
+called a live, trading market *"closed"*.
+
+**AND THE 09:50 SLOT IS SCHEDULED `50 9 * * 1-5` ET — TWENTY MINUTES AFTER THE OPEN.** So the
+guard could not pass for it on any regular weekday. It was dead from the 2026-11-26.1 build
+onward; 2026-11-26 was masked by Thanksgiving (the calendar window check declined that fire
+first), so **2026-11-27 was the first weekday it bit.** The 08:30 slot was never affected:
+pre-open, `close` IS the previous close, and it measured 295 of 296.
+
+**THE DISCRIMINATOR IS PHYSICAL, NOT A CALENDAR: a SETTLED close does not move, and a LIVE price
+does.** Measured on a closed market (2026-11-28): **0 of 40** sampled names changed their `close`
+or their `volume` in 45 seconds. Measured on the live session (2026-11-27 09:50 ET): **4 of 4**
+moved in 45 seconds, and the regular session's `volume` accumulates every second, which no
+settled figure ever does.
+
+So the capture now takes **its own second sample** of the same names and asks the scanner
+whether its figures moved. **A SHUT MARKET IS STILL REFUSED** — the probe only decides which of
+the two wrong-looking states the capture is standing in:
+
+| the anchor says | the probe says | the capture does |
+|---|---|---|
+| agrees | — | publishes; `ref_mode: aligned`; the anchor IS the scanner's own close |
+| disagrees | nothing moved | **SKIPS** — marker, no tape, exit 3 (the closed market) |
+| disagrees | it is moving | publishes; `ref_mode: rolled`; the anchor is the provider's **implied reference** |
+
+**WHY THE ROLLED ANCHOR IS THE IMPLIED REFERENCE.** `premarket_change` is the provider's own
+measure against the previous close, so `premarket_close / (1 + premarket_change/100)` **is** that
+close — and the tape already carries both numbers, so nothing is invented. It was confirmed
+against the 08:30 tape of the same day: the implied reference on the 09:50 pull was byte-identical
+to that tape's `ref_close` for every name checked.
+
+**THE TAPE CARRIES THE EVIDENCE, SO THE GATE CAN CHECK IT OFFLINE.** Every priced row now
+carries `ref_mode` (`aligned` | `rolled`) and `ref_scanner_close` — the scanner's published
+close, beside the anchor. In the aligned state the two are the same figure; in the rolled state
+the scanner's close is the live price and **the two must differ**. That difference IS the proof
+that the session rolled, and it is on the tape, so the gate needs no network and no second
+source to judge it — and a tape that merely *claims* to be rolled, while its own figures say
+otherwise, fails the gate.
+
+**A TAPE DATED BEFORE 2026-11-28 IS GRANDFATHERED** against this rule, like every other rule
+here. The anchor rule itself (2026-11-27) is unchanged and still bites.
 
 ## WHAT THE SCRIPT DOES (for the reply, not for reimplementation)
 
@@ -957,6 +1045,13 @@ fire, or the capture exited 3 (the market is closed), there is no tape, no board
 coverage and no digest — so the reply says so, names the marker, and counts **no error**
 (a deliberate skip is not a failed capture). Both shapes are spelled out in step 0:
 
+**A SKIP FROM THE ANCHOR GUARD NAMES THE PROBE'S EVIDENCE (2026-11-28).** The capture's
+reason now ends with the roll probe's own numbers — *"the roll probe confirms it: 0/60
+sampled names moved in 45s, and a settled close does not move"* — because the difference
+between "the market is shut" and "the regular session is already open" is exactly what
+that measurement decides. **A skip that names the probe is a DELIBERATE one**; a skip that
+does not (an older capture, or the window check) is the same shape it always was.
+
 ```
 checkpoint: 2026-11-26 0830 — SKIPPED, no tape (the window check declined this fire)
 records written: 0 — no tape; digest: none (preopen-feed/2026-11-26-0830.md is intentionally absent)
@@ -972,6 +1067,14 @@ scanner published alongside it. It is the number that turns "the tape's moves" i
 tape's moves, VERIFIED against the scanner's own close", and it belongs on the push line
 when it is not 100%. A healthy live session measures ~100% (measured 2026-11-25: 14/14);
 a stale anchor measured 11% — and that run wrote no tape at all.
+
+**AND IT NAMES THE MODE (2026-11-28).** The capture also prints `anchor_mode=` — `aligned`
+before the open, `rolled` after it — and `roll=<live>/<checked>`, the probe's own count.
+**Read the mode before reading the ratio:** after the open the ratio is EXPECTED to be
+low (the scanner's `close` is a live price, not the previous close), and a low ratio on a
+`rolled` tape is the rule working, not the guard failing. On an `aligned` tape the ratio
+is the verification. The board carries the same thing as an **Anchor:** line, and the tape
+carries `ref_mode` and `ref_scanner_close` on every priced row.
 
 **THE MOVER COVERAGE LINE REPLACES THE OLD "how many movers carry a catalyst" LINE.** It
 carries the same count and the arithmetic around it, so it is the same line with the

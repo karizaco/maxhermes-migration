@@ -32,7 +32,7 @@ USAGE
       [--tape <tape.jsonl>] [--digest <board.md>] [--skipped <marker.md>] [--slot 0830]
 """
 
-# CHECKER_VERSION: 2026-11-26.1
+# CHECKER_VERSION: 2026-11-28.1
 #
 # THE VERSION MARKER. Every other run-time dependency in this fleet carries one -
 # CAPTURE_SCRIPT_VERSION (capture), PREOPEN_DIGEST_V2 / PREOPEN_EDGAR_DATE_V1
@@ -51,7 +51,7 @@ USAGE
 # PASSED all 179 of its checks - on a tape where 15.3% of the priced rows had a
 # FLIPPED sign and the worst was off by 177 points. The gate verified the tape's SHAPE
 # and never asked whether its MOVES were real. Now it does.
-CHECKER_VERSION = "2026-11-26.1"
+CHECKER_VERSION = "2026-11-28.1"
 
 import argparse
 import datetime
@@ -73,7 +73,16 @@ TAPE_EXTRA_KEYS = ["trending_ts", "trending_score", "volume", "exchange", "groun
                     # THE ANCHOR (2026-11-26): the close the row's move was measured
                     # against, as the scanner published it. Additive - cron #17's
                     # consumer reads the keys it knows and ignores the rest.
-                    "ref_close"]
+                    "ref_close",
+                    # THE ANCHOR MODE (2026-11-28): WHICH STATE the capture was in when
+                    # it wrote the row - `aligned` (the scanner's `close` WAS the
+                    # previous close) or `rolled` (the regular session was already open,
+                    # so the scanner's `close` was a LIVE price and the anchor is the
+                    # provider's implied reference instead) - and the scanner's
+                    # published close beside it. The gap between the two IS the
+                    # evidence that the session rolled, so the gate can check a rolled
+                    # tape offline, exactly like an aligned one.
+                    "ref_mode", "ref_scanner_close"]
 # How old a catalyst may be and still explain a move that happened today. This MUST
 # equal the capture script's own CATALYST_MAX_AGE_DAYS - check_script() asserts it,
 # because a gate that reads a different window than the one that wrote the tape
@@ -94,7 +103,7 @@ DATE_RULE_EFFECTIVE = "2026-11-17"
 # The capture script the procedure must demand. The version moves when the capture's
 # MEASURED OUTPUT changes, so a stale copy cannot win the fetch ladder and publish a
 # different number than the board.
-CAPTURE_VERSION = "2026-11-26.1"
+CAPTURE_VERSION = "2026-11-28.1"
 # ---------------------------------------------------------------------------
 # THE ANCHOR RULE (2026-11-26).
 # ---------------------------------------------------------------------------
@@ -122,6 +131,13 @@ CAPTURE_VERSION = "2026-11-26.1"
 # anchor: a historical artifact is never failed for a rule that post-dates it. Same
 # shape as the date contract and the coverage floor.
 ANCHOR_RULE_EFFECTIVE = "2026-11-27"
+# THE ANCHOR MODE RULE (2026-11-28). The anchor rule above is instant-bound: the
+# scanner's `close` column IS the previous close only while the PRE-MARKET session is
+# live. The 09:50 slot fires twenty minutes after the open, where that column is a live
+# price - so from 2026-11-28 a tape states which state it was written in, and carries
+# the scanner's published close beside its anchor. A tape dated before this day is
+# grandfathered, like every other rule here.
+ANCHOR_MODE_EFFECTIVE = "2026-11-28"
 # The share of priced rows whose implied reference must agree with their own anchor.
 # On a live session it is ~100%; on a stale anchor it is ~0% (measured: 11%).
 ANCHOR_MATCH_FLOOR = 0.90
@@ -287,6 +303,10 @@ def check_procedure(path):
           "the digest fetch ALSO demands the PREOPEN_EDGAR_DATE_V1 marker - the "
           "date-rendering rule changed, so a stale renderer that prints a filing date "
           "as a bare clock time must not win the ladder")
+    check(re.search(r"PREOPEN_ANCHOR_MODE_V1", t) is not None,
+          "the digest fetch ALSO demands the PREOPEN_ANCHOR_MODE_V1 marker - the "
+          "renderer that publishes the board's ANCHOR line, so a board says whether it "
+          "was taken before or after the open")
 
     # 9. THE MOVER COVERAGE FLOOR. The procedure is where the metric, the floor, the
     # arithmetic, the labels and the reply lines are SPECIFIED - the prompt is
@@ -398,6 +418,13 @@ def check_procedure(path):
     check(re.search(r"CAPTURE_ANCHOR_GUARD_V1", t) is not None,
           "the capture fetch ALSO demands the CAPTURE_ANCHOR_GUARD_V1 marker - the "
           "build that refuses to write a tape on a stale scanner anchor")
+    check(re.search(r"CAPTURE_ANCHOR_ROLL_V1", t) is not None,
+          "the capture fetch ALSO demands the CAPTURE_ANCHOR_ROLL_V1 marker - the "
+          "build that tells a SHUT market from an OPEN one instead of calling both "
+          "of them closed")
+    check(re.search(r"roll probe|ROLL PROBE|roll_probe", t, re.I) is not None,
+          "the procedure states the ROLL PROBE - the rule that keeps the 09:50 slot "
+          "from skipping every weekday on a live market")
     check(re.search(r"ref_close", t) is not None,
           "the procedure states that the tape carries the close each move was "
           "measured against")
@@ -651,6 +678,19 @@ def check_script(path):
     # ------------------------------------------------------------------
     check(re.search(r"CAPTURE_ANCHOR_GUARD_V1", t) is not None,
           "the capture carries the CAPTURE_ANCHOR_GUARD_V1 capability marker")
+    check(re.search(r"CAPTURE_ANCHOR_ROLL_V1", t) is not None,
+          "the capture carries the CAPTURE_ANCHOR_ROLL_V1 capability marker")
+    check(re.search(r"def\s+probe_session_roll", t) is not None,
+          "the capture defines the ROLL PROBE - the measurement that tells a shut "
+          "market from an open one")
+    check(re.search(r"=\s*probe_session_roll\(", t) is not None,
+          "the capture CALLS the roll probe - a probe that is only defined never "
+          "runs")
+    check(re.search(r"ref_mode", t) is not None,
+          "the capture publishes the anchor MODE on every priced row")
+    check(re.search(r"ref_scanner_close", t) is not None,
+          "the capture publishes the scanner's own close beside the anchor - the "
+          "evidence the gate checks a rolled tape with")
     check(re.search(r"def anchor_health", t) is not None,
           "the capture checks the scanner's anchor before it writes a tape")
     check(re.search(r"=\s*anchor_health\(", t) is not None,
@@ -687,6 +727,10 @@ def check_digest_script(path):
     check("PREOPEN_EDGAR_DATE_V1" in t,
           "carries the PREOPEN_EDGAR_DATE_V1 marker - the renderer that publishes a "
           "date-only catalyst (an SEC EDGAR filing date) as a DATE and not as a clock time")
+    check("PREOPEN_ANCHOR_MODE_V1" in t,
+          "carries the PREOPEN_ANCHOR_MODE_V1 marker - the renderer that publishes the "
+          "board's ANCHOR line, so a board says whether it was taken before or after "
+          "the open")
     check(re.search(r"DATE_CONTRACT\s*=\s*[\"']preopen-dates-v\d+[\"']", t) is not None,
           "the renderer stamps the date contract on the board, so a pre-fix board can be "
           "grandfathered against the rule")
@@ -991,6 +1035,99 @@ def check_tape(tape_path):
                 "a comparable close")
     else:
         ok(f"the tape predates the anchor rule ({ANCHOR_RULE_EFFECTIVE}) - grandfathered")
+
+    # ------------------------------------------------------------------
+    # THE ANCHOR MODE RULE (2026-11-28).
+    #
+    # THE ANCHOR INVARIANT IS INSTANT-BOUND, AND ONE SLOT SITS PAST THAT INSTANT.
+    # The anchor is checked against the scanner's `close` column, which IS the previous
+    # close while the PRE-MARKET session is live. At the 09:30 ET OPEN the scanner ROLLS
+    # that column to the LIVE regular-session price and freezes the pre-market columns
+    # at their last values, so the invariant cannot hold after the open - and the 09:50
+    # slot is scheduled `50 9 * * 1-5` ET, twenty minutes after it. The capture then
+    # skipped every weekday and called a live market "closed" (measured 2026-11-27:
+    # 100 of 1142 priced rows agreed, 8.8% against a 90% floor, on a market that was
+    # OPEN and trading).
+    #
+    # So a tape now states WHICH STATE it was written in and carries the scanner's
+    # published close beside its anchor:
+    #
+    #   * `aligned` - the scanner's `close` WAS the previous close, so the anchor and
+    #     the scanner's close are the SAME figure. The pre-open path, unchanged.
+    #   * `rolled`  - the regular session was already open, so the scanner's `close`
+    #     was a LIVE price and the anchor is the provider's implied reference
+    #     instead. The two MUST differ, and that difference IS the evidence.
+    #
+    # The rule is GRANDFATHERED for tapes written before it existed - the same shape as
+    # the anchor rule and the coverage floor.
+    # ------------------------------------------------------------------
+    if (tape_date is not None
+            and tape_date >= datetime.date.fromisoformat(ANCHOR_MODE_EFFECTIVE)):
+        modes = {r.get("ref_mode") for r in priced}
+        missing_mode = [r.get("ticker") for r in priced
+                        if r.get("ref_mode") not in ("aligned", "rolled")]
+        check(not missing_mode,
+              f"every priced row states which state the capture was in "
+              f"({len(missing_mode)} missing or invalid)")
+        if len(modes) > 1:
+            check(False,
+                  f"the tape's rows disagree about the capture's state "
+                  f"(got {sorted(str(m) for m in modes)})")
+        mode = next((m for m in modes if m in ("aligned", "rolled")), None)
+        same = 0
+        differ = 0
+        mode_checked = 0
+        mode_offenders = []
+        for r in priced:
+            rc = r.get("ref_close")
+            sc = r.get("ref_scanner_close")
+            p = r.get("price")
+            pct = r.get("pct")
+            if rc in (None, "") or sc in (None, "") or p is None or pct is None:
+                continue
+            try:
+                rc = float(rc)
+                sc = float(sc)
+                p = float(p)
+                pct = float(pct)
+            except (TypeError, ValueError):
+                continue
+            if rc <= 0:
+                continue
+            mode_checked += 1
+            close_enough = abs(sc - rc) / rc <= ANCHOR_TOLERANCE
+            if close_enough:
+                same += 1
+            else:
+                differ += 1
+            if len(mode_offenders) < 5 and mode == "rolled" and close_enough:
+                mode_offenders.append(f"{r.get('ticker')} scanner close {sc:.4f} vs "
+                                      f"anchor {rc:.4f}")
+        if mode == "aligned":
+            if mode_checked:
+                ratio = same / mode_checked
+                check(ratio >= ANCHOR_MATCH_FLOOR,
+                      f"an ALIGNED tape's anchor IS the scanner's own close "
+                      f"({same}/{mode_checked} = {ratio:.0%}, floor "
+                      f"{ANCHOR_MATCH_FLOOR:.0%})")
+        elif mode == "rolled":
+            if mode_checked:
+                ratio = differ / mode_checked
+                check(ratio >= ANCHOR_MATCH_FLOOR,
+                      f"a ROLLED tape's anchor is the implied reference and the "
+                      f"scanner's close is a LIVE price, so the two must differ "
+                      f"({differ}/{mode_checked} = {ratio:.0%}, floor "
+                      f"{ANCHOR_MATCH_FLOOR:.0%}"
+                      f"{'; offenders ' + str(mode_offenders[:3]) if mode_offenders else ''})")
+            else:
+                bad("a tape that claims the session rolled carries no comparable "
+                    "scanner close - the evidence for the claim cannot be checked")
+        else:
+            bad("the tape states no anchor mode, so the gate cannot tell a pre-open "
+                "tape from a post-open one")
+    else:
+        ok(f"the tape predates the anchor-mode rule ({ANCHOR_MODE_EFFECTIVE}) - "
+           f"grandfathered")
 
     stale, undated_confident = [], []
     for r in rows:

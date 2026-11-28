@@ -266,6 +266,70 @@ def build_grandfathered_anchor(tmp):
     return build_anchored(tmp, date="2026-11-26", drop_anchor=True)
 
 
+def build_rolled(tmp, date="2026-11-28", slot="0950", claim="rolled",
+                 scanner_matches=False, drop_mode=False):
+    """A tape written AFTER the open, where the scanner's `close` was a LIVE price.
+
+    THE ANCHOR MODE RULE (2026-11-28). The anchor rule's invariant - the tape's implied
+    reference equals the scanner's own `close` - holds only while the PRE-MARKET session
+    is live. At the 09:30 ET open the scanner rolls that column to the live price and
+    freezes the pre-market columns, so a tape written after the open carries the
+    provider's IMPLIED reference as its anchor and the scanner's live price beside it.
+    The gap between the two IS the evidence, and the gate checks it offline.
+
+      * `claim="rolled"`  - the honest post-open tape. The anchor is the implied
+        reference and the scanner's close differs from it (it is the live price).
+      * `scanner_matches=True` - a tape that CLAIMS the session rolled while its own
+        figures say the scanner's close IS the anchor. The claim is incoherent and the
+        gate must catch it - this is exactly the bug the rule exists to stop.
+      * `claim="aligned"` - the honest pre-open tape: the anchor and the scanner's close
+        are the SAME figure.
+      * `drop_mode=True`  - a tape that states no mode at all, so the gate cannot tell
+        a pre-open tape from a post-open one.
+    """
+    tape, digest = build_conforming(tmp, date=date, slot=slot)
+    rows = [json.loads(l) for l in open(tape, encoding="utf-8").read().splitlines() if l.strip()]
+    for r in rows:
+        r["ts"] = f"{date}T09:52:10-05:00"
+        if r.get("news_date"):
+            r["news_date"] = f"{date}T11:30:00Z"
+        if r.get("pct") is None:
+            continue
+        implied = r["price"] / (1.0 + r["pct"] / 100.0)
+        r["ref_close"] = implied
+        if drop_mode:
+            r.pop("ref_mode", None)
+            r.pop("ref_scanner_close", None)
+            continue
+        r["ref_mode"] = claim
+        if claim == "aligned":
+            r["ref_scanner_close"] = implied
+        else:
+            # The scanner's live price: the pre-market print, marked on by the open.
+            r["ref_scanner_close"] = implied if scanner_matches else implied * 1.031
+    with open(tape, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    subprocess.run([sys.executable, DIGEST, "--tape", tape, "--out", digest,
+                    "--date", date, "--slot", slot], capture_output=True, text=True, check=True)
+    return tape, digest
+
+
+def build_rolled_claim_without_evidence(tmp):
+    """A tape that CLAIMS the session rolled while its own figures say otherwise."""
+    return build_rolled(tmp, scanner_matches=True)
+
+
+def build_rolled_without_mode(tmp):
+    """A post-open tape that states no mode, so the gate cannot judge its claim."""
+    return build_rolled(tmp, drop_mode=True)
+
+
+def build_aligned(tmp):
+    """The honest PRE-OPEN tape, dated on or after the mode rule's effective date."""
+    return build_rolled(tmp, claim="aligned")
+
+
 def build_low_coverage(tmp, date="2026-11-09", slot="0830"):
     """A CONFORMING tape whose MOVER COVERAGE is BELOW the 30% floor.
 
@@ -1190,6 +1254,19 @@ CASES = [
     ("a tape that carries no anchor at all is caught", False, None, build_unanchored),
     ("a tape dated BEFORE the anchor rule is grandfathered (it still passes)", True, None,
      build_grandfathered_anchor),
+    # THE ANCHOR MODE RULE (2026-11-28). The anchor invariant is INSTANT-BOUND and the
+    # 09:50 slot fires twenty minutes after the open, where the scanner's `close` is a
+    # LIVE price - so the capture skipped every weekday and called a live market
+    # "closed" (measured 2026-11-27: 100 of 1142 priced rows agreed, 8.8% against a 90%
+    # floor, on a market that was OPEN and trading).
+    ("a tape written AFTER the open is accepted when it carries the evidence", True, None,
+     build_rolled),
+    ("a tape written BEFORE the open is accepted when it carries the evidence", True, None,
+     build_aligned),
+    ("a tape that CLAIMS the session rolled without the evidence is caught", False, None,
+     build_rolled_claim_without_evidence),
+    ("a tape that states no anchor mode is caught", False, None,
+     build_rolled_without_mode),
 ]
 
 

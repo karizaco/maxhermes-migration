@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-CAPTURE_SCRIPT_VERSION: 2026-11-26.1
+CAPTURE_SCRIPT_VERSION: 2026-11-28.1
 # CAPTURE_ANCHOR_GUARD_V1 - the capability marker the procedure's fetch ladder demands,
 # so a STALE copy (one with no market-closed guard) cannot win it.
+# CAPTURE_ANCHOR_ROLL_V1 - the capability marker for the ROLL PROBE: the build that can
+# tell a SHUT market from an OPEN one, instead of calling both of them "closed".
 #
 # WHY THIS BUILD EXISTS. Measured 2026-11-26 08:30 ET: the checkpoint fired on
 # THANKSGIVING, with the NYSE closed, and the capture wrote 379 records anyway. The
@@ -309,6 +311,44 @@ ANCHOR_MATCH_FLOOR = 0.90
 # Below this many priced rows the sample cannot decide anything, so the capture does
 # NOT trip: a thin band on a quiet pre-market must not be read as a closed market.
 ANCHOR_MIN_SAMPLE = 25
+
+# ---------------------------------------------------------------------------
+# THE ROLL PROBE - IS THE SCANNER'S `close` A LIVE PRICE OR A SETTLED CLOSE?
+# ---------------------------------------------------------------------------
+# THE ANCHOR INVARIANT ABOVE IS INSTANT-BOUND, AND ONE OF THIS ROUTINE'S SLOTS SITS PAST
+# THAT INSTANT.
+#
+# The invariant holds while the PRE-MARKET session is live, because then the scanner's
+# `close` column IS the previous close. At the 09:30 ET OPEN the scanner ROLLS that
+# column: `close` becomes the LIVE regular-session price, while `premarket_change` and
+# `premarket_close` FREEZE at their last pre-open values. Measured 2026-11-27 09:50 ET,
+# two scanner pulls 45s apart: UFG's `close` went 2.9612 -> 2.9099 and AAPL's
+# 356.7617 -> 356.79, while the implied reference stayed frozen and CORRECT (UFG 1.72,
+# POM 1.61, MNDR 0.5048 - byte-identical to the 08:30 tape's `ref_close`).
+#
+# So the guard fired on a LIVE market and called it "closed": 100 of 1142 priced rows
+# matched (8.8% against a 90% floor). The 09:50 slot is scheduled `50 9 * * 1-5` ET - TWENTY
+# MINUTES AFTER THE OPEN - so the guard could not pass for it on any regular weekday. It
+# was dead from the 2026-11-26.1 build onward; 2026-11-26 was masked by Thanksgiving, so
+# 2026-11-27 was the first weekday it bit.
+#
+# THE DISCRIMINATOR IS PHYSICAL, NOT A CALENDAR: a SETTLED close does not move, and a LIVE
+# price does. Measured on the closed market (2026-11-28, a Saturday): 0 of 40 sampled
+# names changed their `close` or their `volume` in 45 seconds. On the live session
+# (2026-11-27 09:50 ET) 4 of 4 moved in 45 seconds, and the regular session's `volume`
+# accumulates every second, which no settled figure ever does.
+#
+# So when the anchor disagrees, the capture asks the scanner ITSELF whether the session
+# rolled, using two samples it takes itself: a settled market answers "nothing moved",
+# and an open one answers "it is moving". A market that is shut is STILL REFUSED - the
+# probe only decides WHICH of the two wrong-looking states the capture is in.
+ROLL_PROBE_SAMPLE = 60      # names sampled from the band for the probe
+ROLL_PROBE_DELAY_S = 45     # seconds between the two samples
+# How many of the sample must show movement before the capture calls the session LIVE.
+# A settled close does not move at all, so the floor is set high enough that a single
+# scanner correction or a rounding change cannot carry a SHUT market through it.
+ROLL_PROBE_MIN_LIVE = 2
+ROLL_PROBE_MIN_RATIO = 0.10
 
 # ---------------------------------------------------------------------------
 # THE MOVER COVERAGE FLOOR - HOW MUCH OF WHAT THE READER READS DID WE EXPLAIN?
@@ -703,7 +743,7 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
                             "right": ["OTC"]},
                            {"left": "premarket_change", "operation": op, "right": right}],
                 "columns": ["name", "description", "premarket_change", "premarket_close",
-                            "premarket_volume", "exchange", "close"],
+                            "premarket_volume", "exchange", "close", "volume"],
                 "sort": {"sortBy": "premarket_change", "sortOrder": order},
                 "range": [0, limit]}
         req = urllib.request.Request(
@@ -724,7 +764,7 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
             if len(d) < 7:
                 continue
             rec = dict(zip(["name", "description", "premarket_change", "premarket_close",
-                            "premarket_volume", "exchange", "close"], d))
+                            "premarket_volume", "exchange", "close", "volume"], d))
             t = (rec.get("name") or "").upper()
             if not t:
                 continue
@@ -737,7 +777,11 @@ def call_scanner_band(pct=BAND_PCT, limit=1000):
                       "volume": rec.get("premarket_volume"),
                       "name": rec.get("description"), "exchange": rec.get("exchange"),
                       # THE ANCHOR, from the SAME response - see anchor_health().
-                      "ref_close": rec.get("close")}
+                      "ref_close": rec.get("close"),
+                      # The REGULAR session's volume, from the same response. It is NOT
+                      # the tape's `volume` (that is the pre-market print's size); it is
+                      # here for the ROLL PROBE, which watches it accumulate.
+                      "reg_volume": rec.get("volume")}
     return {"rows": out, "up": counts.get("up", 0), "down": counts.get("down", 0),
             "total": len(out), "truncated": truncated}
 
@@ -793,6 +837,133 @@ def anchor_health(pm_rows):
             "unknown": bool(checked < ANCHOR_MIN_SAMPLE),
             "tolerance": ANCHOR_TOLERANCE, "floor": ANCHOR_MATCH_FLOOR,
             "offenders": offenders}
+
+
+def _same_number(a, b, rel=1e-9):
+    """Are these two numbers the same figure? A live price and a settled close are
+    never the same; a float's own noise never is either."""
+    try:
+        a = float(a)
+        b = float(b)
+    except (TypeError, ValueError):
+        return a == b
+    if a == b:
+        return True
+    scale = max(abs(a), abs(b), 1e-12)
+    return abs(a - b) / scale <= rel
+
+
+def call_scanner_closes(tickers):
+    """The scanner's `close` and `volume` for these tickers, in ONE post.
+
+    The roll probe needs a SECOND sample of the same two columns, and it needs
+    them for the SAME names it sampled the first time - so they can be compared
+    name by name.
+    """
+    syms = [t for t in tickers if t]
+    if not syms:
+        return {"rows": {}, "error": "no tickers"}
+    cols = ["name", "description", "close", "volume"]
+    body = {"filter": [{"left": "type", "operation": "equal", "right": "stock"},
+                       {"left": "name", "operation": "in_range", "right": syms}],
+            "columns": cols, "range": [0, len(syms) + 5]}
+    req = urllib.request.Request(
+        "https://scanner.tradingview.com/america/scan",
+        data=json.dumps(body).encode(),
+        headers={**UA, "Content-Type": "application/json"})
+    try:
+        res = json.loads(urllib.request.urlopen(req, timeout=45).read())
+    except Exception as exc:
+        return {"rows": {}, "error": f"scanner_failed: {str(exc)[:120]}"}
+    out = {}
+    for row in res.get("data") or []:
+        d = row.get("d") or []
+        if len(d) < len(cols):
+            continue
+        rec = dict(zip(cols, d))
+        t = (rec.get("name") or "").upper()
+        if not t:
+            continue
+        out[t] = {"close": rec.get("close"), "volume": rec.get("volume")}
+    return {"rows": out, "total": len(out)}
+
+
+def probe_session_roll(band_rows, delay_s=ROLL_PROBE_DELAY_S):
+    """Has the scanner's `close` column ROLLED from a settled close to a LIVE price?
+
+    The anchor invariant is instant-bound (see the ROLL PROBE constants), so when the
+    anchor disagrees the capture has to tell two states apart:
+
+      * the market is SHUT - the scanner is serving a pre-market session it never
+        rolled forward, and every move on the tape is measured from the wrong base.
+        The tape must NOT be written. (Thanksgiving, 2026-11-26.)
+      * the market is OPEN and the regular session has started - the scanner rolled
+        its `close` column to the LIVE price while the pre-market columns froze at
+        their last values. The tape's moves are measured against the TRUE previous
+        close and the tape SHOULD be written. (2026-11-27 09:50 ET, twenty minutes
+        after the open.)
+
+    The discriminator is physical and needs no calendar and no second source: a
+    SETTLED close does not move and a LIVE price does. So the probe takes its own
+    second sample of the same names and asks whether the scanner's figures moved.
+
+    A SHUT market is still refused: the probe only decides WHICH of the two
+    wrong-looking states the capture is standing in.
+    """
+    sample = []
+    for tk, r in sorted((band_rows or {}).items(),
+                         key=lambda kv: -abs(kv[1].get("pct") or 0)):
+        if len(sample) >= ROLL_PROBE_SAMPLE:
+            break
+        c = r.get("ref_close")
+        if c in (None, ""):
+            continue
+        try:
+            float(c)
+        except (TypeError, ValueError):
+            continue
+        sample.append(tk)
+    if len(sample) < 5:
+        return {"sampled": len(sample), "checked": 0, "live": 0, "ratio": None,
+                "live_session": False, "need": 0, "window_s": 0,
+                "error": "no_sample", "examples": []}
+    try:
+        time.sleep(delay_s)
+    except Exception:
+        pass
+    second = call_scanner_closes(sample)
+    rows = second.get("rows") or {}
+    checked = 0
+    live = 0
+    examples = []
+    for tk in sample:
+        r1 = (band_rows or {}).get(tk) or {}
+        r2 = rows.get(tk)
+        if not r2:
+            continue
+        c1 = r1.get("ref_close")
+        c2 = r2.get("close")
+        if c1 in (None, "") or c2 in (None, ""):
+            continue
+        checked += 1
+        v1 = r1.get("reg_volume")
+        v2 = r2.get("volume")
+        # The regular session's VOLUME accumulates every second while it runs, and a
+        # settled figure never moves - so it is the artifact-proof signal. A `close`
+        # that moved is corroboration, but it has to be a real move, not a rounding
+        # wobble.
+        vol_moved = (v1 is not None and v2 is not None and not _same_number(v1, v2))
+        close_moved = not _same_number(c1, c2)
+        if vol_moved or close_moved:
+            live += 1
+            if len(examples) < 5:
+                examples.append(f"{tk}: close {c1} -> {c2}, volume {v1} -> {v2}")
+    need = max(ROLL_PROBE_MIN_LIVE, int(ROLL_PROBE_MIN_RATIO * checked))
+    live_session = bool(checked and live >= need)
+    return {"sampled": len(sample), "checked": checked, "live": live,
+            "ratio": (live / checked) if checked else None,
+            "live_session": live_session, "need": need, "window_s": delay_s,
+            "error": second.get("error"), "examples": examples}
 
 
 def call_top_movers(category="gainers", limit=40):
@@ -1785,20 +1956,67 @@ def build(date_str, checkpoint, top_n=8):
     # it is not a loud error - it is a checkpoint that declined, with a trail.
     # ------------------------------------------------------------------
     anchor = anchor_health(pm_rows)
+    anchor_mode = "aligned"
+    roll = None
     if anchor.get("stale"):
-        detail = "; ".join(anchor.get("offenders") or [])
-        reason = (f"the market is closed - the scanner's pre-market anchor is stale: "
-                  f"{anchor['matched']}/{anchor['checked']} priced rows match the "
-                  f"scanner's own close (floor {ANCHOR_MATCH_FLOOR:.0%})")
-        if detail:
-            reason += f" [{detail}]"
-        return {"error": f"market_closed: {reason}",
-                "market_closed": True,
-                "reason": reason,
-                "anchor": anchor,
-                "band_up": band.get("up"), "band_down": band.get("down"),
-                "band_total": band.get("total"),
-                "errors": [f"market_closed: {reason}"]}
+        # ------------------------------------------------------------------
+        # THE ANCHOR DISAGREES. That is true in TWO states, and confusing them
+        # is what made this routine skip every weekday:
+        #
+        #  * the market is SHUT - the scanner never rolled its pre-market session
+        #    forward, so the moves are measured from the wrong base and the tape
+        #    must NOT be written (Thanksgiving, 2026-11-26).
+        #  * the market is OPEN and the REGULAR session has started - the scanner
+        #    rolled its `close` column to the LIVE price and froze the pre-market
+        #    columns at their last values. The moves are measured against the TRUE
+        #    previous close and the tape SHOULD be written (2026-11-27 09:50 ET,
+        #    twenty minutes after the open).
+        #
+        # The probe settles it with the scanner's own figures: a SETTLED close does
+        # not move and a LIVE price does. No calendar, no second source, and a
+        # SHUT market is still refused - the probe only decides which of the two
+        # wrong-looking states the capture is standing in.
+        # ------------------------------------------------------------------
+        roll = probe_session_roll(band_rows)
+        if not roll.get("live_session"):
+            detail = "; ".join(anchor.get("offenders") or [])
+            reason = (f"the market is closed - the scanner's pre-market anchor is stale: "
+                      f"{anchor['matched']}/{anchor['checked']} priced rows match the "
+                      f"scanner's own close (floor {ANCHOR_MATCH_FLOOR:.0%}); the roll "
+                      f"probe confirms it: {roll.get('live', 0)}/{roll.get('checked', 0)} "
+                      f"sampled names moved in {roll.get('window_s', 0)}s, and a settled "
+                      f"close does not move")
+            if detail:
+                reason += f" [{detail}]"
+            return {"error": f"market_closed: {reason}",
+                    "market_closed": True,
+                    "reason": reason,
+                    "anchor": anchor,
+                    "roll": roll,
+                    "band_up": band.get("up"), "band_down": band.get("down"),
+                    "band_total": band.get("total"),
+                    "errors": [f"market_closed: {reason}"]}
+        # THE REGULAR SESSION IS OPEN. The scanner's `close` is a LIVE price, not the
+        # close the pre-market move was measured against, so the tape's anchor is the
+        # provider's own implied reference - the close the move was really measured
+        # from. The scanner's published close rides on the row too, so the gate can
+        # SEE that the two disagree (which is what "rolled" means) and can check the
+        # tape without re-fetching anything.
+        anchor_mode = "rolled"
+        for _tk, _r in pm_rows.items():
+            _pct, _px = _r.get("pct"), _r.get("price")
+            try:
+                _implied = float(_px) / (1.0 + float(_pct) / 100.0)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            _r["ref_scanner_close"] = _r.get("ref_close")
+            _r["ref_close"] = _implied
+    # EVERY priced row states which state it was written in, and carries the scanner's
+    # own published close beside the anchor. In the ALIGNED state the two are the same
+    # figure; in the ROLLED state they differ - and that difference is the evidence.
+    for _tk, _r in pm_rows.items():
+        _r.setdefault("ref_mode", anchor_mode)
+        _r.setdefault("ref_scanner_close", _r.get("ref_close"))
 
     # Re-order the candidates by THIS session's absolute pre-market move. The
     # grounded-call budget is finite and is spent in this order, so the order must follow
@@ -1876,6 +2094,17 @@ def build(date_str, checkpoint, top_n=8):
                 # anchor is a tape of invented moves, and the gate must be able to see
                 # that without re-fetching anything.
                 "ref_close": pr.get("ref_close"),
+                # WHICH STATE the capture was in when it wrote this row. `aligned` =
+                # the scanner's `close` WAS the previous close and the anchor is the
+                # scanner's own figure. `rolled` = the regular session was already
+                # open, so the scanner's `close` was a LIVE price and the anchor is
+                # the provider's implied reference instead.
+                "ref_mode": pr.get("ref_mode") or "aligned",
+                # The scanner's PUBLISHED close, beside the anchor. In the aligned
+                # state it is the same figure; in the rolled state it is the live
+                # price, and the gap between the two IS the evidence that the
+                # session rolled - so the gate can check it offline.
+                "ref_scanner_close": pr.get("ref_scanner_close"),
                 # The DOLLAR behind the print, and the sign probe's verdict.
                 "pm_notional": pm_notional(pr),
                 "sign_conflict": False,
@@ -1907,6 +2136,8 @@ def build(date_str, checkpoint, top_n=8):
                 "exchange": (mv or {}).get("exchange"),
                 # A narrative row carries no print, so it has no anchor either.
                 "ref_close": None,
+                "ref_mode": None,
+                "ref_scanner_close": None,
                 "pm_notional": None,
                 "sign_conflict": False,
                 "sentiment": None,
@@ -2028,6 +2259,17 @@ def build(date_str, checkpoint, top_n=8):
             "anchor_matched": anchor.get("matched"),
             "anchor_ratio": anchor.get("ratio"),
             "anchor_stale": anchor.get("stale"),
+            # WHICH STATE the capture was in: `aligned` (the scanner's `close` WAS the
+            # previous close) or `rolled` (the regular session was already open, so the
+            # scanner's `close` was a live price and the anchor is the provider's
+            # implied reference). The reply names it, and the board publishes it.
+            "anchor_mode": anchor_mode,
+            # THE ROLL PROBE's own ledger: how many sampled names moved between the two
+            # samples. A settled close does not move, so this is what separates a SHUT
+            # market from an OPEN one.
+            "roll_live": (roll or {}).get("live"),
+            "roll_checked": (roll or {}).get("checked"),
+            "roll_live_session": (roll or {}).get("live_session"),
             "stale_dropped": stale_dropped,
             "thin_dropped": thin_dropped,
             "empty_dropped": empty_dropped,
@@ -2189,6 +2431,8 @@ def main():
           # scanner's own close. A healthy run is ~100%, and that number is what turns
           # "the tape's moves" into "the tape's moves, verified against the scanner".
           f"anchor={res.get('anchor_matched')}/{res.get('anchor_checked')}, "
+          f"anchor_mode={res.get('anchor_mode')}, "
+          f"roll={res.get('roll_live')}/{res.get('roll_checked')}, "
           f"as_of={res.get('as_of')}, stale_dropped={len(res.get('stale_dropped') or [])}, "
           f"catalysts: dated={res.get('catalyst_dated')} "
           f"(article={res.get('catalyst_article')}, edgar={res.get('catalyst_edgar')}, "
